@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>一种动态筛选非周期性异常方法（CN112862019A）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>一种动态筛选非周期性异常方法（CN112862019A）</h1>
+
+<blockquote>
+申请人：北京必示科技有限公司<br>
+申请日：2021-04-25<br>
+公开日：2021-08-31<br>
+IPC分类号：G06K 9/62 (2006.01); G06N 3/04 (2006.01); G06N 3/08 (2006.01)<br>
+发明人：张文池、曹立、隋楷心、刘大鹏<br>
+关联文档：CN112862019A.pdf
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<tr><th>字段</th><th>值</th></tr>
+<tr><td>专利号</td><td>CN112862019A</td></tr>
+<tr><td>类型</td><td>发明专利申请（A）</td></tr>
+<tr><td>申请号</td><td>202110445385.2</td></tr>
+<tr><td>申请日</td><td>2021-04-25</td></tr>
+<tr><td>公开号</td><td>CN112862019A</td></tr>
+<tr><td>公开日</td><td>2021-08-31（PDF 扉页记载 2021-05-28）</td></tr>
+<tr><td>申请人</td><td>北京必示科技有限公司</td></tr>
+<tr><td>发明人</td><td>张文池、曹立、隋楷心、刘大鹏</td></tr>
+<tr><td>IPC</td><td>G06K 9/62; G06N 3/04; G06N 3/08</td></tr>
+<tr><td>法律状态</td><td>实质审查中</td></tr>
+<tr><td>专利代理机构</td><td>北京华创智道知识产权代理事务所（普通合伙）11888</td></tr>
+<tr><td>代理人</td><td>彭随丽</td></tr>
+</table>
+<blockquote>注：CSV 索引中本专利的标题"一种告警根因分析方法、装置及存储介质"与 PDF 实际标题"一种动态筛选非周期性异常方法"不一致；本文以 PDF 实际公开文本为准。</blockquote>
+
+<h2>二、背景（Background）</h2>
+<p>在实际生产任务中，运维指标经常被定时任务（如压测、版本升级、主备切换等）触发产生"尖峰"或"平台"形态的周期性特征。这些尖峰本身是任务的正常表现，但因其幅度大、形态特殊，常规异常检测算法会把它们误判为异常。</p>
+<p>现有做法是在频繁告警的"时间窗口"设置"告警静默期"（alert silence）：</p>
+<ul>
+<li>静默期设置过短 → 仍有大量误报；</li>
+<li>静默期设置过长 → 可能忽略真实的生产故障。</li>
+</ul>
+<p>更进一步的问题是，这些定时任务的开始时间和持续时间<b>不固定</b>（受前序任务影响、人工介入等），导致尖峰出现的位置和宽度在每个周期都有偏差，是一种"不稳定/非固定周期性"行为。如何在尖峰位置不稳定、宽度不固定的情况下，自动去除"周期性伪异常"、保留"非周期性真异常"，是本发明要解决的核心问题。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<ul>
+<li><b>痛点 1（静默期长短两难）</b>：传统静默期方法要么误报多要么漏报。<b>解决方案</b>：用"动态基线"代替固定静默期，自适应每个时间点的"周期性程度"。</li>
+<li><b>痛点 2（尖峰位置不固定）</b>：定时任务每次开始时间漂移。<b>解决方案</b>：基于 Bi-LSTM 预测值 + 历史相同位置均值的"异常分数"对每个点做归一化。</li>
+<li><b>痛点 3（尖峰宽度不一致）</b>：每次尖峰持续时间不固定。<b>解决方案</b>：用 DBSCAN 聚类自动推测"单个异常时间窗口 W"，并按 Gumbel 分布拟合窗口内异常概率。</li>
+<li><b>痛点 4（多窗口叠加形成全局基线）</b>：单一窗口不能覆盖全天。<b>解决方案</b>：把所有窗口的判定基线叠加形成全局基线。</li>
+<li><b>痛点 5（阈值固定）</b>：固定阈值不能适应不同密度区域。<b>解决方案</b>：用可调阈值 P 平衡灵敏度和误报。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<h3>4.1 系统总览</h3>
+<p>整个方法由 4 个主要步骤组成：</p>
+<ol>
+<li><b>步骤 1</b>：获取实时数据；</li>
+<li><b>步骤 2</b>：常规异常判断模型输出异常点列表；</li>
+<li><b>步骤 3</b>：根据"异常判定动态基线"对每个异常点的异常概率重新处理；</li>
+<li><b>步骤 4</b>：与系统异常概率阈值 P 比较，识别"非典型周期性"异常。</li>
+</ol>
+<p>其中步骤 3 又分为 6 个子步骤：获取时序历史数据 → 峰值数据提取 → 历史环比异常点聚类 → 单窗口 Gumbel 分布拟合 → 单窗口动态基线 → 全局动态基线。</p>
+
+<h3>4.2 关键概念</h3>
+<ul>
+<li><b>非典型周期性异常</b>：在不稳定周期性尖峰附近出现的、与历史周期性模式不符的真异常。</li>
+<li><b>节点异常分数 NodeScore</b>：用 Bi-LSTM 预测值与真实值之差，除以历史相同位置均值得到的归一化异常分数。</li>
+<li><b>DBSCAN 聚类</b>：基于密度聚类，搜索历史相同位置附近 n 分钟内的相似异常模式，输出"偏移程度"和"异常时间窗口大小 W"。</li>
+<li><b>Gumbel 分布</b>：耿贝尔分布，常用于拟合极值和短时窗的衰减。</li>
+<li><b>单窗口动态基线</b>：单个异常时间窗口内，根据 Gumbel 拟合的异常概率密度函数生成的判定基线。</li>
+<li><b>全局动态基线</b>：把所有单窗口判定基线叠加起来形成的全局基线。</li>
+<li><b>异常概率阈值 P</b>：可调节的阈值，平衡灵敏度和误报。</li>
+</ul>
+
+<h3>4.3 关键数学</h3>
+
+<p><b>4.3.1 NodeScore 异常分数</b></p>
+\[
+\text{NodeScore} = \frac{|\text{Predict} - \text{value}|}{\text{history\_mean}}
+\]
+<p>其中 Predict 是 Bi-LSTM 在该位置的预测值，value 是真实值，history_mean 是历史相同位置的数据均值。</p>
+
+<p><b>4.3.2 DBSCAN 聚类（基于 DTW 距离的受限偏移窗口）</b></p>
+<p>针对每个异常点，搜索历史不同周期相同位置附近 n 分钟内的异常点 + 其前 n 分钟的异常表现，用 DBSCAN（带 DTW 距离）判定当前异常点是否与历史异常模式一致。</p>
+
+<p><b>4.3.3 Gumbel 分布拟合</b></p>
+<p>对已经判定为周期性行为的异常点，把该位置异常概率设为 1，左右两侧按衰减公式递减：</p>
+\[
+P_t = \max(P_{t-1}, P_{t+1}) \cdot k
+\]
+<p>其中 $k$ 为预设衰减系数。窗口内所有点的异常概率用 Gumbel 分布拟合。</p>
+
+<p><b>4.3.4 全局动态基线</b></p>
+<p>全局基线 = $\sum$ 各窗口的基线。每个窗口用其概率密度函数给出"周期性行为"判定阈值。</p>
+
+<p><b>4.3.5 非典型周期性异常识别</b></p>
+<p>最终异常点的"处理后异常概率"与系统阈值 P 比较：</p>
+<ul>
+<li>处理后概率 &lt; P：周期性伪异常，过滤；</li>
+<li>处理后概率 ≥ P：非典型周期性异常，告警。</li>
+</ul>
+
+<h3>4.4 与现有技术的差异</h3>
+<table>
+<tr><th>维度</th><th>静默期法</th><th>本发明</th></tr>
+<tr><td>阈值</td><td>固定静默期</td><td>动态基线</td></tr>
+<tr><td>位置漂移</td><td>不适应</td><td>Bi-LSTM 归一化</td></tr>
+<tr><td>窗口宽度</td><td>固定</td><td>DBSCAN 估计 W</td></tr>
+<tr><td>全局 vs 局部</td><td>全局固定</td><td>窗口叠加</td></tr>
+<tr><td>可解释</td><td>弱</td><td>强（每步可视化）</td></tr>
+</table>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<h3>5.1 输入 / 输出</h3>
+<ul>
+<li><b>输入</b>：实时时序数据 stream，Bi-LSTM 模型（已训练），历史时序数据 history，异常概率阈值 P。</li>
+<li><b>输出</b>：过滤后的非典型周期性异常点列表。</li>
+</ul>
+
+<h3>5.2 伪代码</h3>
+<pre><code>def filter_non_typical_periodic(stream, lstm_model, history, P):
+    # Step 1: 获取实时数据
+    realtime = stream
+
+    # Step 2: 常规异常判断模型 → 异常点列表
+    candidates = []
+    for t, x in enumerate(realtime):
+        pred = lstm_model.predict(t)
+        hist_mean = history.same_position(t)
+        node_score = abs(pred - x) / hist_mean
+        if node_score &gt; TH:
+            candidates.append((t, x, node_score))
+
+    # Step 3: 异常判定动态基线
+    # 3.1 峰值数据提取
+    nodescores = extract_node_scores(history, lstm_model)
+
+    # 3.2 历史环比异常点聚类
+    windows = []      # 异常时间窗口集合
+    for c in candidates:
+        similar = find_similar_anomalies(c, history, k=10, n_min=5)
+        W = cluster_and_estimate_window(similar)   # DBSCAN
+        windows.append((c.t, W))
+
+    # 3.3 单窗口 Gumbel 分布
+    gumbel_distributions = []
+    for t0, W in windows:
+        # 中心点异常概率=1，左右按 k 衰减
+        prob = np.zeros(W)
+        prob[W // 2] = 1.0
+        for i in range(1, W // 2 + 1):
+            prob[W // 2 - i] = max(prob[W // 2 - i + 1], 1) * k
+            prob[W // 2 + i] = max(prob[W // 2 + i - 1], 1) * k
+        gumbel = fit_gumbel(prob)
+        gumbel_distributions.append((t0, gumbel))
+
+    # 3.4 单窗口动态基线
+    window_baselines = [(t0, gumbel.pdf(t)) for t0, gumbel in gumbel_distributions]
+
+    # 3.5 全局动态基线
+    global_baseline = sum(baseline for _, baseline in window_baselines)
+
+    # 3.6 处理后异常概率
+    for t, x, score in candidates:
+        baseline = global_baseline[t] if t &lt; len(global_baseline) else 0
+        processed_score = score - baseline
+
+        # Step 4: 与 P 比较
+        if processed_score &gt;= P:
+            alarm(t, x, processed_score)     # 非典型周期性异常
+        # 否则视为周期性伪异常，过滤
+</code></pre>
+
+<h3>5.3 关键数学（汇总）</h3>
+<ul>
+<li>NodeScore：$\text{NodeScore}=|\text{Predict}-\text{value}|/\text{history\_mean}$</li>
+<li>概率衰减：$P_t=\max(P_{t-1}, P_{t+1})\cdot k$</li>
+<li>全局基线：$\text{global\_baseline}=\sum_i \text{window\_baseline}_i$</li>
+<li>异常识别：$\text{异常}\iff \text{processed\_score}\ge P$</li>
+</ul>
+
+<h3>5.4 复杂度分析</h3>
+<ul>
+<li>Bi-LSTM 预测：$O(T\cdot d\cdot L)$，$d$ 隐层维数，$L$ 序列长度</li>
+<li>DBSCAN 聚类：$O(N\log N)$，$N$ 候选异常点数</li>
+<li>Gumbel 拟合：$O(M)$，$M$ 窗口大小</li>
+<li>全局基线叠加：$O(N\cdot M)$</li>
+<li>在线判断：$O(1)$ 每点</li>
+</ul>
+
+<h3>5.5 示例</h3>
+<p>某支付系统交易量时序受每晚 23:00 定时"对账任务"影响，尖峰位置在 23:00-23:15，宽度漂移 ±5 分钟。历史 30 天有 4 次真正的异常事件（网络抖动、数据库慢等）。</p>
+<ol>
+<li><b>常规检测</b>：模型给出 30 个候选异常点（含 30 个每日尖峰 + 4 个真异常）。</li>
+<li><b>峰值数据提取</b>：Bi-LSTM 对每个点做预测，计算 NodeScore。</li>
+<li><b>历史聚类</b>：DBSCAN 找到 30 个尖峰聚类，估计每个尖峰窗口 W=15 ± 5 分钟。</li>
+<li><b>Gumbel 拟合</b>：每个窗口内异常概率按 Gumbel 拟合。</li>
+<li><b>全局基线</b>：30 个窗口的基线叠加 → 23:00-23:15 区间内 baseline 高，其余低。</li>
+<li><b>阈值判断 P=0.5</b>：
+  <ul>
+  <li>4 个真异常的 processed_score 分别为 0.85, 0.78, 0.65, 0.72（baseline 较低）→ 全部 ≥ P → 告警；</li>
+  <li>30 个周期性尖峰的 processed_score 0.05 ~ 0.30（减去高 baseline）→ 全部 &lt; P → 过滤。</li>
+  </ul>
+</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[实时时序数据] --> B[常规异常判断模型]
+    H[历史时序数据] --> B
+    B --> C[异常点列表]
+    C --> D[峰值数据提取<br/>Bi-LSTM NodeScore]
+    D --> E[DBSCAN 聚类<br/>单异常时间窗口 W]
+    E --> F[单窗口 Gumbel 拟合]
+    F --> G[单窗口动态基线]
+    G --> H2[全局动态基线]
+    H2 --> I[处理后异常概率]
+    C --> I
+    I --> J{vs 阈值 P}
+    J -- 是 --> K[非典型周期性异常<br/>告警]
+    J -- 否 --> L[周期性伪异常<br/>过滤]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[获取实时数据] --> S2[常规异常判断]
+    S2 --> S3[异常点列表]
+    S3 --> S4[获取时序历史数据]
+    S4 --> S5[峰值数据提取 Bi-LSTM]
+    S5 --> S6[历史环比异常点 DBSCAN 聚类]
+    S6 --> S7[单异常时间窗口 W 估计]
+    S7 --> S8[单窗口 Gumbel 异常分布]
+    S8 --> S9[单窗口动态基线]
+    S9 --> S10[全局动态基线]
+    S10 --> S11[处理后异常概率]
+    S3 --> S11
+    S11 --> S12{概率 vs P}
+    S12 -- 是 --> ALARM[非典型周期告警]
+    S12 -- 否 --> FILTER[周期性伪异常过滤]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><b>+ Bi-LSTM 归一化异常分数</b>：用历史相同位置均值做分母，避免单点异常被放大为"全局异常"，是处理"不稳定周期"的关键。</li>
+<li><b>+ DBSCAN 自适应窗口宽度</b>：用聚类算法自动估计"单个异常时间窗口 W"，解决了"窗口大小不固定"问题。</li>
+<li><b>+ Gumbel 极值分布拟合</b>：对每个窗口的异常概率用 Gumbel 分布拟合，符合尖峰附近异常概率"中心高、边缘衰减"的特征。</li>
+<li><b>+ 全局基线叠加</b>：把所有窗口的基线叠加形成全局基线，覆盖全天不同时段。</li>
+<li><b>+ 可调阈值 P</b>：平衡灵敏度与误报率。</li>
+</ul>
+
+<h2>九、权利要求摘要（Claims Summary）</h2>
+<ul>
+<li><b>独立权利要求 1（方法）</b>：核心 4 步——获取实时数据 → 常规异常判断 → 异常判定动态基线处理 → 与阈值 P 比较。</li>
+<li><b>从属权利要求 2</b>：步骤 3 包含 6 个子步骤（301-306）。</li>
+<li><b>从属权利要求 3</b>：峰值数据提取用 Bi-LSTM + NodeScore 公式。</li>
+<li><b>从属权利要求 4</b>：DBSCAN 聚类搜索历史相同位置异常点。</li>
+<li><b>从属权利要求 5</b>：Gumbel 分布拟合 + 概率衰减公式 $P_t=\max(P_{t-1},P_{t+1})\cdot k$。</li>
+<li><b>从属权利要求 6</b>：单窗口动态基线生成。</li>
+<li><b>从属权利要求 7</b>：全局动态基线 = 各窗口基线叠加。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><b>支付系统定时对账任务</b>：每晚 23:00 触发，尖峰位置漂移，方法有效去除周期性伪异常。</li>
+<li><b>电商大促压测</b>：定时压测任务触发的流量尖峰。</li>
+<li><b>数据库主备切换</b>：定时主备切换导致的连接数尖峰。</li>
+<li><b>版本升级窗口</b>：定时版本升级触发的告警抖动。</li>
+<li><b>CDN 缓存刷新</b>：定时刷新任务触发的网络流量尖峰。</li>
+</ul>
+
+<h2>十一、相关专利（Related Patents in this set）</h2>
+<ul>
+<li><b>CN111858231B 单指标异常检测</b>：本专利是它的"周期性伪异常过滤"补充，专门去除跑批/定时任务产生的尖峰误报。</li>
+<li><b>CN112905671A 时间序列异常处理</b>：本专利聚焦"非周期性异常识别"，它聚焦"主动学习 + RRCF 异常检测"。</li>
+<li><b>CN112231193A 时序容量预测</b>：本专利是"在线异常识别"，它做"未来值预测"。</li>
+<li><b>CN111737095B 批处理任务时间监控</b>：本专利处理定时任务尖峰的"误报"，它做定时任务时长的"预测"。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<table>
+<tr><th>术语</th><th>解释</th></tr>
+<tr><td>非典型周期性异常</td><td>在不稳定周期性尖峰附近出现的、与历史周期性模式不符的真异常</td></tr>
+<tr><td>周期性伪异常</td><td>定时任务触发的尖峰，本身是正常但被误判为异常</td></tr>
+<tr><td>Bi-LSTM</td><td>双向长短时记忆网络</td></tr>
+<tr><td>NodeScore</td><td>节点的异常分数，归一化后用于聚类</td></tr>
+<tr><td>DBSCAN</td><td>基于密度的聚类算法</td></tr>
+<tr><td>DTW</td><td>Dynamic Time Warping，动态时间规整</td></tr>
+<tr><td>Gumbel 分布</td><td>耿贝尔分布，常用于拟合极值</td></tr>
+<tr><td>异常时间窗口 W</td><td>单个尖峰的时间宽度</td></tr>
+<tr><td>异常判定动态基线</td><td>自适应不同时间点的"周期性程度"基线</td></tr>
+<tr><td>异常概率阈值 P</td><td>平衡灵敏度与误报的可调参数</td></tr>
+<tr><td>告警静默期</td><td>传统方法在固定时间窗内抑制告警的机制</td></tr>
+</table>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Hochreiter S, Schmidhuber J. "Long Short-Term Memory." Neural Computation, 1997.</li>
+<li>Graves A, Schmidhuber J. "Framewise phoneme classification with bidirectional LSTM." 2005.</li>
+<li>Ester M, et al. "A density-based algorithm for discovering clusters in large spatial databases with noise." KDD, 1996.</li>
+<li>Gumbel E J. "Statistics of Extremes." Columbia University Press, 1958.</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

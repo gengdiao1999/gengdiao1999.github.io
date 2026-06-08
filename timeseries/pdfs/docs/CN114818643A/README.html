@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一种保留特定业务信息的日志模板提取方法（CN114818643A）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>一种保留特定业务信息的日志模板提取方法（CN114818643A）</h1>
+<blockquote>
+申请人：北京必示科技有限公司
+申请日：2022-06-21
+公开/授权日：2022-07-29（公开日）
+IPC分类号：G06F 40/186 (2020.01); G06F 40/194 (2020.01); G06F 40/216 (2020.01); G06F 16/18 (2019.01)
+发明人：汤汝鸣、曹立、殷康璘、刘大鹏
+关联文档：[同目录 CN114818643A.pdf](../../../CN114818643A.pdf)
+</blockquote>
+<h2>一、文档信息速览</h2>
+<table>
+<tr><th>字段</th><th>值</th></tr>
+</table>
+<p>|---|---|</p>
+<p>| 专利号 | CN114818643A |</p>
+<p>| 类型 | 发明专利申请（A） |</p>
+<p>| 申请号 | 202210702569.7 |</p>
+<p>| 申请日 | 2022-06-21 |</p>
+<p>| 公开号 | CN114818643A |</p>
+<p>| 公开/授权日 | 2022-07-29（公开日） |</p>
+<p>| 申请人 | 北京必示科技有限公司 |</p>
+<p>| 发明人 | 汤汝鸣、曹立、殷康璘、刘大鹏 |</p>
+<p>| IPC | G06F 40/186; G06F 40/194; G06F 40/216; G06F 16/18 |</p>
+<p>| 法律状态 | 公开，实质审查中 |</p>
+<h2>二、背景（Background）</h2>
+<p>本发明属于计算机技术领域，聚焦于企业业务监控日志的&quot;模板提取（Log Template Extraction）&quot;与&quot;业务事件序列构造&quot;。其本质问题是：在大型互联网/金融/电信企业的业务系统中，日志数量巨大（每天 GB-TB 级）、格式复杂、字段多且相似度高，传统基于简单分词的日志模板提取方法往往把包含业务信息的关键字段（如业务流水号、Thread-id、Server-id）误归并为通配符，导致模板可读性、可解释性都较差，进一步导致无法构建准确的业务控制流图。</p>
+<p>现有日志模板提取方法（如基于格式树的方法、ETP、LogCluster、Spell 等）的典型步骤是：先按空格等分隔符分词，对时间、数字、IP 等典型格式进行归一化或替换，然后基于相似度将相似的日志聚成模板。这一流程的痛点在于：</p>
+
+  <li>业务字段（如 ESB 的 <code>mSrv1001</code>、<code>Thread-37</code>）数量多、相似度高，在格式树中会被频繁合并，最终在模板里被通配符替代，无法识别业务实体；</li>
+  <li>后续做&quot;按业务实体聚合日志序列&quot;时，由于缺乏实体识别能力，必须借助最小近邻算法从大量噪声中识别日志序列，但并发高时噪声过滤效果差，控制流图精度无法保证。</li>
+
+<p>本发明提出在预处理阶段引入&quot;特定字段规则&quot;来显式保留业务实体字段（业务/拓扑/主机的 ID 等），并在模板提取阶段通过&quot;高相似度字段识别&quot;反向反馈修正规则，最终在序列提取阶段基于已匹配的实体字段直接构造控制流图，提高准确性与可解释性。</p>
+<h2>三、目的（Purpose / Problems Solved）</h2>
+
+  <li><strong>痛点 → 方案：业务字段被通配符替换</strong>：现有模板提取对所有相似字段做合并，导致业务 ID、主机编号、流水号等关键字段无法识别。本方案在预处理阶段显式定义&quot;实体对象字段匹配规则&quot;，对匹配字段统一用占位符替换，业务字段得以保留。</li>
+  <li><strong>痛点 → 方案：格式复杂、缺乏领域知识时规则难以建立</strong>：完全靠人写正则不可扩展。本方案结合字符串结构特征（字母长度）、语义特征（字符集基数、数字比例、元/辅音比例）、统计特征（香农墒、N-Gram 向量），用随机森林建模，模型输出&quot;是否为特殊实体对象字段&quot;的概率，识别后自动生成正则表达式。</li>
+  <li><strong>痛点 → 方案：日志模板可读性差</strong>：传统模板被大量通配符污染。本方案通过显式占位符（如 <code>&lt;thread-id&gt;</code>、<code>&lt;server-id&gt;</code>）让模板保留业务含义，可读性、可解释性大幅提升。</li>
+  <li><strong>痛点 → 方案：业务事件序列识别困难</strong>：高并发场景下业务实例交错，日志序列模式难以发现。本方案基于已匹配实体字段按字段取值组合分类，再在每个分类里抽取事件序列，并以字段优先级（按 TF-IDF）迭代放宽分类限制，提高控制流图精度。</li>
+  <li><strong>痛点 → 方案：模板提取与序列识别缺乏闭环</strong>：本方案增加 S5 &quot;高相似度字段识别&quot; 步骤，将模板提取阶段发现的高相似字段回写到预处理规则，实现持续迭代优化。</li>
+
+<h2>四、核心原理（Principles）</h2>
+<h3>系统总览</h3>
+<p>本方案将&quot;日志模板提取 + 业务事件序列构造&quot;组织为一个由 5 个步骤构成的流水线（S1-S5），其中 S5 是一个反馈环：</p>
+<pre><code>
+S1 特定字段规则构造
+        ↓
+S2 日志预处理（按规则用占位符替换）
+        ↓
+S3 提取日志模板（基于格式树）
+        ↓
+S4 日志序列提取（按实体字段取值分类 + 最小近邻）
+        ↓
+S5 高相似度字段识别（反馈回 S2）
+</code></pre>
+<h3>关键概念</h3>
+
+  <li><strong>实体对象字段</strong>：可作为业务流程/拓扑关系中识别实体的字段，例如 Thread-id、Server-id、Biz-id；与&quot;业务变量&quot;（业务状态码、金额等）有本质区别。</li>
+  <li><strong>占位符（Placeholder）</strong>：用统一占位符（如 <code>&lt;thread-id&gt;</code>）替换特定字段，保留语义并提升模板可读性。</li>
+  <li><strong>格式树（Format Tree）</strong>：模板提取算法的数据结构，由叶子向根逐层合并相似字段。</li>
+  <li><strong>高相似度字段</strong>：模板训练周期内，同一字段位置出现的不重复原始字段数量超过高斯分布动态阈值的字段。</li>
+  <li><strong>最小近邻算法</strong>：用于在已分类的日志模板序列中发现重复子串模式，构造控制流图。</li>
+
+<h3>数学原理</h3>
+<h4>4.1 字段特征表示</h4>
+<p>字段 \(x\) 的特征向量由三部分组成：</p>
+<p>$$</p>
+<p>\phi(x) = \left[ \phi_{\text{struct}}(x), \phi_{\text{sem}}(x), \phi_{\text{stat}}(x) \right]</p>
+<p>$$</p>
+
+  <li>结构特征 \(\phi_{\text{struct}}(x)\)：字母长度等；</li>
+  <li>语义特征 \(\phi_{\text{sem}}(x)\)：字符集基数、数字比例、元音/辅音比例等；</li>
+  <li>统计特征 \(\phi_{\text{stat}}(x)\)：香农熵、N-Gram 向量等。</li>
+
+<h4>4.2 随机森林分类概率</h4>
+<p>$$</p>
+<p>P(\text{特殊实体} \mid x) = \frac{1}{K} \sum_{k=1}^{K} \mathbb{I}\{h_k(x) = \text{特殊实体}\}</p>
+<p>$$</p>
+<p>其中 \(h_k\) 是第 \(k\) 棵决策树的预测，\(K\) 为森林大小。模型输出概率高时，将对应字段识别为&quot;实体对象字段&quot;，并生成正则表达式。</p>
+<h4>4.3 高相似度字段的高斯动态阈值</h4>
+<p>在格式树每个字段位置，记录其训练周期内的不重复字段数量序列 \(C = \{c_1, c_2, \ldots, c_T\}\)。使用极大似然估计其高斯分布参数：</p>
+<p>$$</p>
+<p>\mu_C = \frac{1}{T} \sum_{i=1}^T c_i, \quad \sigma_C^2 = \frac{1}{T} \sum_{i=1}^T (c_i - \mu_C)^2</p>
+<p>$$</p>
+<p>动态阈值为：</p>
+<p>$$</p>
+<p>\tau = \mu_C + \alpha \cdot \sigma_C</p>
+<p>$$</p>
+<p>超过 \(\tau\) 的字段被判定为&quot;高相似度字段&quot;，进入 S5。</p>
+<h4>4.4 字段优先级（TF-IDF）</h4>
+<p>$$</p>
+<p>\text{TF-IDF}(f) = \frac{\#(f \text{ in template})}{\#(\text{all fields in template})} \cdot \log \frac{N}{1 + \#(\text{templates containing } f)}</p>
+<p>$$</p>
+<p>TF-IDF 越高，字段优先级越高；分类限制放宽时优先去掉 TF-IDF 低的字段。</p>
+<h3>与现有技术的差异</h3>
+<table>
+<tr><th>维度</th><th>传统日志模板提取</th><th>本方案</th></tr>
+</table>
+<p>|---|---|---|</p>
+<p>| 业务字段识别 | 缺失 | 显式匹配规则 + 随机森林识别 |</p>
+<p>| 模板可读性 | 通配符污染 | 占位符保留业务语义 |</p>
+<p>| 控制流图构造 | 最小近邻 + 启发式 | 按实体字段分类 + 优先级放宽 |</p>
+<p>| 反馈闭环 | 无 | S5 自动识别 → S2 规则更新 |</p>
+<p>| 序列提取抗噪 | 弱（高并发下失效） | 强（按实体字段分类隔离噪声） |</p>
+<h2>五、算法详解（Algorithm）</h2>
+<h3>输入 / 输出</h3>
+
+  <li><strong>输入</strong>：按时间顺序排列的原始日志文本序列（按行）。</li>
+  <li><strong>输出</strong>：业务事件对应的日志控制流图（流程图），包括事件模板号、转移路径与分支概率。</li>
+
+<h3>伪代码</h3>
+<pre><code>
+def log_template_pipeline(raw_logs):
+    # S1: 构造特定字段规则
+    rules = build_special_field_rules(seed_kb, labeled_samples)
+    # - 手工正则：基于专家领域知识
+    # - 自动学习：随机森林识别 (字段→是否为实体对象字段)
+    # 反馈闭环：S5 输出的新规则会更新 rules
+
+    # S2: 日志预处理（按规则占位符替换）
+    structured = [preprocess(line, rules) for line in raw_logs]
+    # 例: &quot;2021-08-01 12:00:00 Thread-37: run at host mSrv1001&quot;
+    #   -&gt; &quot;&lt;timestamp&gt; &lt;thread-id&gt;: run at host &lt;server-id&gt;&quot;
+
+    # S3: 提取日志模板（基于格式树）
+    templates, high_sim_fields = format_tree_extract(structured)
+    # 同时记录每个模板位置的不重复字段数，使用 POT/高斯阈值过滤
+
+    # S4: 日志序列提取（按实体字段取值分类 + 最小近邻）
+    flow_graph = None
+    while True:
+        # 1) 按所有实体字段取值组合分类
+        classes = group_by_field_values(templates)
+        # 2) 在每个类中选与原始日志一致的子集
+        per_class = [select_matching(c, raw_logs) for c in classes]
+        # 3) 在每类中用最小近邻发现重复子串
+        events = [min_subseq_extract(p) for p in per_class]
+        # 4) 人工/算法核验；通过则保留
+        if verify(events):
+            flow_graph = build_directed_graph(events)
+            return flow_graph, templates
+        # 5) 否则按字段优先级 (TF-IDF) 去掉最低优先级字段，重试
+        if not drop_lowest_priority_field():
+            break
+
+    # S5: 高相似度字段识别（反馈回 S2）
+    new_rules = identify_special_fields(high_sim_fields)
+    rules.update(new_rules)
+    return log_template_pipeline(raw_logs)  # 迭代
+</code></pre>
+<h3>关键数学</h3>
+<p>见 §4.1-4.4。核心是：</p>
+
+  <li>字段表示为多维特征向量后输入随机森林；</li>
+  <li>字段优先级由 TF-IDF 决定；</li>
+  <li>高相似度字段使用高斯动态阈值判断；</li>
+  <li>反馈闭环由 S5 输出新规则回到 S2。</li>
+
+<h3>复杂度分析</h3>
+
+  <li>随机森林训练：\(O(K \cdot N \cdot d \log N)\)，\(K\) 为树数，\(N\) 为字段数，\(d\) 为特征维度；</li>
+  <li>格式树模板提取：\(O(L \cdot N \log N)\)，\(L\) 为日志行数；</li>
+  <li>序列提取（最小近邻）：分类后近似 \(O(m \cdot n)\)，\(m\) 为分类数，\(n\) 为每类平均样本数；</li>
+  <li>反馈迭代次数：一般 \(O(K)\)（\(K\) 为字段数），每次迭代放宽分类限制。</li>
+
+<h3>示例</h3>
+<p>原始 ESB 日志：</p>
+<pre><code>
+2021-08-01 12:00:00 Thread-37: run at host mSrv1001
+2021-08-01 12:00:01 Thread-37: finish at host mSrv1001
+2021-08-01 12:00:02 Thread-38: run at host mSrv1002
+</code></pre>
+<p>S1：手工或自动建立规则 <code>Thread-\d+ → &lt;thread-id&gt;</code>、<code>mSrv\d+ → &lt;server-id&gt;</code>。</p>
+<p>S2：预处理后：</p>
+<pre><code>
+&lt;timestamp&gt; &lt;thread-id&gt;: run at host &lt;server-id&gt;
+&lt;timestamp&gt; &lt;thread-id&gt;: finish at host &lt;server-id&gt;
+&lt;timestamp&gt; &lt;thread-id&gt;: run at host &lt;server-id&gt;
+</code></pre>
+<p>S3：格式树提取模板：</p>
+<pre><code>
+T1: &lt;thread-id&gt;: run at host &lt;server-id&gt;
+T2: &lt;thread-id&gt;: finish at host &lt;server-id&gt;
+</code></pre>
+<p>S4：按 <code>&lt;thread-id&gt;</code> 和 <code>&lt;server-id&gt;</code> 字段取值分类，按类抽取事件序列：</p>
+
+  <li>Thread-37/mSrv1001: run → finish</li>
+  <li>Thread-38/mSrv1002: run</li>
+
+<p>构造控制流图：run → finish；run 终止。</p>
+<p>S5：高相似度字段识别（如发现新 <code>BizId-\d+</code> 字段），回写 S2 规则，迭代。</p>
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[原始日志文本序列] --> B[S1 特定字段规则构造]
+    B --> C[S2 日志预处理]
+    C --> D[S3 格式树模板提取]
+    D --> E[S4 日志序列提取 + 控制流图构造]
+    E --> F[S5 高相似度字段识别]
+    F -->|反馈新规则| B
+    D -->|高相似度字段| F
+    E --> G[控制流图输出]
+</div>
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[S1: 构造特定字段规则] --> S2[S2: 日志预处理与占位符替换]
+    S2 --> S3[S3: 基于格式树提取日志模板]
+    S3 --> S4[S41: 按字段取值组合分类]
+    S4 --> S5[S42: 选取与原始日志一致的子集]
+    S5 --> S6[S43: 最小近邻抽取业务事件序列]
+    S6 --> S7{S44: 人工/算法核验?}
+    S7 -- 通过 --> S8[S45: 构造控制流图]
+    S7 -- 不通过 --> S9[按字段优先级放宽分类限制]
+    S9 --> S5
+    S3 --> S5H[S5: 高相似度字段识别]
+    S5H -->|新规则| S2
+</div>
+<h2>八、关键创新点（Key Innovations）</h2>
+
+  <li><strong>+ 特定字段规则构造（S1）</strong>：显式定义业务实体字段（Thread-id、Server-id 等）的匹配规则，使其在预处理阶段就被占位符替换，保留业务语义。</li>
+  <li><strong>+ 多特征随机森林自动识别</strong>：当缺乏专家知识时，使用结构/语义/统计三类特征训练随机森林，输出&quot;是否为实体对象字段&quot;概率，识别后自动生成正则表达式。</li>
+  <li><strong>+ 高相似度字段识别（S5）</strong>：在格式树每个字段位置统计训练周期内的不重复字段数量，使用高斯动态阈值判断高相似度字段，并反向反馈到 S2 规则。</li>
+  <li><strong>+ 字段优先级驱动的序列提取</strong>：日志序列提取阶段按字段优先级（TF-IDF）顺序放宽分类限制，优先保留 TF-IDF 高（业务重要）的字段。</li>
+  <li><strong>+ 反馈闭环迭代</strong>：S5 持续发现新字段，S2 持续更新规则，整个流水线对新增业务字段持续自适应。</li>
+
+<h2>九、权利要求摘要（Claims Summary）</h2>
+
+  <li><strong>独立权利要求 1（方法）</strong>：</li>
+  <li>S1 构造特定字段规则；</li>
+  <li>S2 日志预处理，按规则用占位符替换；</li>
+  <li>S3 基于格式树模板提取，得到日志模板序列与高相似度字段；</li>
+  <li>S4 日志序列提取，按已匹配实体字段取值分类，构造控制流图。</li>
+
+
+  <li><strong>独立权利要求 6（装置）</strong>：对应方法权利要求 1 的模块——特定字段规则构造模块、日志预处理模块、日志模板提取模块、日志序列提取模块。</li>
+  <li><strong>独立权利要求 11（计算机设备）</strong> / <strong>独立权利要求 12（存储介质）</strong>：标准硬件与介质权利要求。</li>
+
+
+  <li><strong>从属权利要求 2-5、7-10</strong>：</li>
+  <li>S5 高相似度字段识别与反馈；</li>
+  <li>S4 的具体步骤（S41-S45）：分类、选取、抽取、核验、构造；</li>
+  <li>字段优先级由 TF-IDF 确定；</li>
+  <li>S1 中特征为结构/语义/统计特征，随机森林建模。</li>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+  <li><strong>金融交易系统业务追踪</strong>：保留交易流水号、账户 ID 等关键字段，构建完整的业务控制流图，定位异常交易。</li>
+  <li><strong>微服务调用链日志治理</strong>：在 Kubernetes 环境下对 Java/Go 应用日志做模板提取，保留 trace-id / span-id 等实体字段。</li>
+  <li><strong>电商订单流程异常分析</strong>：对&quot;下单 → 支付 → 物流 → 售后&quot;日志序列构造控制流图，识别异常分支。</li>
+  <li><strong>电信运营商业务流程监控</strong>：对 BSS/OSS 系统的复杂业务日志做模板提取与流程图构建。</li>
+  <li><strong>大型企业中间件（WebLogic/Tomcat）日志治理</strong>：自动识别 <code>mSrv\d+</code> 等主机编号，避免被通配符归并。</li>
+
+<h2>十一、相关专利（Related Patents in this set）</h2>
+
+  <li>CN114785666B（一种网络故障排查方法与系统）</li>
+  <li>CN115062144B（基于知识库和集成学习的日志异常检测方法与系统）</li>
+  <li>CN115391160B（异常变更检测方法、装置、设备及存储介质）</li>
+  <li>CN115392403A（异常变更检测方法、装置、设备及存储介质）</li>
+  <li>CN116302762A（基于红蓝对抗的故障定位应用的评测方法与系统）</li>
+  <li>CN116820826A（基于调用链的根因定位方法、装置、设备及存储介质）</li>
+
+<h2>十二、术语表（Glossary）</h2>
+
+  <li><strong>ESB</strong>：Enterprise Service Bus，企业服务总线。</li>
+  <li><strong>CMDB</strong>：Configuration Management Database，配置管理数据库。</li>
+  <li><strong>TF-IDF</strong>：词频-逆文档频率（Term Frequency-Inverse Document Frequency），用于衡量词在文档集中的重要性。</li>
+  <li><strong>格式树</strong>：Format Tree，一种日志模板数据结构，由叶子向根逐层合并相似字段。</li>
+  <li><strong>随机森林</strong>：Random Forest，多棵决策树的集成学习方法，输出类别概率。</li>
+  <li><strong>香农熵</strong>：Shannon Entropy，信息论中衡量信息量的指标。</li>
+  <li><strong>N-Gram</strong>：连续 N 个字符组成的向量，用于文本统计特征。</li>
+  <li><strong>最小近邻算法</strong>：用于在序列中发现重复子串的算法。</li>
+  <li><strong>有限状态自动机</strong>：Finite State Automaton，用于建模业务状态转移。</li>
+  <li><strong>占位符</strong>：Placeholder，文本中用于替换特定字段的统一标记。</li>
+
+<h2>十三、参考与延伸阅读</h2>
+
+  <li>Fu, X., et al. &quot;LogCluster: A clustering algorithm for log message categorization.&quot;</li>
+  <li>Tang, L., et al. &quot;LogPAI: A Platform for Intelligent Log Analysis.&quot;</li>
+  <li>Manning, C. D., et al. &quot;Introduction to Information Retrieval.&quot;</li>
+  <li>必示科技 AIOps 日志异常检测产品文档。</li>
+  <li>相关论文：基于格式树（Format Tree）的日志模板提取、日志序列模式挖掘、控制流图构造。</li>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>
