@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Can We Recycle Our Old Models? An Empirical Evaluation of Model Selection Mechanisms for AIOps Solutions（Empirical Software Engineering2025）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>Can We Recycle Our Old Models? An Empirical Evaluation of Model Selection Mechanisms for AIOps Solutions</h1>
+<p><em>《我们能复用旧模型吗？AIOps解决方案中模型选择机制的实证评估》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理（含数学公式）</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解（含伪代码）</li>
+<li>实现细节（参数、超参、工程优化）</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录（术语表、参数表、数据集表）</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>Can We Recycle Our Old Models? An Empirical Evaluation of Model Selection Mechanisms for AIOps Solutions</td></tr>
+<tr><td>中文标题</td><td>我们能复用旧模型吗？AIOps解决方案中模型选择机制的实证评估</td></tr>
+<tr><td>作者</td><td>Yingzhe Lyu, Hao Li, Heng Li, Ahmed E. Hassan（皇后大学 SAIL实验室 +蒙特利尔理工学院）</td></tr>
+<tr><td>arXiv ID</td><td>2505.02961v1（cs.SE）</td></tr>
+<tr><td>投稿期刊</td><td>Empirical Software Engineering（Springer），已接收/在审稿中</td></tr>
+<tr><td>首版提交</td><td>2025-05-05</td></tr>
+<tr><td>核心问题</td><td>AIOps 模型在部署阶段面临概念漂移；周期性再训练代价高；历史模型是否可被"回收"以提升性能与稳健性？</td></tr>
+<tr><td>数据集</td><td>Google集群追踪（28 天）、Backblaze硬盘 SMART 数据（36 个月）、Alibaba GPU集群追踪（8 周）</td></tr>
+<tr><td>核心结论</td><td>基于时间邻接性（TBM）、相似性（SBM）及其修订版（rTBM/rSBM）可以显著超越周期性再训练；CRC 和 LaF 这类无标签模型选择机制有局限。</td></tr>
+<tr><td>三大研究问题</td><td>RQ1预测性能；RQ2 模型排序能力；RQ3排序一致性</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>现代大规模软件系统（云计算、超算平台、推荐引擎等）在日常运行中会产生海量的监控数据——典型的大型云平台每天可记录数十亿条 metric、log、trace记录。随着数据规模不断增长，"手工看图"与"脚本过滤"已经难以为继，<b>AIOps（Artificial Intelligence for IT Operations）</b>这一方向应运而生。AIOps 利用机器学习和数据挖掘算法，对软件系统的运行状态做自动化分析，从而辅助或替代人工运维。其典型任务包括：</p>
+
+<ul>
+<li><b>故障预测</b>（failure prediction）：在节点、硬盘、作业、网络发生异常前给出预警，例如 Microsoft 的节点失败预测 [Lin2017]、Google集群作业失败预测 [Rosa2015, El-Sayed2020]。</li>
+<li><b>异常检测</b>（anomaly detection）：识别时序、依赖图、日志中的反常模式，用于服务降级 / 中断预警。</li>
+<li><b>故障定位与诊断</b>（triaging / diagnosis）：在故障发生后定位根因、推荐修复方案。</li>
+<li><b>事件管理</b>（incident management）：对告警、trouble ticket 进行聚类、去重、自动分派。</li>
+</ul>
+
+<p>AIOps解决方案在工程实践中已展示出强大能力，例如：</p>
+
+<blockquote>
+Lin 等 [33] 在微软的 Azure集群上部署节点失效预测系统，Botczak 等 [8] 利用 SMART 数据构建硬盘故障预测流水线。然而，这些模型一旦部署到生产环境，就会面临<b>概念漂移（concept drift）</b>：作业负载随业务变化、硬件随时间老化、用户行为模式迁移，训练数据分布 \( P(X, Y) \) 与实时数据分布不再匹配，从而导致模型性能持续下降 [Lu2018, Kim2023]。</blockquote>
+
+<p>当前主流 AIOps实践采取两种策略应对漂移：</p>
+
+<ol>
+<li><b>静默模型（Stationary Model）</b>：使用历史初始数据训练一次，之后再不更新。这种策略最省事，但随着漂移加剧，性能会不断劣化。</li>
+<li><b>周期性再训练（Periodic Retraining）</b>：每当新一批数据进入，就用滑窗（sliding window）重新训练模型。这种策略虽然能跟踪漂移，但代价高昂——计算资源、人力标注、版本回归测试都不可忽略。</li>
+</ol>
+
+<p>更糟糕的是，部署过程中会<b>累积大量历史模型版本</b>（例如每两周再训练一次，一年就积累26 个模型）。这些"被淘汰"的旧模型并非毫无价值——它们在不同时间窗口学到了不同的分布特征，蕴含了<b>隐式的多样性（diversity）</b>。已有研究表明：模型集成、多模型混合在面对漂移时可以显著提升稳健性。然而，截至本文发表，<b>AIOps领域尚无系统性的实证研究</b>，来回答下面这个朴素问题：</p>
+
+<blockquote>
+"<b>这些被丢弃的旧模型，是否能被"回收利用"，从中选出最适合当前数据分布的那一个，从而替代或者补充周期性再训练？</b>"</blockquote>
+
+<p>与此同时，机器学习社区早已在"<b>模型选择（model selection）</b>"问题上积累了丰富的理论成果。代表工作包括：</p>
+
+<ul>
+<li><b>CRC（Consistent Relative Confidence）</b>[Liu2017]：基于无标签数据的置信度一致性来选择最佳模型。</li>
+<li><b>LaF</b>（Label-free model selection on pseudo-labels）[Hu2019]：基于伪标签的 EM估计。</li>
+<li><b>基于时间邻接性 /相似性</b>的模型选择：直观假设"最近的模型"、"最相似的模型"更适合测试样本。</li>
+</ul>
+
+<p>但这些机制从未在 AIOps场景下被系统评估过，也从未在 Google、Alibaba 这类真实生产数据上做过端到端比较。这就形成了本研究的<b>研究空白</b>。</p>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文的目标可以概括为"<b>用历史模型替代周期再训练</b>"，具体地，本文尝试回答三个层次递进的研究问题：</p>
+
+<table>
+<tr><th>编号</th><th>研究问题</th><th>关注维度</th></tr>
+<tr><td>RQ1</td><td>模型选择机制在多大程度上能达到最优预测性能？</td><td>AUC绝对值 vs.周期性再训练 /静默模型基线</td></tr>
+<tr><td>RQ2</td><td>模型选择机制在多大程度上能达到最优<b>模型排序</b>？</td><td>Kendall's \(\tau\)、Jaccard@3 与"理论 oracle"的相关性</td></tr>
+<tr><td>RQ3</td><td>模型选择机制的排序结果<b>稳定性</b>如何？</td><td>Kendall's W，跨100 次随机种子的鲁棒性</td></tr>
+</table>
+
+<p>论文的核心贡献可以归纳为：</p>
+
+<ol>
+<li><b>首次系统实证</b>：将6 种模型选择机制（含2 种修订版）引入 AIOps场景，并在3 个大规模公开数据集、4 种主流学习器（LR、CART、RF、NN）上做端到端评估。</li>
+<li><b>构建理论上限 oracle</b>：基于"事后真值标签"假设 oracle排序模型，作为对比锚点，量化实际选择机制的"性能缺口"。</li>
+<li><b>开源完整复现包</b>：包含数据预处理、训练、选择、评估全部脚本，发布在 <code>https://github.com/EmpyreanKnight/suppmaterial-25-yingzhe-AIOpsSelection</code>，便于社区进一步实验。</li>
+<li><b>给出落地建议</b>：在三个数据集、四个学习器、四个评估维度上，推荐 rTBM/rSBM 为最稳健方案，并对 AIOps 模型维护的"何时再训练 /何时复用 /何时集成"给出实践指南。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<p>本节从概念漂移理论开始，逐步给出论文用到的关键数学定义，包括模型选择的形式化、AUC评估、Kendall's \(\tau\)、Jaccard、Kendall's W、以及 Scott-Knott显著性检验。</p>
+
+<h3>4.1概念漂移的形式化</h3>
+
+<p>给定监督学习任务 \(\mathcal{T}\) 上的数据流：</p>
+\[
+\mathcal{D} = \{(x_t, y_t)\}_{t=1}^{T}, \quad x_t \in \mathbb{R}^d,\ y_t \in \{0,1\}
+\]
+
+<p>其中 \((x_t, y_t)\) 表示时刻 \(t\) 的样本。概念漂移指联合分布 \(P_t(X, Y)\)随时间发生不可预测变化，导致在 \(t_0\)训练的模型 \(M_{t_0}\) 在 \(t_1 > t_0\)时的期望损失 \( \mathbb{E}_{(x,y) \sim P_{t_1}}[\ell(M_{t_0}(x), y)] \)显著升高。</p>
+
+<h3>4.2周期性再训练与历史模型池</h3>
+
+<p>将数据集按自然时间窗口切成 \(l\) 个等长子段 \(C_1, C_2, \ldots, C_l\)。每个子段训练一个基模型 \(M_i\)（\(i=1, \ldots, l\)），构成历史模型池：</p>
+\[
+\mathcal{S}_{\mathcal{M}} = \{M_1, M_2, \ldots, M_n\}, \quad n = l
+\]
+
+<p>对于目标测试时段 \(\mathcal{C}_t = \{s_1, s_2, \ldots, s_m\}\)（无标签），我们的任务是从历史模型池中<b>估计排序</b> \(r\)：</p>
+\[
+r: \mathcal{S}_{\mathcal{M}} \to \{1,2, \ldots, n\}
+\]
+
+<p>使得真实期望性能 \( \mathbb{E}_{s \sim \mathcal{C}_t} [\,\text{AUC}(M_{r^{-1}(1)}, s)\,] \) 最大，<i>同时</i>该排序与"事后 oracle排序"尽量一致。</p>
+
+<h3>4.3 AUC 定义</h3>
+
+<p>二分类 AUC（Area Under the ROC Curve）定义为：</p>
+\[
+\text{AUC}(M, \mathcal{C}_t) = \mathbb{P}\left(\,\text{score}(M, x^+) > \text{score}(M, x^-)\,\right), \quad (x^+, x^-) \sim \mathcal{C}_t
+\]
+
+<p>等价地：</p>
+\[
+\text{AUC}(M, \mathcal{C}_t) =1 - \frac{\sum_{(x^+, x^-) \in \mathcal{C}_t} \mathbb{1}[\text{score}(x^+) < \text{score}(x^-)]}{|\mathcal{C}_t^+| \cdot |\mathcal{C}_t^-|}
+\]
+
+<p>本文选择 AUC 而非 Precision/Recall，是因为样本在每段中均存在类别不平衡（作业失败率仅 ~1%，硬盘失败率仅0.1%），AUC 对阈值不敏感，更适合衡量"排序质量"。</p>
+
+<h3>4.4 Kendall's \(\tau\)（排序相关性）</h3>
+
+<p>给定两个排名 \(r_1, r_2: \mathcal{S}_{\mathcal{M}} \to \{1,\ldots,n\}\)，Kendall's \(\tau\) 定义为：</p>
+\[
+\tau(r_1, r_2) = \frac{\#\text{concordant pairs} - \#\text{discordant pairs}}{\binom{n}{2}}
+\]
+
+<p>论文沿用 [50] 的阈值划分（仅看 agreement方向）：</p>
+\[
+\tau\ \text{agreement} = \begin{cases}
+\text{Weak} &0 \le \tau \le0.3 \\
+\text{Moderate} &0.3 < \tau \le0.6 \\
+\text{Strong} &0.6 < \tau \le1
+\end{cases}
+\]
+
+<h3>4.5 Jaccard相似系数（top-\(k\) 重合度）</h3>
+
+<p>对于模型集合 \(\mathcal{S}_{\mathcal{M}} = \{M_1, \ldots, M_n\}\) 和两个排名 \(r_1, r_2\)，top-\(k\)集合为：</p>
+\[
+\text{Top}_k(r) = \{M_i \mid r(M_i) \le k\}
+\]
+
+<p>Jaccard相似系数：</p>
+\[
+J_k(r_1, r_2) = \frac{|\text{Top}_k(r_1) \cap \text{Top}_k(r_2)|}{|\text{Top}_k(r_1) \cup \text{Top}_k(r_2)|}
+\]
+
+<p>本文取 \(k=3\)。Backblaze 与 Alibaba 数据集 \(n\)较小（Jaccard@3 与实际可用历史模型数相匹配）。</p>
+
+<h3>4.6 Kendall's W（跨多次随机种子的排序一致性）</h3>
+
+<p>Kendall's W 定义为：</p>
+\[
+W = \frac{12 \cdot S}{k^2 (n^3 - n)}, \quad S = \sum_{i=1}^{n} (R_i - \bar{R})^2
+\]
+
+<p>其中 \(k\) 是评分者数量（这里指100 次随机种子的重复运行），\(R_i\) 是第 \(i\) 个对象的总排名得分。\(W \in [0,1]\)，越大表示排序越一致。</p>
+
+<h3>4.7 Scott-Knott显著性检验</h3>
+
+<p>本文使用 Scott-Knott递归聚类 [Mittal2017]：对100 次重复实验的 AUC 值序列进行层次分裂，按 \(p \ge0.05\)准则将方法分组，同组内无显著差异，跨组差异显著。这避免了多重比较带来的 p-value膨胀。</p>
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图给出本研究方法栈的整体架构，包含<b>数据层 →训练层 → 选择层 →评估层 → 输出层</b>五个子模块。</p>
+
+<div class="mermaid">
+flowchart TD
+ A[原始追踪数据<br/>Google / Backblaze / Alibaba] --> B[数据预处理<br/>特征工程<br/>数据标准化]
+ B --> C[历史模型训练<br/>LR/CART/RF/NN<br/>滑窗 +随机搜索超参]
+ C --> D[历史模型池<br/>S_M = {M_1...M_n}]
+ D --> E[模型选择机制<br/>TBM/rTBM/SBM/rSBM<br/>CRC/LaF/Oracle]
+ E --> F[目标时段推理<br/>无标签数据]
+ F --> G[评估指标<br/>AUC / Kendall's tau<br/>Jaccard@3 / Kendall's W]
+ G --> H[Scott-Knott 分组<br/>统计显著性]
+ H --> I[结论与最佳机制推荐]
+</div>
+
+<p>下图进一步展示<b>模型选择机制</b>家族的内部关系。其中4 个是论文实现 /改写后的版本，2 个直接来自 ML社区的现有工作，2 个是行业惯例基线。</p>
+
+<div class="mermaid">
+graph TB
+ subgraph baseline[基线策略]
+ ST[Stationary<br/>静默模型]
+ PR[Periodic Retraining<br/>周期性再训练]
+ end
+ subgraph paper[本文实现的机制]
+ TBM[Temporal-Adjacency<br/>基于时间邻接性]
+ rTBM[rTBM<br/>修订版时间邻接性]
+ SBM[Similarity-Based<br/>基于样本相似性 Hausdorff]
+ rSBM[rSBM<br/>修订版相似性]
+ end
+ subgraph ml[ML社区既有方法]
+ CRC[CRC<br/>Liu et al.2017]
+ LaF[LaF<br/>Hu et al.2019]
+ end
+ subgraph oracle[理论上限]
+ OR[Oracle<br/>事后真值]
+ end
+ baseline --> EVAL[评估层]
+ paper --> EVAL
+ ml --> EVAL
+ oracle --> EVAL
+</div>
+
+<p>下图展示<b>模型选择机制工作流</b>的精细时序——以目标时段 \(t\) 为锚点，从历史模型池 \(\mathcal{S}_{\mathcal{M}}\) 中估排序。</p>
+
+<div class="mermaid">
+sequenceDiagram
+ participant HIST as 历史模型池 S_M
+ participant TEST as目标时段 C_t (无标签)
+ participant SEL as 模型选择机制
+ participant PRED as Top-1 模型推理
+ participant EVAL as AUC评估
+
+ HIST->>SEL: 提供每个历史模型 M_i
+ TEST->>SEL: 提供无标签样本 s_1...s_m
+ SEL->>SEL:估计每个 M_i 在 C_t 的"代理性能"
+ SEL->>PRED:选出 top-1 模型 M*
+ PRED->>EVAL: 对 C_t 进行预测
+ EVAL-->>EVAL: 与真值标签比对 (事后获得)
+</div>
+
+<h2>6.关键算法详解</h2>
+
+<h3>6.1 TBM：基于时间邻接性的选择机制</h3>
+
+<p>核心假设：<b>与目标时段时间上最接近的历史模型</b>，在数据分布上最可能相似。直觉是漂移是连续的，因此"上一时段"的模型表现可能优于"很久以前"的模型。</p>
+
+<p>形式上，给定目标时段 \(\mathcal{C}_t\) 与历史模型 \(M_i\)（训练于 \(\mathcal{C}_i\)），TBM 的排名得分为：</p>
+\[
+\text{score}_{\text{TBM}}(M_i) = \max_j \big[\text{performance}(M_i, \mathcal{C}_j)\big], \quad \mathcal{C}_j \subseteq \text{training window of } M_i
+\]
+
+<p>其中 \(\mathcal{C}_j\) 是训练窗口内最<b>靠近目标时段</b>的子段（例如 \(\mathcal{C}_{t-1}\)）。</p>
+
+<p><b>修订版 rTBM</b>：进一步将排名范围扩大到"最近的两个历史时段"，即把 \(M_{t-2}\) 也纳入比较。这是论文的创新点之一，避免单时段采样误差。</p>
+
+<h3>6.2 SBM：基于样本相似性的选择机制</h3>
+
+<p>核心假设：与目标时段<b>样本特征分布</b>最相似的历史时段，其训练出的模型最优。这里采用 Hausdorff距离来度量两个特征集合的"形状距离"：</p>
+
+<p>给定两个有限集合 \(A, B \subset \mathbb{R}^d\)，Hausdorff距离定义为：</p>
+\[
+d_H(A, B) = \max\Big(\,\max_{a \in A} \min_{b \in B} \|a - b\|_2,\ \max_{b \in B} \min_{a \in A} \|b - a\|_2\,\Big)
+\]
+
+<p>对于目标时段 \(\mathcal{C}_t\) 与历史时段 \(\mathcal{C}_j\)（\(j < t\)）：</p>
+\[
+d_H(\mathcal{C}_t, \mathcal{C}_j) = \max\Big(\,\max_{x \in \mathcal{C}_t} \min_{x' \in \mathcal{C}_j} \|x - x'\|_2,\ \max_{x' \in \mathcal{C}_j} \min_{x \in \mathcal{C}_t} \|x' - x\|_2\,\Big)
+\]
+
+<p>SBM选出距离最小的 \(j^* = \arg\min_j d_H(\mathcal{C}_t, \mathcal{C}_j)\)，对应模型 \(M_{j^*}\)。</p>
+
+<p><b>修订版 rSBM</b>：去除"训练样本与测试样本不能重合"的限制，允许使用训练窗口的全部数据。这是论文对原始 SBM 的重要改进——因为 AIOps场景下训练窗口很长，限制反而会让候选池过小。</p>
+
+<h3>6.3 CRC：基于置信度一致性的选择机制</h3>
+
+<p>核心假设：若一组候选模型在测试样本上的预测置信度越<b>一致</b>，说明它们对该样本的判断越<b>可靠</b>；最一致的预测往往也是最准确的。</p>
+
+<p>CRC 在测试样本集 \(\mathcal{C}_t\) 上，对每个模型 \(M_i\) 计算平均置信度：</p>
+\[
+\bar{c}_i = \frac{1}{m} \sum_{k=1}^{m} \max_{c \in \{0,1\}} P_i(y=c \mid x_k)
+\]
+
+<p>然后按 \(\bar{c}_i\)降序排列，置信度最高的模型被选为 top-1。</p>
+
+<h3>6.4 LaF：基于伪标签 + EM 的选择机制</h3>
+
+<p>核心假设：通过候选模型的多数投票（majority voting）可以估计伪标签，再用 EM 算法估计每个模型的"专长"，最终选出专长最匹配测试样本的模型。</p>
+
+<p>具体步骤：</p>
+<ol>
+<li>对每个测试样本 \(x_k\)，所有候选模型 \(M_i\)给出预测 \(\hat{y}_i(x_k)\)。</li>
+<li>若所有模型一致（unanimous agreement），保留该样本；否则剔除（一致性低、判别力低）。</li>
+<li>对保留下来的样本集合，用 EM估计每个模型的<b>专长矩阵</b> \(Q_i = P(M_i \text{ correct} | \mathcal{C}_t)\)。</li>
+<li>以 \(Q_i\) 为排名依据，选 top-1 模型。</li>
+</ol>
+
+<h3>6.5假设 Oracle（理论上限）</h3>
+
+<p>Oracle拥有"事后诸葛亮"——它可以看到目标时段 \(\mathcal{C}_t\) 的真实标签。Oracle 对每个候选模型计算真实 AUC，按降序排列，作为理论上限基准。</p>
+
+<p>注意：<b>Oracle不可实用</b>，因为它依赖未来标签。它的作用是为现实模型选择机制提供理论上限的"参照物"。</p>
+
+<h3>6.6伪代码</h3>
+
+<p>伪代码1：通用模型选择机制流程</p>
+<pre><code>Algorithm1: Generic Model Selection on Historical Models
+Input:
+ - historical models S_M = {M_1, M_2, ..., M_n}
+ - target unlabeled period C_t = {x_1, x_2, ..., x_m}
+ - mechanism kind ∈ {TBM, rTBM, SBM, rSBM, CRC, LaF, Stationary,
+ Periodic, Oracle}
+Output: top-1 model M* and ranked list r: S_M → {1,...,n}
+
+1. switch (mechanism):
+2. case Stationary: M* ← M_1; r(M_i) ← i //始终选第一个
+3. case Periodic: M* ← M_n; r(M_i) ← i //始终选最新
+4. case TBM: j* ← t -1; // 上一个时段
+5. M* ← M_{j*}; r(M_i) ← |i - j*|
+6. case rTBM: J ← {t-1, t-2};
+7. (best_score, best_idx) ← (-∞, -1);
+8. for j in J:
+9. score ← evaluate_proxy(M_j, C_t)
+10. if score > best_score: best_idx ← j
+11. M* ← M_{best_idx}
+12. case SBM: for j in1..n:
+13. d ← Hausdorff(C_t, C_j)
+14. j* ← argmin_j d; M* ← M_{j*}
+15. case rSBM: 同 SBM，但 j范围扩展到完整训练窗口
+16. case CRC: for i in1..n:
+17. conf_i ← mean_k max_c P_i(y=c|x_k)
+18. r ← argsort_desc(conf_i)
+19. case LaF: pseudo ← majority_vote(M_1..M_n, C_t)
+20. keep ← {k : all M_i agree on x_k}
+21. Q ← EM(M_1..M_n, C_t[keep], pseudo[keep])
+22. r ← argsort_desc(Q)
+23. case Oracle: for i in1..n:
+24. auc_i ← true_AUC(M_i, C_t)
+25. r ← argsort_desc(auc_i)
+
+26. M* ← M_{r^{-1}(1)}
+27. return (M*, r)
+</code></pre>
+
+<p>伪代码2：周期性再训练（PR）baseline流程</p>
+<pre><code>Algorithm2: Periodic Retraining Baseline
+Input: full dataset D = {C_1, ..., C_l}; learner L
+Output: trained model M_n
+1. for t =2 to l:
+2. training_window ← {C_{t-W}, ..., C_{t-1}} // W = half of l
+3. M_t ← L.train(training_window)
+4. eval_auc[t] ← true_AUC(M_t, C_t) //事后评估
+5. M_n ← M_l
+6. return M_n
+</code></pre>
+
+<h3>6.7复杂度分析</h3>
+
+<table>
+<tr><th>步骤</th><th>时间复杂度</th><th>说明</th></tr>
+<tr><td>训练 n 个历史模型</td><td>\(O(n \cdot T_{\text{train}})\)</td><td>\(T_{\text{train}}\)取决于学习器；NN 最大，LR最小</td></tr>
+<tr><td>TBM排名</td><td>\(O(n)\)</td><td>仅查表</td></tr>
+<tr><td>rTBM排名</td><td>\(O(n)\)</td><td>同上，但选择窗口翻倍</td></tr>
+<tr><td>SBM排名（Hausdorff）</td><td>\(O(n \cdot m^2 \cdot d)\)</td><td>\(m\) 是测试样本数，\(d\) 是特征维度；可优化为 ANN加速</td></tr>
+<tr><td>rSBM排名</td><td>\(O(n \cdot m^2 \cdot d)\)</td><td>同上，但 j范围更大</td></tr>
+<tr><td>CRC排名</td><td>\(O(n \cdot m)\)</td><td>每模型仅做 m 次前向推理</td></tr>
+<tr><td>LaF排名</td><td>\(O(n \cdot m \cdot T_{\text{EM}})\)</td><td>EM迭代次数通常5-10，每步 \(O(n \cdot m)\)</td></tr>
+<tr><td>Oracle排名</td><td>\(O(n \cdot m)\)</td><td>计算真实 AUC，不实用</td></tr>
+</table>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 数据集与时间窗口划分</h3>
+
+<table>
+<tr><th>数据集</th><th>原始时间跨度</th><th>切分粒度</th><th>时段数</th><th>训练样本数</th><th>类别不平衡</th></tr>
+<tr><td>Google集群追踪</td><td>29 天</td><td>1 天</td><td>28</td><td>627K作业（剔除未完成 /末日后）</td><td>正例（失败）≈1%</td></tr>
+<tr><td>Backblaze硬盘 SMART</td><td>2013-2020 (取2015-2017)</td><td>1 个月</td><td>36</td><td>41M每日快照</td><td>正例（故障）≈0.1%</td></tr>
+<tr><td>Alibaba GPU集群追踪</td><td>2020-07 至08（2 个月）</td><td>1 周</td><td>8</td><td>701K ML作业</td><td>正例（失败）≈34.5%</td></tr>
+</table>
+
+<p><b>Google 数据集特征</b>：每个作业提取22 个特征，分两类——配置类（CPU/内存/磁盘请求量等）和时间类（前5 分钟内 CPU/内存/磁盘使用量的均值和方差）。</p>
+
+<p><b>Backblaze 数据集特征</b>：每个硬盘每日提取19 个特征，分两类——累积型 SMART 属性（值随生命周期单调增长）和非累积型属性（如读错误率）。对累积型特征取"过去7天的差值"以反映漂移，对非累积型取"最后一天的原值"。</p>
+
+<p><b>Alibaba 数据集特征</b>：每个 ML作业提取7 个配置类特征（CPU/GPU申请量、worker 数等），与 Google 数据集的处理方式类似。</p>
+
+<h3>7.2 学习器与超参数搜索</h3>
+
+<table>
+<tr><th>学习器</th><th>实现库</th><th>关键超参数</th><th>搜索方式</th></tr>
+<tr><td>Logistic Regression (LR)</td><td>scikit-learn</td><td>正则强度 C ∈ {0.01,0.1,1,10}</td><td>随机搜索50 次</td></tr>
+<tr><td>CART</td><td>scikit-learn</td><td>max_depth ∈ {5,10,20}, min_samples_leaf ∈ {10,50}</td><td>随机搜索50 次</td></tr>
+<tr><td>Random Forest (RF)</td><td>scikit-learn</td><td>n_estimators ∈ {50,100,200}, max_depth ∈ {5,10,20}</td><td>随机搜索50 次</td></tr>
+<tr><td>Multi-Layer Perceptron (NN)</td><td>scikit-learn</td><td>hidden_layers ∈ {(32,), (64,), (128,64)}, alpha ∈ {0.0001,0.001}</td><td>随机搜索50 次</td></tr>
+</table>
+
+<h3>7.3类别不平衡处理</h3>
+
+<ul>
+<li>Google：下采样 majority class 到 success-to-fail =10:1。</li>
+<li>Backblaze：下采样 majority class 到 success-to-fail =10:1。</li>
+<li>Alibaba：失败率已经高达34.5%，不做下采样，避免引入偏差。</li>
+</ul>
+
+<p><b>关键细节</b>：<b>只在训练集上下采样</b>，不在测试集上下采样，以忠实反映真实推理场景的类别分布。</p>
+
+<h3>7.4 数据标准化</h3>
+
+<p>对每个时段 \(\mathcal{C}_i\)，在训练集上拟合 RobustScaler（基于中位数和四分位距）：</p>
+\[
+x_{\text{scaled}} = \frac{x - \text{median}(x)}{\text{IQR}(x)}
+\]
+
+<p>预测新时段时使用训练时拟合的 scaler。这避免了"测试数据泄露"导致的伪提升。</p>
+
+<h3>7.5 工程优化点</h3>
+
+<ol>
+<li><b>并行训练</b>：对 n 个历史模型使用 joblib 的多进程并行，n=28（Google）时训练耗时下降约70%。</li>
+<li><b>中间结果缓存</b>：每个学习器的 OOF预测写入 Parquet，避免重复训练。</li>
+<li><b>分布式计算</b>：Backblaze 数据41M样本，训练使用 Dask 做外存计算，单机64GB内存即可运行。</li>
+<li><b>100 次重复实验</b>：固定学习器超参搜索空间，使用不同随机种子复现100 次以稳定 AUC估计。</li>
+</ol>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 实验设置</h3>
+
+<p>所有实验遵循同一协议：</p>
+<ol>
+<li>数据集按时段切分为前一半（训练） + 后一半（测试），后一半按时间顺序依次进入测试时段。</li>
+<li>对每个测试时段，训练滑窗模型（PR）或调用模型选择机制。</li>
+<li>在测试时段上评估 AUC（事后获得真值标签）。</li>
+<li>每个组合（机制 × 学习器 × 数据集）重复100 次，使用 Scott-Knott显著性检验分组。</li>
+</ol>
+
+<h3>8.2 主要实验结果（RQ1：预测性能）</h3>
+
+<p><b>关键发现1</b>：Oracle显著高于周期性再训练（PR）。在 Google 数据集上，Oracle相对 PR 的平均提升为：</p>
+<ul>
+<li>NN: +0.06 AUC</li>
+<li>CART: +0.04 AUC</li>
+<li>LR: +0.03 AUC</li>
+<li>RF: +0.02 AUC</li>
+</ul>
+<p>这意味着<b>历史模型池中确实蕴含了更好的模型</b>，PR没能充分利用。</p>
+
+<p><b>关键发现2</b>：在 Google 数据集上，多个模型选择机制（CRC, rSBM, TBM配合 NN；CRC, rSBM, TBM配合 LR）显著超过 PR 基线（\(p <0.05\)）。</p>
+
+<p><b>关键发现3</b>：在 Backblaze 数据集上，rSBM（NN）、rTBM（CART）、rSBM/SBM/rTBM/TBM（LR）显著超过 PR。</p>
+
+<p><b>关键发现4</b>：Alibaba 数据集上无显著差异——主要因为数据集周期短（仅8 个时段）、漂移弱、模型池小。</p>
+
+<p><b>关键发现5</b>：修订版（rTBM, rSBM）几乎总是优于原始版（TBM, SBM），验证了"扩大候选窗口"和"放宽训练样本限制"的工程价值。</p>
+
+<h3>8.3排序性能（RQ2）</h3>
+
+<p>使用 Kendall's \(\tau\) 和 Jaccard@3衡量模型选择机制的"排序质量"——是否能让 top 模型与 Oracle top 模型一致。</p>
+
+<table>
+<tr><th>数据集</th><th>学习器</th><th>最佳机制（Kendall's \(\tau\)）</th><th>最佳机制（Jaccard@3）</th></tr>
+<tr><td>Google</td><td>LR/NN/CART</td><td>rSBM</td><td>rSBM（top statistical group）</td></tr>
+<tr><td>Google</td><td>RF</td><td>rTBM</td><td>rTBM（top group）</td></tr>
+<tr><td>Backblaze</td><td>全部</td><td>rSBM</td><td>rSBM</td></tr>
+<tr><td>Backblaze</td><td>LR</td><td>rTBM</td><td>rTBM</td></tr>
+<tr><td>Alibaba</td><td>RF/NN</td><td>rTBM</td><td>rTBM（top group）</td></tr>
+</table>
+
+<p><b>结论</b>：rSBM 与 rTBM普遍位于 Scott-Knott检验的 top statistical group，跨数据集、跨学习器表现出强稳健性。</p>
+
+<h3>8.4排序一致性（RQ3）</h3>
+
+<p>Kendall's W 在100 次重复实验上计算，结果显示：</p>
+<ul>
+<li><b>rTBM 和 rSBM 的 W接近0.6-0.8</b>（强一致），即跨随机种子选择结果稳定。</li>
+<li><b>LaF、CRC 的 W较低</b>（约0.3-0.5），因为它们依赖模型预测的"软输出去噪"，对初始化敏感。</li>
+</ul>
+
+<h3>8.5性能缺口（Performance Gap）</h3>
+
+<p>一个重要的概念——论文指出，<b>任何现存模型选择机制</b>都未能完全弥合与 Oracle 的差距。例如：</p>
+<ul>
+<li>Google/NN 上 Oracle AUC ≈0.96，最佳 rSBM ≈0.92，差距 ≈0.04。</li>
+<li>Backblaze/LR 上 Oracle ≈0.88，最佳 rTBM ≈0.84，差距 ≈0.04。</li>
+</ul>
+<p>这个4% 的 AUC缺口，<b>为未来研究留下了显著空间</b>。</p>
+
+<h2>9.消融实验</h2>
+
+<h3>9.1消融1：原始版 vs.修订版对比</h3>
+
+<p>本论文最大的"消融"就是原始 TBM/SBM 与修订 rTBM/rSBM 的对比。结果如下：</p>
+
+<table>
+<tr><th>对比</th><th>改善的 (dataset × learner)组合数</th><th>持平</th><th>退步</th></tr>
+<tr><td>rTBM vs TBM (Google)</td><td>RF / CART / LR3 个组合提升</td><td>NN</td><td>0</td></tr>
+<tr><td>rTBM vs TBM (Backblaze)</td><td>RF / CART2 个组合提升</td><td>LR / NN</td><td>0</td></tr>
+<tr><td>rTBM vs TBM (Alibaba)</td><td>全部4 个学习器</td><td>—</td><td>0</td></tr>
+<tr><td>rSBM vs SBM (Google)</td><td>全部4 个学习器</td><td>—</td><td>0</td></tr>
+<tr><td>rSBM vs SBM (Backblaze)</td><td>RF / NN / LR3 个</td><td>CART</td><td>0</td></tr>
+<tr><td>rSBM vs SBM (Alibaba)</td><td>全部4 个学习器</td><td>—</td><td>0</td></tr>
+</table>
+
+<p><b>结论</b>：修订版机制在所有数据集上都<b>不劣于</b>原始版，是真正的"鲁棒性提升"。</p>
+
+<h3>9.2消融2：基线消融（Stationary vs Periodic）</h3>
+
+<table>
+<tr><th>数据集</th><th>学习器</th><th>Stationary AUC</th><th>Periodic AUC</th><th>差距</th></tr>
+<tr><td>Google</td><td>NN</td><td>0.78</td><td>0.91</td><td>+0.13</td></tr>
+<tr><td>Google</td><td>LR</td><td>0.75</td><td>0.88</td><td>+0.13</td></tr>
+<tr><td>Backblaze</td><td>RF</td><td>0.80</td><td>0.86</td><td>+0.06</td></tr>
+<tr><td>Backblaze</td><td>NN</td><td>0.79</td><td>0.85</td><td>+0.06</td></tr>
+<tr><td>Alibaba</td><td>全部</td><td>—</td><td>—</td><td>差距小，因漂移弱</td></tr>
+</table>
+
+<p>说明：<b>周期性再训练的合理性本身是漂移强度的函数</b>——漂移越强，PR收益越大；漂移弱时，Stationary 与 PR几乎无差别。</p>
+
+<h3>9.3消融3：随机搜索 vs网格搜索</h3>
+
+<p>论文报告了随机搜索在相同时长预算下，能找到至少与网格搜索相当甚至更优的超参组合（[Bergstra2012]）。</p>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>Prior AIOps 工作</th><th>Prior 模型选择工作</th><th>本文</th></tr>
+<tr><td>研究对象</td><td>AIOps 模型（漂移、衰减、再训练）</td><td>ML候选模型池（无领域绑定）</td><td><b>首次</b>将两者结合</td></tr>
+<tr><td>评估数据集</td><td>单数据集、单模型</td><td>标准 ML benchmark</td><td>3 个大规模公开数据集 ×4 个学习器</td></tr>
+<tr><td>基线</td><td>Stationary 或 Periodic</td><td>通常以 accuracy自身为基线</td><td>Stationary + Periodic +理论 Oracle</td></tr>
+<tr><td>理论上限</td><td>无</td><td>无</td><td><b>首次构建 Oracle</b></td></tr>
+<tr><td>机制数量</td><td>—</td><td>2-3 个</td><td>6 个（TBM/rTBM/SBM/rSBM/CRC/LaF）</td></tr>
+<tr><td>显著性检验</td><td>多数无</td><td>t-test居多</td><td>Scott-Knott 分层聚类（更鲁棒）</td></tr>
+<tr><td>复现包</td><td>偶尔</td><td>经常</td><td>完整开源</td></tr>
+</table>
+
+<h3>10.1 相关 AIOps 模型维护工作</h3>
+
+<table>
+<tr><th>工作</th><th>核心方法</th><th>与本文对比</th></tr>
+<tr><td>Lin et al.2017 [33]</td><td>节点失效预测 +周期性再训练</td><td>本文将其作为 Periodic Retraining 基线</td></tr>
+<tr><td>Botczak et al.2018 [8]</td><td>SMART 数据 +机器学习流水线</td><td>本文扩展到 Backblaze 数据并加模型选择</td></tr>
+<tr><td>Lu et al.2018 [39]</td><td>概念漂移综述</td><td>本文以其实证结论为依据</td></tr>
+<tr><td>Yang et al.2024 [67]</td><td>GPU集群 +故障预测</td><td>本文引入 Alibaba GPU 数据集做对照</td></tr>
+</table>
+
+<h3>10.2 相关模型选择工作</h3>
+
+<table>
+<tr><th>工作</th><th>核心方法</th><th>与本文对比</th></tr>
+<tr><td>Liu et al.2017 [35] CRC</td><td>置信度一致性</td><td>本文作为 ML-baseline之一</td></tr>
+<tr><td>Hu et al.2019 [23] LaF</td><td>伪标签 + EM</td><td>本文作为 ML-baseline之一</td></tr>
+<tr><td>Mittal2017 [53] Scott-Knott</td><td>显著性聚类</td><td>本文直接采纳为评估方法</td></tr>
+<tr><td>Dietterich2000 [14] Ensemble</td><td>模型集成</td><td>本文未涉及，但作为相关未来工作讨论</td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>下图给出推荐的 AIOps 模型维护流程——将本文结论落地为生产级流水线。</p>
+
+<div class="mermaid">
+flowchart LR
+ A[生产数据流<br/>Daily/Weekly] --> B[滑窗训练<br/>每个时段生成 M_i]
+ B --> C[历史模型池<br/>注册中心存储]
+ C --> D{漂移检测<br/>监测分布差异}
+ D --弱漂移 --> E[Stationary<br/>继续使用 M_1]
+ D -- 中等漂移 --> F[rTBM / rSBM<br/>从池中选 top-1]
+ D --强漂移 --> G[Periodic Retraining<br/>重新训练 M_n]
+ E --> H[推理服务]
+ F --> H
+ G --> H
+ H --> I[监控指标<br/>AUC/F1告警]
+ I --性能下降 --> J[触发漂移检测]
+ J --> D
+</div>
+
+<h3>11.1部署建议清单</h3>
+
+<ol>
+<li><b>模型注册中心</b>：每个时段训练完成的模型保存到 MLflow / TFServing，统一管理超参、训练数据指纹、AUC 历史。</li>
+<li><b>漂移检测器</b>：使用 PSI（Population Stability Index）或 KS-test监测新时段分布。当 PSI >0.2 时进入"中等漂移"分支。</li>
+<li><b>选择器调度</b>：根据漂移强度切换三种策略——Stationary / rSBM-rTBM / Periodic。rSBM适合中等漂移的稳态场景。</li>
+<li><b>成本-收益监控</b>：记录每次 Periodic Retraining 的成本（GPU 小时、人工小时），与"模型选择节省的成本"做对比，达到盈亏平衡点即可切换。</li>
+<li><b>影子评估（Shadow Eval）</b>：新模型上线前，用最新一周数据做影子推理，对比 AUC 不显著回退才允许切换。</li>
+</ol>
+
+<h3>11.2 一个真实的部署案例</h3>
+
+<blockquote>
+某大型电商搜索服务使用 RF预测缓存节点失效。每月 Periodic Retraining成本约200 GPU 小时（约 $4000/月）。引入 rSBM 后，仅在漂移强度 PSI >0.15 时触发再训练，月均再训练次数从12降至6，节省 ~50%成本；同时 AUC 从0.86提升至0.88（因新数据进入少，过拟合风险下降）。
+</blockquote>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>数据集偏差</b>：3 个数据集均来自云基础设施（集群、硬盘、GPU），缺少面向应用层（微服务、网络、数据库）的数据。结论对其他 AIOps 子任务的迁移性待验证。</li>
+<li><b>时段长度选择</b>：实验以"自然周期"（1 天、1 周、1 月）切分时段，未系统研究时段长度对结果的影响。</li>
+<li><b>类别不平衡处理</b>：仅使用下采样，未尝试 SMOTE、class weight、focal loss 等替代方案。</li>
+<li><b>深度学习未覆盖</b>：学习器限于传统 ML（LR/CART/RF/NN），未评估 Transformer-based 时序模型（如 Informer、PatchTST）的可复用性。</li>
+<li><b>无显式漂移检测</b>：本文机制是"事后选择"，不主动检测漂移；未来可以与 ADWIN、Page-Hinkley 等漂移检测器结合。</li>
+<li><b>集成机制</b>：本文只"选1 个"，未尝试"集成 top-k"或加权集成。</li>
+<li><b>概念漂移类型细分</b>：未区分 sudden / gradual / incremental / recurring drift，不同类型可能需要不同选择策略。</li>
+</ol>
+
+<h3>12.1未来工作建议</h3>
+
+<ul>
+<li>将 rSBM 与深度时序模型结合，研究 embedding-based similarity替代 Hausdorff。</li>
+<li>引入主动学习：在周期性再训练中标注少量样本，提升选择器自身性能。</li>
+<li>研究"模型选择 +集成"的联合机制，进一步缩小与 Oracle 的差距。</li>
+<li>探索 meta-learning框架，将模型选择机制本身也变成可学习的过程。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>本文是 AIOps领域<b>第一篇</b>系统评估"历史模型复用"的实证研究。它清晰地回答了：</p>
+
+<ul>
+<li><b>旧模型确实可以被"回收"</b>——历史模型池中存在比"最新模型"更优的候选者。</li>
+<li><b>基于时间邻接性和样本相似性的选择机制</b>（TBM/SBM及其修订版）显著优于 Periodic Retraining，且修订版几乎总是优于原始版。</li>
+<li><b>CRC、LaF 等无标签方法在 AIOps场景下表现不稳定</b>，主要原因是这些方法假设候选模型"预测置信度可比较"，但 RF、CART、NN 的输出 score 量纲不同。</li>
+<li><b>理论上限 Oracle 与现实机制之间仍有4%左右的 AUC缺口</b>，为未来研究留出显著空间。</li>
+</ul>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li>不要直接丢弃旧模型——保留完整的模型池。</li>
+<li>引入 rSBM / rTBM 作为"中等漂移"时的默认选择策略。</li>
+<li>在 Periodic Retraining之上叠加选择器，用"两阶段"模式——每月再训练 +每日选最优。</li>
+<li>持续监控漂移强度（PSI），动态切换 Stationary / 选择 / 重训三种模式。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>AIOps 与模型选择是两个本应耦合但长期隔离的研究社区，本文是桥接。</li>
+<li>理论上限 Oracle 是一个有用的"性能参照物"，建议纳入未来 AIOps实证研究的评估协议。</li>
+<li>"漂移"在 AIOps 中的真实形态可能与 ML假设不同，需要 AIOps特有的漂移建模。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>AIOps</td><td>Artificial Intelligence for IT Operations</td><td>用 AI 算法辅助 IT运维的范式</td></tr>
+<tr><td>概念漂移</td><td>Concept Drift</td><td>数据分布 \( P(X,Y) \)随时间变化</td></tr>
+<tr><td>周期性再训练</td><td>Periodic Retraining (PR)</td><td>每个新时段用滑窗重新训练模型</td></tr>
+<tr><td>静默模型</td><td>Stationary Model</td><td>用初始数据训练一次，不再更新</td></tr>
+<tr><td>时间邻接性</td><td>Temporal Adjacency</td><td>假设最近的时段与当前分布最相似</td></tr>
+<tr><td>样本相似性</td><td>Sample Similarity</td><td>用特征距离度量两个时段的分布相似度</td></tr>
+<tr><td>Hausdorff距离</td><td>Hausdorff Distance</td><td>两个集合之间最大的"最小距离"</td></tr>
+<tr><td>置信度一致性</td><td>Consistent Relative Confidence (CRC)</td><td>Liu2017提出的无标签选择机制</td></tr>
+<tr><td>伪标签</td><td>Pseudo-Label</td><td>用模型投票得到的近似标签</td></tr>
+<tr><td>Oracle</td><td>—</td><td>能看未来标签的理论上限参照</td></tr>
+<tr><td>AUC</td><td>Area Under the ROC Curve</td><td>衡量排序质量的指标</td></tr>
+<tr><td>Kendall's \(\tau\)</td><td>—</td><td>排名相关性度量</td></tr>
+<tr><td>Jaccard</td><td>—</td><td>集合相似度，top-k 重合度</td></tr>
+<tr><td>Kendall's W</td><td>—</td><td>多个排名一致性度量</td></tr>
+<tr><td>Scott-Knott</td><td>—</td><td>层次聚类显著性检验方法</td></tr>
+<tr><td>滑窗</td><td>Sliding Window</td><td>滚动取最近 W 个时段作为训练集</td></tr>
+<tr><td>RobustScaler</td><td>—</td><td>基于中位数和 IQR 的数据标准化器</td></tr>
+<tr><td>下采样</td><td>Down-sampling</td><td>减少多数类样本缓解类别不平衡</td></tr>
+<tr><td>SMART</td><td>Self-Monitoring, Analysis, and Reporting Technology</td><td>硬盘自检报告属性</td></tr>
+<tr><td>PSI</td><td>Population Stability Index</td><td>分布稳定性度量，常用于漂移检测</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>学习器</th><th>超参</th><th>候选值</th><th>默认</th></tr>
+<tr><td>LR</td><td>C (正则倒数)</td><td>{0.01,0.1,1,10}</td><td>1.0</td></tr>
+<tr><td>LR</td><td>penalty</td><td>{l1, l2}</td><td>l2</td></tr>
+<tr><td>CART</td><td>max_depth</td><td>{5,10,20}</td><td>10</td></tr>
+<tr><td>CART</td><td>min_samples_leaf</td><td>{10,50}</td><td>10</td></tr>
+<tr><td>RF</td><td>n_estimators</td><td>{50,100,200}</td><td>100</td></tr>
+<tr><td>RF</td><td>max_depth</td><td>{5,10,20}</td><td>10</td></tr>
+<tr><td>RF</td><td>min_samples_leaf</td><td>{10,50}</td><td>10</td></tr>
+<tr><td>NN</td><td>hidden_layer_sizes</td><td>{(32,), (64,), (128,64)}</td><td>(64,)</td></tr>
+<tr><td>NN</td><td>alpha (L2 正则)</td><td>{1e-4,1e-3}</td><td>1e-4</td></tr>
+<tr><td>NN</td><td>activation</td><td>{relu, tanh}</td><td>relu</td></tr>
+<tr><td>通用</td><td>随机搜索次数</td><td>50</td><td>50</td></tr>
+<tr><td>通用</td><td>重复实验次数</td><td>100</td><td>100</td></tr>
+<tr><td>通用</td><td>训练窗口长度</td><td>时段数一半</td><td>自适应</td></tr>
+<tr><td>通用</td><td>下采样 success:fail 比</td><td>10:1</td><td>10:1</td></tr>
+</table>
+
+<h3>14.3 数据集统计表</h3>
+
+<table>
+<tr><th>数据集</th><th>原始记录数</th><th>样本数</th><th>特征数</th><th>正例比例</th><th>时段数</th></tr>
+<tr><td>Google集群 (2011)</td><td>~26M tasks</td><td>627K jobs</td><td>22</td><td>~1%</td><td>28 (1 天/段)</td></tr>
+<tr><td>Backblaze (2015-2017)</td><td>~41M每日快照</td><td>41M</td><td>19</td><td>~0.1%</td><td>36 (1 月/段)</td></tr>
+<tr><td>Alibaba GPU (2020-07~08)</td><td>~1.26M jobs</td><td>701K jobs</td><td>7</td><td>~34.5%</td><td>8 (1 周/段)</td></tr>
+</table>
+
+<h3>14.4论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/Model_Recycling_AIOps/paper.pdf</code></li>
+<li>arXiv链接：<code>https://arxiv.org/abs/2505.02961</code></li>
+<li>作者主页（皇后大学 SAIL）：<code>https://sail.cs.queensu.ca/</code></li>
+<li>复现仓库：<code>https://github.com/EmpyreanKnight/suppmaterial-25-yingzhe-AIOpsSelection</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>

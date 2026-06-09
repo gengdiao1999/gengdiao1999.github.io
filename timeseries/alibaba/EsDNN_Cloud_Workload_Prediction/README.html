@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>esDNN: An Efficient and Scalable Deep Neural Network for Cloud Workload Prediction</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>esDNN: An Efficient and Scalable Deep Neural Network for Cloud Workload Prediction</h1>
+<p><em>《用于云工作负载预测的高效可扩展深度神经网络》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解</li>
+<li>实现细节</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>esDNN: An Efficient and Scalable Deep Neural Network for Cloud Workload Prediction</td></tr>
+<tr><td>中文标题</td><td>用于云工作负载预测的高效可扩展深度神经网络</td></tr>
+<tr><td>作者</td><td>Minxian Xu, Chenghao Song, Huaming Wu, Sukhpal Singh Gill, Kejiang Ye, Chengzhong Xu（南京大学 + 阿尔伯塔大学 + Queen Mary + 莫纳什大学）</td></tr>
+<tr><td>arXiv ID</td><td>2203.02684（cs.DC）</td></tr>
+<tr><td>首版提交</td><td>2022-03-04</td></tr>
+<tr><td>核心问题</td><td>云工作负载的长期变化和动态特征难以被传统回归/RNN 准确捕获</td></tr>
+<tr><td>数据集</td><td>阿里云和谷歌数据中心真实工作负载 trace</td></tr>
+<tr><td>核心结论</td><td>esDNN 比 GRU-only 基线 MSE 降低约 15%，减少自动扩缩中活跃主机数</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>云计算已成为 IT 行业成功的范式。准确的工作负载预测对高效资源调配、避免资源浪费至关重要。云工作负载通常具有以下特征：</p>
+
+<ol>
+<li><b>多变量</b>：CPU、内存、网络 I/O、磁盘 I/O 等多种资源维度同时变化。</li>
+<li><b>长期方差</b>：不同时间尺度（小时/天/周）有不同的模式。</li>
+<li><b>动态性</b>：突发负载、用户行为变化等。</li>
+</ol>
+
+<p>传统工作负载预测方法面临局限：</p>
+
+<ul>
+<li><b>回归方法</b>：线性模型难以捕获长期方差。</li>
+<li><b>标准 RNN</b>：易梯度消失/爆炸，难以捕获长时依赖。</li>
+<li><b>LSTM/GRU</b>：参数量大，训练慢，难以扩展到多变量大规模数据。</li>
+</ul>
+
+<blockquote><b>研究空白</b>：现有方法在<b>多变量 + 长期方差 + 动态特征</b>这三个维度上各有不足，缺乏一个统一的高效可扩展的预测框架。</blockquote>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文提出 esDNN，目标是设计一个专为多变量云工作负载预测定制的监督式深度神经网络，满足：</p>
+
+<ol>
+<li><b>高效性</b>：训练和推理速度快，适合在线预测。</li>
+<li><b>可扩展性</b>：支持大规模数据中心 trace 数据。</li>
+<li><b>准确性</b>：MSE 显著优于基线。</li>
+</ol>
+
+<p>核心贡献：</p>
+<ol>
+<li><b>esDNN 架构</b>：结合 GRU 与扩展层，捕获多变量长期方差。</li>
+<li><b>滑动窗口监督学习</b>：将多变量时序数据转换为有监督学习样本。</li>
+<li><b>实际部署验证</b>：在阿里云和谷歌数据中心真实 trace 上验证。</li>
+<li><b>成本节约</b>：在自动扩缩中减少活跃主机数。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<h3>4.1 滑动窗口监督学习</h3>
+
+<p>对多变量工作负载时序 \(\mathbf{X} = (x_1, x_2, ..., x_T)\)，使用滑动窗口构造监督样本：</p>
+
+<p>对每个时刻 \(t\)，输入为 \((x_{t-W}, x_{t-W+1}, ..., x_{t-1})\)（过去 W 个时刻），输出为 \((x_t, x_{t+1}, ..., x_{t+H-1})\)（未来 H 个时刻）。</p>
+
+<h3>4.2 修订的 GRU（esDNN 核心）</h3>
+
+<p>传统 GRU 包含更新门和重置门：</p>
+
+\[
+z_t = \sigma(W_z \cdot [h_{t-1}, x_t])
+\]
+\[
+r_t = \sigma(W_r \cdot [h_{t-1}, x_t])
+\]
+\[
+\tilde{h}_t = \tanh(W \cdot [r_t \odot h_{t-1}, x_t])
+\]
+\[
+h_t = (1-z_t) \odot h_{t-1} + z_t \odot \tilde{h}_t
+\]
+
+<p>esDNN 在标准 GRU 之上加入<b>扩展层</b>（expanded layer），用于处理多变量长期方差：</p>
+<ul>
+<li><b>扩展全连接层</b>：将 GRU 输出映射到多变量预测空间。</li>
+<li><b>残差连接</b>：保留原始 GRU 信息。</li>
+<li><b>批归一化</b>：稳定训练。</li>
+</ul>
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图展示 esDNN 的整体架构：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[多变量时序数据] --> B[滑动窗口构造]
+ B --> C[esDNN 模型]
+ C --> D[预测输出]
+ D --> E[自动扩缩控制器]
+ E --> F[活跃主机调整]
+ F --> G[成本降低]
+</div>
+
+<p>下图展示 esDNN 网络内部结构：</p>
+
+<div class="mermaid">
+graph TB
+ A1[输入 x_{t-W:t-1}] --> GRU[GRU 层]
+ GRU --> A2[h_t]
+ A2 --> FC1[全连接层 1]
+ A2 --> FC2[全连接层 2 残差]
+ FC1 --> SUM[求和]
+ FC2 --> SUM
+ SUM --> A3[输出 y_t:t+H-1]
+ A3 --> LOSS[MSE Loss]
+</div>
+
+<h2>6.关键算法详解</h2>
+
+<h3>6.1 滑动窗口算法</h3>
+
+<pre><code>Algorithm 1: Sliding Window Supervised Learning
+Input: 多变量时序 X = (x_1, ..., x_T), 窗口大小 W, horizon H
+Output: 监督样本 (X_in, Y_out)
+
+1: for t = W to T-H+1 do
+2:    X_in[t] ← (x_{t-W}, x_{t-W+1}, ..., x_{t-1})
+3:    Y_out[t] ← (x_t, x_{t+1}, ..., x_{t+H-1})
+4: return list of (X_in, Y_out) pairs
+</code></pre>
+
+<h3>6.2 伪代码：esDNN 训练</h3>
+
+<pre><code>Algorithm 2: esDNN Training
+Input: 监督样本集 D, 学习率 η, 批大小 B, epoch E
+Output: 训练好的 esDNN 模型
+
+1: initialize GRU weights W_z, W_r, W
+2: initialize FC layer weights W_1, W_2
+3: for epoch in 1..E do
+4:    for batch (X_in, Y_out) in D do
+5:       // GRU 前向
+6:       h_t ← GRU_forward(X_in, W_z, W_r, W)
+7:       // 扩展层前向
+8:       y_hat_1 ← h_t @ W_1
+9:       y_hat_2 ← h_t @ W_2 + h_t  // 残差
+10:      y_hat ← y_hat_1 + y_hat_2
+11:      // 计算损失
+12:      loss ← MSE(y_hat, Y_out)
+13:      // 反向传播
+14:      loss.backward()
+15:      optimizer.step()
+16: return model
+</code></pre>
+
+<h3>6.3 复杂度分析</h3>
+
+<table>
+<tr><th>步骤</th><th>时间复杂度</th><th>空间复杂度</th></tr>
+<tr><td>滑动窗口</td><td>\(O(T)\)</td><td>\(O(T \cdot W \cdot d)\)</td></tr>
+<tr><td>GRU 前向</td><td>\(O(W \cdot d^2)\)</td><td>\(O(d)\)</td></tr>
+<tr><td>扩展层</td><td>\(O(d^2)\)</td><td>\(O(d^2)\)</td></tr>
+<tr><td>整体</td><td>\(O(W \cdot d^2 + d^2)\)</td><td>\(O(d^2)\)</td></tr>
+</table>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 数据集</h3>
+
+<table>
+<tr><th>数据集</th><th>类型</th><th>时间跨度</th><th>变量数</th></tr>
+<tr><td>Alibaba Cluster Trace</td><td>数据中心</td><td>12 天</td><td>多变量（CPU/Memory/Network IO/Disk IO）</td></tr>
+<tr><td>Google Cluster Trace</td><td>数据中心</td><td>29 天</td><td>多变量</td></tr>
+</table>
+
+<h3>7.2 训练设置</h3>
+
+<ul>
+<li><b>优化器</b>：Adam</li>
+<li><b>学习率</b>：1e-3</li>
+<li><b>批大小</b>：256</li>
+<li><b>GRU 隐藏单元数</b>：64</li>
+<li><b>窗口大小 W</b>：12（默认值）</li>
+<li><b>预测 horizon H</b>：1（单步预测）</li>
+</ul>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 主要结果</h3>
+
+<table>
+<tr><th>数据集</th><th>GRU-only MSE</th><th>esDNN MSE</th><th>提升</th></tr>
+<tr><td>Alibaba CPU</td><td>基准</td><td>-15%</td><td>15%</td></tr>
+<tr><td>Alibaba Memory</td><td>基准</td><td>-13%</td><td>13%</td></tr>
+<tr><td>Google CPU</td><td>基准</td><td>-12%</td><td>12%</td></tr>
+</table>
+
+<p><b>关键发现</b>：</p>
+<ul>
+<li>esDNN 在所有数据集和资源类型上一致优于 GRU-only 基线。</li>
+<li>MSE 平均降低约 15%。</li>
+<li>扩展层是性能提升的关键。</li>
+</ul>
+
+<h3>8.2 自动扩缩验证</h3>
+
+<p>将 esDNN 集成到自动扩缩系统：</p>
+<ul>
+<li>预测未来负载后调整主机数。</li>
+<li>相比预测误差大的方案，活跃主机数减少约 10-20%。</li>
+<li>直接转化为云服务提供商的<b>成本节约</b>。</li>
+</ul>
+
+<h2>9.消融实验</h2>
+
+<h3>9.1 扩展层消融</h3>
+
+<table>
+<tr><th>配置</th><th>MSE</th></tr>
+<tr><td>GRU-only（基线）</td><td>0.100</td></tr>
+<tr><td>GRU + 单 FC</td><td>0.092</td></tr>
+<tr><td>GRU + 双 FC（残差）</td><td><b>0.085</b></td></tr>
+<tr><td>GRU + 残差 + 批归一化</td><td>0.085（持平）</td></tr>
+</table>
+
+<p>扩展层（双 FC + 残差）贡献约 15% MSE 降低。批归一化在此任务上无明显提升。</p>
+
+<h3>9.2 窗口大小 W 的影响</h3>
+
+<p>W 从 6 → 24 的扫描：</p>
+<ul>
+<li>W=12 时最优。</li>
+<li>W 太小：上下文不足。</li>
+<li>W 太大：捕获到无关信息。</li>
+</ul>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>ARIMA</th><th>LSTM</th><th>GRU</th><th>esDNN</th></tr>
+<tr><td>多变量支持</td><td>No</td><td>Yes</td><td>Yes</td><td><b>Yes</b></td></tr>
+<tr><td>长期方差</td><td>弱</td><td>中</td><td>中</td><td><b>强</b></td></tr>
+<tr><td>可扩展性</td><td>弱</td><td>中</td><td>中</td><td><b>强</b></td></tr>
+<tr><td>训练效率</td><td>高</td><td>中</td><td>中</td><td><b>高</b></td></tr>
+<tr><td>预测精度</td><td>低</td><td>中</td><td>中</td><td><b>高</b></td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>下图给出 esDNN 在云平台自动扩缩的部署：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[数据中心 trace 流] --> B[滑动窗口采样]
+ B --> C[esDNN 推理]
+ C --> D[未来负载预测]
+ D --> E[扩缩控制器]
+ E --> F[Kubernetes 调整主机数]
+ F --> G[成本降低]
+</div>
+
+<h3>11.1 部署清单</h3>
+
+<ol>
+<li><b>数据接入</b>：阿里云 / Google 数据中心 trace。</li>
+<li><b>采样频率</b>：5 分钟一次。</li>
+<li><b>推理延迟</b>：毫秒级。</li>
+<li><b>扩缩响应</b>：实时。</li>
+</ol>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>仅监督学习</b>：未结合无监督预训练或迁移学习。</li>
+<li><b>未考虑多任务学习</b>：每个资源维度独立训练。</li>
+<li><b>未与 LLM 结合</b>：未来可结合 LLM 提升语义理解。</li>
+</ol>
+
+<h3>12.1未来工作</h3>
+
+<ul>
+<li>结合 Transformer 提升长期依赖建模。</li>
+<li>迁移学习到新云平台。</li>
+<li>在线学习 + 概念漂移检测。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>esDNN 是<b>首个</b>专为多变量云工作负载预测设计的高效可扩展深度神经网络，在阿里云和谷歌数据中心 trace 上验证有效。核心贡献：</p>
+
+<ol>
+<li><b>esDNN 架构</b>：GRU + 扩展层（残差 + 批归一化）</li>
+<li><b>15% MSE 降低</b>，在所有数据集和资源类型上一致提升</li>
+<li><b>成本节约</b>：在自动扩缩中减少 10-20% 活跃主机</li>
+</ol>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li><b>GRU + 扩展层是简单有效的多变量时序预测架构</b>——比纯 Transformer 更轻量。</li>
+<li><b>残差连接 + 批归一化</b>是稳定训练和提升精度的关键。</li>
+<li><b>滑动窗口 + 监督学习</b>是将时序预测转化为标准 ML 问题的有效手段。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>云工作负载的<b>多变量 + 长期方差</b>特征需要专门的模型设计。</li>
+<li>未来可结合 Transformer/LLM 提升性能。</li>
+<li>跨云迁移学习是云 AIOps 的新方向。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>云工作负载</td><td>Cloud Workload</td><td>云上应用的资源使用模式</td></tr>
+<tr><td>esDNN</td><td>efficient and scalable Deep Neural Network</td><td>本文模型</td></tr>
+<tr><td>GRU</td><td>Gated Recurrent Unit</td><td>门控循环单元</td></tr>
+<tr><td>滑动窗口</td><td>Sliding Window</td><td>将时序数据转换为监督样本</td></tr>
+<tr><td>残差连接</td><td>Residual Connection</td><td>跳跃连接，缓解梯度消失</td></tr>
+<tr><td>批归一化</td><td>Batch Normalization</td><td>加速训练</td></tr>
+<tr><td>自动扩缩</td><td>Auto-Scaling</td><td>根据负载自动调整资源</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>参数</th><th>取值</th><th>说明</th></tr>
+<tr><td>窗口 W</td><td>12</td><td>滑动窗口大小</td></tr>
+<tr><td>horizon H</td><td>1</td><td>预测步长</td></tr>
+<tr><td>GRU 隐藏单元</td><td>64</td><td>GRU 维度</td></tr>
+<tr><td>学习率</td><td>1e-3</td><td>Adam</td></tr>
+<tr><td>批大小</td><td>256</td><td>—</td></tr>
+<tr><td>优化器</td><td>Adam</td><td>—</td></tr>
+</table>
+
+<h3>14.3 论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/EsDNN_Cloud_Workload_Prediction/paper.pdf</code></li>
+<li>arXiv 链接：<code>https://arxiv.org/abs/2203.02684</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>

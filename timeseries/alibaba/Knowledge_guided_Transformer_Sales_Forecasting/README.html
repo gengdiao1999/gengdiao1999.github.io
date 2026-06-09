@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>From Known to Unknown: Knowledge-guided Transformer for Time-Series Sales Forecasting in Alibaba</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>From Known to Unknown: Knowledge-guided Transformer for Time-Series Sales Forecasting in Alibaba (Aliformer)</h1>
+<p><em>《从已知到未知：阿里巴巴面向时间序列销售预测的知识引导 Transformer》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理（含数学公式）</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解（含伪代码）</li>
+<li>实现细节（参数、超参、工程优化）</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录（术语表、参数表、数据集表）</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>From Known to Unknown: Knowledge-guided Transformer for Time-Series Sales Forecasting in Alibaba</td></tr>
+<tr><td>中文标题</td><td>从已知到未知：阿里巴巴面向时间序列销售预测的知识引导 Transformer（Aliformer）</td></tr>
+<tr><td>作者</td><td>Xinyuan Qi, Kai Hou, Tong Liu, Zhongzhong Yu, Sihao Hu, Wenwu Ou（阿里巴巴）</td></tr>
+<tr><td>arXiv ID</td><td>2109.08381v2（cs.LG）</td></tr>
+<tr><td>首版提交</td><td>2021-09-17</td></tr>
+<tr><td>核心问题</td><td>电商促销期间未来商品价格/营销活动等"未来知识"已知，但传统 TSF 只能基于历史，无法利用未来信息</td></tr>
+<tr><td>数据集</td><td>4 个公开（ETTh/ETTm/ECL/Kaggle-M5）+ 1 个新发布 TMS（120万商品）</td></tr>
+<tr><td>核心结论</td><td>Aliformer 在 TMS 上 MSE 提升 52%（vs LogTrans），在阿里实际部署中 GMV 覆盖率 74.96% vs Informer 70.23%</td></tr>
+<tr><td>部署状态</td><td>2021-05 部署阿里电商平台，选品用于促销活动</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>时间序列预测（TSF）在金融投资、天气预报、销售预测等领域有重要应用。在电商场景中，<b>时间序列销售预测（TSSF）</b>对商品选品、库存管理、营销策略有极大价值。</p>
+
+<p>2020 年天猫双 11 的 GMV 达 4982 亿元，背后是数百万商家、数千工厂、电商平台等供应链的密切合作。其中，<b>选品与营销活动的协调是关键</b>，因为消费者对促销（如价格折扣、优惠券、广告投放）极其敏感。</p>
+
+<p>传统 TSF 方法分为三类：</p>
+<ul>
+<li><b>经典时间序列</b>：Brockwell & Davis、Seger、Salinas、Flunkert，仅基于历史观测值预测。</li>
+<li><b>深度学习方法</b>：LSTNet、DeepAR，结合时序特征与生成能力。</li>
+<li><b>注意力模型</b>：Transformer 衍生出 LogTrans、Informer、Autoformer 等。</li>
+</ul>
+
+<p>这些方法有一个共同限制：<b>只利用历史信息</b>，无法利用<b>未来已知信息</b>。在 TSSF 场景中，许多未来信息是<b>可提前获取</b>的：</p>
+<ul>
+<li><b>商品价格</b>：未来 15 天的定价已确定。</li>
+<li><b>营销活动</b>：是否参加双 11、是否打折、是否参加聚划算等都是预先规划好的。</li>
+</ul>
+
+<blockquote><b>研究空白</b>：现有 TSSF 方法完全忽略未来已知信息，无法在促销期间准确预测销售爆发。先前一些工作如 Qi 等 2019 试图显式建模"目标商品-邻近商品的关联"；Xin 等 2019 修改 GRU 引入预销阶段信息；Ekambaram 2020 利用稀疏注意力跨商品学习。但这些方法部分泄露未来信息或不真正利用未来信息。缺乏公开的电商销售预测数据集。</blockquote>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文提出 <b>Aliformer</b>，一个知识引导的 Transformer，把未来已知信息（产品相关：价格、广告；平台相关：促销级别、级别、时间、品类）注入到预测模型。</p>
+
+<p>核心贡献：</p>
+<ol>
+<li><b>Aliformer 架构</b>：在 vanilla Transformer 基础上加入 AliAttention 层，用未来知识引导 attention 修正；同时提出未来强调训练策略。</li>
+<li><b>TMS 数据集</b>：首个大规模电商销售预测公开数据集，120万商品，86 维特征，覆盖 200 天。</li>
+<li><b>实际部署</b>：自 2021-05 部署阿里电商，验证 GMV 覆盖率提升 4.73%。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<h3>4.1 问题形式化</h3>
+
+<p>给定历史统计与知识信息：</p>
+
+\[
+\mathbb{S} = \{s_1^{(n)}, s_2^{(n)}, ..., s_T^{(n)}\}, \quad
+\mathbb{K} = \{k_1^{(n)}, k_2^{(n)}, ..., k_T^{(n)}\}
+\]
+
+<p>对未来 \(L\) 步：</p>
+
+\[
+\{y_{T+1}^{(n)}, ..., y_{T+L}^{(n)}\} = f_h(x_1^{(n)}, ..., x_T^{(n)})
+\]
+
+<p>其中 \(x_t^{(n)} = \text{Emb}(\{s_t^{(n)}, k_t^{(n)}\})\)。对未来时段，\(k\) 已知（知识信息）。</p>
+
+<p><b>未来知识分类</b>：</p>
+<ul>
+<li><b>商品相关</b>：商品本身、价格、广告投入、是否参加活动。</li>
+<li><b>平台相关</b>：促销活动级别、时间、品类等。</li>
+</ul>
+
+<h3>4.2 Vanila Self-Attention</h3>
+
+<p>vanilla attention（来自 BERT/Vaswani 2017）计算：</p>
+
+\[
+\text{Att}(i,j) = \frac{(x_i^h W_Q)(x_j^h W_K)^T}{\sqrt{d}}, \quad
+x_i^{h+1} = \sum_j \text{Softmax}(\text{Att}(i,j)) \cdot (x_j^h W_V)
+\]
+
+<p>每层：</p>
+\[
+x^h = \text{Emb}(\{s_1, k_1\}, ..., \text{Emb}(u_{T+L}, k_{T+L})),
+\quad
+x^{h+1} = \text{VSA}(x^h)
+\]
+
+<p><b>局限</b>：直接对整个输入做双向 self-attention 可能导致未来信息泄露——因为所有 token 都参与 attention，模型可能"作弊"看到未来。</p>
+
+<h3>4.3 AliAttention 层</h3>
+
+<p>AliAttention 同时利用集成信息 \(x_t^{(n)}\) 和知识 \(\tilde{x}_t^{(n)}\)。对集成输入 \(x_t^{(n)} \in \mathbb{R}^{B \times T \times C}\)，知识 \(\tilde{x}_t^{(n)} \in \mathbb{R}^{B \times T \times C}\)，AliAttention 计算：</p>
+
+\[
+\text{Att}(i,j) = \frac{(x_i^h W_Q^I)(x_j^h W_K^I)^T}{\sqrt{2d}}, \quad
+\widetilde{\text{Att}}(i,j) = \frac{(x_i W_Q^{\overline{I}})(x_j W_K^{\overline{I}})^T}{\sqrt{2d}}
+\]
+
+\[
+\text{Att}(i,j)^* = \text{Att}(i,j) + \widetilde{\text{Att}}(i,j)
+\]
+
+\[
+x_i^{h+1} = \sum_j \text{Softmax}(\text{Att}(i,j)^*) \cdot (x_j^h W_V^I)
+\]
+
+<p><b>核心思想</b>：\(\widetilde{\text{Att}}\) 是"知识引导分支"，将未来知识作为"明确"信息注入到 attention 中；而原始 Att 仍然只基于历史。</p>
+
+<h3>4.4 未来强调训练策略</h3>
+
+<p>朴素训练会让模型对"可学习 token"过拟合，难以利用未来知识。Aliformer 引入<b>span masking</b>（来自 Joshi 2020）：</p>
+<ul>
+<li>在训练中，序列中段被 mask（替换为可学习 token）。</li>
+<li>模型必须依赖未来知识来预测 mask 段。</li>
+</ul>
+
+<p>span masking 概率 \(p_2\) 控制。</p>
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图展示 Aliformer 的整体架构：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[历史统计 s_1...s_T] --> B[Embedding]
+ C[知识 k_1...k_{T+L}] --> B
+ B --> D[AliAttention Layer 1]
+ D --> E[AliAttention Layer 2]
+ E --> F[AliAttention Layer 12]
+ F --> G[Output Y hat]
+</div>
+
+<p>下图展示 AliAttention 的内部结构：</p>
+
+<div class="mermaid">
+graph TB
+ A1[历史输入 x^h] --> Q1[Q 投影]
+ A1 --> K1[K 投影]
+ A1 --> V1[V 投影]
+ A2[知识输入] --> Q2[Q_bar 投影]
+ A2 --> K2[K_bar 投影]
+ Q1 --> ATT[Att]
+ K1 --> ATT
+ Q2 --> ATT_BAR[Att_bar]
+ K2 --> ATT_BAR
+ ATT --> SUM[Att_star = Att + Att_bar]
+ ATT_BAR --> SUM
+ SUM --> SOFT[Softmax]
+ SOFT --> MUL[× V]
+ MUL --> OUT[x^h+1]
+</div>
+
+<h2>6.关键算法详解</h2>
+
+<h3>6.1 AliAttention 完整流程</h3>
+
+<p>AliAttention 的计算步骤：</p>
+<ol>
+<li>对集成输入 \(x_t^{(n)}\)，分别用 \(W_Q^I, W_K^I, W_V^I\) 投影。</li>
+<li>对未来知识 \(\tilde{x}_t^{(n)}\)，分别用 \(W_Q^{\bar{I}}, W_K^{\bar{I}}\) 投影。</li>
+<li>计算两条 attention：\(\text{Att}\)（仅基于集成输入）和 \(\widetilde{\text{Att}}\)（仅基于知识）。</li>
+<li>两条 attention 相加：\(\text{Att}^* = \text{Att} + \widetilde{\text{Att}}\)。</li>
+<li>Softmax + 乘以 V，得到下一层表示。</li>
+</ol>
+
+<h3>6.2 未来强调训练策略</h3>
+
+<p>在训练阶段：</p>
+<ul>
+<li>对每个序列，以概率 \(p_1\) 选择 naive 策略（不 mask），以概率 \(p_2\) 选择 span masking。</li>
+<li>span masking：在序列中段 mask 一段连续 token，让模型只能用未来知识预测。</li>
+</ul>
+
+<p>未来强调训练策略让模型"被迫"利用未来知识而非作弊。</p>
+
+<h3>6.3 伪代码</h3>
+
+<p>伪代码：Aliformer 前向推理</p>
+<pre><code>Algorithm 1: Aliformer Forward Pass
+Input: 历史统计 s_1..s_T, 知识 k_1..k_{T+L}
+Output: 未来预测 y_hat_{T+1..T+L}
+
+1. // Embedding
+2. x ← []  // 集成输入
+3. for t in 1..T:
+4.    x.append(Emb(s_t, k_t))
+5. x_tilde ← []  // 知识输入
+6. for t in 1..T+L:
+7.    x_tilde.append(Emb(k_t))  // 仅知识
+8. // AliAttention stack
+9. for h in 1..12:
+10.   // 计算集成 attention
+11.   Q_I = x @ W_Q_I
+12.   K_I = x @ W_K_I
+13.   V_I = x @ W_V_I
+14.   Att = (Q_I @ K_I.T) / sqrt(2d)
+15.   // 计算知识 attention
+16.   Q_K = x_tilde @ W_Q_K
+17.   K_K = x_tilde @ W_K_K
+18.   Att_bar = (Q_K @ K_K.T) / sqrt(2d)
+19.   // 融合
+20.   Att_star = Att + Att_bar
+21.   x = Softmax(Att_star) @ V_I
+22. // 输出预测
+23. y_hat = x[T+1..T+L]
+24. return y_hat
+</code></pre>
+
+<h3>6.4 复杂度分析</h3>
+
+<table>
+<tr><th>步骤</th><th>时间复杂度</th><th>空间复杂度</th></tr>
+<tr><td>Embedding</td><td>\(O((T+L) \cdot d)\)</td><td>\(O((T+L) \cdot d)\)</td></tr>
+<tr><td>AliAttention 单层</td><td>\(O((T+L)^2 \cdot d)\)</td><td>\(O((T+L)^2)\)</td></tr>
+<tr><td>12 层 Transformer</td><td>\(O(L_{layers} \cdot (T+L)^2 \cdot d)\)</td><td>\(O(L_{layers} \cdot (T+L)^2)\)</td></tr>
+</table>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 数据集</h3>
+
+<table>
+<tr><th>数据集</th><th>维度</th><th>时间跨度</th><th>采样率</th><th>说明</th></tr>
+<tr><td>ETTh</td><td>7</td><td>2016-07~2018-07</td><td>1 hour</td><td>电力变压器温度</td></tr>
+<tr><td>ETTm</td><td>7</td><td>2016-07~2018-07</td><td>15 min</td><td>电力变压器温度</td></tr>
+<tr><td>ECL</td><td>321</td><td>2012-2014</td><td>1 hour</td><td>电力消耗负载</td></tr>
+<tr><td>Kaggle-M5</td><td>—</td><td>—</td><td>1 day</td><td>Walmart 商品销售</td></tr>
+<tr><td>TMS（自发布）</td><td>86</td><td>2020-09~2021-04</td><td>1 day</td><td>天猫商品销售</td></tr>
+</table>
+
+<h3>7.2 TMS 数据集特征</h3>
+
+<ul>
+<li><b>样本数</b>：120 万商品（从 10 亿中过滤）。</li>
+<li><b>时间</b>：2020-09-13 ~ 2021-04-15（215 天）。</li>
+<li><b>特征维度</b>：86 维。</li>
+<li><b>分类</b>：107 品类、149,582 品牌。</li>
+<li><b>训练/验证/测试</b>：按 2020-08-20 划分。</li>
+</ul>
+
+<p><b>86 维特征分类</b>：</p>
+<ul>
+<li>Sparse Features：seller_id, brand_id, cate_id, week, nday, in_activity</li>
+<li>Dense Features (Product-Property)：brand_score, online, price, dsr_fw, dsr_zw, dsr_zl</li>
+<li>Dense Features (Product-Statistics)：pay_ord_amt/cnt 1d/1w/1m, cart_cnt 1d/1w/1m, ipv_1d/1w/1m</li>
+<li>Dense Features (Seller-Statistics)：slr_*</li>
+<li>Dense Features (Cate-Statistics)：cate_*</li>
+</ul>
+
+<h3>7.3 训练超参</h3>
+
+<table>
+<tr><th>参数</th><th>取值</th><th>说明</th></tr>
+<tr><td>预测窗口 L</td><td>{48, 96, 168, 336, 720}</td><td>逐步扩大</td></tr>
+<tr><th>AliAttention 层数</th><th>{3, 4, 5, 6, 8, 10, 12, 14}</th><th>12 在 TMS 最优</th></tr>
+<tr><th>头数</th><th>12</th><th>Transformer 标准</th></tr>
+<tr><th>优化器</th><th>Adam</th><th>初始 lr=2e-4</th></tr>
+<tr><th>训练轮数</th><th>20 epochs</th><th>早停</th></tr>
+<tr><th>Batch size</th><th>512</th><th>PyTorch 默认</th></tr>
+<tr><th>硬件</th><th>8 × NVIDIA V100 32GB</th><th>GPU</th></tr>
+<tr><th>Span masking 概率 p2</th><th>50%~90%</th><th>未来强调训练</th></tr>
+</table>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 整体对比</h3>
+
+<table>
+<tr><th>数据集</th><th>窗口</th><th>Aliformer MSE</th><th>Aliformer MAE</th><th>Informer MSE</th><th>LogTrans MSE</th><th>LSTMa MSE</th><th>LSTNet MSE</th></tr>
+<tr><td>TMS (5)</td><td>15</td><td><b>0.154</b></td><td><b>0.229</b></td><td>0.321</td><td>0.327</td><td>0.313</td><td>0.283</td></tr>
+<tr><td>Kaggle-M5 (1)</td><td>28</td><td><b>0.526</b></td><td><b>0.555</b></td><td>0.552</td><td>0.544</td><td>0.533</td><td>0.528</td></tr>
+<tr><td>ETTh (7)</td><td>48</td><td><b>0.767</b></td><td><b>0.694</b></td><td>1.575</td><td>1.952</td><td>1.805</td><td>3.629</td></tr>
+<tr><td>ETTm (7)</td><td>48</td><td><b>0.309</b></td><td><b>0.371</b></td><td>0.413</td><td>0.424</td><td>0.647</td><td>1.672</td></tr>
+<tr><td>ECL (321)</td><td>48</td><td><b>0.304</b></td><td><b>0.369</b></td><td>0.387</td><td>0.399</td><td>0.486</td><td>0.443</td></tr>
+</table>
+
+<p><b>关键发现</b>：</p>
+<ul>
+<li>Aliformer 在 5 个数据集、所有预测长度上一致优于基线。</li>
+<li>在 TMS（5）上 MSE 0.154 vs LogTrans 0.327，提升 52%。</li>
+<li>在 Kaggle-M5 上提升有限（数据集特征相似性小）。</li>
+</ul>
+
+<h3>8.2 消融实验</h3>
+
+<table>
+<tr><th>变体</th><th>MSE</th><th>MAE</th></tr>
+<tr><td>Aliformer (full)</td><td><b>0.154</b></td><td><b>0.229</b></td></tr>
+<tr><td>w/o AliAttention</td><td>0.163</td><td>0.236</td></tr>
+<tr><td>w/o 未来知识</td><td>0.203</td><td>0.265</td></tr>
+</table>
+
+<ul>
+<li>AliAttention 贡献：MSE -0.009（用 AliAttention 后提升）。</li>
+<li>未来知识贡献：MSE -0.049（去未来知识后明显下降）。</li>
+</ul>
+
+<h3>8.3 参数敏感性</h3>
+
+<p><b>AliAttention 层数</b>：</p>
+<ul>
+<li>3 → 6 层：MSE 持续下降。</li>
+<li>12 层：最优。</li>
+<li>14 层：开始过拟合。</li>
+</ul>
+
+<p><b>Span masking 概率 p2</b>：</p>
+<ul>
+<li>50%：MSE 0.154。</li>
+<li>90%：MSE 0.158。</li>
+<li>最佳 50%。</li>
+</ul>
+
+<h2>9.消融实验</h2>
+
+<p>本节展示按目标变量的消融（TMS 数据集，预测窗口 15）：</p>
+
+<table>
+<tr><th>目标</th><th>w/o 未来知识 MSE</th><th>w/o AliAttention MSE</th><th>Aliformer (full) MSE</th></tr>
+<tr><td>ipv</td><td>0.065</td><td>0.059</td><td><b>0.059</b></td></tr>
+<tr><td>ipv_uv</td><td>0.055</td><td>0.049</td><td><b>0.049</b></td></tr>
+<tr><td>gmv</td><td>0.639</td><td>0.494</td><td><b>0.456</b></td></tr>
+<tr><td>ord</td><td>0.130</td><td>0.110</td><td><b>0.105</b></td></tr>
+<tr><td>byr</td><td>0.124</td><td>0.104</td><td><b>0.100</b></td></tr>
+<tr><td>Avg</td><td>0.203</td><td>0.163</td><td><b>0.154</b></td></tr>
+</table>
+
+<p>AliAttention 在所有目标上一致优于基线。未来知识对 gmv 提升最显著（0.494 → 0.456），因为价格/营销活动对销售有直接因果关系。</p>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>传统 TSF</th><th>GRU-based TSSF</th><th>Attention-based</th><th>Aliformer</th></tr>
+<tr><td>使用历史</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>使用未来知识</td><td>No</td><td>部分（Qi 2019）</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><td>结构</td><td>RNN/CNN</td><td>GRU + Attention</td><td>Transformer</td><td>知识引导 Transformer</td></tr>
+<tr><td>防未来泄露</td><td>—</td><td>部分</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><td>训练策略</td><td>标准</td><td>标准</td><td>标准</td><td>未来强调训练</td></tr>
+<tr><td>实际部署</td><td>无</td><td>无</td><td>无</td><td>阿里电商</td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>下图给出 Aliformer 在阿里电商的部署：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[商品过去 200 天销售数据] --> B[Aliformer 推理]
+ C[未来 15 天促销计划] --> B
+ B --> D[预测未来 15 天销售值]
+ D --> E{排序 top 100 万}
+ E --> F[平台促销候选商品]
+ F --> G[商家使用]
+ G --> H[流量 + 销售]
+ H --> I[GMV 统计]
+ I --> J{效果评估}
+ J -- 提升 --> K[继续使用 Aliformer]
+</div>
+
+<h3>11.1 部署清单</h3>
+
+<ol>
+<li><b>模型</b>：12 层 Aliformer，12 头 attention。</li>
+<li><b>数据</b>：阿里 ODPS 系统，过去 200 天 + 未来 15 天计划。</li>
+<li><b>推理</b>：8 × V100 GPU，每商品 ~10ms。</li>
+<li><b>集成</b>：阿里电商平台商品选品流程。</li>
+</ol>
+
+<h3>11.2 实际效果</h3>
+
+<blockquote>自 2021-05 部署以来，Aliformer 用于天猫商品选品。具体流程：从亿级商品中预选 top 100 万参加平台促销活动。结果显示：Aliformer 选品的商品 GMV 覆盖率 74.96%，相比 Informer 的 70.23% 提升 4.73%，带来显著电商平台利润。</blockquote>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>仅依赖商品/平台相关未来知识</b>：未考虑供应链、宏观市场等外部因素。</li>
+<li><b>静态知识表示</b>：未来知识用 one-hot 或数值嵌入，未做动态推理。</li>
+<li><b>训练与推理的分布偏移</b>：促销期间 vs 平时数据分布差异大。</li>
+<li><b>数据集规模</b>：TMS 已发布但商品范围有限。</li>
+</ol>
+
+<h3>12.1未来工作</h3>
+
+<ul>
+<li>扩展到更多电商场景（直播、跨境）。</li>
+<li>结合强化学习做动态选品。</li>
+<li>结合大语言模型（LLM）做商品/活动语义理解。</li>
+<li>多商品关联建模（graph + transformer）。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>Aliformer 是<b>首个</b>把"未来知识"显式注入时间序列预测的工业级 Transformer，在阿里电商平台部署并验证有效。核心贡献：</p>
+
+<ol>
+<li><b>问题重新定义</b>：从"基于历史"扩展到"基于历史 + 未来已知"，这是 TSSF 的本质。</li>
+<li><b>AliAttention 机制</b>：通过 attention 残差连接，把知识作为 attention bias 注入。</li>
+<li><b>未来强调训练</b>：span masking 防止模型作弊，提高泛化。</li>
+<li><b>实际业务价值</b>：GMV 覆盖率 +4.73%，是 AIOps 落地的标杆。</li>
+</ol>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li><b>领域知识是 AI 模型的胜负手</b>——纯数据驱动方法忽视业务规则。</li>
+<li><b>防止未来泄露是 TSSF 的关键</b>——双向 attention + 朴素训练容易让模型作弊。</li>
+<li><b>span masking 是训练时强制利用特定信息的有效手段</b>。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>将"先验知识"显式注入到 attention 是 Transformer 的新方向。</li>
+<li>领域数据公开（TMS）能极大推动研究社区进步。</li>
+<li>实际部署效果（GMV 提升）是检验 AIOps 工作的最终标准。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>时间序列预测</td><td>Time Series Forecasting (TSF)</td><td>基于历史预测未来</td></tr>
+<tr><td>时间序列销售预测</td><td>TSSF</td><td>TSF 在电商销售预测的应用</td></tr>
+<tr><td>Aliformer</td><td>Aliformer</td><td>本文提出的模型</td></tr>
+<tr><td>AliAttention</td><td>AliAttention</td><td>本文提出的 attention 层</td></tr>
+<tr><td>未来知识</td><td>Future Knowledge</td><td>未来已知的商品价格、促销计划等</td></tr>
+<tr><td>Span Masking</td><td>Span Masking</td><td>训练时 mask 连续 token 段</td></tr>
+<tr><td>Vanilla Attention</td><td>VSA</td><td>原始 Transformer Self-Attention</td></tr>
+<tr><td>未来强调训练</td><td>Future-emphasized Training</td><td>让模型利用未来知识的训练策略</td></tr>
+<tr><td>GMV</td><td>Gross Merchandise Volume</td><td>商品交易总额</td></tr>
+<tr><td>TMS</td><td>Tmall Merchandise Sales</td><td>天猫商品销售数据集</td></tr>
+<tr><td>VSA</td><td>Vanilla Self-Attention</td><td>原始 Transformer self-attention</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>参数</th><th>取值范围</th><th>默认值</th><th>说明</th></tr>
+<tr><td>预测窗口 L</td><td>{48, 96, 168, 336, 720}</td><td>168</td><td>未来预测长度</td></tr>
+<tr><td>AliAttention 层数</td><td>{3, 4, 5, 6, 8, 10, 12, 14}</td><td>12</td><td>深度</td></tr>
+<tr><td>头数</td><td>{4, 8, 12}</td><td>12</td><td>多头 attention</td></tr>
+<tr><td>Batch size</td><td>{128, 256, 512}</td><td>512</td><td>批大小</td></tr>
+<tr><td>学习率</td><td>{1e-3, 1e-4, 1e-5}</td><td>2e-4</td><td>Adam 初始 lr</td></tr>
+<tr><td>训练轮数</td><td>20+</td><td>20</td><td>早停</td></tr>
+<tr><td>Span masking 概率 p2</td><td>[0.5, 0.9]</td><td>0.5</td><td>未来强调训练</td></tr>
+<tr><td>硬件</td><td>—</td><td>8 × V100 32GB</td><td>GPU 训练</td></tr>
+</table>
+
+<h3>14.3 TMS 数据集统计</h3>
+
+<table>
+<tr><th>条目</th><th>值</th></tr>
+<tr><td>商品数</td><td>1.2M</td></tr>
+<tr><td>时间跨度</td><td>2020-09-13 ~ 2021-04-15（215 天）</td></tr>
+<tr><td>特征维度</td><td>86</td></tr>
+<tr><td>品类数</td><td>107</td></tr>
+<tr><td>品牌数</td><td>149,582</td></tr>
+<tr><td>训练/验证/测试划分</td><td>2020-08-20</td></tr>
+<tr><td>5 个目标变量</td><td>ipv, ipv_uv, gmv, ord, byr</td></tr>
+</table>
+
+<h3>14.4 论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/Knowledge_guided_Transformer_Sales_Forecasting/paper.pdf</code></li>
+<li>arXiv 链接：<code>https://arxiv.org/abs/2109.08381</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>

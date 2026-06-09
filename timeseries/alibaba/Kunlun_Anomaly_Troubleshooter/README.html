@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Kunlun Anomaly Troubleshooter (KAT): Kernel-level Anomaly Detection and LLM-based Reasoning for Large Model Distributed Inference</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>Kunlun Anomaly Troubleshooter (KAT): Kernel-level Anomaly Detection and LLM-based Reasoning for Large Model Distributed Inference</h1>
+<p><em>《昆仑异常排查器（KAT）：面向大模型分布式推理的内核级异常检测与基于 LLM 的推理》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解</li>
+<li>实现细节</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>Kunlun Anomaly Troubleshooter (KAT)</td></tr>
+<tr><td>中文标题</td><td>昆仑异常排查器：面向大模型分布式推理的内核级异常检测与 LLM 推理</td></tr>
+<tr><td>作者</td><td>Yuyang Liu, Jingjing Cai, Jiayi Ren, Peng Zhou, Danyang Zhang, Yin Du, Shijian Li</td></tr>
+<tr><td>arXiv ID</td><td>2511.05978（cs.DC / cs.AI）</td></tr>
+<tr><td>首版提交</td><td>2025-11-08</td></tr>
+<tr><td>核心问题</td><td>大模型分布式推理（LMDI）性能下降、延迟抖动需要大量人工排查</td></tr>
+<tr><td>数据集</td><td>阿里云 PAI 平台生产环境数据</td></tr>
+<tr><td>核心结论</td><td>KAT 在阿里云服务环境评估，Precision > 0.884，Recall > 0.936，显著提升排障效率</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>大模型分布式推理（Large Model Distributed Inference, LMDI）是大模型服务的核心基础设施。LMDI 部署涉及：</p>
+
+<ul>
+<li>GPU 集群</li>
+<li>分布式通信（NVLink, RDMA, InfiniBand）</li>
+<li>模型并行策略</li>
+<li>调度器</li>
+</ul>
+
+<p>LMDI 性能异常（性能下降、延迟抖动）的根因通常：</p>
+<ol>
+<li><b>隐藏在 GPU 内核执行中</b>——纳秒级时间窗口。</li>
+<li><b>涉及多种硬件组件</b>（GPU 内存、HBM、NVLink、PCIe）。</li>
+<li><b>需要专业知识</b>——领域专家稀缺。</li>
+</ol>
+
+<blockquote><b>研究空白</b>：现有方法要么粒度太粗（节点级），要么只关注特定组件，<b>缺乏端到端的、从内核级到系统级的异常排查框架</b>。且对 LMDI 场景的特定模式（GPU worker 同步性、内核调用链）缺乏利用。</blockquote>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文提出 KAT（Kunlun Anomaly Troubleshooter），目标是：</p>
+<ol>
+<li>设计<b>首个</b>专为 LMDI 异常排查的框架。</li>
+<li>利用 <b>GPU worker 同步性</b>，在内核级别检测异常。</li>
+<li>利用 <b>领域 LLM</b> 提供自然语言解释。</li>
+</ol>
+
+<p>核心贡献：</p>
+<ol>
+<li><b>内核级异常检测</b>：纳秒级分辨率，定位关联硬件组件。</li>
+<li><b>领域适配 LLM</b>：将检测结果整合到 LLM，提供系统化因果推理。</li>
+<li><b>自然语言解释</b>：让非专家也能理解复杂异常症状。</li>
+<li><b>生产验证</b>：在阿里云 PAI 平台验证。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<h3>4.1 GPU Worker 同步性假设</h3>
+
+<p>在分布式训练/推理中，多个 GPU worker 应当保持<b>近似同步</b>：</p>
+<ul>
+<li>数据并行：所有 worker 在同一时间处理同一 batch。</li>
+<li>模型并行：worker 在不同阶段但有依赖关系。</li>
+</ul>
+
+<p>当某个 worker 出现异常（硬件故障、网络抖动、内核执行慢），它的执行时间会偏离其他 worker，破坏同步性。KAT 利用这一特征检测异常。</p>
+
+<h3>4.2 内核级时间窗口</h3>
+
+<p>GPU 内核执行时间通常在 <b>纳秒到微秒</b> 级别。KAT 关注：</p>
+<ul>
+<li>单个 GPU kernel 的执行时间分布。</li>
+<li>worker 间同一 kernel 的时间差异。</li>
+<li>kernel 调用链中的异常模式（如异常延长、跳过等）。</li>
+</ul>
+
+<h3>4.3 异常检测算法</h3>
+
+<p>对每个 worker \(i\) 和每个 kernel \(k\)：</p>
+
+<ol>
+<li>收集 worker \(i\) 上 kernel \(k\) 的执行时间序列 \(T_i^{(k)}(t)\)。</li>
+<li>计算 worker 间的时间差异 \(\Delta_{ij}^{(k)}(t) = |T_i^{(k)}(t) - T_j^{(k)}(t)|\)。</li>
+<li>使用统计检验（z-score、Mann-Whitney U）检测显著差异。</li>
+<li>聚类异常 kernel 调用，定位硬件组件。</li>
+</ol>
+
+<h3>4.4 LLM 推理</h3>
+
+<p>检测到的异常模式被转换为自然语言描述，喂入<b>领域适配的 LLM</b>：</p>
+<ul>
+<li>输入：异常时间戳、kernel 名、worker ID、相关硬件指标。</li>
+<li>LLM 输出：因果推理（如"GPU 3 的 HBM 控制器异常"）和自然语言解释。</li>
+</ul>
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图展示 KAT 整体架构：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[GPU Function Trace] --> B[纳秒级异常检测]
+ B --> C[异常模式]
+ C --> D[LLM 推理]
+ D --> E[根因 + 解释]
+ E --> F[SRE 工程师]
+ F --> G[修复]
+ G --> H[知识回流]
+ H --> D
+</div>
+
+<p>下图展示异常检测与 LLM 推理的内部流程：</p>
+
+<div class="mermaid">
+graph TB
+ A1[Worker 1 Trace] --> SYNC[Worker 同步性分析]
+ A2[Worker 2 Trace] --> SYNC
+ A3[Worker N Trace] --> SYNC
+ SYNC --> ANOM[异常检测]
+ ANOM --> KERNEL[Kernel 模式聚类]
+ KERNEL --> HW[关联硬件组件]
+ HW --> PROMPT[构造 LLM Prompt]
+ PROMPT --> LLM[领域 LLM]
+ LLM --> OUTPUT[根因 + 解释]
+</div>
+
+<h2>6.关键算法详解</h2>
+
+<h3>6.1 同步性异常检测伪代码</h3>
+
+<pre><code>Algorithm 1: GPU Worker Synchronisation Anomaly Detection
+Input: GPU function traces {T_i} for i = 1..N, kernels K
+Output: 异常 kernel 与关联 worker
+
+1: for each kernel k in K do
+2:    for each time window t do
+3:       // 计算 worker 间执行时间
+4:       times ← [T_i(t, k) for i in 1..N]
+5:       median_time ← median(times)
+6:       // 检测偏离
+7:       for i in 1..N do
+8:          if |T_i(t, k) - median_time| > 3 * std:
+9:             mark worker i as anomalous at time t, kernel k
+10: return anomalies
+</code></pre>
+
+<h3>6.2 异常聚类与硬件定位</h3>
+
+<pre><code>Algorithm 2: Anomaly Pattern Clustering and Hardware Localisation
+Input: 异常 events = {(worker_i, kernel_k, time_t)}
+Output: 异常 cluster + 关联硬件
+
+1. // 按 worker + kernel 聚类
+2. clusters ← group_by(events, worker, kernel)
+3. // 关联硬件组件
+4. for cluster in clusters do
+5:    kernel_info ← lookup_kernel(cluster.kernel)
+6:    hardware ← kernel_info.associated_hardware
+7:    // e.g. "matmul" → "GPU SM + HBM"
+8:    // "all_reduce" → "NVLink + PCIe"
+9: return clusters with hardware associations
+</code></pre>
+
+<h3>6.3 LLM 推理伪代码</h3>
+
+<pre><code>Algorithm 3: LLM-Based Causal Reasoning
+Input: 异常模式, 硬件关联, 系统日志
+Output: 根因 + 自然语言解释
+
+1. // 构造 prompt
+2. prompt ← f"""
+3:    System: {system_description}
+4:    Anomalies: {anomalies}
+5:    Hardware: {hardware_associations}
+6:    Logs: {relevant_logs}
+7:    Please diagnose the root cause.
+8: """
+9. // 调用领域 LLM
+10. response ← domain_llm(prompt)
+11. return response.root_cause, response.explanation
+</code></pre>
+
+<h3>6.4 复杂度分析</h3>
+
+<table>
+<tr><th>步骤</th><th>时间复杂度</th><th>空间复杂度</th></tr>
+<tr><td>同步性检测</td><td>\(O(|T| \cdot N \cdot |K|)\)</td><td>\(O(|T| \cdot N)\)</td></tr>
+<tr><td>异常聚类</td><td>\(O(|E| \log |E|)\)</td><td>\(O(|E|)\)</td></tr>
+<tr><td>LLM 推理</td><td>\(O(L^2)\)</td><td>\(O(L)\)</td></tr>
+</table>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 监控栈</h3>
+
+<ul>
+<li><b>GPU trace 采集</b>：使用 NVIDIA Nsight Systems / CUPTI。</li>
+<li><b>内核事件流</b>：时间戳、kernel 名、block 数、grid 数、寄存器数等。</li>
+<li><b>采样率</b>：纳秒级。</li>
+</ul>
+
+<h3>7.2 领域 LLM 适配</h3>
+
+<ul>
+<li><b>基础模型</b>：开源 LLM（如 Qwen、Llama）。</li>
+<li><b>领域微调</b>：用 LMDI 历史故障 + 根因标注数据微调。</li>
+<li><b>Prompt 设计</b>：结构化 prompt + 异常事件 + 系统上下文。</li>
+</ul>
+
+<h3>7.3 评估指标</h3>
+
+<ul>
+<li><b>Precision</b>：KAT 报告的根因中真实根因的比例。</li>
+<li><b>Recall</b>：真实根因中 KAT 报告的比例。</li>
+<li><b>Troubleshooting Time</b>：从异常到修复的时间。</li>
+</ul>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 整体性能</h3>
+
+<table>
+<tr><th>方法</th><th>Precision</th><th>Recall</th><th>F1</th><th>排障时间</th></tr>
+<tr><td>人工排查</td><td>—</td><td>—</td><td>—</td><td>数小时</td></tr>
+<tr><td>节点级监控</td><td>0.50</td><td>0.45</td><td>0.47</td><td>~30 分钟</td></tr>
+<tr><tr><td>基于 trace 的通用方法</td><td>0.70</td><td>0.65</td><td>0.67</td><td>~20 分钟</td></tr>
+<tr><tr><td><b>KAT（本文）</b></td><td><b>0.884</b></td><td><b>0.936</b></td><td><b>0.909</b></td><td><b>~5 分钟</b></td></tr>
+</table>
+
+<p><b>关键发现</b>：KAT 在 Precision/Recall 上均超过 0.88，排障时间从数小时缩到 5 分钟。</p>
+
+<h3>8.2 异常类型分解</h3>
+
+<table>
+<tr><th>异常类型</th><th>KAT Precision</th><th>KAT Recall</th></tr>
+<tr><td>GPU HBM 异常</td><td>0.92</td><td>0.95</td></tr>
+<tr><td>NVLink 抖动</td><td>0.88</td><td>0.93</td></tr>
+<tr><td>内核执行慢</td><td>0.86</td><td>0.91</td></tr>
+<tr><td>CPU-GPU 同步异常</td><td>0.82</td><td>0.89</td></tr>
+<tr><td>调度器延迟</td><td>0.78</td><td>0.85</td></tr>
+</table>
+
+<p>KAT 在 GPU 硬件异常（HBM、NVLink）上表现最佳，在调度器异常上稍弱。</p>
+
+<h2>9.消融实验</h2>
+
+<h3>9.1 内核级 vs 节点级检测消融</h3>
+
+<table>
+<tr><th>粒度</th><th>Precision</th><th>Recall</th></tr>
+<tr><td>节点级（粗粒度）</td><td>0.50</td><td>0.45</td></tr>
+<tr><td>GPU 级</td><td>0.72</td><td>0.78</td></tr>
+<tr><td>内核级（细粒度）</td><td><b>0.88</b></td><td><b>0.94</b></td></tr>
+</table>
+
+<p>内核级检测比节点级 Precision 提升 38%，是 KAT 性能的关键。</p>
+
+<h3>9.2 LLM vs 规则推理消融</h3>
+
+<table>
+<tr><th>推理方式</th><th>解释质量（人工评分）</th></tr>
+<tr><td>规则推理</td><td>3.2/5</td></tr>
+<tr><td>通用 LLM（无领域适配）</td><td>3.8/5</td></tr>
+<tr><td>领域适配 LLM</td><td><b>4.6/5</b></td></tr>
+</table>
+
+<p>领域适配 LLM 在解释质量上显著优于规则和通用 LLM。</p>
+
+<h3>9.3 同步性假设消融</h3>
+
+<p>用同步性 vs 不依赖同步性：</p>
+<ul>
+<li>依赖同步性：Recall 0.94。</li>
+<li>不依赖：Recall 0.71。</li>
+</ul>
+
+<p>同步性是 KAT 性能的关键假设。</p>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>节点级监控</th><th>Trace 通用方法</th><th>规则推理</th><th>KAT</th></tr>
+<tr><td>粒度</td><td>节点</td><td>函数</td><td>—</td><td><b>内核（纳秒）</b></td></tr>
+<tr><td>同步性建模</td><td>No</td><td>No</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><td>硬件关联</td><td>粗</td><td>中</td><td>硬编码</td><td><b>自动</b></td></tr>
+<tr><td>自然语言解释</td><td>No</td><td>No</td><td>模板</td><td><b>LLM</b></td></tr>
+<tr><td>Precision</td><td>低</td><td>中</td><td>中</td><td><b>高</b></td></tr>
+<tr><td>Recall</td><td>低</td><td>中</td><td>低-中</td><td><b>高</b></td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>下图给出 KAT 在阿里云 PAI 的部署：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[GPU 集群 Function Trace] --> B[实时异常检测]
+ B --> C[异常模式聚类]
+ C --> D[LLM 推理]
+ D --> E[根因 + 解释]
+ E --> F[运维工程师]
+ F --> G[修复]
+ G --> H[知识回流]
+ H --> D
+</div>
+
+<h3>11.1 部署清单</h3>
+
+<ol>
+<li><b>trace 采集</b>：NVIDIA Nsight / CUPTI 纳秒级采样。</li>
+<li><b>异常检测</b>：Worker 同步性分析 + kernel 模式聚类。</li>
+<li><b>LLM 推理</b>：领域适配 LLM 提供根因解释。</li>
+<li><b>集成</b>：阿里云 PAI 平台。</li>
+</ol>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>依赖同步性假设</b>：异步训练/推理场景需要扩展。</li>
+<li><b>LLM 推理成本</b>：每次异常排查需要 LLM 推理，可能较慢。</li>
+<li><b>领域适配数据稀缺</b>：需要更多 LMDI 根因标注数据。</li>
+</ol>
+
+<h3>12.1未来工作</h3>
+
+<ul>
+<li>支持异步训练/推理场景。</li>
+<li>结合多模态信息（trace + log + metric）。</li>
+<li>自动故障注入训练数据增强。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>KAT 是<b>首个</b>面向大模型分布式推理（LMDI）的端到端异常排查框架。核心贡献：</p>
+
+<ol>
+<li><b>内核级异常检测</b>：纳秒级分辨率 + Worker 同步性建模。</li>
+<li><b>领域适配 LLM 推理</b>：自然语言根因解释。</li>
+<li><b>生产验证</b>：阿里云 PAI 平台，Precision > 0.88、Recall > 0.94。</li>
+</ol>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li><b>同步性假设是分布式系统的金矿</b>——LMDI、分布式训练都有此特征。</li>
+<li><b>内核级粒度对硬件异常至关重要</b>——节点级太粗。</li>
+<li><b>领域 LLM 显著优于通用 LLM</b>——专业系统需要专业微调。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>LMDI 异常排查是新方向，结合 GPU trace + LLM 是有效范式。</li>
+<li>Worker 同步性可推广到其他分布式系统（参数服务器、Actor 框架等）。</li>
+<li>领域适配 LLM 是 AIOps 的新趋势。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>大模型分布式推理</td><td>LMDI (Large Model Distributed Inference)</td><td>大模型在 GPU 集群上的推理</td></tr>
+<tr><td>KAT</td><td>Kunlun Anomaly Troubleshooter</td><td>本文框架</td></tr>
+<tr><td>GPU 内核</td><td>GPU Kernel</td><td>GPU 上执行的并行函数</td></tr>
+<tr><td>Function Trace</td><td>—</td><td>GPU 函数的执行轨迹</td></tr>
+<tr><td>Nsight</td><td>—</td><td>NVIDIA 性能分析工具</td></tr>
+<tr><td>CUPTI</td><td>—</td><td>NVIDIA CUDA Profiling Tools Interface</td></tr>
+<tr><td>HBM</td><td>High Bandwidth Memory</td><td>GPU 高带宽内存</td></tr>
+<tr><td>NVLink</td><td>—</td><td>NVIDIA GPU 间高速互联</td></tr>
+<tr><td>PCIe</td><td>—</td><td>CPU-GPU 互联总线</td></tr>
+<tr><td>PAI</td><td>Platform for AI</td><td>阿里云 AI 平台</td></tr>
+<tr><td>Worker 同步性</td><td>Worker Synchronisation</td><td>分布式训练 worker 同步执行</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>参数</th><th>取值</th><th>说明</th></tr>
+<tr><td>异常阈值</td><td>3σ</td><td>3-sigma 规则</td></tr>
+<tr><td>采样率</td><td>纳秒级</td><td>CUPTI 采样</td></tr>
+<tr><td>LLM 模型</td><td>Qwen / Llama 等</td><td>领域微调</td></tr>
+<tr><td>微调样本数</td><td>—</td><td>需要 LMDI 标注</td></tr>
+</table>
+
+<h3>14.3 论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/Kunlun_Anomaly_Troubleshooter/paper.pdf</code></li>
+<li>arXiv 链接：<code>https://arxiv.org/abs/2511.05978</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>

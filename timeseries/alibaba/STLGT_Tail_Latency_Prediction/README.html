@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>STLGT: A Scalable Trace-Based Linear Graph Transformer for Tail Latency Prediction in Microservices</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>STLGT: A Scalable Trace-Based Linear Graph Transformer for Tail Latency Prediction in Microservices</h1>
+<p><em>《微服务中基于追踪的可扩展线性图 Transformer 用于尾延迟预测》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理（含数学公式）</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解（含伪代码）</li>
+<li>实现细节（参数、超参、工程优化）</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录（术语表、参数表、数据集表）</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>STLGT: A Scalable Trace-Based Linear Graph Transformer for Tail Latency Prediction in Microservices</td></tr>
+<tr><td>中文标题</td><td>微服务中基于追踪的可扩展线性图 Transformer 用于尾延迟预测</td></tr>
+<tr><td>作者</td><td>Yongliang Ding, Qigong Bi, Peng Pu（华东师范大学 ECNU）</td></tr>
+<tr><td>arXiv ID</td><td>2604.26422v1（cs.LG）</td></tr>
+<tr><td>会议</td><td>EASE '26（International Conference on Evaluation and Assessment in Software Engineering）</td></tr>
+<tr><td>首版提交</td><td>2026-04-29</td></tr>
+<tr><td>核心问题</td><td>教育平台考试期间请求突发难预测；现有方法无法兼顾全局依赖传播、突发感知、可扩展</td></tr>
+<tr><td>数据集</td><td>3 个公开（DSB Hotel/Social）+ 1 个阿里生产 traces（含 20K+ 微服务，6 stream，8,640 窗口）</td></tr>
+<tr><td>核心结论</td><td>相比 PERT-GNN，MAPE 改善 8.5-9.5%，且 12× 更快的 GPU 推理</td></tr>
+<tr><td>部署场景</td><td>教育微服务平台 + 阿里生产</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>云原生计算已成为现代软件交付的基础范式，微服务和容器技术是其核心架构。IBM、阿里云等大型云提供商利用 Kubernetes 容器编排管理大规模生产系统。</p>
+
+<p>与许多稳定的企业工作负载不同，<b>教育平台工作负载通常包含调度驱动的突发</b>：</p>
+<ul>
+<li>在线考试</li>
+<li>截止日期驱动的提交</li>
+<li>同步课堂活动</li>
+</ul>
+
+<p>这些突发在短时间内急剧增加流量。<b>弹性</b>（elasticity）是云服务的关键特性——基于运行时指标（CPU、内存利用率）提供/回收资源，以满足 QoS 要求并控制运营成本。</p>
+
+<p>典型的主动自动扩缩系统包含两个核心组件：</p>
+<ol>
+<li><b>预测器</b>（Predictor）</li>
+<li><b>扩缩控制器</b>（Scaling Controller）</li>
+</ol>
+
+<p>虽然扩缩控制器的设计已被广泛研究（强化学习、actor-critic 等），但<b>预测器建模能力</b>在复杂微服务环境中仍受限。三个关键挑战：</p>
+
+<ul>
+<li><b>C1：全局依赖建模受限</b>：现有预测器要么忽略微服务调用依赖，要么只捕获局部邻域。</li>
+<li><b>C2：突发感知时间建模不足</b>：现有方法隐式假设负载平稳性，无法应对突发流量模式。</li>
+<li><b>C3：可扩展性差、忠实度低</b>：基于图神经网络或全局注意力机制的方法在大规模系统中计算开销巨大。</li>
+</ul>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文提出 STLGT（Scalable Trace-based Linear Graph Transformer），目标是为每个 API 流构建一个 per-API 预测器，对 multi-step p95 尾延迟进行精准预测。</p>
+
+<p>核心贡献：</p>
+<ol>
+<li><b>基于追踪的跨度图抽象</b>（Trace-based span graph abstraction）：从分布式追踪构建 API-specific span graph 与轻量级 span-to-graph 特征聚合。</li>
+<li><b>结构感知线性图 Transformer</b>（Structure-aware Linear Graph Transformer）：在线性图 Transformer 编码器中线性推理，捕获全局依赖传播。</li>
+<li><b>解耦时空建模</b>（Decoupled spatiotemporal modeling）：全局依赖编码与时序动态解耦，避免耦合的时空注意力。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<h3>4.1 问题形式化</h3>
+
+<p><b>定义 1：微服务调用图（MCG）</b>：</p>
+\[
+\mathcal{G} = (\mathcal{V}, \mathcal{E})
+\]
+<p>节点为 \(M\) 个微服务，边 \((s_i, s_j) \in \mathcal{E}\) 表示 \(s_i\) 可能调用 \(s_j\)。</p>
+
+<p><b>定义 2：追踪与 Span</b>：将时间离散化为固定长度 \(\Delta\) 的窗口。窗口 \(t\) 内观察到追踪 \(\mathcal{T}_t^{\mathcal{A}}\)，由一组 span \(\Sigma(t) = \{\sigma_{\tau,1}, \sigma_{\tau,2}, ..., \sigma_{\tau;|t|}\}\) 组成。每个 span 捕获一次调用事件：</p>
+\[
+\sigma = (\text{traceID}, \text{spanID}, p, s, t_1, t_2)
+\]
+<p>span 通过父子关系连接形成根树。</p>
+
+<p><b>定义 3：API 诱导 Span 图</b>：</p>
+\[
+\mathcal{G}^{\mathcal{A}} = (\mathcal{V}^{\mathcal{A}}, \mathcal{E}^{\mathcal{A}})
+\]
+<p>对目标 API \(\mathcal{A}\)，节点为执行阶段的 stage 节点，\(\mathcal{E}^{\mathcal{A}}\) 表示调用关系。</p>
+
+<p><b>问题：尾延迟预测</b>：给定历史长度 \(L\) 和预测 horizon \(H\)，目标是学习预测器 \(f_\theta\)：</p>
+\[
+\hat{y}^A_{t+1:t+H} = f_\theta(\Theta^{\mathcal{A}}_t, \mathbf{X}^{\mathcal{A}}_{t-L+1}, \mathbf{c}^{\mathcal{A}}_{t-L+1})
+\]
+
+<h3>4.2 跨度图构建</h3>
+
+<p>Algorithm 1 描述了从追踪构建跨度图的过程。对每条 span \(\sigma \in \Sigma(\tau)\)，将其起始节点 \((p, s)\) 添加到 \(\mathcal{V}^{\mathcal{A}}\)。对于同 trace 内的连接，保留调用者-被调用者对的 stage 节点。给所有从 \((p, s)\) 到 \((s, u)\) 的边添加反向边，形成 \(\mathcal{E}^{\mathcal{A}}\)。</p>
+
+<h3>4.3 特征构造</h3>
+
+<p><b>尾延迟标签</b>：</p>
+\[
+y^{\mathcal{A}}_{t} = \rho_q(\mathcal{T}^{\mathcal{A}}_t)
+\]
+<p>其中 \(\rho_q(\cdot)\) 返回 \(q\)-分位数（\(q=0.95\)）。</p>
+
+<p><b>追踪公共向量</b>：</p>
+\[
+\mathbf{c}^{\mathcal{A}}_t = \phi_{\text{common}}(\mathcal{T}^{\mathcal{A}}_t)
+\]
+<p>汇总 API 级工作负载和性能信号：吞吐量、响应时间百分位、失败率。</p>
+
+<p><b>span-specific 向量</b>：</p>
+\[
+\mathbf{u}^{\mathcal{A}}_{t,t} = \phi_{\text{span}}(\mathcal{T}^{\mathcal{A}}_t, v^{\mathcal{A}}_t)
+\]
+<p>捕获 span 内的细粒度时序结构：归一化的开始/结束时间、归一化的持续时间。</p>
+
+<h3>4.4 空间编码器：结构感知线性注意力</h3>
+
+<p><b>单次稀疏预混合</b>：</p>
+\[
+\tilde{\mathbf{A}} = \mathbf{A} + \mathbf{I}, \quad \tilde{\mathbf{D}} = \text{diag}(\tilde{\mathbf{A}}\mathbf{1}), \quad \mathbf{P} = \tilde{\mathbf{D}}^{-1} \tilde{\mathbf{A}}
+\]
+
+\[
+\mathbf{K} = (1-\rho) \mathbf{I} + \rho \mathbf{P} \mathbf{K}, \quad \mathbf{V} = (1-\rho) \mathbf{I} + \rho \mathbf{P} \mathbf{V}
+\]
+
+<p><b>线性混合</b>：</p>
+\[
+\mathbf{D}_t = \text{diag}\left(\frac{1}{N}\tilde{\mathbf{Q}}(\tilde{\mathbf{K}}^T)\mathbf{1}\right) \in \mathbb{R}^{N \times N}
+\]
+
+\[
+\mathbf{Z}^{\mathcal{A}}_t = \mathbf{D}^{-1}_t \left[ \mathbf{Y} + \frac{1}{N}\tilde{\mathbf{Q}}(\tilde{\mathbf{K}}^T) \mathbf{V} \right]
+\]
+
+<p><b>本地传播（GCN 分支）</b>：</p>
+\[
+\mathbf{Z}^{\mathcal{A}}_{f,t} = \tilde{\mathbf{D}}^{-\frac{1}{2}} \tilde{\mathbf{A}} \tilde{\mathbf{D}}^{-\frac{1}{2}} \mathbf{H}^{(0)}_t \mathbf{W}_L
+\]
+
+<p><b>融合与读取</b>：通过两层 MLP 融合全局和局部表示，再通过 attention pooling 读取图嵌入。</p>
+
+<h3>4.5 时序解码器：TimesBlock</h3>
+
+<p>TimesBlock 来自 TimesNet：</p>
+<ul>
+<li>对输入做 FFT，识别 \(K\) 个主频。</li>
+<li>对每个频率做 2D 卷积。</li>
+<li>残差堆叠 B 个 TimesBlock。</li>
+</ul>
+
+<h3>4.6 分位数损失（Quantile Loss）</h3>
+
+<p>对 p95 尾延迟，使用分位数回归损失：</p>
+\[
+\ell_q(y, \hat{y}) = \psi_q(y - \hat{y}), \quad \psi_q(u) = \max(qu, (q-1)u)
+\]
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图展示 STLGT 的整体架构：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[微服务追踪<br/>Jaeger] --> B[数据收集器]
+ B --> C[动态追踪聚合]
+ C --> D[跨度图构建]
+ D --> E[空间编码器<br/>GCN + 线性注意力]
+ E --> F[时序解码器<br/>TimesBlock]
+ F --> G[分位数回归输出]
+ G --> H{预测 p95 延迟}
+ H -- 触发 --> I[扩缩控制器]
+ I --> J[云原生扩缩]
+</div>
+
+<p>下图展示空间编码器内部结构：</p>
+
+<div class="mermaid">
+graph TB
+ A[MCG G = (V, E)] --> B[服务指标 m_t]
+ A --> C[API 追踪 T_t^A]
+ B --> D[span 特征 u_t]
+ C --> D
+ D --> E[MLP 投影]
+ E --> F[H 矩阵]
+ F --> G[GCN 分支]
+ F --> H[线性注意力分支]
+ G --> I[融合 Z_t]
+ H --> I
+ I --> J[读取 g_t^node]
+ C --> K[MLP]
+ K --> L[trace context c_bar]
+ J --> M[MLP 融合]
+ L --> M
+ M --> N[下一步 g_t]
+</div>
+
+<h2>6.关键算法详解</h2>
+
+<h3>6.1 跨度图构建（Algorithm 1）</h3>
+
+<p>核心步骤：</p>
+<ol>
+<li>对追踪 \(\mathcal{T}_t^{\mathcal{A}}\)，为每条 span 添加 stage 节点到 \(\mathcal{V}^{\mathcal{A}}\)。</li>
+<li>为每个 stage 节点 \(v = (p, s)\)，添加从 \((p, s)\) 到其连接子节点的边。</li>
+<li>为每条边 \((p, s)\)，添加反向边。</li>
+<li>对每个 stage 节点 \(v\)，用 \(\phi_{\text{span}}\) 聚合 span 特征，得到 \(\mathbf{u}^{\mathcal{A}}_{t, v}\)。</li>
+<li>对每个 service 节点 \(v\)，用服务级指标 \(\mathbf{m}^{\mathcal{A}}_t\) 填充 \(\mathbf{m}^{\mathcal{A}}_{t, v}\)。</li>
+</ol>
+
+<h3>6.2 伪代码：STLGT 预测</h3>
+
+<pre><code>Algorithm 2: STLGT Tail-Latency Prediction
+Input: MCG G = (V, E), service metrics {m_t}, traces of A in window t: T_t^A
+Output: 未来 H 步尾延迟预测 y_hat_{t+1:t+H}
+
+1. // 跨度图构建
+2. G^A, X_t^A, c_t^A ← SpanGraphConstruction(G, {m_t}, T_t^A)
+3. // 空间编码
+4. H^(0) ← MLP_in(X_t^A)              // 投影
+5. Z_t^G ← LinearAttn(H^(0))           // 全局
+6. Z_t^L ← GCN(H^(0))                  // 局部
+7. g_t^node ← Fusion(Z_t^G, Z_t^L)     // 融合
+8. g_t^code ← AttentionPool(g_t^node)  // 读取
+9. c_bar_t ← Fusion(g_t^code, c_t^A)  // 上下文融合
+10. // 时序解码
+11. G_t ← stack(g_t^code, c_bar_t) over last L windows
+12. U_t^(0) ← MLP_in(G_t)
+13. for b in 1..B:
+14.    U_t^(b) ← U_t^(b-1) + TimesBlock(U_t^(b-1))
+15. // 预测
+16. y_hat_{t+1:t+H} ← MLP_out(U_t^B)
+17. return y_hat
+</code></pre>
+
+<h3>6.3 复杂度分析</h3>
+
+<table>
+<tr><th>步骤</th><th>时间复杂度</th><th>空间复杂度</th></tr>
+<tr><td>跨度图构建</td><td>\(O(|\mathcal{V}^{\mathcal{A}}| + |\mathcal{E}^{\mathcal{A}}|)\)</td><td>\(O(|\mathcal{V}^{\mathcal{A}}| + |\mathcal{E}^{\mathcal{A}}|)\)</td></tr>
+<tr><td>线性注意力</td><td>\(O(|\mathcal{E}^{\mathcal{A}}| + N d^2)\)</td><td>\(O(Nd)\)</td></tr>
+<tr><td>GCN</td><td>\(O(|\mathcal{E}^{\mathcal{A}}| d^2)\)</td><td>\(O(Nd)\)</td></tr>
+<tr><td>TimesBlock</td><td>\(O(B N d^2)\)</td><td>\(O(Nd)\)</td></tr>
+<tr><td>整体</td><td>\(O(|\mathcal{E}^{\mathcal{A}}| d + N d^2)\)</td><td>\(O(Nd)\)</td></tr>
+</table>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 数据集</h3>
+
+<table>
+<tr><th>数据集</th><th>#SVC</th><th>#Streams</th><th>Δ</th><th>#Win</th><th>说明</th></tr>
+<tr><td>Hotel Reservation (DSB)</td><td>17</td><td>5</td><td>30s</td><td>14,400</td><td>酒店预订</td></tr>
+<tr><td>Social Network (DSB)</td><td>26</td><td>5</td><td>30s</td><td>14,400</td><td>社交网络</td></tr>
+<tr><td>Alibaba traces</td><td>20K+</td><td>6</td><td>60s</td><td>8,640</td><td>阿里生产 traces</td></tr>
+</table>
+
+<h3>7.2 训练设置</h3>
+
+<ul>
+<li><b>优化器</b>：AdamW (lr=1e-3, weight_decay=1e-5)。</li>
+<li><b>Batch size</b>：32。</li>
+<li><b>训练轮数</b>：至 temporal leakage 出现时停止。</li>
+<li><b>Early stopping</b>：基于验证集 MAE。</li>
+<li><b>数据划分</b>：时序切分 70%/15%/15%。</li>
+</ul>
+
+<h3>7.3 模型配置</h3>
+
+<ul>
+<li><b>隐藏维度 d</b>：32（与基线一致）。</li>
+<li><b>Spatial encoder</b>：1 个 Sec. 4.1 + Sec. 4.2 block。</li>
+<li><b>TimesBlock</b>：B=2 堆叠层，K=3 主频。</li>
+</ul>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 整体精度（RQ1）</h3>
+
+<table>
+<tr><th>方法</th><th>Social Network MAPE</th><th>Hotel Reservation MAPE</th><th>Alibaba MAPE</th><th>Edu Platform MAPE</th></tr>
+<tr><td>GBDT</td><td>21.73%</td><td>19.10%</td><td>19.37%</td><td>20.05%</td></tr>
+<tr><td>PERT-GNN</td><td>11.18%</td><td>10.88%</td><td>10.32%</td><td>10.89%</td></tr>
+<tr><td>FastPERT</td><td>11.59%</td><td>10.82%</td><td>10.86%</td><td>10.96%</td></tr>
+<tr><td><b>STLGT (Ours)</b></td><td><b>10.12%</b></td><td><b>9.89%</b></td><td><b>9.60%</b></td><td><b>9.99%</b></td></tr>
+</table>
+
+<p><b>关键发现</b>：</p>
+<ul>
+<li>STLGT 在 4 个数据集上一致优于所有基线。</li>
+<li>相比 PERT-GNN，MAPE 改善 8.5%（Social Network）到 9.5%（Edu Platform）。</li>
+<li>Edu Platform 改善最显著（教育场景突发模式），平均改善 8.5%。</li>
+</ul>
+
+<h3>8.2 消融实验（RQ2）</h3>
+
+<table>
+<tr><th>变体</th><th>Social Network MAPE</th><th>Hotel Reservation MAPE</th><th>Alibaba MAPE</th><th>Edu Platform MAPE</th></tr>
+<tr><td>STLGT w/ Standard Attention</td><td>10.30%</td><td>9.86%</td><td>10.24%</td><td>10.21%</td></tr>
+<tr><td>STLGT w/o Structure-aware</td><td>10.73%</td><td>10.69%</td><td>10.70%</td><td>11.03%</td></tr>
+<tr><td>STLGT w/o Local (GCN)</td><td>12.14%</td><td>11.88%</td><td>11.81%</td><td>12.16%</td></tr>
+<tr><td>STLGT w/o Trace-context</td><td>10.57%</td><td>10.39%</td><td>10.04%</td><td>10.51%</td></tr>
+<tr><td>STLGT w/ Linear Decoder</td><td>12.41%</td><td>11.91%</td><td>12.38%</td><td>12.43%</td></tr>
+</table>
+
+<p><b>关键发现</b>：</p>
+<ul>
+<li>去掉 Local (GCN) 性能下降最大（11.88-12.16%），说明局部依赖关键。</li>
+<li>用 Standard Attention 略差于线性注意力（10.30 vs 10.12），说明线性化在大规模图上有效。</li>
+<li>用 Linear Decoder 替换 TimesBlock 性能显著下降（12.41%），说明时序建模对突发模式至关重要。</li>
+</ul>
+
+<h3>8.3 可扩展性（RQ3）</h3>
+
+<table>
+<tr><th>模型</th><th>复杂度</th><th>#Params</th><th>GPU 延迟 (ms)</th><th>CPU 延迟 (s)</th></tr>
+<tr><td>PERT-GNN</td><td>\(O(N^2 d)\)</td><td>0.12M</td><td>30.3 → 60.72 (2.0×)</td><td>0.21 → 10.44 (49.7×)</td></tr>
+<tr><td><b>STLGT</b></td><td>\(O(|\mathcal{E}| d + N d^2)\)</td><td>0.05M</td><td>30.5 → 46.0 (1.5×)</td><td>0.22 → 0.84 (3.8×)</td></tr>
+</table>
+
+<p>STLGT 在 N=1→32 时 GPU 延迟增长 1.5×，CPU 增长 3.8×；PERT-GNN 分别为 2.0× 和 49.7×。说明 STLGT 显著优于 PERT-GNN 在可扩展性上。</p>
+
+<h2>9.消融实验</h2>
+
+<h3>9.1 隐藏维度 d 的影响</h3>
+
+<p>d 从 16 → 128 的扫描：</p>
+<ul>
+<li>DSB 上：d=32/64 时 MAPE 稳定，d=16 表现较差。</li>
+<li>Edu Platform 上：d=32/64 最优，d=16 性能差，d=128 没有提升。</li>
+<li>结论：d=32 在精度和效率间平衡最佳。</li>
+</ul>
+
+<h3>9.2 工作负载模式的影响</h3>
+
+<p>Edu Platform 在周期性工作负载中，STLGT 优于 FastPERT 0.16%（MAPE）。但 STLGT 的 <b>MAPE 更低</b>，说明在 burst-sensitivity 方面更强。</p>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>GBDT</th><th>PERT-GNN</th><th>FastPERT</th><th>STLGT</th></tr>
+<tr><td>全局依赖建模</td><td>无</td><td>图注意力</td><td>简化</td><td><b>线性图注意力</b></td></tr>
+<tr><td>突发感知</td><td>无</td><td>无</td><td>无</td><td><b>TimesBlock</b></td></tr>
+<tr><td>可扩展性</td><td>较好</td><td>差 (N²)</td><td>较好</td><td><b>好 (Nd²)</b></td></tr>
+<tr><td>局部依赖</td><td>无</td><td>GNN</td><td>GNN</td><td><b>GCN</b></td></tr>
+<tr><td>追踪感知</td><td>无</td><td>是</td><td>是</td><td><b>是</b></td></tr>
+<tr><td>复杂度</td><td>—</td><td>\(O(N^2 d)\)</td><td>—</td><td>\(O(|\mathcal{E}| d + N d^2)\)</td></tr>
+<tr><td>MAPE</td><td>~20%</td><td>~11%</td><td>~11%</td><td><b>~10%</b></td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>下图给出 STLGT 在云原生平台的部署：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[生产微服务追踪<br/>Jaeger/Istio] --> B[数据收集器]
+ B --> C[跨度图构建]
+ C --> D[STLGT 推理]
+ D --> E{预测 p95 尾延迟}
+ E -- 触发阈值 --> F[扩缩控制器]
+ F --> G[Kubernetes 弹性扩缩]
+ E -- 正常 --> H[继续监控]
+</div>
+
+<h3>11.1 部署清单</h3>
+
+<ol>
+<li><b>数据收集</b>：Istio + Jaeger（注入并追踪 RPC）。</li>
+<li><b>服务指标</b>：Prometheus + cAdvisor。</li>
+<li><b>模型训练</b>：Kubernetes 3 节点，12 核 24GB，每节点单 V100 GPU。</li>
+<li><b>推理</b>：单次窗口 30-60s 推理 &lt; 1s。</li>
+</ol>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>依赖调用路径稳定性</b>：假设 API 的主导调用路径在评估期内稳定。如果调用路径切换（服务插拔、路由变更），需要重训。</li>
+<li><b>未结合 trace / log / metric 三源</b>：未来可融合多模态信息。</li>
+<li><b>无强化学习闭环</b>：未与扩缩控制器联合优化。</li>
+</ol>
+
+<h3>12.1未来工作</h3>
+
+<ul>
+<li>引入拓扑漂移在线适应。</li>
+<li>结合 trace / log / metric 三源数据。</li>
+<li>与扩缩控制器的强化学习联合优化。</li>
+<li>支持亚秒级粒度的更细预测。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>STLGT 是<b>首个</b>面向微服务尾延迟预测的可扩展线性图 Transformer，在 4 个数据集上全面超越 PERT-GNN/FastPERT。核心贡献：</p>
+
+<ol>
+<li><b>追踪感知的跨度图抽象</b>：从分布式追踪构建 API-specific span graph。</li>
+<li><b>结构感知线性图 Transformer</b>：避免 \(O(N^2)\) 全局注意力，扩展到大规模微服务。</li>
+<li><b>解耦时空建模</b>：全局依赖 + 时序动态分开建模，避免耦合注意力。</li>
+</ol>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li><b>线性注意力是大规模图的必选</b>——\(O(N^2)\) softmax attention 不可扩展。</li>
+<li><b>解耦时空建模</b>比耦合时空注意力更高效。</li>
+<li><b>追踪数据蕴含丰富结构信息</b>，是优于纯 metric 的输入。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>把"per-API 单独建模"作为大系统的可扩展手段。</li>
+<li>TimesBlock 等周期感知时序模块对突发负载建模更鲁棒。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>尾延迟</td><td>Tail Latency</td><td>高百分位（如 p95/p99）的响应时间</td></tr>
+<tr><td>微服务调用图</td><td>MCG (Microservice Call Graph)</td><td>微服务之间调用关系的有向图</td></tr>
+<tr><td>Span</td><td>Span</td><td>追踪中的单个调用事件</td></tr>
+<tr><td>Span Graph</td><td>Span Graph</td><td>API 内 span 组成的图</td></tr>
+<tr><td>BERT-style 图</td><td>—</td><td>PERT-style 的多 stage 切分</td></tr>
+<tr><td>线性注意力</td><td>Linear Attention</td><td>避免 O(N²) 的注意力变体</td></tr>
+<tr><td>GCN</td><td>Graph Convolutional Network</td><td>图卷积网络</td></tr>
+<tr><td>TimesBlock</td><td>TimesBlock</td><td>TimesNet 中的多周期卷积模块</td></tr>
+<tr><td>MAPE</td><td>Mean Absolute Percentage Error</td><td>平均绝对百分比误差</td></tr>
+<tr><td>p95</td><td>95th percentile</td><td>第 95 百分位</td></tr>
+<tr><td>SLO</td><td>Service Level Objective</td><td>服务等级目标</td></tr>
+<tr><td>QoS</td><td>Quality of Service</td><td>服务质量</td></tr>
+<tr><td>DSB</td><td>DeathStarBench</td><td>微服务 benchmark</td></tr>
+<tr><td>Jaeger</td><td>—</td><td>分布式追踪系统</td></tr>
+<tr><td>Istio</td><td>—</td><td>服务网格</td></tr>
+<tr><td>FFT</td><td>Fast Fourier Transform</td><td>快速傅里叶变换</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>参数</th><th>取值范围</th><th>默认值</th><th>说明</th></tr>
+<tr><td>历史长度 L</td><td>—</td><td>12</td><td>输入窗口</td></tr>
+<tr><th>预测 horizon H</th><th>—</th><th>6</th><th>输出窗口</th></tr>
+<tr><th>隐藏维度 d</th><th>{16, 32, 64, 128}</th><th>32</th><th>嵌入维度</th></tr>
+<tr><th>TimesBlock 层数 B</th><th>—</th><th>2</th><th>堆叠层数</th></tr>
+<tr><th>主频数 K</th><th>—</th><th>3</th><th>FFT 频率数</th></tr>
+<tr><th>分位数 q</th><th>—</th><th>0.95</th><th>p95 尾延迟</th></tr>
+<tr><th>窗口 Δ</th><th>—</th><th>30s / 60s</th><th>追踪窗口</th></tr>
+<tr><th>学习率</th><th>—</th><th>1e-3</th><th>AdamW</th></tr>
+<tr><th>Weight decay</th><th>—</th><th>1e-5</th><th>AdamW</th></tr>
+<tr><th>Batch size</th><th>—</th><th>32</th><th>训练</th></tr>
+<tr><th>结构感知混合 ρ</th><th>[0, 1]</th><th>0.2</th><th>局部-全局混合</th></tr>
+</table>
+
+<h3>14.3 论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/STLGT_Tail_Latency_Prediction/paper.pdf</code></li>
+<li>arXiv 链接：<code>https://arxiv.org/abs/2604.26422</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>

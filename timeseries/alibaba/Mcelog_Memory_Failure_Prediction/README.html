@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Highly Efficient Memory Failure Prediction using Mcelog-based Data Mining and Machine Learning</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>Highly Efficient Memory Failure Prediction using Mcelog-based Data Mining and Machine Learning</h1>
+<p><em>《基于 Mcelog 数据挖掘和机器学习的高效内存故障预测》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理（含数学公式）</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解（含伪代码）</li>
+<li>实现细节（参数、超参、工程优化）</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录（术语表、参数表、数据集表）</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>Highly Efficient Memory Failure Prediction using Mcelog-based Data Mining and Machine Learning</td></tr>
+<tr><td>中文标题</td><td>基于 Mcelog 数据挖掘和机器学习的高效内存故障预测</td></tr>
+<tr><td>作者</td><td>Chengdong Yao（悉尼科技大学 UTS）</td></tr>
+<tr><td>arXiv ID</td><td>2105.04547（cs.LG）</td></tr>
+<tr><td>首版提交</td><td>2021-05-10</td></tr>
+<tr><td>核心问题</td><td>阿里 AIOps 内存故障预测比赛中：噪声大、位置信息不全、7 天预测时间过长、类别极度不平衡</td></tr>
+<tr><td>数据集</td><td>阿里 mcelog 数据，4 表，2019-01~2019-05 训练，2019-08~2019-10 测试</td></tr>
+<tr><td>核心结论</td><td>单 CatBoost 模型在线测试仅 30 分钟通过（多数竞争者 > 3 小时），最终 F1 得分 46+</td></tr>
+<tr><td>部署状态</td><td>阿里云内部 AIOps 比赛第 14 名</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>在数据中心，<b>内存故障</b>导致的意外宕机会让服务器甚至整个信息技术基础设施的稳定性下降，损害业务。提前准确预测内存故障是数据中心最重要的研究方向之一。</p>
+
+<p>生产系统中，内存故障预测面临：</p>
+<ol>
+<li><b>技术问题</b>：数据噪声大、正负样本极端不平衡。</li>
+<li><b>时间稳定性</b>：算法必须保证长期稳定。</li>
+</ol>
+
+<p>本文的解决方案：<b>对比常用技能</b>，通过<a href="https://github.com/ycd2016/aiaio2">改进方案</a>在阿里云内部比赛 PAKDD 2021 取得第 14 名（32.64 分），在线测试仅 30 分钟通过（多数 > 3 小时）。</p>
+
+<blockquote>背景动机：内存故障预测需要在<strong>效率</strong>与<strong>准确性</strong>之间取得平衡，既要快速响应（30 分钟内完成 1 分钟日志批处理），又要保证 F1 分数最大化。</blockquote>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文的目标是设计一个<b>高效</b>且<b>有效</b>的内存故障预测方案，满足：</p>
+<ol>
+<li><b>效率约束</b>：5 秒内处理 1 分钟日志（包括多服务器）。</li>
+<li><b>指标优化</b>：F1 分数（结合 sigmoid 缩放的 TP/PP）。</li>
+<li><b>资源友好</b>：在 Intel Xeon Platinum 8163 CPU（4 核 8 线程、32GB 内存）+ Nvidia V100 GPU（16GB）上可运行。</li>
+</ol>
+
+<p>核心贡献：</p>
+<ol>
+<li><b>完整的特征工程流程</b>：从原始 mcelog 到 160 个特征。</li>
+<li><b>类别不平衡处理</b>：50% 随机采样保持原始分布。</li>
+<li><b>时间区间优化</b>：将 7 天预测缩短到 9 小时。</li>
+<li><b>过拟合问题诊断</b>：通过 mask 关键特征解决严重过拟合。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<h3>4.1 评估指标</h3>
+
+<p>比赛用 sigmoid 加权的 TP 累加：</p>
+
+\[
+n_{tpp} = \sum_{n=1}^{F} \left\{ \text{sigmoid}\left(\frac{p+t}{ati}\right), \quad pti \le ati \atop 0, \quad pti > ati \right.
+\]
+
+\[
+\text{sigmoid}(x) = \frac{e^x}{e^x + 1}
+\]
+
+\[
+\text{Precision} = \frac{n_{tpp}}{n_{pp}}, \quad \text{Recall} = \frac{n_{tpr}}{n_{pr}}, \quad \text{score} = 100 \times F_1
+\]
+
+<p>关键约束：</p>
+<ul>
+<li>\(F\)：预测故障且 7 天内实际故障的服务器集合。</li>
+<li>\(pti\)（predicted time interval）：预测服务器在多少分钟内故障。</li>
+<li>\(ati\)（actual time interval）：实际故障时间 - 报告时间。</li>
+<li>当 \(pti \le ati\) 时，sigmoid 最多 0.731，最大 F1 = 0.8446，score 最高 84.4641。</li>
+</ul>
+
+<h3>4.2 效率指标</h3>
+
+<p>snps（server minutes per second）：每秒钟能处理多少服务器-分钟。snps 越高越好。</p>
+
+<h3>4.3 数据处理</h3>
+
+<p>原始数据来自 mcelog 报告的 DRAM 错误日志，分 4 个表：</p>
+<ul>
+<li>每行是一个样本。</li>
+<li>测试集只包含表 1-3，每列含义与训练集相同。</li>
+<li>测试集通过 API 实时获取，每分钟一次。</li>
+<li>为防止"用未来数据"，下一分钟数据需在当前预测结果提交后才能获取。</li>
+</ul>
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图展示本文的迭代式建模过程：</p>
+
+<div class="mermaid">
+flowchart TD
+ A[原始 mcelog 数据] --> B[Baseline: 4 部分特征 + 5 折 CV CatBoost]
+ B --> C{Training-Validation Gap 大?}
+ C -- 是 --> D[1. 目标优化<br/>分类器 + 回归器]
+ D --> E{效果?}
+ E -- 失败 --> F[2. 数据清洗<br/>2.1 噪声数据<br/>2.2 不平衡数据]
+ F --> G{效果?}
+ G -- 提升 --> H[3. 时间区间缩小<br/>7d → 9h]
+ H --> I{效果?}
+ I -- 提升 --> J[4. 特征工程<br/>4.1 跨表/派生特征<br/>4.2 去除过拟合特征]
+ J --> K[Final CatBoost 模型]
+</div>
+
+<h2>6.关键算法详解</h3>
+
+<h3>6.1 4 部分基础特征</h3>
+
+<ol>
+<li><b>累计特征</b>：统计不同 MCA ID 和 transaction 出现次数（假设内存故障由许多小错误累积）。</li>
+<li><b>位置特征</b>：错误发生位置的编号、次数、方差（某些位置更容易引起故障）。</li>
+<li><b>布尔特征</b>：内核错误日志中的布尔信息（true 值）。</li>
+<li><b>厂商特征</b>：不同内存品牌对错误的容忍度不同。</li>
+</ol>
+
+<p>数据划分：</p>
+<ul>
+<li>排除 ati > 1440 分钟（24h）的正样本，负样本 ati 设为 -1 分钟。</li>
+<li>将数据分为"会故障"和"不会故障"两类，构成二分类任务。</li>
+</ul>
+
+<h3>6.2 5 折 CatBoost 训练</h3>
+
+<p>Baseline 使用 5 个 CatBoost 分类器 5 折交叉验证。在预测阶段取所有模型的平均值作为最终结果。Baseline 训练得分约 24，验证约 0。</p>
+
+<h3>6.3 目标优化尝试（失败）</h3>
+
+<p>Baseline 训练-验证差距高达 9.1983，论文尝试两阶段策略：</p>
+<ol>
+<li>训练分类器将服务器分为"1 天内会故障 / 不会故障"。</li>
+<li>训练回归器预测剩余时间。</li>
+</ol>
+
+<p>回归损失采用 <b>Directed Square Error (DSE)</b>：</p>
+
+\[
+\text{DSE}(p, t) = \begin{cases} (p-t)^2, & p \le t \\ 10(p-t)^2, & p > t \end{cases}
+\]
+
+\[
+\text{DSE}'(p, t) = \begin{cases} 2(p-t), & p \le t \\ 20(p-t), & p > t \end{cases}
+\]
+
+<p>评估函数 <b>True Positive Score (TPS)</b>：</p>
+
+\[
+\text{TPS}(p, t) = \sum_{i=1}^{n} \begin{cases} \text{sigmoid}(\frac{p_i}{t_i}), & p_i \le t_i \\ 0, & p_i > t_i \end{cases}
+\]
+
+<p><b>结果</b>：训练阶段提升 1 分，<b>在线测试下降 2 分</b>，且效率降低 18%。两阶段策略失败。</p>
+
+<h3>6.4 数据清洗</h3>
+
+<p><b>噪声数据</b>：</p>
+<ul>
+<li>问题 1：位置信息不确定。MCA 不知道精确位置时记录为 -1。</li>
+<li>问题 2：预测时间窗口长。7 天窗口内可能发生不可控事件。</li>
+</ul>
+
+<p>统计发现：故障时间差最大值仅 34 小时，75% 样本少于 9 小时 48 分钟。因此将预测窗口从 7 天缩短到 9 小时。训练提升 4.2 分，测试提升 1.8 分到 26+。</p>
+
+<p><b>不平衡数据</b>：</p>
+<ul>
+<li>正样本 < 50 个，负样本 > 200 万。</li>
+<li>极端不平衡导致 LR 损失虚高。</li>
+<li>解决：50% 随机负采样 + retrain。</li>
+</ul>
+
+<p>训练提升 4.6 分，测试提升 1.1 分到 27+。</p>
+
+<h3>6.5 特征工程</h3>
+
+<p><b>跨表/派生特征</b>（8 类）：</p>
+<ol>
+<li>4 类基础特征（前文）。</li>
+<li>不同错误源比例（3 种）。</li>
+<li>错误时间差（错误率与时间差均值/方差）。</li>
+<li>不同级别错误数（增加不同错误的数量）。</li>
+<li>五元组信息（位置编码）。</li>
+</ol>
+
+<p><b>结果</b>：训练提升 6.4 分，测试仅提升 1.3 分到 28+。说明部分新引入的特征在训练集和测试集分布不同，造成严重过拟合。</p>
+
+<h3>6.6 去除过拟合特征</h3>
+
+<p>通过 mask（设置 mask 列为 0）实验，发现 3 类过拟合特征：</p>
+<ul>
+<li>硬件错误与 DRAM 错误的比值。</li>
+<li>特定五元组中的错误数。</li>
+<li>最后一天的累积特征。</li>
+</ul>
+
+<p><b>结果</b>：训练降低（正常），<b>在线测试从 28+ 提升到 29+</b>，效率从 11.7410 提升到 9.4438（更快）。</p>
+
+<h3>6.7 伪代码</h3>
+
+<p>伪代码：完整 CatBoost 训练流程</p>
+<pre><code>Algorithm 1: Highly Efficient Memory Failure Prediction
+Input: mcelog 4 表数据, 训练时长阈值 T_max
+Output: CatBoost 模型 M
+
+1. // 特征工程
+2. F_baseline ← extract_baseline_features(data)  // 4 类基础
+3. F_derived ← extract_derived_features(data)     // 8 类派生
+4. F_total ← F_baseline + F_derived              // 160 维
+5. F_total[overfitting_mask] ← 0                 // 去除过拟合特征
+6. // 数据清洗
+7. F_total ← filter_noise(F_total)                // 位置 -1 处理
+8. F_total ← time_window_reduce(F_total, 7d → 9h)
+9. F_total ← resample(F_total, neg_ratio=0.5)    // 50% 负采样
+10. // 训练
+11. M ← CatBoostClassifier(iterations=2000, lr=0.03, depth=6)
+12. M.fit(F_total.X, F_total.y)
+13. return M
+</code></pre>
+
+<h3>6.8 复杂度分析</h3>
+
+<table>
+<tr><th>步骤</th><th>时间复杂度</th><th>空间复杂度</th></tr>
+<tr><td>特征提取</td><td>\(O(N \cdot d)\)</td><td>\(O(N \cdot d)\)</td></tr>
+<tr><td>CatBoost 训练</td><td>\(O(N \cdot d \cdot T)\)</td><td>\(O(N \cdot d)\)</td></tr>
+<tr><td>CatBoost 推理</td><td>\(O(T \cdot d)\)</td><td>\(O(d)\)</td></tr>
+</table>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 硬件</h3>
+
+<ul>
+<li>CPU：Intel Xeon Platinum 8163，4 核 8 线程。</li>
+<li>内存：32GB。</li>
+<li>GPU：Nvidia V100，16GB 显存。</li>
+</ul>
+
+<h3>7.2 软件</h3>
+
+<ul>
+<li>Python 3.6+</li>
+<li>CatBoost 0.24+</li>
+<li>NumPy, Pandas, scikit-learn</li>
+</ul>
+
+<h3>7.3 评估指标</h3>
+
+<ul>
+<li><b>F1-score</b>：结合 sigmoid 加权 TP、PP、PR。</li>
+<li><b>snps</b>：每秒钟处理的 server-minutes，越高越好。</li>
+</ul>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 整体对比（7 个模型变体）</h3>
+
+<table>
+<tr><th>模型</th><th>训练性能</th><th>验证性能</th><th>效率 (snps)</th></tr>
+<tr><td>Baseline</td><td>33.5119</td><td>24.3136</td><td>11.7587</td></tr>
+<tr><td>TabNet baseline</td><td>36.1293</td><td>21.9653</td><td>8.5144</td></tr>
+<tr><td>Objectives optimized</td><td>34.8852</td><td>22.1432</td><td>9.6109</td></tr>
+<tr><td>Time interval reduced</td><td>37.7059</td><td>26.0961</td><td>11.7410</td></tr>
+<tr><td>Training set resampled</td><td>42.3121</td><td>27.1729</td><td>10.9224</td></tr>
+<tr><td>Features derived</td><td>48.6663</td><td>28.4557</td><td>9.0758</td></tr>
+<tr><td><b>Over-fitting solved</b></td><td>46.2899</td><td><b>29.2701</b></td><td><b>9.4438</b></td></tr>
+</table>
+
+<p><b>关键发现</b>：</p>
+<ul>
+<li>每一步都让训练-验证差距缩小。</li>
+<li>最终 over-fitting solved 模型在验证集上 29.27，比 baseline 提升 5 分。</li>
+<li>效率比 baseline 提升 1.25 倍。</li>
+</ul>
+
+<h3>8.2 TabNet 失败</h3>
+
+<p>TabNet 表现 < 22 分。原因是：</p>
+<ol>
+<li>数据集特征范围大（0-2^17），TabNet 无法处理。</li>
+<li>特征构造过程本身有信息损失。</li>
+</ol>
+
+<h3>8.3 特征重要性</h3>
+
+<p>前 10 个重要特征：</p>
+<ol>
+<li>错误行标准差（9.551%）</li>
+<li>硬件错误与 MCA 错误比（7.772%）</li>
+<li>错误内存模式（6.374%）</li>
+<li>错误行模式（5.387%）</li>
+<li>错误 bank 模式（4.658%）</li>
+<li>错误列模式（3.455%）</li>
+<li>MCA code Z 数量（2.904%）</li>
+<li>错误 bank 标准差（2.825%）</li>
+<li>服务器厂商（2.685%）</li>
+<li>可寻址错误：硬件错误（2.618%）</li>
+</ol>
+
+<p>8 类特征中，<b>位置相关特征（类型 2）最重要</b>（51.024%），其次是模式 5（15.027%）。</p>
+
+<h2>9.消融实验</h2>
+
+<h3>9.1 目标优化的消融</h3>
+
+<p>两阶段策略（分类器+回归器）虽然训练提升 1 分，但测试下降 2 分，效率降低 18%。说明对于内存故障预测这种"宽泛预测"任务，单一分类器更稳定。</p>
+
+<h3>9.2 时间区间缩小的消融</h3>
+
+<table>
+<tr><th>时间窗口</th><th>训练 F1</th><th>测试 F1</th><th>效率</th></tr>
+<tr><td>7 天（原始）</td><td>34.8852</td><td>22.1432</td><td>9.6109</td></tr>
+<tr><td><b>9 小时（缩小）</b></td><td><b>37.7059</b></td><td><b>26.0961</b></td><td><b>11.7410</b></td></tr>
+</table>
+
+<p>时间窗口从 7 天缩短到 9 小时，训练提升 2.8 分，测试提升 4 分，效率提升 1.22 倍。</p>
+
+<h3>9.3 类别不平衡的消融</h3>
+
+<table>
+<tr><th>采样策略</th><th>训练 F1</th><th>测试 F1</th></tr>
+<tr><td>原始（无重采样）</td><td>37.7059</td><td>26.0961</td></tr>
+<tr><td><b>50% 随机负采样</b></td><td><b>42.3121</b></td><td><b>27.1729</b></td></tr>
+</table>
+
+<p>50% 负采样保持原始比例，训练提升 4.6 分，测试提升 1.1 分。</p>
+
+<h3>9.4 特征工程的消融</h3>
+
+<table>
+<tr><th>特征集</th><th>训练 F1</th><th>测试 F1</th></tr>
+<tr><td>Baseline（4 类）</td><td>33.5119</td><td>24.3136</td></tr>
+<tr><td>+ 派生特征（8 类）</td><td>48.6663</td><td>28.4557</td></tr>
+<tr><td><b>+ 去过拟合</b></td><td>46.2899</td><td><b>29.2701</b></td></tr>
+</table>
+
+<p>派生特征大幅提升训练分但仅小幅提升测试分；去 3 个过拟合特征后训练分下降（正常）但测试分提升。</p>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>Du 等 2018（在线学习）</th><th>Mukhanov 等 2018（SVM/KNN/RF）</th><th>本文</th></tr>
+<tr><td>方法</td><td>在线学习</td><td>传统 ML</td><td>CatBoost + 特征工程</td></tr>
+<tr><td>数据规模</td><td>单服务器</td><td>单服务器</td><td>百万级记录</td></tr>
+<tr><td>数据源</td><td>单源</td><td>单源</td><td>4 表多源</td></tr>
+<tr><td>噪声处理</td><td>不强调</td><td>不强调</td><td>位置不确定 + 时间窗</td></tr>
+<tr><td>类别不平衡</td><td>不强调</td><td>不强调</td><td>50% 负采样</td></tr>
+<tr><td>效率</td><td>—</td><td>—</td><td>9.44 snps</td></tr>
+<tr><td>过拟合诊断</td><td>—</td><td>—</td><td>mask 关键特征</td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>下图给出内存故障预测系统的部署：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[Linux mcelog] --> B[实时流 1 分钟]
+ B --> C[特征工程 + 50% 负采样]
+ C --> D[CatBoost 推理]
+ D --> E{预测会故障?}
+ E -- 是 --> F[告警]
+ E -- 否 --> G[继续监控]
+ F --> H[运维团队]
+ H --> I[更换内存]
+</div>
+
+<h3>11.1 部署清单</h3>
+
+<ol>
+<li><b>硬件</b>：阿里比赛用 Intel Xeon Platinum 8163 + V100 GPU。</li>
+<li><b>软件</b>：CatBoost + scikit-learn。</li>
+<li><b>实时性</b>：1 分钟批处理，5 秒内完成推理。</li>
+<li><b>效率</b>：9.44 snps（每秒钟处理 9.44 个 server-minutes）。</li>
+<li><b>在线测试</b>：30 分钟通过（多数竞争者 > 3 小时）。</li>
+</ol>
+
+<h3>11.2 比赛结果</h3>
+
+<blockquote>该方案在阿里 AIOps 比赛中获得第 14 名，score 32.64。单模型（CatBoost）在测试集上仅 30 分钟通过（多数竞争者 &gt; 3 小时），最终得分 46+。代码已开源：<a href="https://github.com/ycd2016/aiaio2">github.com/ycd2016/aiaio2</a>。</blockquote>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>训练-验证差距仍存在</b>：从 9.2 降到 17，模型仍有改进空间。</li>
+<li><b>特征依赖具体数据集</b>：本方案对阿里云数据调优，迁移到其他云可能需重做特征工程。</li>
+<li><b>TabNet 失败</b>：神经网络在本任务上效果不佳，可能因为特征范围过大。</li>
+<li><b>异常检测未尝试</b>：本文聚焦分类，未评估无监督异常检测。</li>
+</ol>
+
+<h3>12.1未来工作</h3>
+
+<ul>
+<li>尝试深度学习（深度异常检测、RNN/LSTM）做自动特征工程。</li>
+<li>概念漂移检测（ADWIN、Page-Hinkley）。</li>
+<li>跨厂商泛化（不同 DRAM 厂商的迁移学习）。</li>
+<li>在线学习 + 模型集成。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>本文是阿里 PAKDD 2021 比赛中第 14 名的工程实战总结，核心贡献是：</p>
+
+<ol>
+<li><b>迭代式特征工程</b>：从 baseline 4 类特征 → 8 类派生 → 去除过拟合，循序渐进。</li>
+<li><b>训练-验证差距分析</b>：揭示内存故障预测的过拟合风险。</li>
+<li><b>效率与精度的平衡</b>：5 秒内处理 1 分钟日志（9.44 snps）。</li>
+<li><b>开源代码</b>：github.com/ycd2016/aiaio2。</li>
+</ol>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li><b>特征工程是数据挖掘的核心</b>——本文 4 类基础特征就足以取得 24+ F1。</li>
+<li><b>类别不平衡要靠重采样</b>——50% 负采样保持原始分布最佳。</li>
+<li><b>时间窗口选择影响巨大</b>——7 天太长，9 小时更合适。</li>
+<li><b>过拟合诊断要靠 mask 实验</b>——3 个特征严重过拟合，去除后测试 F1 提升。</li>
+<li><b>树模型是工业首选</b>——CatBoost 在效率与精度之间取得最佳平衡。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>深度学习（TabNet）在 DRAM 故障预测中效果不佳，可能因为特征值范围大。</li>
+<li>类别特征的概率论方法（Ochiai 系数）值得探索。</li>
+<li>异常检测（无监督）可能是更鲁棒的范式。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>mcelog</td><td>—</td><td>Linux 工具，记录 Machine Check Exception</td></tr>
+<tr><td>MCE</td><td>Machine Check Exception</td><td>机器检查异常</td></tr>
+<tr><td>MCA</td><td>Machine Check Architecture</td><td>机器检查架构</td></tr>
+<tr><td>DSE</td><td>Directed Square Error</td><td>定向平方误差</td></tr>
+<tr><td>TPS</td><td>True Positive Score</td><td>真阳性分数</td></tr>
+<tr><td>snps</td><td>Server Minutes Per Second</td><td>效率指标</td></tr>
+<tr><td>CatBoost</td><td>—</td><td>Yandex 开源的 GBDT 库</td></tr>
+<tr><td>TabNet</td><td>—</td><td>Google 的表格深度学习模型</td></tr>
+<tr><td>PP</td><td>Predicted Positive</td><td>预测为正的样本数</td></tr>
+<tr><td>TPP</td><td>True Predicted Positive</td><td>真阳性 sigmoid 加权和</td></tr>
+<tr><td>TPR</td><td>True Predicted Real</td><td>实际为正的真预测 sigmoid 加权和</td></tr>
+<tr><td>PR</td><td>Predicted Real</td><td>实际为正的样本数</td></tr>
+<tr><td>PAKDD</td><td>Pacific-Asia Conf. on Knowledge Discovery and Data Mining</td><td>Pacific-Asia KDD 会议</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>参数</th><th>取值</th><th>说明</th></tr>
+<tr><td>CatBoost iterations</td><td>2000</td><td>迭代次数</td></tr>
+<tr><td>CatBoost depth</td><td>6</td><td>树深度</td></tr>
+<tr><td>CatBoost learning_rate</td><td>0.03</td><td>学习率</td></tr>
+<tr><td>5-fold CV</td><td>5</td><td>Baseline 训练</td></tr>
+<tr><td>时间窗口</td><td>9 小时</td><td>预测窗口（从 7 天缩短）</td></tr>
+<tr><td>负采样比例</td><td>50%</td><td>50% 随机负采样</td></tr>
+<tr><td>特征总数</td><td>160</td><td>含过拟合特征</td></tr>
+<tr><td>去除过拟合特征数</td><td>3</td><td>硬件/DRAM 比、五元组特定错误数、最后一天累积</td></tr>
+</table>
+
+<h3>14.3 8 类特征工程</h3>
+
+<table>
+<tr><th>类别</th><th>特征数</th><th>示例</th></tr>
+<tr><td>1. 累计特征</td><td>—</td><td>不同 MCA ID 和 transaction 出现次数</td></tr>
+<tr><td>2. 位置特征</td><td>—</td><td>错误位置编号、次数、方差</td></tr>
+<tr><td>3. 布尔特征</td><td>—</td><td>内核错误日志中 true 值</td></tr>
+<tr><td>4. 厂商特征</td><td>—</td><td>内存品牌</td></tr>
+<tr><td>5. 错误源比例</td><td>3</td><td>不同错误源（MCA、具体位置、硬件）的比例</td></tr>
+<tr><td>6. 时间差特征</td><td>—</td><td>错误时间差均值/方差</td></tr>
+<tr><td>7. 错误数量</td><td>—</td><td>不同级别错误数</td></tr>
+<tr><td>8. 五元组信息</td><td>—</td><td>位置编码的特定五元组</td></tr>
+</table>
+
+<h3>14.4 论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/Mcelog_Memory_Failure_Prediction/paper.pdf</code></li>
+<li>arXiv 链接：<code>https://arxiv.org/abs/2105.04547</code></li>
+<li>开源代码：<code>https://github.com/ycd2016/aiaio2</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>

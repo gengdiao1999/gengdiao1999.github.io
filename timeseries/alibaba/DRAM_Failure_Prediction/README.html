@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>DRAM Failure Prediction in AIOps: Empirical Evaluation, Challenges and Opportunities</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>DRAM Failure Prediction in AIOps: Empirical Evaluation, Challenges and Opportunities</h1>
+<p><em>《AIOps 中的 DRAM 故障预测：实证评估、挑战与机遇》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理（含数学公式）</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解（含伪代码）</li>
+<li>实现细节（参数、超参、工程优化）</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录（术语表、参数表、数据集表）</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>DRAM Failure Prediction in AIOps: Empirical Evaluation, Challenges and Opportunities</td></tr>
+<tr><td>中文标题</td><td>AIOps 中的 DRAM 故障预测：实证评估、挑战与机遇</td></tr>
+<tr><td>作者</td><td>Zhiye Wu, Hongzuo Xu, Guansong Pang, Fengyuan Yu, Yijie Wang, Songlei Jian, Yongjun Wang（国防科技大学 + 阿德莱德大学）</td></tr>
+<tr><td>arXiv ID</td><td>2104.15052v2（cs.LG）</td></tr>
+<tr><td>首版提交</td><td>2021-04-30</td></tr>
+<tr><td>核心问题</td><td>DRAM 故障预测因公开数据集稀缺而研究有限；阿里云提供 PAKDD 2021 比赛 6 个月多源数据，需系统评估</td></tr>
+<tr><td>数据集</td><td>阿里云 3 千万条记录：Kernel/Address/Mce 三表 + 两种组合（Address_Mce, Kernel_Address）</td></tr>
+<tr><td>核心结论</td><td>XGB 和 LGBM 在分类任务中表现最好（F1 ~0.6-0.7），HBOS 在异常检测中 AUC 最高（0.85+）</td></tr>
+<tr><td>部署状态</td><td>PAKDD 2021 比赛第二名 32.64 分</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>过去十年，云服务发展迅速，大型数据中心为上层应用提供基础设施。在生产数据中心，硬件故障频发，其中 <b>DRAM 故障是主要原因之一</b>。DRAM 故障可能导致严重事故，造成经济损失、违反 SLA。</p>
+
+<p>已有 DRAM 故障预测研究有限，原因是：</p>
+<ol>
+<li><b>公开数据集稀缺</b>：DRAM 故障数据敏感，厂商很少公开。</li>
+<li><b>数据特征研究不足</b>：不同厂商/型号的 DRAM 故障模式不同。</li>
+</ol>
+
+<p>已有研究如 Du 等使用在线学习预测单服务器 DRAM 故障；Mukhanov 等用 SVM/KNN/RF 做单服务器预测。但这些方法不能扩展到大规模数据中心。</p>
+
+<blockquote><b>研究空白</b>：<b>DRAM 故障数据高度敏感</b>，公开数据集极少，严重阻碍了 DRAM 故障预测的机器学习研究与发展。</blockquote>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文对阿里云 PAKDD 2021 比赛提供的大规模多源 DRAM 故障数据进行系统实证评估，目标是：</p>
+<ol>
+<li><b>多分类视角</b>：把 DRAM 故障预测视为多分类任务（不同时间窗口的 3 种正类）。</li>
+<li><b>系统评估 7 种 SOTA 分类器</b>：SVM、LR、RF、DT、GBDT、XGB、LGBM 在 5 个数据集上的表现。</li>
+<li><b>无监督异常检测视角</b>：3 种异常检测器（iForest、HBOS、COPOD）。</li>
+<li><b>讨论未来研究挑战与机遇</b>：特征工程、类别特征、树模型 vs 神经网络。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<h3>4.1 问题形式化</h3>
+
+<p><b>多分类任务</b>：根据故障发生时间将正样本分为 3 类：</p>
+<ul>
+<li>455/286/508：故障前 1/3/7 天。</li>
+<li>155/321/635：故障前 1/2/4 周。</li>
+<li>其他：未在未来一段时间内发生故障（负样本）。</li>
+</ul>
+
+<h3>4.2 三种数据表</h3>
+
+<table>
+<tr><th>表名</th><th>特征数</th><th>记录数</th><th>负样本</th><th>正样本</th><th>正类数</th></tr>
+<tr><td>Kernel</td><td>55</td><td>650,323</td><td>649,074</td><td>1,294</td><td>455/286/508</td></tr>
+<tr><td>Address</td><td>19</td><td>1,451,013</td><td>1,449,687</td><td>1,326</td><td>370/321/635</td></tr>
+<tr><td>Mce</td><td>82</td><td>1,483,197</td><td>1,481,869</td><td>1,328</td><td>370/321/637</td></tr>
+<tr><td>Address_Mce（组合）</td><td>99</td><td>1,251,013</td><td>1,249,687</td><td>1,326</td><td>370/321/635</td></tr>
+<tr><td>Kernel_Address（组合）</td><td>72</td><td>650,653</td><td>649,403</td><td>1,250</td><td>455/287/508</td></tr>
+</table>
+
+<h3>4.3 类别特征处理的数学基础</h3>
+
+<p>对于类别特征，论文提出用概率论概念处理：</p>
+
+<p><b>边缘概率</b>：</p>
+\[
+P(v) = \frac{|\{x \in \mathcal{X} | x_j^v = v\}|}{N}
+\]
+
+<p><b>联合概率</b>：</p>
+\[
+P(v_i, v_j) = \frac{|\{x \in \mathcal{X} | x_i^v = v_i \cap x_j^v = v_j\}|}{N}
+\]
+
+<p><b>Ochiai 系数（值相似度）</b>：</p>
+\[
+s(v_i, v_j) = \frac{P(v_i, v_j)}{\sqrt{P(v_i) \cdot P(v_j)}}
+\]
+
+<p><b>熵（信息论）</b>：</p>
+\[
+H(\mathcal{F}) = \sum_{i=1}^{D} H(f_i | f_{i-1}, ..., f_1)
+\]
+
+<p><b>互信息</b>：</p>
+\[
+I(f_i; f_j) = H(f_i) - H(f_i | f_j)
+\]
+
+<h3>4.4 评估方法</h3>
+
+<p>六折交叉验证（6-fold CV），按月份划分训练/验证集：</p>
+<ul>
+<li>训练集：6 个月中的 5 个月。</li>
+<li>验证集：剩余 1 个月。</li>
+<li>重复 6 次得到 6 折。</li>
+</ul>
+
+<p>评估指标：</p>
+<ul>
+<li>Precision (P)</li>
+<li>Recall (R)</li>
+<li>F1-score</li>
+<li>无监督异常检测用 AUC。</li>
+</ul>
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图展示 DRAM 故障预测的实验设计：</p>
+
+<div class="mermaid">
+flowchart TD
+ A[阿里云 3 表多源数据<br/>Kernel/Address/Mce] --> B[特征工程]
+ B --> C[生成 5 个数据集]
+ C --> C1[Kernel]
+ C --> C2[Address]
+ C --> C3[Mce]
+ C --> C4[Address_Mce]
+ C --> C5[Kernel_Address]
+ C1 --> D[多分类评估]
+ C2 --> D
+ C3 --> D
+ C4 --> D
+ C5 --> D
+ D --> E1[7 种分类器<br/>SVM/LR/RF/DT/GBDT/XGB/LGBM]
+ D --> E2[3 种异常检测器<br/>iForest/HBOS/COPOD]
+ E1 --> F[Precision/Recall/F1]
+ E2 --> G[AUC]
+</div>
+
+<h2>6.关键算法详解</h2>
+
+<h3>6.1 类别特征处理</h3>
+
+<p>数据中三表都含类别特征：</p>
+<ul>
+<li>Kernel 表 24 个二元特征（kernel log 是否匹配给定故障模板）。</li>
+<li>Mce 表有 "mce_id"、"transaction" 特征。</li>
+<li>Address 表有离散化故障位置。</li>
+</ul>
+
+<p>传统 one-hot 编码会大幅增加维度，且使数据稀疏。论文建议用 Ochiai 系数或互信息来度量类别相似度，从而构造更有意义的特征。</p>
+
+<h3>6.2 7 种分类器</h3>
+
+<table>
+<tr><th>分类器</th><th>实现库</th><th>关键参数</th></tr>
+<tr><td>SVM (RBF)</td><td>sklearn</td><td>默认</td></tr>
+<tr><td>Logistic Regression</td><td>sklearn</td><td>默认</td></tr>
+<tr><td>Random Forest</td><td>sklearn</td><td>默认</td></tr>
+<tr><td>Decision Tree</td><td>sklearn</td><td>默认</td></tr>
+<tr><td>GBDT</td><td>sklearn</td><td>默认</td></tr>
+<tr><td>XGBoost</td><td>xgboost</td><td>默认</td></tr>
+<tr><td>LightGBM</td><td>lightgbm</td><td>默认</td></tr>
+</table>
+
+<h3>6.3 3 种异常检测器</h3>
+
+<table>
+<tr><th>检测器</th><th>算法</th><th>特点</th></tr>
+<tr><td>iForest</td><td>Isolation Forest</td><td>基于随机隔离的树</td></tr>
+<tr><td>HBOS</td><td>Histogram-based Outlier Score</td><td>基于直方图</td></tr>
+<tr><td>COPOD</td><td>Copula-based Outlier Detection</td><td>基于 Copula 函数的概率</td></tr>
+</table>
+
+<h3>6.4 伪代码</h3>
+
+<p>伪代码：6-fold 交叉验证</p>
+<pre><code>Algorithm 1: 6-Fold Cross-Validation for DRAM Failure Prediction
+Input: 5 个数据集 D = {D_Kernel, D_Address, D_Mce, D_Address_Mce, D_Kernel_Address}
+Output: 每折每分类器的 P/R/F1 指标
+
+1. for dataset D in Datasets do
+2.    for fold in 1..6 do
+3.       train_data, val_data ← split_by_month(D, fold)
+4.       // 类别不平衡：过采样 + 欠采样
+5.       train_data_balanced ← resample(train_data)
+6.       for classifier in Classifiers do
+7.          model ← classifier.train(train_data_balanced)
+8.          preds ← model.predict(val_data)
+9.          // 按 serial number 聚合：7 天内预测 + 实际故障
+10.         for server in val_data.servers:
+11.            if (server.pred_failure_within_7d and server.actual_failure):
+12.               TP += 1
+13.            elif (server.pred_failure and !server.actual_failure):
+14.               FP += 1
+15.            ...
+16.         compute_PRF(TP, FP, FN)
+17.   aggregate_results()
+18. return aggregated_metrics
+</code></pre>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 数据集</h3>
+
+<ul>
+<li>来源：阿里云 PAKDD 2021 比赛，6 个月（2020-08 至 2021-01）。</li>
+<li>三表：Kernel log、Address log、Machine Check Exception (MCE)。</li>
+<li>类别划分：455/286/508 (1d/3d/7d) 或 370/321/635 (1w/2w/4w)。</li>
+</ul>
+
+<h3>7.2 类别不平衡处理</h3>
+
+<ul>
+<li>组合：过采样（oversampling）+ 欠采样（undersampling）。</li>
+<li>过采样：复制正样本以增加占比。</li>
+<li>欠采样：减少负样本以匹配比例。</li>
+</ul>
+
+<h3>7.3 评估指标</h3>
+
+<ul>
+<li>分类任务：Precision, Recall, F1-score。</li>
+<li>异常检测：AUC。</li>
+<li>聚合：按 server 序列号聚合，每服务器每天一个预测结果。</li>
+</ul>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 多分类器对比（Kernel 数据集）</h3>
+
+<table>
+<tr><th>分类器</th><th>Jan-Fold F1</th><th>Feb-Fold F1</th><th>Mar-Fold F1</th><th>Apr-Fold F1</th><th>May-Fold F1</th><th>Jul-Fold F1</th></tr>
+<tr><td>SVM</td><td>39.1</td><td>34.1</td><td>26.5</td><td>16.0</td><td>37.4</td><td>30.8</td></tr>
+<tr><td>LR</td><td>35.2</td><td>31.7</td><td>30.6</td><td>23.0</td><td>28.3</td><td>20.9</td></tr>
+<tr><td>RF</td><td>33.7</td><td>39.9</td><td>30.3</td><td>20.8</td><td>29.4</td><td>28.4</td></tr>
+<tr><td>DT</td><td>29.4</td><td>29.4</td><td>30.5</td><td>25.0</td><td>24.5</td><td>28.4</td></tr>
+<tr><td>GBDT</td><td>41.2</td><td>41.0</td><td>33.6</td><td>29.0</td><td>31.7</td><td>31.7</td></tr>
+<tr><td>XGB</td><td>36.9</td><td>43.2</td><td>35.0</td><td>32.8</td><td>37.3</td><td>30.8</td></tr>
+<tr><td><b>LGBM</b></td><td><b>40.0</b></td><td>40.6</td><td>44.5</td><td><b>40.0</b></td><td><b>34.1</b></td><td><b>31.9</b></td></tr>
+</table>
+
+<p><b>关键发现</b>：LGBM 和 XGB 在大多数折上表现最好。</p>
+
+<h3>8.2 异常检测器对比（AUC）</h3>
+
+<table>
+<tr><th>检测器</th><th>Kernel</th><th>Address</th><th>Mce</th><th>Address_Mce</th><th>Kernel_Address</th></tr>
+<tr><td>iForest</td><td>~75</td><td>~80</td><td>~70</td><td>~78</td><td>~70</td></tr>
+<tr><td>HBOS</td><td><b>~85</b></td><td>~80</td><td><b>~80</b></td><td>~80</td><td>~80</td></tr>
+<tr><td>COPOD</td><td>~70</td><td><b>~80</b></td><td>~40</td><td>~78</td><td>~78</td></tr>
+</table>
+
+<p>HBOS 在大多数数据集上 AUC 最高，COPOD 在 Address/Address_Mce 上表现好。</p>
+
+<h3>8.3 关键发现</h3>
+
+<ol>
+<li><b>类别不平衡是核心挑战</b>：负样本远多于正样本（百万 vs 千）。</li>
+<li><b>树模型（XGB/LGBM）更适合</b>：相比线性模型（SVM/LR）和神经网络。</li>
+<li><b>组合数据集不一定有提升</b>：Kernel_Address 组合相比单表性能接近。</li>
+<li><b>特征工程是制胜关键</b>：He 等 2017 表明"即使简单算法用高质量特征也能赢"。</li>
+</ol>
+
+<h2>9.消融实验</h2>
+
+<h3>9.1 类别不平衡处理</h3>
+
+<p>论文比较了不同采样策略：</p>
+<ul>
+<li>仅过采样：F1 提升但 Recall 降低。</li>
+<li>仅欠采样：F1 持平但大量信息丢失。</li>
+<li>过采样 + 欠采样组合：最优。</li>
+</ul>
+
+<h3>9.2 特征工程</h3>
+
+<p>论文提到可能的改进方向：</p>
+<ul>
+<li><b>新特征</b>：重建误差（Zhao & Hryniewicki 2019）、基于自动编码器的异常分数。</li>
+<li><b>多时间粒度</b>：在多个时间窗口上聚合特征。</li>
+<li><b>类别特征表示</b>：用 Ochiai 系数/互信息构造特征。</li>
+</ul>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>Du 等 2018</th><th>Mukhanov 等 2018</th><th>本文</th></tr>
+<tr><td>方法</td><td>在线学习</td><td>SVM/KNN/RF</td><td>7 种分类器 + 3 种异常检测器</td></tr>
+<tr><td>数据规模</td><td>单服务器</td><td>单服务器</td><td>数百万条记录</td></tr>
+<tr><td>数据源</td><td>单源</td><td>单源</td><td>多源（Kernel/Address/Mce）</td></tr>
+<tr><td>评估方式</td><td>简单</td><td>简单</td><td>六折 CV + 多种指标</td></tr>
+<tr><td>类别不平衡</td><td>不强调</td><td>不强调</td><td>重点处理</td></tr>
+<tr><td>对比深度</td><td>浅</td><td>浅</td><td>深 + 跨数据集</td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>论文方案在 PAKDD 2021 比赛中排名第二（32.64 分）。</p>
+
+<p>典型的 DRAM 故障预测部署架构：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[服务器 MCE/Address/Kernel Log] --> B[实时流处理]
+ B --> C[特征工程]
+ C --> D[分类器推理]
+ D --> E{预测会故障?}
+ E -- 是 --> F[告警 + 调度换机]
+ E -- 否 --> G[继续监控]
+ F --> H[运维团队]
+ H --> I[更换 DRAM]
+</div>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>特征工程未深入</b>：本文仅做基本特征工程，未尝试深度学习（深度异常检测、RNN/LSTM/GRU）。</li>
+<li><b>类别特征处理</b>：one-hot 编码维度大且稀疏。需用 Ochiai 系数、互信息等。</li>
+<li><b>树模型 vs 神经网络</b>：XGB/LGBM 更适合异构特征，但网络模型在同质特征上更强。</li>
+<li><b>类别不平衡</b>：过采样 + 欠采样是常用方法，但 SMOTE、focal loss 等值得探索。</li>
+<li><b>跨厂商泛化</b>：不同 DRAM 厂商故障模式不同。</li>
+</ol>
+
+<h3>12.1未来工作</h3>
+
+<ul>
+<li>深度学习（深度异常检测、RNN/LSTM/GRU）用于自动特征提取。</li>
+<li>类别特征的概率表示（Ochiai、互信息）。</li>
+<li>概念漂移检测（ADWIN、Page-Hinkley）。</li>
+<li>联邦学习跨数据中心训练。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>本文是<b>首篇</b>对大规模 DRAM 故障数据进行系统实证评估的工作。核心贡献：</p>
+
+<ol>
+<li><b>实证基准</b>：在 5 个数据集 ×7 个分类器上提供完整对比。</li>
+<li><b>树模型优势</b>：XGB/LGBM 是处理异构特征 + 类别不平衡的最佳工具。</li>
+<li><b>未来研究挑战</b>：特征工程、类别特征、深度学习、概念漂移。</li>
+</ol>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li><b>类别不平衡是工业机器学习的核心挑战</b>——必须用专门策略处理。</li>
+<li><b>树模型是工业首选</b>：XGB/LGBM 性能、易用性、可解释性平衡最佳。</li>
+<li><b>特征工程 + 业务理解胜过算法选择</b>——好特征比好模型更重要。</li>
+<li><b>不同 DRAM 厂商需独立建模</b>——故障模式差异大。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>公开大规模工业数据集是推动研究的关键——PAKDD 比赛是典范。</li>
+<li>类别特征的概率论方法（Ochiai、互信息）是值得深入研究的方向。</li>
+<li>深度学习 vs 树模型在不同场景有不同优势，需根据数据特性选择。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>DRAM</td><td>Dynamic Random-Access Memory</td><td>动态随机存取存储器</td></tr>
+<tr><td>MCE</td><td>Machine Check Exception</td><td>机器检查异常</td></tr>
+<tr><td>Kernel log</td><td>—</td><td>Linux 内核日志</td></tr>
+<tr><td>Address</td><td>—</td><td>DRAM 物理地址</td></tr>
+<tr><td>PAF1</td><td>Physical Address Failure Indicator</td><td>物理地址故障指示</td></tr>
+<tr><td>6-fold CV</td><td>6-fold Cross-Validation</td><td>六折交叉验证</td></tr>
+<tr><td>类别不平衡</td><td>Class Imbalance</td><td>正负样本比例严重失衡</td></tr>
+<tr><td>过采样</td><td>Oversampling</td><td>增加正样本</td></tr>
+<tr><td>欠采样</td><td>Undersampling</td><td>减少负样本</td></tr>
+<tr><td>iForest</td><td>Isolation Forest</td><td>隔离森林异常检测</td></tr>
+<tr><td>HBOS</td><td>Histogram-based Outlier Score</td><td>直方图异常分数</td></tr>
+<tr><td>COPOD</td><td>Copula-based Outlier Detection</td><td>Copula 函数异常检测</td></tr>
+<tr><td>Ochiai 系数</td><td>Ochiai Coefficient</td><td>集合相似度</td></tr>
+<tr><td>XGB</td><td>XGBoost</td><td>极端梯度提升</td></tr>
+<tr><td>LGBM</td><td>LightGBM</td><td>轻量梯度提升机</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>参数</th><th>取值</th><th>说明</th></tr>
+<tr><td>六折数</td><td>6</td><td>按月份划分</td></tr>
+<tr><td>类别划分</td><td>{1d, 3d, 7d} 或 {1w, 2w, 4w}</td><td>正样本标签</td></tr>
+<tr><td>SVM kernel</td><td>RBF</td><td>径向基</td></tr>
+<tr><td>过采样比例</td><td>—</td><td>经验调优</td></tr>
+<tr><td>欠采样比例</td><td>—</td><td>经验调优</td></tr>
+</table>
+
+<h3>14.3 数据集统计</h3>
+
+<table>
+<tr><th>数据集</th><th>特征数</th><th>记录数</th><th>正类比例</th><th>类别数</th></tr>
+<tr><td>Kernel</td><td>55</td><td>650,323</td><td>0.20%</td><td>3 + 1</td></tr>
+<tr><td>Address</td><td>19</td><td>1,451,013</td><td>0.09%</td><td>3 + 1</td></tr>
+<tr><td>Mce</td><td>82</td><td>1,483,197</td><td>0.09%</td><td>3 + 1</td></tr>
+<tr><td>Address_Mce</td><td>99</td><td>1,251,013</td><td>0.11%</td><td>3 + 1</td></tr>
+<tr><td>Kernel_Address</td><td>72</td><td>650,653</td><td>0.19%</td><td>3 + 1</td></tr>
+</table>
+
+<h3>14.4 论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/DRAM_Failure_Prediction/paper.pdf</code></li>
+<li>arXiv 链接：<code>https://arxiv.org/abs/2104.15052</code></li>
+<li>比赛主页：<code>https://tianchi.aliyun.com/competition/entrance/531874/</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>

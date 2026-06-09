@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>BSODiag: A Global Diagnosis Framework for Batch Servers Outage in Large-scale Cloud Infrastructure Systems</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width:1100px; margin:2rem auto; padding:01.5rem; line-height:1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom:3px solid #0b5394; padding-bottom:0.4rem; }
+h2 { color: #0b5394; border-left:4px solid #0b5394; padding-left:0.6rem; margin-top:2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width:100%; margin:1rem0; }
+th, td { border:1px solid #d0d7de; padding:0.5rem0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding:0.15rem0.35rem; border-radius:3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding:1rem; border-radius:6px; overflow-x: auto; }
+pre code { background: transparent; padding:0; }
+blockquote { border-left:4px solid #d0d7de; margin:0; padding:0.5rem1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding:1rem; border-radius:6px; margin:1rem0; text-align: center; }
+ul, ol { padding-left:1.6rem; }
+li { margin:0.3rem0; }
+.toc { background: #f6f8fa; padding:1rem1.5rem; border-radius:6px; margin:1rem0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>BSODiag: A Global Diagnosis Framework for Batch Servers Outage in Large-scale Cloud Infrastructure Systems</h1>
+<p><em>《大规模云基础设施系统中批服务器宕机的全局诊断框架》</em></p>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li>文档信息速览</li>
+<li>研究背景</li>
+<li>论文目的与解决的问题</li>
+<li>核心原理（含数学公式）</li>
+<li>系统/算法整体架构</li>
+<li>关键算法详解（含伪代码）</li>
+<li>实现细节（参数、超参、工程优化）</li>
+<li>实验设计与结果</li>
+<li>消融实验</li>
+<li>与已有工作的对比</li>
+<li>工程落地与部署</li>
+<li>局限性与未来工作</li>
+<li>总结与启示</li>
+<li>附录（术语表、参数表、数据集表）</li>
+</ol>
+</div>
+
+<h2>1.文档信息速览</h2>
+
+<table>
+<tr><th>条目</th><th>内容</th></tr>
+<tr><td>论文标题（原文）</td><td>BSODiag: A Global Diagnosis Framework for Batch Servers Outage in Large-scale Cloud Infrastructure Systems</td></tr>
+<tr><td>中文标题</td><td>大规模云基础设施系统中批服务器宕机的全局诊断框架</td></tr>
+<tr><td>作者</td><td>Tao Duan, Runqing Chen, Pinghui Wang, Junzhou Zhao (XJTU 西安交大), Jiongzhou Liu, Shujie Han, Yi Liu, Fan Xu（阿里云）</td></tr>
+<tr><td>arXiv ID</td><td>2502.15728v1（cs.DC）</td></tr>
+<tr><td>首版提交</td><td>2025-01-31</td></tr>
+<tr><td>核心问题</td><td>阿里云香港数据中心 2022-12 批服务器宕机持续 12 小时；多源数据格式差异大、跨域故障难定位、单源监测遗漏严重</td></tr>
+<tr><td>数据集</td><td>阿里云基础设施 4 个数据中心，2022 年初始 + 2023 年验证；共 95 个 batch server outage 案例</td></tr>
+<tr><td>核心结论</td><td>BSODiag 在 PR@3 上 87.5%、PCR 46.3%，比基线分别提升 10.2% 和 3.7%；单次诊断 24.5 秒</td></tr>
+<tr><td>部署状态</td><td>阿里云基础设施系统</td></tr>
+</table>
+
+<h2>2. 研究背景</h2>
+
+<p>云系统（AWS、Azure、阿里云）提供计算、存储、电商等多种服务。故障会严重影响稳定性、可用性，导致客户流失、收入下降。<b>批服务器宕机（Batch Servers Outage）</b>是云基础设施最致命的故障之一，会让所有上游服务完全不可用。</p>
+
+<p>真实案例：<b>2022-12-18 阿里云香港数据中心批服务器宕机</b>，导致 ECS、PolarDB、Networking 等服务中断 12 小时以上。</p>
+
+<p>云基础设施包含多个域：</p>
+<ul>
+<li><b>互联网数据中心 (IDC)</b>：服务器机柜、UPS、温度湿度控制。</li>
+<li><b>云网络 (Cloud Networking)</b>：交换机、负载均衡器。</li>
+<li><b>云服务器 (Cloud Servers)</b>：CPU/GPU/SSD 集群。</li>
+</ul>
+
+<p>现有方法的问题：</p>
+<ol>
+<li><b>微服务 vs 云基础设施</b>：基于 metric/log/trace 的方法不适用于云基础设施（数据格式差异大）。</li>
+<li><b>故障关联测量不准确</b>：图方法对层级/冗余结构失效。</li>
+<li><b>缺乏可解释性</b>：仅定位根因，未给出故障传播路径。</li>
+</ol>
+
+<blockquote>论文对阿里云基础设施的实证研究揭示：<b>单源粗粒度数据不足以全面刻画故障</b>，且故障通常由跨域并发故障引起。必须从全局视角建模故障相关性。</blockquote>
+
+<h2>3.论文目的与解决的问题</h2>
+
+<p>本文提出 BSODiag，目标是<b>无监督、轻量</b>的批服务器宕机诊断框架，从<b>全局视角</b>建模多源监测数据中的故障相关性。</p>
+
+<p>核心挑战：</p>
+<ol>
+<li><b>低质量故障监测数据</b>（粗粒度）。</li>
+<li><b>故障相关性复杂</b>（跨域 + 跨层级）。</li>
+<li><b>根因定位缺乏可解释性</b>（仅有 root cause，不含 propagation path）。</li>
+</ol>
+
+<p>核心贡献：</p>
+<ol>
+<li><b>首次系统研究</b>大规模云基础设施的批服务器宕机问题，并进行真实系统实证。</li>
+<li><b>无监督、轻量级</b>诊断框架 BSODiag，含 3 个核心模块：多源故障检测、故障相关性挖掘、宕机根因分析。</li>
+<li><b>真实工业数据验证</b>：阿里云基础设施 1 年数据，BSODiag 在 PR@3 上 87.5%、PCR 46.3%，显著优于基线。</li>
+</ol>
+
+<h2>4.核心原理</h2>
+
+<h3>4.1 问题形式化</h3>
+
+<p>故障快照（Outage Snapshot）：</p>
+\[
+U \equiv \{A_{-L:T'}, L_{-T:T'}, C_{-T:T'}\}
+\]
+<p>其中 \(A\) 是 alerts，\(L\) 是 incidents，\(C\) 是 changes；\(-L, T, T'\) 分别为前/后时间窗。</p>
+
+<p><b>两个子问题</b>：</p>
+<ol>
+<li><b>故障检测子问题</b>：\(F: U \mapsto E = \{e_1, ..., e_n\}\) 识别 outage-related events。</li>
+<li><b>根因分析子问题</b>：\(M: E \mapsto \{e_r, p_U\}\) 定位 top-k 根因并推断传播路径。</li>
+</ol>
+
+<h3>4.2 多源故障检测（Multi-source Failure Detection, MFD）</h3>
+
+<p>三个组件：</p>
+<ol>
+<li><b>Alert2TS</b>：将 alerts 转换为多变量时间序列。Alert 子集 \(A_s = \{a_{s,t}^{k,t} : k \in \mathcal{K}, t \in [-L, T']\}\)，每条 alert 序列在长度为 \(\delta\) 的时隙内聚合成 \(X_s \in \mathbb{R}^{K \times N}\)。</li>
+<li><b>Failure Detection</b>：使用 SPOT（基于极值理论的无监督异常检测）识别真异常。SPOT 在初始窗口 \([-L, -T']\) 学习正常 alert 模式，在诊断窗口 \([-T, T']\) 检测异常。</li>
+<li><b>Change Filter</b>：基于专家白名单过滤无关的 changes，只保留 proactive changes。</li>
+<li><b>Event Merge</b>：将 alerts/incidents/changes 合并为统一事件。</li>
+</ol>
+
+<h3>4.3 故障相关性挖掘（Failure Correlation Mining, FCM）</h3>
+
+<p>基于高频失败关联挖掘（来自 Apriori 算法）：</p>
+
+<p>支持度：</p>
+\[
+\text{support}(\langle e_a, e_b \rangle) = P(e_a, e_b) = \frac{\text{num}(\langle e_a, e_b \rangle)}{\text{num}(\text{failure pairs})}
+\]
+
+<p>置信度：</p>
+\[
+\text{confidence}(\langle e_a, e_b \rangle) = P(e_b | e_a) = \frac{\text{num}(\langle e_a, e_b \rangle)}{\text{num}(e_a)}
+\]
+
+<p>约束：仅保留满足故障规则树（hierarchical relationships）的高频对，得到 failure knowledge graph \(G_f\)。</p>
+
+<h3>4.4 宕机根因分析（Outage Root Cause Analysis, ORCA）</h3>
+
+<p><b>事件因果图构建</b>：</p>
+<ul>
+<li>节点：事件 \(e_i\)。</li>
+<li>边权重 \(w_{ij} = p_{ij}.\text{conf} \cdot \text{dist}(e_i, e_j)\)，其中 \(\text{dist}(e_i, e_j) = |e_i.\text{sn} \cap e_j.\text{sn}| / |e_i.\text{sn}|\)。</li>
+<li>结合历史故障相关性（来自 \(G_f\)）和当前设备连接强度（来自 CMDB）。</li>
+</ul>
+
+<p><b>根因定位</b>：定制 MAPR（Multi-Attribute Personalized Random Walk）算法：</p>
+<ol>
+<li>初始化每个节点个性化分数 \(u_i = \exp(-l) / \text{dist}(e_i, e_o)\)。</li>
+<li>使用故障相关性 \(w_{ij}\) 作为转移概率。</li>
+<li>多次随机游走，更新 \(u_i\)。</li>
+<li>对每个 outage-related node \(e_i\)，加 incoming edge \(e_o \to e_i\)，权重 \(w_{oi} = 1 / |E^* - 1|\)。</li>
+<li>迭代 L 次后收敛。</li>
+<li>移除 outage 节点 \(e_o\)，按 \(u_i\) 排序得 top-k 根因 \(S_U\)。</li>
+</ol>
+
+<p><b>故障传播路径推断</b>：基于 PPI（Propagation Probability Inference）：</p>
+\[
+p_U = \arg\max_{p \in \mathbb{P}} \text{TransPrt}(p_i) = \arg\max_{p \in \mathbb{P}} \prod_{j \in \mathbb{P}(p_i)} u_j
+\]
+
+<h2>5. 系统/算法整体架构</h2>
+
+<p>下图展示 BSODiag 整体架构。</p>
+
+<div class="mermaid">
+flowchart TD
+ A[Cloud Infrastructure<br/>告警/事件/变更] --> B[Multi-source Failure Detection<br/>MFD]
+ B --> B1[Alert2TS<br/>告警转时序]
+ B --> B2[Failure Detection<br/>SPOT 异常检测]
+ B --> B3[Change Filter<br/>白名单]
+ B --> B4[Event Merge<br/>事件合并]
+ B1 --> C[Event Set E]
+ B2 --> C
+ B3 --> C
+ B4 --> C
+ C --> D[Failure Correlation Mining<br/>FCM]
+ D --> D1[Apriori 高频对挖掘]
+ D --> D2[Failure Knowledge Graph G_f]
+ D1 --> D2
+ C --> E[Outage Root Cause Analysis<br/>ORCA]
+ D2 --> E
+ E --> E1[Event Causal Graph G_e<br/>含 MAPR 随机游走]
+ E1 --> E2[Top-k Root Cause]
+ E1 --> E3[Failure Propagation Path]
+</div>
+
+<h2>6.关键算法详解</h2>
+
+<h3>6.1 Alert2TS 告警转时序</h3>
+
+<p>对每个设备 \(s\)，将 alert 按时间窗口 \(\delta\) 聚合为多变量时序 \(X_s\)。每列对应一种 alert 类型（高 CPU 利用率、磁盘满、内存异常等）。</p>
+
+<p>聚合策略：</p>
+<ul>
+<li>数值型 alert：取窗口内的聚合值（sum/avg）。</li>
+<li>非数值型 alert：取该时段内出现过的 alert 类型集合（\(r_s^{k,t} = 1\) if 出现过）。</li>
+<li>缺失值：填 0（表示该时段内未出现）。</li>
+</ul>
+
+<h3>6.2 SPOT 异常检测</h3>
+
+<p>SPOT（Streaming Peaks over Threshold）算法：</p>
+<ol>
+<li>在初始窗口 \([-L, -T']\) 学习正常 alert 模式，建立极端值边界。</li>
+<li>在诊断窗口 \([-T, T']\) 动态更新边界。</li>
+<li>超阈值点视为真异常。</li>
+</ol>
+
+<h3>6.3 故障关联挖掘（FPM）</h3>
+
+<p>基于 Apriori 的高频故障对挖掘：</p>
+<ol>
+<li>从历史数据中统计每个故障事件的频率。</li>
+<li>筛选频率 ≥ \(\alpha \cdot |\mathcal{Q}_1|\) 的事件作为高频单事件。</li>
+<li>对候选对，检查 hierarchical relationship（\(e_i.\text{level} > e_j.\text{level}\)）和支持度。</li>
+<li>输出高频对集合 \(\mathcal{Q}_2\)。</li>
+</ol>
+
+<h3>6.4 MAPR 随机游走</h3>
+
+<p>MAPR（Multi-Attribute Personalized Random Walk）结合时空信息：</p>
+<ol>
+<li>对每个非 outage 节点，初始化个性化分数 \(u_i\)。</li>
+<li>使用历史故障相关性 + 当前设备连接强度作为转移概率。</li>
+<li>添加 outage 节点到所有相关节点的 incoming edge。</li>
+<li>迭代更新 \(u_i\) 直到收敛。</li>
+<li>移除 outage 节点后，按 \(u_i\) 排序 top-k 节点。</li>
+</ol>
+
+<h3>6.5 伪代码</h3>
+
+<p>伪代码 1：FPM 故障对挖掘</p>
+<pre><code>Algorithm 1: Failure Pairs Mining (FPM)
+Input: Event Set T = {T_1, T_2, ...}, Support Threshold α
+Output: Frequent Failure Pairs Set Q_2
+
+1: Q_1 ← ∅; Q_2 ← ∅
+2: for each event e in T do
+3:    if e in Q_1 then e.count ← e.count + 1
+4:    else
+5:       Q_1 ← Q_1 ∪ {e}
+6:       e.count ← 0
+7: Q_1 ← {e ∈ Q_1 | e.count ≥ |Q_1| · α}
+8: // frequent failure pair mining
+9: for i = 1...|Q_1| do
+10:   for j = i...|Q_1| do
+11:      p_ij ← ⟨e_i, e_j⟩
+12:      if e_i.level > e_j.level then
+13:         Q_2 ← p_ij
+14:         for each failure group T_l in T do
+15:            if p_ij ∈ T_l then
+16:               p_ij.count ← p_ij.count + 1
+17: Q_2 ← {p_ij ∈ Q_2 | p_ij.count ≥ |Q_2| · α}
+18: return Q_2
+</code></pre>
+
+<p>伪代码 2：BSODiag 主流程</p>
+<pre><code>Algorithm 2: BSODiag Main Pipeline
+Input: Outage Snapshot U
+Output: Top-k Root Causes S_U, Failure Propagation Path p_U
+
+1. // 多源故障检测
+2. A_ts ← Alert2TS(U.alerts)
+3. E_alert ← FailureDetection(A_ts, [-T, T'])
+4. E_change ← ChangeFilter(U.changes, whitelist)
+5. E_incident ← U.incidents
+6. E ← EventMerge(E_alert, E_change, E_incident)
+7. // 故障相关性挖掘
+8. F ← FailureCorrelationMining(historical_data)
+9. G_f ← build_knowledge_graph(F)
+10. // 根因分析
+11. G_e ← build_event_causal_graph(E, G_f, CMDB)
+12. S_U ← MAPR_random_walk(G_e, E_outage_node)
+13. p_U ← PPI_path_inference(G_e, S_U[1])
+14. return S_U, p_U
+</code></pre>
+
+<h3>6.6 复杂度分析</h3>
+
+<table>
+<tr><th>步骤</th><th>时间复杂度</th><th>空间复杂度</th></tr>
+<tr><td>Alert2TS 聚合</td><td>\(O(N \cdot K)\)</td><td>\(O(N \cdot K)\)</td></tr>
+<tr><td>SPOT 检测</td><td>\(O(N)\)</td><td>\(O(N)\)</td></tr>
+<tr><td>FPM 挖掘</td><td>\(O(|\mathcal{T}| + |\mathcal{Q}_1|^2)\)</td><td>\(O(|\mathcal{T}|)\)</td></tr>
+<tr><td>MAPR 随机游走</td><td>\(O(L \cdot |E|)\)</td><td>\(O(|V|)\)</td></tr>
+<tr><td>PPI 路径搜索</td><td>\(O(|V|^2)\)</td><td>\(O(|V|^2)\)</td></tr>
+</table>
+
+<h2>7. 实现细节</h2>
+
+<h3>7.1 数据集统计</h3>
+
+<table>
+<tr><th>数据集</th><th>#Incident</th><th>#Alert</th><th>#Change</th><th>#Failure Types</th><th>#Outage Cases</th></tr>
+<tr><td>D_init</td><td>19,020</td><td>879,870</td><td>3,255</td><td>62</td><td>27</td></tr>
+<tr><td>D_dc</td><td>173</td><td>256,212</td><td>1,657</td><td>31</td><td>19</td></tr>
+<tr><td>D_net</td><td>478</td><td>774,638</td><td>5,091</td><td>44</td><td>47</td></tr>
+<tr><td>D_all</td><td>665</td><td>1,032,851</td><td>7,644</td><td>56</td><td>68</td></tr>
+</table>
+
+<h3>7.2 关键阈值</h3>
+
+<ul>
+<li>初始窗口：\([-4, -2]\) 小时（outage 前 4-2 小时）。</li>
+<li>诊断窗口：\([-2, 0.25]\) 小时（outage 前 2 小时到后 15 分钟）。</li>
+<li>Alert 聚类窗口 \(\delta = 1\) 分钟。</li>
+<li>Event merge 窗口 \(\eta = 5\) 分钟。</li>
+<li>FPM 支持度阈值 \(\alpha = 0.001\)。</li>
+<li>MAPR 迭代次数 \(L = 100\)。</li>
+</ul>
+
+<h3>7.3 评估指标</h3>
+
+<ul>
+<li><b>PR@k</b>：Top-k 中包含真实根因的比例，\(\text{PR}@k = \frac{1}{|\mathcal{U}|} \sum_{U \in \mathcal{U}} \mathbb{I}[r_U \in S_U[1:k]]\)</li>
+<li><b>MAP</b>：\(\text{MAP} = \frac{1}{k} \sum_{i \leq i \leq k} \text{PR}@i\)</li>
+<li><b>PCR（Path Coverage Rate）</b>：传播路径覆盖率，\(\text{PCR} = \frac{1}{|\mathcal{U}|} \sum_{U \in \mathcal{U}} \frac{|p_U \cap \tilde{p}_U|}{|p_U|}\)</li>
+</ul>
+
+<h2>8. 实验设计与结果</h2>
+
+<h3>8.1 整体对比（PR@k）</h3>
+
+<table>
+<tr><th>方法</th><th>D_dc PR@1</th><th>D_dc PR@3</th><th>D_dc MAP</th><th>D_net PR@1</th><th>D_net PR@3</th><th>D_net MAP</th><th>D_all PR@1</th><th>D_all PR@3</th><th>D_all MAP</th></tr>
+<tr><td>Random Selection</td><td>14.3%</td><td>31.2%</td><td>42.6%</td><td>8.7%</td><td>23.8%</td><td>36.4%</td><td>10.4%</td><td>28.8%</td><td>39.2%</td></tr>
+<tr><td>Hierarchy-First</td><td>12.6%</td><td>27.5%</td><td>46.3%</td><td>13.9%</td><td>37.8%</td><td>66.4%</td><td>12.5%</td><td>35.4%</td><td>62.5%</td></tr>
+<tr><td>Time-First</td><td>22.5%</td><td>42.6%</td><td>53.8%</td><td>41.2%</td><td>56.0%</td><td>73.7%</td><td>35.0%</td><td>52.0%</td><td>70.1%</td></tr>
+<tr><td>SVM</td><td>32.0%</td><td>44.6%</td><td>62.5%</td><td>27.4%</td><td>44.2%</td><td>65.3%</td><td>27.8%</td><td>43.9%</td><td>66.1%</td></tr>
+<tr><td>Random Forest</td><td>39.2%</td><td>58.8%</td><td>72.6%</td><td>41.4%</td><td>57.9%</td><td>71.4%</td><td>42.6%</td><td>58.7%</td><td>74.3%</td></tr>
+<tr><td>AirAlert</td><td>18.5%</td><td>30.9%</td><td>41.0%</td><td>28.0%</td><td>43.2%</td><td>53.6%</td><td>24.5%</td><td>38.7%</td><td>48.8%</td></tr>
+<tr><td>COT</td><td>46.3%</td><td>66.0%</td><td>82.7%</td><td>40.8%</td><td>57.5%</td><td>72.2%</td><td>44.9%</td><td>62.3%</td><td>77.3%</td></tr>
+<tr><td><b>BSODiag (ours)</b></td><td><b>56.1%</b></td><td><b>72.9%</b></td><td><b>88.2%</b></td><td><b>52.4%</td><td><b>70.7%</b></td><td><b>86.7%</b></td><td><b>54.2%</b></td><td><b>70.8%</b></td><td><b>87.5%</b></tr>
+</table>
+
+<p><b>关键发现</b>：</p>
+<ul>
+<li>BSODiag 在 D_all 上 PR@3 70.8%，比最强基线（COT 62.3%）高 8.5%。</li>
+<li>在 D_dc 上 PR@3 72.9%，提升 6.9%。</li>
+<li>在 D_net 上 PR@3 70.7%，提升 13.3%。</li>
+</ul>
+
+<h3>8.2 路径覆盖（PCR）</h3>
+
+<table>
+<tr><th>方法</th><th>D_dc</th><th>D_net</th><th>D_all</th></tr>
+<tr><td>DPS (Deepest Path Search)</td><td>38.0%</td><td>41.6%</td><td>40.2%</td></tr>
+<tr><td>SPS (Shortest Path Search)</td><td>35.2%</td><td>32.4%</td><td>33.8%</td></tr>
+<tr><td>FHM (Failure Hierarchy Matching)</td><td>41.8%</td><td>43.3%</td><td>42.6%</td></tr>
+<tr><td><b>BSODiag (ours)</b></td><td><b>45.6%</b></td><td><b>46.8%</b></td><td><b>46.3%</b></td></tr>
+</table>
+
+<p>BSODiag 在所有数据集上 PCR 提升 3.7-12.3%。</p>
+
+<h3>8.3 消融实验</h3>
+
+<table>
+<tr><th>变体</th><th>PR@1</th><th>PR@2</th><th>PR@3</th><th>MAP</th><th>PCR</th></tr>
+<tr><td><b>BSODiag (full)</b></td><td><b>54.2%</b></td><td><b>70.8%</b></td><td><b>87.5%</b></td><td><b>70.8%</b></td><td><b>46.3%</b></td></tr>
+<tr><td>w/o Failure Knowledge Graph</td><td>47.7%</td><td>62.3%</td><td>80.0%</td><td>63.2%</td><td>38.4%</td></tr>
+<tr><td>w/o CMDB</td><td>52.3%</td><td>68.7%</td><td>84.5%</td><td>68.5%</td><td>43.1%</td></tr>
+<tr><td>w/o MAPR</td><td>50.5%</td><td>66.5%</td><td>82.7%</td><td>66.6%</td><td>41.8%</td></tr>
+</table>
+
+<p>三个组件都不可或缺，去掉任何一项都会显著降低性能。</p>
+
+<h3>8.4 效率分析</h3>
+
+<p>BSODiag 完整诊断 24.5 秒（手动 30 分钟），节约 99%+ 时间。最耗时的部分是 MFD（故障检测），因为要做 SPOT、change filter、event merge 等多步操作。</p>
+
+<h2>9.消融实验</h2>
+
+<h3>9.1 Failure Knowledge Graph 消融</h3>
+
+<p>去掉 FKG 后 PR@3 80.0% vs 87.5%，PCR 38.4% vs 46.3%，说明历史故障知识图是根因分析的关键。</p>
+
+<h3>9.2 CMDB 消融</h3>
+
+<p>去掉 CMDB（设备连接）后 PR@3 84.5% vs 87.5%，说明当前设备连接度也有贡献，但不如 FKG 显著。</p>
+
+<h3>9.3 MAPR 消融</h3>
+
+<p>去掉 MAPR 后 PR@3 82.7%，比 baseline 高，比完整 BSODiag 低 4.8%，说明随机游走机制对根因定位很重要。</p>
+
+<h2>10. 与已有工作的对比</h2>
+
+<table>
+<tr><th>维度</th><th>Hierarchy-First / Time-First</th><th>SVM / RF</th><th>AirAlert / COT</th><th>BSODiag</th></tr>
+<tr><td>基于规则</td><td>Yes</td><td>—</td><td>—</td><td>部分</td></tr>
+<tr><td>基于监督学习</td><td>—</td><td>Yes</td><td>—</td><td>—</td></tr>
+<tr><td>基于图</td><td>—</td><td>—</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>利用多源数据</td><td>No</td><td>No</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><td>挖掘历史故障关联</td><td>No</td><td>No</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><td>利用 CMDB 连接</td><td>No</td><td>No</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><td>故障传播路径</td><td>No</td><td>No</td><td>No</td><td><b>Yes</b></td></tr>
+<tr><td>无监督</td><td>Yes</td><td>No</td><td>Yes</td><td><b>Yes</b></td></tr>
+</table>
+
+<h2>11. 工程落地与部署</h2>
+
+<p>下图给出 BSODiag 部署流程：</p>
+
+<div class="mermaid">
+flowchart LR
+ A[Cloud Infrastructure<br/>告警/事件/变更] --> B[在线诊断]
+ B --> C[BSODiag 推理]
+ C --> D[Top-k Root Cause + 传播路径]
+ D --> E[OSE 工程师]
+ E --> F[修复故障]
+ F --> G[记录案例]
+ G --> H[FKG 更新]
+ H --> C
+</div>
+
+<h3>11.1 部署清单</h3>
+
+<ol>
+<li><b>数据源</b>：阿里云基础设施的 alerts/incidents/changes。</li>
+<li><b>训练</b>：无监督（FCM 挖掘历史数据 + SPOT 在线学习）。</li>
+<li><b>推理</b>：24.5 秒/案例。</li>
+<li><b>集成</b>：嵌入阿里云基础设施诊断平台。</li>
+</ol>
+
+<h3>11.2 实际效果</h3>
+
+<blockquote>BSODiag 在阿里云基础设施系统部署：完整诊断 24.5 秒（手动诊断典型 30 分钟，节约 99%+ 时间）。通过 PR@3 87.5% 和 PCR 46.3% 提升，SRE 能更准确、完整地定位根因并修复故障传播路径中的所有故障点。</blockquote>
+
+<h2>12.局限性与未来工作</h2>
+
+<ol>
+<li><b>数据规模差异大</b>：不同数据中心数据量差异大，影响泛化。</li>
+<li><b>依赖 CMDB</b>：CMDB 维护不及时会降低效果。</li>
+<li><b>不处理瞬时告警</b>：偶发告警可能在 SPOT 中被忽略。</li>
+<li><b>故障类型有限</b>：仅考虑 5 大模块（Storage, Resource Scheduler, Host, Network, Other）。</li>
+</ol>
+
+<h3>12.1未来工作</h3>
+
+<ul>
+<li>扩展到更多故障类型和模块。</li>
+<li>结合 LLM 做根因解释。</li>
+<li>支持多数据中心的联邦诊断。</li>
+<li>实时增量学习 FKG。</li>
+</ul>
+
+<h2>13.总结与启示</h2>
+
+<p>BSODiag 是<b>首个</b>面向大规模云基础设施的批服务器宕机全局诊断框架，在阿里云基础设施系统部署并验证有效。核心贡献：</p>
+
+<ol>
+<li><b>多源数据整合</b>：MFD 模块利用 alerts/incidents/changes 三源数据。</li>
+<li><b>故障关联挖掘</b>：FCM 模块基于 Apriori + 专家规则挖掘历史故障关联。</li>
+<li><b>全局根因分析</b>：ORCA 模块用 MAPR 随机游走 + CMDB 连接强度定位 top-k 根因。</li>
+<li><b>故障传播路径</b>：PPI 推断完整路径，覆盖率 46.3%。</li>
+</ol>
+
+<p><b>对实践者的启示</b>：</p>
+<ol>
+<li><b>多源数据是云基础设施 RCA 的胜负手</b>——单源告警会遗漏关键故障。</li>
+<li><b>历史故障关联（FKG）比单点告警重要</b>——故障模式具有跨事件相关性。</li>
+<li><b>设备连接（CMDB）是根因分析的空间先验</b>。</li>
+<li><b>可解释的传播路径</b>是 OSE 信任系统的关键。</li>
+</ol>
+
+<p><b>对研究者的启示</b>：</p>
+<ol>
+<li>云基础设施 vs 微服务的 RCA 数据格式差异大，需独立设计。</li>
+<li>无监督方法在故障样本稀缺时是更优选择。</li>
+<li>结合专家规则（hierarchical tree）+ 数据驱动（FPM）是工业界实用范式。</li>
+</ol>
+
+<h2>14.附录</h2>
+
+<h3>14.1术语表</h3>
+
+<table>
+<tr><th>术语</th><th>英文</th><th>解释</th></tr>
+<tr><td>批服务器宕机</td><td>Batch Servers Outage (BSO)</td><td>一组服务器集体失效</td></tr>
+<tr><td>MFD</td><td>Multi-source Failure Detection</td><td>多源故障检测</td></tr>
+<tr><td>FCM</td><td>Failure Correlation Mining</td><td>故障相关性挖掘</td></tr>
+<tr><td>ORCA</td><td>Outage Root Cause Analysis</td><td>宕机根因分析</td></tr>
+<tr><td>SPOT</td><td>Streaming Peaks Over Threshold</td><td>基于 POT 的流式异常检测</td></tr>
+<tr><td>MAPR</td><td>Multi-Attribute Personalized Random Walk</td><td>多属性个性化随机游走</td></tr>
+<tr><td>PPI</td><td>Propagation Probability Inference</td><td>传播概率推断</td></tr>
+<tr><td>FKG</td><td>Failure Knowledge Graph</td><td>故障知识图谱</td></tr>
+<tr><td>CMDB</td><td>Configuration Management Database</td><td>配置管理数据库</td></tr>
+<tr><td>PR@k</td><td>Precision at k</td><td>前 k 个中包含真实答案的比例</td></tr>
+<tr><td>PCR</td><td>Path Coverage Rate</td><td>传播路径覆盖率</td></tr>
+<tr><td>IDC</td><td>Internet Data Center</td><td>互联网数据中心</td></tr>
+<tr><td>UPS</td><td>Uninterruptible Power Supply</td><td>不间断电源</td></tr>
+<tr><td>PSU</td><td>Power Supply Unit</td><td>电源单元</td></tr>
+<tr><td>OSE</td><td>On-site Engineer</td><td>现场运维工程师</td></tr>
+</table>
+
+<h3>14.2 主要超参数表</h3>
+
+<table>
+<tr><th>参数</th><th>取值范围</th><th>默认值</th><th>说明</th></tr>
+<tr><td>初始窗口</td><td>—</td><td>[-4, -2] 小时</td><td>outage 前 4-2 小时</td></tr>
+<tr><td>诊断窗口</td><td>—</td><td>[-2, 0.25] 小时</td><td>outage 前 2 小时到后 15 分钟</td></tr>
+<tr><td>Alert 聚类窗口 δ</td><td>—</td><td>1 分钟</td><td>alert 时隙</td></tr>
+<tr><td>Event merge 窗口 η</td><td>—</td><td>5 分钟</td><td>事件合并</td></tr>
+<tr><td>FPM 支持度阈值 α</td><td>—</td><td>0.001</td><td>高频对筛选</td></tr>
+<tr><td>MAPR 迭代次数 L</td><td>—</td><td>100</td><td>随机游走收敛</td></tr>
+</table>
+
+<h3>14.3 论文复现资源</h3>
+
+<ul>
+<li>论文 PDF：<code>/app/study/timeseries/alibaba/BSODiag_Batch_Server_Diagnosis/paper.pdf</code></li>
+<li>arXiv 链接：<code>https://arxiv.org/abs/2502.15728</code></li>
+</ul>
+
+<p>—— 本方案说明文档完 ——</p>
+
+</body>
+</html>
