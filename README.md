@@ -52,7 +52,7 @@ study/
 
 | 专题 | 简介 | 落地数据 | 入口 |
 |---|---|---|---|
-| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 | ✅ **176 篇论文 + 34 件专利** | [`timeseries/papers/`](timeseries/papers/) · [`timeseries/pdfs/`](timeseries/pdfs/) |
+| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 | ✅ **176 篇论文 + 34 件专利** + **16 篇阿里 AIOps** | [`timeseries/papers/`](timeseries/papers/) · [`timeseries/pdfs/`](timeseries/pdfs/) · [`timeseries/alibaba/`](timeseries/alibaba/index.html) |
 | 🟡 **日志（logs）** | 日志解析 / 异常识别 / LLM 日志分析 | ⏳ 规划中 | [`logs/`](logs/) |
 | 🟣 **调用链（tracing）** | 微服务追踪 / 根因定位 / Span 关联 | ⏳ 规划中 | [`tracing/`](tracing/) |
 
