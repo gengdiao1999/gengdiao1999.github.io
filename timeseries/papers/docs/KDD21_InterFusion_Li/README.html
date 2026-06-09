@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>InterFusion: Multivariate Time Series Anomaly Detection and Interpretation using Hierarchical Inter-Metric and Temporal Embedding（KDD 2021）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+
+</style>
+</head>
+<body>
+<h1>InterFusion: Multivariate Time Series Anomaly Detection and Interpretation using Hierarchical Inter-Metric and Temporal Embedding（KDD 2021）</h1>
+<blockquote>作者：Zhihan Li, Youjian Zhao, Jiaqi Han, Ya Su, Rui Jiao, Xidao Wen, Dan Pei<br>机构：清华大学、BNRist<br>发表年份：2021<br>会议/期刊：KDD 2021（ACM SIGKDD Conference on Knowledge Discovery and Data Mining）<br>关联 PDF：同目录下 `KDD21_InterFusion_Li.pdf`</blockquote>
+<h2>一、文档信息速览</h2>
+<table><tr><th>字段</th><th>值</th></tr><tr><td>标题</td><td>Multivariate Time Series Anomaly Detection and Interpretation using Hierarchical Inter-Metric and Temporal Embedding</td></tr><tr><td>作者</td><td>Zhihan Li, Youjian Zhao, Jiaqi Han, Ya Su, Rui Jiao, Xidao Wen, Dan Pei</td></tr><tr><td>机构</td><td>Tsinghua University, BNRist</td></tr><tr><td>发表年份</td><td>2021</td></tr><tr><td>会议/期刊</td><td>KDD 2021</td></tr><tr><td>分类</td><td>时序异常检测 / 多元时序 / AIOps</td></tr><tr><td>核心问题</td><td>如何同时建模多元时序中跨指标的互相关依赖和单指标的时间依赖，并据此进行无监督异常检测与可解释的指标级根因定位。</td></tr><tr><td>主要贡献</td><td>1) 提出首个联合学习显式低维 inter-metric 与 temporal 嵌入的 HVAE 模型；2) 设计 two-view embedding、hierarchical structure、prefiltering 三个关键结构设计；3) 提出基于 MCMC 插补的异常解释方法，可在异常点上得到合理的重构与嵌入；4) 在 4 个真实数据集上 F1 平均 &gt; 0.94，解释精度 0.87。</td></tr></table>
+<h2>二、背景（Background）</h2>
+<p>在制造系统、IT 服务、互联网应用等真实工业场景中，一个被监测的实体（entity）通常会被几十甚至上百个指标（metric）共同刻画，如 Web 服务器的 CPU 利用率、内存使用率、TCP 主动建连数等。这些指标随时间连续采样，就形成了多元时序（Multivariate Time Series, MTS）。MTS 既存在"同一指标内"的时序依赖（temporal dependency，例如 CPU 利用率的日周期），也存在"同一时间戳不同指标间"的互相关依赖（inter-metric dependency，例如包传输率、TCP 建连数和 CPU 利用率之间通常正相关）。</p>
+<p>传统做法依赖运维专家对每个指标手动设置静态阈值，但当指标数膨胀到成百上千时，这种做法不可扩展。学术界近年来提出了两类方法：</p>
+<ol>
+<li><strong>基于预测（prediction-based）</strong> 的方法：用历史值预测未来值，按预测误差判定异常；缺点是有些指标本身不可预测（"inherently unpredictable"）。</li>
+<li><strong>基于重构（reconstruction-based）</strong> 的方法：学习低维表示再重构，按重构误差判定异常。代表包括 MSCRED、OmniAnomaly、USAD 等，但这些方法要么只能建模 inter-metric 依赖（用简单确定性方法太弱），要么不能很好建模 temporal 依赖（缺时间维低维表示）。</li>
+</ul>
+<p>此外，主流方法还存在两个普遍问题：</p>
+<ul>
+<li>训练数据中可能含有潜在异常，直接学习容易过拟合到异常模式。</li>
+<li>检测到异常后只给"是 / 否"的告警，没有"哪些指标最异常"的可解释信息，运维人员定位根因仍需费时。</li>
+</ul>
+<p>InterFusion 正是在这一背景下被提出，目标是在一个统一框架中同时建模 inter-metric 与 temporal 依赖、鲁棒地学习正常模式、并在检测阶段给出可解释的指标级定位。</p>
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<ul>
+<li><strong>痛点 1</strong>：现有方法往往只建模一种依赖。<strong>解决方案</strong>：用 HVAE 联合学习显式低维 inter-metric 与 temporal 嵌入。</li>
+<li><strong>痛点 2</strong>：独立学习两种嵌入后融合困难；沿用图像 HVAE 又会让 inter-metric 嵌入丢失时间一致性。<strong>解决方案</strong>：设计 two-view embedding（沿时间和指标两个"视图"分别压缩、再以辅助"重构输入"作为桥梁）。</li>
+<li><strong>痛点 3</strong>：训练数据中可能含有未标注的异常，模型容易过拟合到异常。<strong>解决方案</strong>：prefiltering 策略——先用一个预训练 VAE 滤掉部分时序异常，再让 inter-metric 嵌入从"重建后的输入"学习。</li>
+<li><strong>痛点 4</strong>：检测到异常后无法定位"哪几个指标最异常"。<strong>解决方案</strong>：提出基于 MCMC 插补的异常解释方法，迭代地假设某些点是"缺失"，用 VAE 重构后估计合理值，再在最终重构概率上读出每个指标的异常贡献。</li>
+<li><strong>痛点 5</strong>：点级评价指标与运维"看一段"的实际使用习惯不一致。<strong>解决方案</strong>：定义段级（segment-wise）评价指标，与现场习惯对齐。</li>
+</ul>
+<h2>四、核心原理（Principles）</h2>
+<p>InterFusion 是一个<strong>层次化变分自编码器（HVAE）</strong>，包含两个随机隐变量：</p>
+<ul>
+<li>z1 学习低维 inter-metric 嵌入。</li>
+<li>z2 学习低维 temporal 嵌入。</li>
+</ul>
+<p>生成模型分解为：</p>
+<p><code> p_\theta(x, z_1, z_2) = p_\theta(x \mid z_1, z_2) \cdot p_\theta(z_1 \mid z_2) \cdot p_\theta(z_2) </code></p>
+<p>z1 与 z2 之间的依赖通过 hierarchical structure 表达，使 inter-metric 嵌入能够感知 temporal 信息，而不是两个独立嵌入再融合。</p>
+<p><strong>Two-view embedding</strong>：</p>
+<ul>
+<li>沿时间维度用 Conv1D 压缩窗口得到 z2（temporal 嵌入），长度被压缩为 W'。</li>
+<li>用 Deconv1D 将 z2 重建为"辅助重构输入" d。</li>
+<li>沿指标维度在 d 上用类似 SRNN 的结构得到 z1（inter-metric 嵌入），维度被压缩为 M'。</li>
+<li>这种"先压缩时间→重建→压指标"的方式，使 z1 既学到指标间关系又保留时间一致性。</li>
+</ul>
+<p><strong>Prefiltering 策略</strong>：</p>
+<ul>
+<li>预训练一个 VAE 模型，对 x 沿时间压缩得到 d，d 试图"忠实"重构 x 但通过 embedding-reconstruction 过程自动滤掉时序异常。</li>
+<li>主模型训练时，z1 不直接从 x 推导，而从 d 推导，从而减少过拟合到异常的风险。</li>
+</ul>
+<p><strong>MCMC-based 异常解释</strong>：</p>
+<ul>
+<li>异常点会污染潜变量 z，进而污染所有维度的重构，导致"正常指标也被判异常"。</li>
+<li>算法 1 把低重构概率的 top-n 个点视为"缺失" x_m，其余视为"观测" x_o；用 VAE 对 (x_o, x_m) 做 S 次 MCMC 插补，得到"接近正常"的重构 x̃；再基于 x̃ 计算每个维度的最终重构概率 AS。</li>
+<li>反复扩大 n（按 n_inc 步进），直到重构概率回到正常基线 b。</li>
+</ul>
+<p><strong>训练目标</strong>（ELBO 展开形式）：</p>
+<p><code> \mathcal{L}(x, \theta, \phi) = \mathbb{E}_{q_\phi} \log p_\theta(x \mid z_1, z_2, e) + \log p_\theta(z_1, e \mid z_2) + \log p_\theta(z_2) - \log q_\phi(z_1, d \mid z_2, x) - \log q_\phi(z_2 \mid x) </code></p>
+<p><strong>异常分数</strong>（推理时）：</p>
+<p><code> AS = - \frac{1}{M \cdot W} \sum_{x_i \in x_o} \mathbb{E}_{q_\phi(z_1, z_2 \mid \tilde{x})} \log p_\theta(x_i \mid z_1, z_2) </code></p>
+<p><strong>与传统方法的差异</strong>：</p>
+<ul>
+<li>与 OmniAnomaly 相比：InterFusion 显式分离 inter-metric / temporal 两个嵌入，并配套解释方法。</li>
+<li>与 MSCRED 相比：MSCRED 用矩阵签名（signature matrix）做确定性重构，无法处理"指标间关系可能反向"的复杂情况；InterFusion 用 HVAE 概率建模更灵活。</li>
+<li>与 VAE 变体（VAEpro、USAD）相比：InterFusion 通过 HVAE 同时捕获 inter-metric 与 temporal 信息。</li>
+</ul>
+<h2>五、算法详解（Algorithm）</h2>
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li><strong>输入</strong>：多元时序 x ∈ R^(M×N)，M 个指标，N 个时间戳，滑窗长度 W。</li>
+<li><strong>输出</strong>：每个时间点的异常分数 AS；以及每个时间点对应的"最异常指标"集合。</li>
+</ul>
+<h3>2. 核心模块</h3>
+<ul>
+<li><strong>Variational Net（q-net）</strong>：x → Conv1D → z2 → Deconv1D → d → SRNN+Real NVP → z1。</li>
+<li><strong>Generative Net（p-net）</strong>：z2 → SRNN → e → Deconv1D → x̃；z1 → 拼接 → 重构 x。</li>
+<li><strong>Prefiltering VAE</strong>：预训练 z2 与 d。</li>
+<li><strong>MCMC 解释器</strong>：算法 1，迭代地把低重构概率点视作"缺失"并插补。</li>
+</ul>
+<h3>3. 伪代码</h3>
+<pre><code># 训练阶段
+pretrain_filtering_vae(x_train)        # 预训练 Prefiltering VAE
+for epoch in range(E):
+    z2 = conv1d(x_window)              # 沿时间压缩
+    d = deconv1d(z2)                   # 辅助重构
+    z1 = srnn_with_realnvp(d)          # 沿指标压缩
+    x_hat = generate(z1, z2, e)        # 重建
+    loss = -elbo(x_window, x_hat, z1, z2, e, d)
+    loss.backward()
+    optimizer.step()
+
+# 推理阶段（异常检测 + 解释）
+def detect_and_interpret(x_window):
+    r0 = reconstruction_probability(x_window)  # 原始每个维度重构概率
+    b = baseline                                # 训练集 Q1 分位数均值
+    np = count(r0 &lt; b)
+    n, n_init, n_inc = init, beta_init * np, beta_inc * np
+    rlist = []
+    while not (ra &gt;= b or n &gt; np):
+        xm = top_n(x_window, r0, n)             # 把低重构概率的点视为缺失
+        xo = x_window - xm
+        for s in range(S):                      # MCMC 插补 S 次
+            z1, z2 = sample_q(xo, xm)
+            xo_rec, xm_rec = decode(z1, z2)
+            x_window = (xo_rec, xm_rec)         # 更新
+        ra = mean_recon_prob(x_window)          # 用更新后的输入计算平均重构概率
+        rlist.append(ra)
+        n += n_inc
+    x_tilde = x_window with highest ra
+    AS = -mean_recon_prob_per_dim(x_tilde)
+    return AS</code></pre>
+<h3>4. 关键数学</h3>
+<ul>
+<li>ELBO 展开：详见上文公式。</li>
+<li>Real NVP 在 z1 上做可逆仿射变换以增强表达力。</li>
+<li>MCMC 步中，q(d|z2) 与 p(e|z2) 共享 Deconv1D 参数，可以对消（详见论文 Eq. 3-4）。</li>
+</ul>
+<h3>5. 复杂度分析</h3>
+<ul>
+<li>单次前向：O(M·W·(隐变量维度))，与 VAE 同一量级。</li>
+<li>解释阶段 MCMC 需 S 次解码，最多 np/n_init 次循环，在 SWaT 上可在秒级完成。</li>
+</ul>
+<h3>6. 训练与推理</h3>
+<ul>
+<li><strong>训练</strong>：无监督，仅用正常 / 训练时序；用 Adam + SGVB 估计器优化 ELBO。</li>
+<li><strong>推理</strong>：滑窗 W 输入，对窗口最后一个点输出 AS，并按段聚合检测异常段。</li>
+</ul>
+<h3>7. 示例</h3>
+<p>SWaT 数据集上，InterFusion 对某段异常（如传感器值突升）的输出 AS 会在该传感器所在维度上明显高于其他维度，运维人员即可直接定位到该传感器为最异常指标。</p>
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[原始 MTS x] --> B[预处理: 滑动窗口]
+    B --> C[Variational Net]
+    C --> D[Conv1D 沿时间压缩]
+    D --> E[z2: temporal 嵌入]
+    E --> F[Deconv1D: 辅助重构 d]
+    F --> G[Prefiltering 滤除时序异常]
+    G --> H[SRNN + Real NVP 沿指标压缩]
+    H --> I[z1: inter-metric 嵌入]
+    I --> J[Generative Net]
+    J --> K[重建 x_hat]
+    K --> L[计算重构概率 r0]
+    L --> M[MCMC 异常解释]
+    M --> N[每个维度的最终 AS]
+    N --> O[检测异常 + 定位最异常指标]
+</div>
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[输入 MTS] --> S2[预训练 Prefiltering VAE]
+    S2 --> S3[主模型训练 HVAE]
+    S3 --> S4[在线检测: 滑窗推理]
+    S4 --> S5[得到原始重构概率 r0]
+    S5 --> S6{ra ≥ b?}
+    S6 -- 否 --> S7[Top-n 点视为 xm]
+    S7 --> S8[MCMC 插补 S 次]
+    S8 --> S9[更新 x 为 x_tilde]
+    S9 --> S10[计算 ra]
+    S10 --> S6
+    S6 -- 是 --> S11[输出 AS 异常分数]
+    S11 --> S12[段级聚合 + 指标级解释]
+</div>
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 双视图嵌入（Two-view Embedding）</strong>：沿时间和指标两个"视图"分别压缩 MTS，避免传统 HVAE 在 MTS 上"时间错位"问题。</li>
+<li><strong>+ 层次化结构 + Prefiltering</strong>：让 inter-metric 嵌入在 temporal 信息指导下学习，又通过预训练 VAE 抑制过拟合到异常。</li>
+<li><strong>+ MCMC-based 异常解释</strong>：把"异常点污染潜变量"这一经典 VAE 痛点转化为算法机会，用迭代插补估计"正常态"重构，再得到可信的指标级贡献。</li>
+<li><strong>+ 段级评估指标</strong>：与运维人员的实际操作习惯对齐，避免点级评估中"对了一点点就算对"的过乐观。</li>
+<li><strong>+ 大规模实验 + 工业部署</strong>：4 个真实数据集（SWaT、WADI、SMD、新发布的 ASD），平均 F1 0.94，并已在某大型互联网公司部署。</li>
+</ul>
+<h2>九、实验与结果（Experiments）</h2>
+<p><strong>数据集</strong>：</p>
+<ul>
+<li><strong>SWaT</strong>：新加坡公用事业局公开的水处理厂数据集。</li>
+<li><strong>WADI</strong>：水分配数据集，118 个指标，复杂互相关。</li>
+<li><strong>SMD</strong>（Server Machine Dataset）：5 周服务器指标，OmniAnomaly 发布。</li>
+<li><strong>ASD</strong>（Application Server Dataset）：本文新发布的某大型互联网公司应用服务器监控数据。</li>
+</ul>
+<p><strong>Baseline</strong>：LSTM-NDT、MSCRED、MAD-GAN、OmniAnomaly、DSANet、USAD、VAEpro。</p>
+<p><strong>主要指标</strong>：</p>
+<ul>
+<li><strong>异常检测</strong>：best-F1（点级 + 段级 + point-adjust）。</li>
+<li><strong>异常解释</strong>：HitRate@P%（被识别为最异常指标的前 P% 中包含真实根因指标的比例）。</li>
+</ul>
+<p><strong>关键结果数字</strong>（Table 1，Average best-F1）：</p>
+<table><tr><th>方法</th><th>SWaT</th><th>WADI</th><th>SMD</th><th>ASD</th><th>Avg</th></tr><tr><td>LSTM-NDT</td><td>0.8133</td><td>0.5067</td><td>0.7687</td><td>0.4061</td><td>0.6237</td></tr><tr><td>MSCRED</td><td>0.8346</td><td>0.5469</td><td>0.8252</td><td>0.5948</td><td>0.7004</td></tr><tr><td>MAD-GAN</td><td>0.8431</td><td>0.7085</td><td>0.8966</td><td>0.6325</td><td>0.7702</td></tr><tr><td>OmniAnomaly</td><td>0.7344</td><td>0.7927</td><td>0.9628</td><td>0.8344</td><td>0.8311</td></tr><tr><td>DSANet</td><td>0.8924</td><td>0.8739</td><td>0.9630</td><td>0.8740</td><td>0.9008</td></tr><tr><td>USAD</td><td>0.8227</td><td>0.4275</td><td>0.9024</td><td>0.7987</td><td>0.7378</td></tr><tr><td>VAEpro</td><td>0.8369</td><td>0.8200</td><td>0.8693</td><td>0.8522</td><td>0.8446</td></tr><tr><td>**InterFusion**</td><td>**0.9280**</td><td>**0.9103**</td><td>**0.9817**</td><td>**0.9531**</td><td>**0.9433**</td></tr></table>
+<ul>
+<li>解释精度（HitRate）平均 0.87，比 SOTA 高至少 0.07。</li>
+</ul>
+<p><strong>消融实验</strong>（论文 Table 5）：去掉 hierarchical、two-view、prefiltering、FLOW（Real NVP）、MCMC-interp 任一组件都会显著降低 F1，说明每个设计点都必要。</p>
+<p><strong>效率分析</strong>：在 SWaT 上每 1024 个时间点检测时间约 1 秒（GPU），相比 OmniAnomaly 推理成本相当，显著低于 MSCRED。</p>
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>Web 应用服务器监控</strong>：多指标异常检测，定位最异常指标（CPU、内存、连接数）以加速排障。</li>
+<li><strong>水处理 / 工业控制</strong>：SWaT、WADI 等数据集场景，识别传感器级异常。</li>
+<li><strong>多机房服务器集群</strong>：MTS 反映集群整体状态，InterFusion 给出"哪几台机器的几个指标最异常"。</li>
+<li><strong>金融交易系统</strong>：同时监控成百上千个指标的时间序列，识别异常段并定位根因指标。</li>
+<li><strong>IoT 设备监控</strong>：传感器互相关建模，对设备群组做异常检测。</li>
+</ul>
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>paper-INFOCOM21-cfp</code>（CTF）也是面向多元时序异常检测，但侧重 coarse-to-fine 模型迁移。</li>
+<li><code>马明华atc21_JumpStarter</code> 也是多元时序异常检测，侧重 cold-start 场景，可与 InterFusion 互补做"冷启动 → 在线学习"。</li>
+<li><code>PID6423661</code>（GMVAE）在 VAE 上做高斯混合先验，可作为 z 的先验替换，扩展 InterFusion。</li>
+<li><code>share_file</code>（VAEPP）的 pull-back 先验也可作为 z2 的先验替代。</li>
+</ul>
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>MTS（Multivariate Time Series）</strong>：多元时序。</li>
+<li><strong>Inter-metric dependency</strong>：同一时间戳下不同指标之间的关系。</li>
+<li><strong>Temporal dependency</strong>：同一指标在时间上的依赖。</li>
+<li><strong>HVAE（Hierarchical Variational Autoencoder）</strong>：层次化 VAE。</li>
+<li><strong>Real NVP</strong>：一种 normalizing flow 实现的灵活后验。</li>
+<li><strong>ELBO</strong>：Evidence Lower Bound，VAE 训练目标。</li>
+<li><strong>Prefiltering</strong>：用预训练 VAE 滤除时序异常的策略。</li>
+<li><strong>MCMC Imputation</strong>：蒙特卡洛插补，迭代用 VAE 估计"缺失点"的过程。</li>
+<li><strong>Point-adjust</strong>：段级评估方法。</li>
+<li><strong>HitRate@P%</strong>：前 P% 候选中包含真值的比率。</li>
+</ul>
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>OmniAnomaly (KDD 2019) — 用随机递归 VAE 做 MTS 异常检测。</li>
+<li>MSCRED (AAAI 2019) — 用矩阵签名 + ConvLSTM。</li>
+<li>DSANet (IJCAI 2019) — Dual Self-Attention Network。</li>
+<li>USAD (KDD 2020) — UnSupervised Anomaly Detection。</li>
+<li>VAE 经典：Kingma & Welling 2014。</li>
+<li>Real NVP：Dinh et al. 2017。</li>
+<li>SMD 数据集、SWaT / WADI 数据集。</li>
+<li>代码与数据：论文 Appendix C.1 给出开源链接。</li>
+</ul>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

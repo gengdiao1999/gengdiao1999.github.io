@@ -1,0 +1,1102 @@
+                    Fast and Cautious: Leveraging Multi-path Diversity for
+                           Transport Loss Recovery in Data Centers
+                                                                                                       ∗
+      Guo Chen1,2 , Yuanwei Lu3,2 , Yuan Meng1 , Bojie Li3,2 , Kun Tan2 , Dan Pei1 , Peng Cheng2 ,
+          Layong (Larry) Luo2 , Yongqiang Xiong2 , Xiaoliang Wang4 , and Youjian Zhao1
+    1 Tsinghua National Laboratory for Information Science and Technology, Tsinghua University,
+       2 Microsoft Research, 3 University of Science & Technology of China, 4 Nanjing University
+
+                             Abstract                              tion control algorithm (e.g., [1, 7]), the network con-
+   To achieve low TCP flow completion time (FCT) in                gestion has been greatly mitigated (e.g., from 1% to
+data center networks (DCNs), it is critical and challeng-          0.01% [6]). But it still cannot be eliminated [7, 8]. Be-
+ing to rapidly recover loss without adding extra conges-           sides congestion, packets may also get lost due to fail-
+tion. Therefore, in this paper we propose a novel loss             ure (e.g., malfunctioning hardware [3]). While normally
+recovery approach FUSO that exploits multi-path diver-             hardware-induced loss rate is low (∼0.001%) [3], the
+sity in DCN for transport loss recovery. In FUSO, when             rate can exceed 1% when hardware does not function
+a multi-path transport sender suspects loss on one sub-            properly. The reason for malfunctioning hardware is
+flow, recovery packets are immediately sent over another           complex. It can come from ASIC deficits, or simply due
+sub-flow that is not or less lossy and has spare conges-           to aging. Although the overall instances of malfunction-
+tion window slots. FUSO is fast in that it does not need           ing hardware are small, once it happens, it usually takes
+to wait for timeout on the lossy sub-flow, and it is cau-          hours or days to detect and mitigate [3].
+tious in that it does not violate congestion control algo-            We show, both analytically and experimentally, that
+rithm. Testbed experiments and simulations show that               even a moderate rise of loss rate (e.g., to 1%) can already
+FUSO decreases the latency-sensitive flows’ 99th per-              cause more than 1% of flows to hit RTOs (§2), and there-
+centile FCT by up to ∼82.3% in a 1Gbps testbed, and up             fore greatly increases the 99th percentile of flow FCT.
+to ∼87.9% in a 10Gpbs large-scale simulated network.               Thus, we need a more robust transport that can ensure
+                                                                   low tail FCT even when facing this adverse situation with
+1     Introduction                                                 lossy hardware. Previously, several techniques have been
+   In recent years, large data centers have been built at an       proposed to reduce TCP RTOs by adding more aggres-
+unforeseen rate and scale worldwide. Each data center              siveness in loss recovery [4]. These schemes, originally
+may contain 100K servers, interconnected together by a             designed for the Internet, have not been well tested in a
+large data center network (DCN) consisting of thousands            DCN environment, where congestion may be highly cor-
+of network equipments e.g., switches and links. Mod-               related, i.e., incast. Therefore, they are facing a difficult
+ern applications hosted in DCN care much about the tail            dilemma: if being too aggressive, this additional aggres-
+flow completion time (FCT) (e.g., 99th percentile). For            siveness may offset the effect of the fine-tuned conges-
+example, in response to a user request, a web application          tion control algorithm for DCN and induce congestion
+(e.g., Bing, Google, Facebook) often touches computa-              losses; Otherwise, being too timid would still cause de-
+tion or memory resources of hundreds of machines, gen-             layed tail FCT.
+erating a large number of parallel latency-sensitive flows
+                                                                      In this paper, we advocate to utilize multiple parallel
+within the DCN. The overall application performance is
+                                                                   paths, which are plenty in most existing DCN topolo-
+commonly governed by the last completed flows [1, 2].
+                                                                   gies [6, 9–12], to perform faster loss recovery, with-
+Therefore, the application performance will be greatly
+                                                                   out adding more congestion. To this end, we present
+impaired if the network is lossy, as the tail FCT of TCP
+                                                                   Fast Multi-path Loss Recovery (FUSO), which employs
+flows may greatly suffer from retransmission timeouts
+                                                                   multiple distinct paths for data transmission (similar
+(RTO) [3, 4] under lossy condition.
+                                                                   to MPTCP [13–15]). FUSO fundamentally avoids the
+   Unluckily, packet losses are not uncommon even
+                                                                   aforementioned dilemma of single-path TCP enhance-
+in well-engineered modern datacenter networks (§2.1).
+                                                                   ments [4]. On one hand, FUSO strictly follows TCP con-
+Conventionally, most of packet losses are due to buffer
+                                                                   gestion control algorithm which is well tuned for existing
+overflow caused by congestion, e.g., incast [5, 6]. How-
+                                                                   DCN. That is, a packet can leave the sender only when
+ever, with the increasing deployment of the Explicit Con-
+                                                                   the TCP congestion window allows. Therefore, FUSO
+gestion Notification (ECN) and fine-tuned TCP conges-
+                                                                   will behave equally aggressively as TCP flows (or pre-
+    ∗ Dan Pei is the corresponding author.                         cisely MPTCP flows). On the other hand, FUSO sender
+
+
+                                                               1
+                                                                           1                                0.4
+will proactively (immediately) recover potential packet                  0.8                                0.3
+                                                                         0.6
+
+
+
+
+                                                                                                    Ratio
+loss in a few paths (usually the “bad” paths) using other
+
+
+
+
+                                                                   CDF
+                                                                                                            0.2
+                                                                         0.4
+paths (usually the “good” paths). By exploiting the diver-               0.2                                0.1
+                                                                           0                                 0
+sity of these paths, FUSO can keep the tail FCT low even                   0.01      0.1        1                 level0   level1   level2   level3
+                                                                                  Loss Ratio                                 Location
+with malfunctioning hardware. This behavior is funda-             Figure 1: Loss rate and location distribution of lossy links (loss
+                                                                  rate > 1%) in a production DCN. Level0-3 denote server↔ToR,
+mentally different from MPTCP, where each sub-flow is             ToR↔Agg, Agg↔Spine, and Spine↔Core, respectively.
+normally responsible to only recover its own losses. Al-
+though MPTCP provides an excellent performance for                   4) We implement FUSO in Linux kernel with ∼900
+long flows’ throughput, it may actually hurt the tail FCT         lines of code (available at https://github.com/
+of small flows compared to normal TCP (more discus-               1989chenguo/FUSO). Experiment results show that
+sion in §2.4).                                                    FUSO’s dynamic speculation-based loss recovery adapts
+                                                                  to various loss conditions well. It decreases the latency-
+   Particularly, FUSO conducts proactive multi-path loss
+                                                                  sensitive flows’ 99th percentile FCT by up to ∼82.3% in
+recovery as follows. When a sub-flow has no more new
+                                                                  an 1Gbps testbed, and up to ∼87.9% in a 10Gpbs large-
+data to send, FUSO tries to utilize this sub-flow’s spare
+                                                                  scale simulated network.
+resources permitted by transport congestion control to
+do proactive loss recovery on another sub-flow. FUSO              2 Fighting Against Packet Loss
+speculates a path status from the information already             2.1 Packet Loss in DCN
+recorded in the transport stack (e.g., packet retransmis-            We first measure the attributes of packets loss in DCN,
+sion). Then it proactively transmits recovery packets             using Netbouncer within a Microsoft Azure’s production
+through those good paths, to protect those packets sus-           data center. NetBouncer is a service deployed in Mi-
+pected to be lost in the bad paths. By doing this, there          crosoft data centers for measuring link status. It is an
+is no need to wait for bad paths to recover loss by them-         end-host and switch joint solution and employs an active
+selves which may cost a rather long time (e.g., rely on           probing mechanism. End-hosts inject probing packets
+timeout). Note that, because FUSO adds no aggressive-             destined to network switches via IP-in-IP tunneling and
+ness to congestion control, even when loss happens at the         switches bounce back the packets to the endhosts. It is an
+edge (e.g., incast) where no path diversity could be uti-         always-on service and the probing is done periodically.
+lized, FUSO can still gracefully bound the redundancy             We have measured the packet loss in the data center for
+incurred by proactive loss recovery, and offer a good per-        five days during December 1st-5th, 2015. The data cen-
+formance (§5.2.3). The major contributions of the paper           ter has four layers of switches, top-of-rack (ToR), Aggre-
+are summarized as follows.                                        gation (Agg), Spine and Core from bottom to top.
+   1) We measure the attributes of packets loss in a Mi-             Loss is not uncommon: In our operation experience,
+crosoft’s production DCN. Then, through analysis and              we find that although the portion of lossy links is small,
+testbed experiments, we quantify the impact of packet             they are not uncommon (also revealed in [3]). We de-
+loss on TCP FCT in DCN for the first time. We show                fine those links with loss rate (measured per hour) greater
+that even a moderate rise of loss rate (e.g., to 1%) would        than 1% as lossy links, which may greatly impair the up-
+already cause enough flows (e.g., >1%) to timeout to af-          layer application performance (§2.2). Taking one day’s
+fect the 99th percentile FCT.                                     data as an example, Fig. 1 (left part) shows the loss rate
+   2) We identify that the fundamental challenge for              distribution among all lossy links during an hour (22:00-
+transport loss recovery in DCN is how to accelerate loss          23:00). The mean loss rate of all the lossy links is ∼4%,
+recovery under various loss conditions without causing            and ∼63% of lossy links have the loss rate between 1% to
+congestion. We further show that existing loss recovery           10%. About 22% of links even have a detected loss rate
+solutions differ just in their fixed choices of aggressive-       larger than 60%, where such exceptionally high loss rate
+ness when dealing with the above challenge, and are not           maybe due to switch ASIC deficits (e.g., packet black-
+adaptive enough to deal with different loss conditions.           hole [3]). We examine all the 5 days’s data and find the
+   3) We design a novel loss transport recovery approach          loss rate distributions all very similar. It shows that al-
+that exploits multi-path diversity in DCN. In our pro-            though the portion of lossy link is small, they are the
+posed solution FUSO, when loss is suspected on one sub-           norm rather than the exception in large-scale data cen-
+flow, recovery packets are immediately sent over another          ters. Packet loss can be caused due to various reasons
+sub-flow that is speculated to be not or less lossy and           including failures and congestion.
+has a spare congestion window. However, we show that,                Location of loss: Next, we analyze the location where
+although conventional MPTCP [13–15] provides an ex-               packet loss happens. As shown in Fig. 1 (right part),
+cellent multi-path transport architecture and significantly       among all the detected lossy links, there are only ∼22%
+improves the performance for long flows, it actually hurts        of lossy links that are at the edge (server↔ToR, i.e.,
+the tail FCT for small flows.                                     level0), and ∼78% are happening in the network (above
+
+
+                                                              2
+                     0
+                    10                                                                  To understand how likely RTO may occur to a flow,
+                                         100KB (analysis)
+      Timeout Pr.
+                     −1
+                    10
+                                                                                     we take both a simple mathematical analysis (estimated
+                            100KB (testbed)                                          lower bound) and testbed experiments to analyze the
+                     −2                                         10KB (testbed)
+                    10                                                               timeout probability of a TCP flow with different flow
+                                                       10KB (analysis)
+                     −3                                                              sizes and different loss rates. We consider one-way ran-
+                    10 −3                       −2                         −1
+                      10                      10
+                                          Packet Loss Rate
+                                                                         10          dom loss condition here for simplicity, but the impact
+Figure 2: Timeout probability of various flows passing a path with                   on TCP performance and our FUSO scheme are by no
+different random packet loss rate.
+                                                                                     means limited to this loss pattern (see §5).
+ToR, i.e., level1-3). About 22%, 24%, 25% and 29%                                       Let’s first assume the network path has a loss proba-
+of lossy links are located respectively at server↔ToR,                               bility of p. Assuming the TCP sender needs k DACKs
+ToR↔Agg, Agg↔Spine and Spine↔Core.                                                   to trigger fast recovery, any of the last k packets get-
+   In summary, even in well-engineered modern data                                   ting lost will lead to an RTO. This tail loss probability is
+center networks, packet losses are inevitable. Although                              ptail = 1 − (1 − p)k . For standard TCP, k = 3, but recent
+the overall loss rate is low, the packet loss rate in some ar-                       Linux kernel which implement’s early retransmit [19] re-
+eas (e.g., links) can exceed several percents, when there                            duces k to 1 at the end of the transaction. Therefore, if
+are failures such as malfunctioning hardware or severe                               we consider early retransmit, the tail loss probability is
+congestions. Moreover, most losses happen in the net-                                simply p. The whole window loss probability can eas-
+work instead of the edge.                                                            ily be derived as pwin = pw , where w is the TCP win-
+2.2                  Impact of Packet Loss                                           dow size. For retransmission loss, clearly, the proba-
+   Once a packet gets lost in the network, TCP needs to                              bility that both the original packet and its retransmis-
+recover it to provide reliable communication. There are                              sion are lost is p2 . Let x be the number of packets in
+two existing loss detection and recovery mechanisms in                               a TCP flow. The probability that the flow encounters at
+TCP 1 : fast recovery and retransmission timeout (RTO).                              least one retransmission loss is pretx = 1 − (1 − p2 )x . In
+Fast recovery detects a packet loss by monitoring dupli-                             summary, the timeout probability of the flow should be
+cated ACKs (or DACKs) and starts to retransmit an old                                pRT O ≥ max(ptail , pwin , pretx ). The solid lines in Fig. 2
+packet once a certain number (i.e., three) of DACKs have                             show the analyzed lower bound timeout probability of
+been received. If there are not enough DACKs, TCP has                                a TCP flow with different flow sizes under various loss
+to rely on RTO and retransmits all un-ACKed packets                                  rates. Here, we consider the early retransmit (k = 1).
+after the timeout. To prevent premature timeouts and                                    To verify our analysis, we also conduct a testbed ex-
+also limited by the kernel timer resolution, the RTO value                           periment to generate TCP flows between two servers. All
+is set rather conservatively, usually several times of the                           flows pass through a path with one-way random loss.
+round-trip-time (RTT). Specifically, in a production data                            Netem [20, 21] is used to generate different loss rate on
+center, the minimum RTO is set to be 5ms [1,3] (the low-                             the path. More details about the testbed settings can be
+est value supported in current Linux kernel [16]), while                             found in §4.2 and §5. The dotted lines in Fig. 2 shows
+the RTT is usually hundreds of µs [1, 3, 16]. As a con-                              the testbed results, which verify that our analysis serves
+sequence, for a latency-sensitive flow, which is usually                             as a good lower bound of the timeout probability.
+small in size, encountering merely one RTO would al-                                    There are a few observations. Firstly, for tiny flows
+ready increase its completion time by several times and                              (e.g., 10KB), the timeout probability linearly grows with
+cause unacceptable performance degradation.                                          the random loss rate. This is because the tail loss proba-
+   Therefore, the core issue in achieving low FCT for                                bility dominates. However, a tiny loss probability would
+small latency-sensitive flows when facing packet losses                              affect the tail of FCT. For example, a moderate rise of
+is to avoid RTO. However, current TCP still has to rely                              the probability to 1% would cause a timeout probability
+on RTO to recover from packet loss in the following three                            larger than 1%, which means the 99th percentile of FCT
+cases [4, 17, 18]. i) The last packet or a series of consec-                         would be greatly impacted. Secondly, when the flow size
+utive packets at the tail of a TCP flow are lost (i.e., tail                         increases, e.g., ≥100KB, the retransmission loss may
+loss), where the TCP sender cannot get enough DACKs                                  dominate, especially when the random hardware loss rate
+to trigger fast recovery and will incur an RTO. ii) A                                is larger than 1%. We can see a clear rise in timeout prob-
+whole window worth of packets are lost (i.e., whole win-                             abilities for the flows with 100KB in Fig. 2. In summary,
+dow loss). iii) A retransmitted packet also gets lost (i.e.,                         we conclude that a small random loss rate (i.e., >1%)
+retransmission loss).                                                                would already cause enough flows to timeout to affect
+    1 Many production data centers also use DCTCP [1] as their network
+                                                                                     the 99th percentile of FCT. This can also explain why a
+transport protocol. DCTCP has the same loss recovery scheme as TCP.
+                                                                                     malfunctioning switch in the Azure datacenter that drops
+Thus, for ease of presentation, we use TCP to stand for both TCP and                 ∼2% of the packets causes great performance degrada-
+DCTCP while discussing the loss recovery.                                            tion of all the services that traverse this switch [3].
+
+
+                                                                                 3
+2.3    Challenge for TCP Loss Recovery                             tion and failure conditions. When a few paths are expe-
+   To prevent timeout, when there are not enough re-               riencing failure such as random loss or black-hole, the
+turned DACKs to trigger fast recovery, prior work (e.g.,           rest paths (i.e., the majority) may remain in a good state
+[4]) adds aggressiveness to congestion control to do loss          without failure loss. Also, caused by uneven load bal-
+recovery before RTO. However, deciding the aggressive-             ance [25], some paths may be heavily congested to drop
+ness level, i.e., how long to wait before sending recov-           packets while other paths are in light load.
+ery packets, to adapt to complex network conditions in                One might think that using multi-path transport proto-
+DCNs is a daunting task.                                           col such as MPTCP [13–15] is able to address the chal-
+   As introduced before, congestion and failure loss co-           lenge above. On the contrary, although MPTCP provides
+exist in DCN. Congestion losses are very bursty and of-            excellent performance for long flows, it actually hurts the
+ten lead to multiple consecutive packet losses [1, 4, 5, 7].       tail FCT of small latency-sensitive flows under lossy con-
+For congestion loss, recovery should be delayed for                dition (see §5). It is because that, while MPTCP explores
+enough time before being sent out after the original pack-         multiple paths, each of its paths normally has to recover
+ets. If a recovery packet is sent too fast before conges-          loss by itself. Therefore, its overall completion time de-
+tion disappears, the recovery packet may get dropped by            pends on the last completed sub-flow on the worst path.
+the overflowed buffer and also worsen the congestion.              Simply exploring multiple paths actually increases the
+However, for some failure loss such as random drop, re-            chance to hit the bad paths. Therefore, MPTCP’s lack of
+covery packets should be sent as fast as possible to ac-           an effective loss recovery mechanism leads to a long tail
+celerate the recovery process. Otherwise the delay for             FCT especially for small flows.
+sending recovery packets already increases the FCT of                 To this end, we propose Fast Multi-path Loss
+latency-sensitive flows. Facing this difficult dilemma,            Recovery (FUSO), which leverages multi-path diversity
+previous schemes choose different aggressiveness levels            for transport loss recovery. FUSO fundamentally avoids
+in an ad-hoc manner, from a conservative 2RTT in Tail              the aforementioned dilemma (§2.3), by utilizing those
+Loss Probe (TLP) [22], modestly conservative 1/4 RTT               paths in good status to proactively (or immediately) con-
+in TCP Instant Recovery (TCP-IR) [23], to a very ag-               duct loss recovery for bad paths. First, FUSO is cautious
+gressive zero time in Proactive [4]. Unfortunately, the            in that it strictly follows TCP congestion control algo-
+fixed settings of aggressiveness levels make above exist-          rithm that is tuned for existing DCN, adding no aggres-
+ing schemes incapable of adapting to complex loss con-             siveness. Second, FUSO is fast in that the sender will
+ditions: different loss characteristics under either con-          proactively recover potential packet loss in bad paths us-
+gestion loss, failure loss or both.                                ing good paths before timeout. As shown before, most
+   Essentially, we identify that the fundamental challenge         losses happen in the network (§2.1), which gives plenty
+for transport loss recovery in DCN is how to acceler-              of opportunities for FUSO to leverage multi-path diver-
+ate loss recovery as soon as possible, under various               sity. On the other hand, sometimes packet losses may
+loss conditions without causing congestion. Single-path            happen at the edge (e.g., incast) due to congestion, where
+loss recovery is not a promising direction to address this         there is no path diversity that can be utilized for multi-
+challenge because the recovery packets have to be sent             path loss recovery. Thanks to strictly following the con-
+over the same path that is under various loss conditions,          gestion control, FUSO can adaptively throttle its proac-
+the exact nature (congestion-induced, failure-induced, or          tive loss recovery behaviour and be conservative to avoid
+both) of which are often unclear to the sender. One might          worsening the congestion (see §5.2.3).
+think that through explicitly identifying congestion loss             Note that there is a mechanism named opportunistic
+using schemes such as CP [24], transport can distinguish           retransmission [14] in MPTCP, which may also trigger
+congestion and failure loss with the help of switches.             proactive retransmission through alternative good sub-
+However, there lacks a study on such design and its reli-          flows similar to the scheme in our FUSO solution. Al-
+ability under hardware failure conditions still remains to         though sharing the same high-level idea which is uti-
+be an open question in complex production DCNs.                    lizing path diversity, it addresses different problems
+2.4    Utilizing Multi-path                                        from FUSO. MPTCP opportunistic retransmission is de-
+   Then it is natural to raise a question: why not try an-         signed for wide-area network (WAN) to maintain a high
+other good path when loss is speculated on one “bad”               throughput and minimize the memory (receive or send
+path? Actually, current DCN environment offers us a                buffer) usage, to cope with severe reordering caused by
+good chance to design a better loss recovery scheme                diverse delay of multiple paths. It is triggered only when
+based on multi-path. Current DCN provides many par-                the new data cannot be sent because the receive window
+allel paths (e.g., 64 or more) between any two nodes by            or the send buffer is full. It immediately retransmits the
+dense interconnected topologies [6,9–12]. Usually, these           oldest un-ACKed packet through alternative good paths
+paths have a big loss diversity due to different conges-           which have the smallest RTT. Although opportunistic re-
+
+                                                               4
+Algorithm 1 Proactive multi-path loss recovery.                           3.2    FUSO Sender
+1: function TRY SEND RECOVERIES( )                                           The FUSO sender’s proactive multi-path loss recovery
+2:    while BytesInFlightTotal < CW NDTotal and no new data do            process can be summarized as Algo. 1. Specifically, we
+3:        return ← SEND A RECOVERY( )
+4:        if return == NOT SEND then                                      insert a function TRY SEND RECOVERIES() in the trans-
+5:             break                                                      port stack, monitoring the changes of BytesInFlightTotal ,
+1: function SEND A RECOVERY( )                                            CW NDTotal and the application data. This function needs
+2:    FIND WORST SUB-FLOW( )                                              to be inserted into two positions: i) after all the data de-
+3:    FIND BEST SUB-FLOW( )
+4:    if no worst found or no best sub-flow found then
+                                                                          livered from the application has been pushed into the
+5:        return NOT SEND                                                 transport send buffer and sent out, which indicates that
+6:    recovery packet←one un-ACKed packet of the worst sub-flow           there is currently no more new data delivered from the
+7:    Send the recovery packet through the best sub-flow                  up-layer application; ii) after an ACK is received and the
+8:    BytesInFlightTotal += Sizerecovery packet
+                                                                          transport status (e.g., BytesInFlightTotal , CW NDTotal )
+                                                                          has been changed. More implementation-related details
+transmission helps to achieve a high throughput for long                  are discussed in §4.1. Within this function, the sender
+flows in WAN scenario, it offers little help on maintain-                 calls the function SEND A RECOVERY() to send a recov-
+ing a low FCT under lossy condition in DCN scenario                       ery packet if the following conditions are both satisfied:
+where paths often have very similar delay. More im-                       i) there is spare window capacity allowed by congestion
+portantly, in DCN those latency-sensitive flows are of-                   control, and ii) all new data has been sent out.
+ten with too small sizes (e.g., <100KB) to cause severe                      In the function SEND A RECOVERY(), FUSO sender
+reordering, which cannot eat up the end-host’s buffer.                    first calls the function FIND WORST SUB-FLOW() and
+Therefore, these small flows cannot trigger the oppor-                    FIND BEST SUB-FLOW() to find the current worst and
+tunistic retransmission.                                                  best sub-flows. The worst sub-flow is selected only
+                                                                          among those who have un-ACKed data, and the best sub-
+3     FUSO Design
+                                                                          flow is selected only among those whose congestion win-
+3.1      Overview                                                         dow (cwnd) has spare spaces permitted by congestion
+   We now introduce FUSO. FUSO is built on top of                         control. We defer the discussion on how to find the worst
+the multi-path transport, in which a TCP flow is divided                  and best paths to §3.2.1.
+into multiple sub-flows. Note that FUSO focuses on                           If currently there is no worst or no best sub-flow,
+multi-path loss recovery rather than multi-path conges-                   FUSO stops generating recovery packets for this round.
+tion control. Particularly, in this paper, we build FUSO                  Next, if the worst and best sub-flows are found, a recov-
+on MPTCP2 [13–15]. ECMP [26] or SDN methods (e.g.,                        ery packet for the worst sub-flow is generated. Because
+XPath [27]) can be used to implicitly or explicitly map                   FUSO conducts proactive loss recovery before a packet
+the sub-flows3 onto different physical paths in DCN.                      is detected as lost either by DACKs or RTO, we have
+   The core scheme of FUSO is that, by strictly follow-                   to guess which packet is most likely to be the lost one.
+ing the congestion control, if there is a spare congestion                FUSO infers the packet as the oldest un-ACKed packet
+window (cwnd), FUSO first tries to transmit new data.                     which has been sent out for the longest time. Thus, the
+If the up-layer application currently has no new data,                    sender proactively generates a recovery packet for one
+FUSO utilizes this transmission opportunity to proactive-                 un-ACKed packet on the worst path in the ascending or-
+ly/immediately transmit recovery packets for those sus-                   der of TCP sequence number (i.e., the oldest packet in
+pected lost (un-ACKed4 ) packets on “bad” sub-flows, by                   this path). To avoid adding too much unnecessary traffic
+utilizing “good” sub-flows. Note that FUSO does not                       to the network, an un-ACKed packet will be sent at most
+affect the existing MPTCP opportunistic retransmission                    once by the proactive loss recovery scheme in FUSO.
+mechanism triggered by full receive window. These two                        After the recovery packet is generated, FUSO sender
+mechanisms can be complementary to each other.                            sends it through the best sub-flow. Note that the recov-
+                                                                          ery packet is regarded as a new data packet for the best
+   We separately discuss the FUSO sender and receiver
+                                                                          sub-flow. The recovery packet is under the best sub-
+for better clarification. In a FUSO connection, the sender
+                                                                          flow’s congestion control, and, if it gets lost in the best
+and receiver refer to the end hosts sending data and the
+                                                                          sub-flow, it will be retransmitted as normal packets in
+ACK respectively. Both ends are simultaneously the
+                                                                          the best sub-flow using the standard TCP loss recovery.
+sender and receiver in a two-way connection.
+                                                                          However, to avoid duplicate recovery, these packets will
+    2 FUSO can also work on other multi-path transport protocols.
+                                                                          not be counted in the un-ACKed packets waiting for re-
+    3 We use ‘sub-flow’ and ‘path’ interchangeably in this Section.       covery when FUSO sender conducts fast multi-path loss
+    4 For TCP with SACK [28] enabled, un-ACKed packets refer to           recovery later. In the last step of SEND A RECOVERY(),
+those un-SACKed and un-ACKed ones.                                        BytesInFlightTotal is incremented and the conditions
+
+
+                                                                      5
+in the while loop in TRY SEND RECOVERIES() will be                 behaviour on the sub-flow-level, but directly recovery the
+checked again.                                                     lost packets on the data-level.
+3.2.1 Path Selection                                                   For the best sub-flow that transmits FUSO recovery
+                                                                   packets, these packets are naturally regarded as normal
+   Whenever congestion control offers a chance to trans-
+                                                                   data packets in terms of this sub-flow’s congestion con-
+mit packets, FUSO tries to proactively recover the sus-
+                                                                   trol and original TCP loss recovery. Although protected
+pected lost packet in the currently “worst” path which
+                                                                   by them, the bad sub-flow is not aware of these recovery
+is most likely to encounter packet loss, utilizing the
+                                                                   packets, and may unnecessarily retransmit the old data
+currently “best” path which is least likely to encounter
+                                                                   packet (if lost) itself. FUSO currently chooses such a
+packet loss. Therefore, we define a metric Cl = α ·
+                                                                   simple approach to maintain the exact congestion control
+lossrate + β · lossratelast , to describe the possibility of
+                                                                   behavior and add no aggressiveness, both on individual
+packet loss happening in a sub-flow. Cl is the weighted
+                                                                   sub-flows and the overall multi-path transport flow. It
+sum of the overall packet loss rate lossrate and the most
+                                                                   needs no further coordination besides the original ACK
+recent packet loss rate lossratelast in this sub-flow. α and
+                                                                   schemes in TCP between the sender and the receiver, but
+β are the respective weight of each part. Since current
+                                                                   may incur some redundant retransmissions. A naive so-
+TCP/MPTCP retransmits a packet after detecting it as
+                                                                   lution to eliminate the redundant retransmissions may be
+lost either by DACK or RTO, FUSO uses the ratio of total
+                                                                   that the receiver proactively generates ACKs for the orig-
+retransmitted packets to the total transmitted packets as
+                                                                   inal packets in the bad sub-flow, upon receiving recov-
+the approximation of lossrate. Note that recovery pack-
+                                                                   ery packets from other good sub-flows. However, this
+ets generated by FUSO are regarded as new packets in-
+                                                                   may cause adverse interaction with congestion control.
+stead of retransmitted packets for sub-flows. lossratelast
+                                                                   Specifically, the bad sub-flow’s sender end may wrongly
+is calculated as the ratio of one to the number of trans-
+                                                                   judge the path as in a good status and increases its send-
+mitted packets from (including) the last retransmission.
+                                                                   ing rate, which may exacerbate the loss.
+   The worst sub-flow is picked among those which have
+                                                                       In order to maintain the congestion control behav-
+at least one un-ACKed packet (possibly lost), and with
+                                                                   ior and eliminate the redundant retransmissions, it may
+the largest Cl . For sub-flows which have never encoun-
+                                                                   need very complex changes to the MCTCP/TCP proto-
+tered a retransmission yet, their Cl equals zero. If all
+                                                                   cols. The sender and receiver must coordinate to decide
+sub-flows’ Cl equals zero, FUSO picks the one with the
+                                                                   whether/how it should change each sub-flow’s conges-
+largest measured RTT thus to optimize the overall FCT.
+                                                                   tion control behavior (e.g., increase/decrease how much
+   The best sub-flow is picked among those which have
+                                                                   to the cwnd), to cope with various conditions, such as
+spare cwnd, and with the smallest Cl . For sub-flows
+                                                                   i) the proactive retransmission received but the origi-
+never encountering a retransmission yet, their Cl equals
+                                                                   nal packet lost, ii) the original packet received but the
+zero and is smaller than others. If more than one sub-
+                                                                   proactive retransmission lost, iii) both packets lost, iv)
+flows have zero Cl , FUSO picks the one with the small-
+                                                                   the proactive retransmission received before the original
+est measured RTT as the best sub-flow. Note that at the
+                                                                   packet, v) the original packet received before the proac-
+initial state, some sub-flows may have never transmit-
+                                                                   tive retransmission, etc. The feasibility of such a solution
+ted any data when FUSO starts proactive loss recovery.
+                                                                   and how to design it still requires further study and is left
+Then these sub-flows’ Cl equal infinity and have the least
+                                                                   as our future work. FUSO currently chooses to trade a
+priority when FUSO selects the best sub-flow. If all sub-
+                                                                   little redundant retransmission (see §5.2.2 and 5.2.3) for
+flows’ Cl equal infinity, FUSO randomly picks one as
+                                                                   the aforementioned simple and low-cost approach.
+the best sub-flow. Note that the best and worst sub-flows
+may be the same one. Under this condition, FUSO sim-               4 Implementation and Testbed Setup
+ply transmits the recovery packets in the same sub-flow            4.1 FUSO Implementation
+after the original packets.
+                                                                      We implemented FUSO in Linux kernel 3.18 with
+3.3    FUSO Receiver                                               827 lines of code, building FUSO upon MPTCP’s latest
+   FUSO receiver is relatively simple. In multi-path               Linux implementation (v0.90) [29].
+transport protocol such as MPTCP, the receiver has a                  FUSO sender: We insert TRY SEND RECOVERIES() in
+data-level (i.e., flow-level) receive buffer and each sub-         Algo. 1 into the following positions of the sender’s trans-
+flow has a virtual receive buffer that is mapped to the            port kernel, to check whether a FUSO recovery packet
+data-level receive buffer. Upon receiving a FUSO recov-            should be sent now: 1) in function tcp sendmsg() after all
+ery packet, FUSO receiver directly inserts the recovery            the data delivered from the application has been pushed
+packet into the corresponding position of the data-level           into the send buffer; 2) in function tcp v4 rcv() after an
+receive buffer, to complete the flow transmission. The             ACK is received and the transport status (cwnd, bytes in
+FUSO recovery packets will not affect the bad sub-flows’           flight etc.) has been changed.
+
+
+                                                               6
+                                                                                                                       P1
+   In TRY SEND RECOVERIES(), FUSO detects that there                                                   ToR1            P2            ToR2
+                                                                          Rack2          Rack1                         P3
+is currently no more new data from the up-layer appli-
+cation, if the two conditions are both satisfied: i) the                     ToR2      ToR1            H1 H2      H3        H4     H5 H6
+
+data delivered from the application has all been pushed
+                                                                                                          Rack1                  Rack2
+in the send buffer; ii) the packets in the send buffer                              Figure 3: Basic topology of the testbed.
+have all been sent. If a multi-path loss recovery packet           deferred by the former lost packets in the same sub-flow.
+is allowed to be sent, FUSO sender calls the function              To solve this problem, we implement a minor modifica-
+SEND A RECOVERY() and picks one un-ACKed packets
+                                                                   tion to current MPTCP’s receiving end implementation,
+(in ascending order of sequence number) on the worst               which immediately copies the sub-flow-level OoS pack-
+sub-flow, then copies and transmits it on the best sub-            ets directly to the MPTCP data-level receive buffer. This
+flow. We utilize existing functions in MPTCP to recon-             receiving end modification is 34 lines of code.
+struct the mapping of the recovery packet’s data-level
+(i.e., flow-level) sequence number to the new sub-flow-            4.2    Testbed Setup
+level sequence number. Also, FUSO sender remembers                    We build a small 1Gbps testbed as shown in Fig. 3. It
+this packet to ensure that each un-ACKed packet is pro-            consists of two 6-port ToR switches (ToR1, ToR2) and six
+tected for at most once. In FUSO, both the formats of              hosts (H1 ∼H6) located in the two racks below the ToR
+data packets and FUSO recovery packets have no differ-             switches. There are three parallel paths between the two
+ence from those in the original MPTCP protocol. The                racks, emulating the multi-path DCN environment.
+data-level sequence number (DSN) in the existing Data                 Each host is a desktop with an Intel E7300 Core2
+Sequence Signal (DSS) option of MPTCP header can no-               Duo 2.66GHz CPU, 4GB RAM and 1Gbps NIC, and
+tify the receiver how to map this recovery packet into             runs Ubuntu 14.04 64-bit with Linux 3.18.20 kernel. We
+data-level data.                                                   use two servers to emulate the two ToR switches. Each
+                                                                   server-emulated switch is a desktop with an Intel Core
+   It is noteworthy that, besides the opportunistic retrans-
+                                                                   i7-4790 3.60GHz CPU, 32GB RAM, and 7 Intel I350
+mission introduced before, original MPTCP may also re-
+                                                                   Gigabit Ethernet NICs (one reserved for the manage-
+transmit the data packets originally delivered to one sub-
+                                                                   ment). All server-emulated switches run Ubuntu 14.04
+flow through other sub-flows under the following condi-
+                                                                   64-bit with Linux 4.4-RC7 kernel. Originally, current
+tion: if one sub-flow is judged to be dead when it encoun-
+                                                                   Linux kernel only support IP-address-based (<src,dst>
+ters certain number of consecutive timeouts, all the pack-
+                                                                   pair) ECMP [26] when forwarding packets. There-
+ets once distributed to this sub-flow will be re-injected
+                                                                   fore, we made a minor modification (8 lines of code)
+to a special flow-level sending buffer called “reinject
+                                                                   to the switches kernel, thus to enable layer-4 port-based
+queue”. Then MPTCP will redistribute these packets to
+                                                                   ECMP [26] (<src,dst,sport,dport,protocol> pair) which
+other sub-flows. This is a failover scheme to deal with
+                                                                   is widely supported by commodity switches and used in
+the case that some of its sub-flows completely fail. How-
+                                                                   production DCNs [3, 6, 16].
+ever, it is too slow (after a sub-flow is dead) to provide a
+                                                                      Flows are randomly hashed to the physical paths by
+low FCT under lossy conditions.
+                                                                   ECMP in our testbed. Each switch port buffer size is
+   FUSO receiver: The receiving process has already                128KB. The basic RTT in our testbed is ∼280µs. ECN
+been implemented in MPTCP’s original receiving logic,              is enabled using Linux qdisc RED module, with marking
+which requires no other modification. According to                 threshold set to be 32KB according to the guidance by
+the DSN in the header option, the receiver will insert             [7]. We set TCP minRTO to 5ms [1, 3]. These settings
+the multi-path loss recovery packet in the correspond-             are used in all the testbed experiments .
+ing position of the data-level receive buffer, and com-
+plete the data transmission. Note that in the current              5     Evaluation
+MPTCP’s Linux implementation, the receiver only hands                 In this section, we use both testbed experiments and
+over packets to the data-level receive buffer which are in-        ns-2 simulations to show the following key points. 1)
+sequence in the sub-flow level, and buffers the packets            Our testbed experiments show FUSO’s good perfor-
+which are out-of-sequence (OoS) in the sub-flow level in           mance under various lossy conditions, including fail-
+the sub-flow’s OoS queue. This implementation reduces              ure loss, failure & congestion loss, and congestion loss.
+the reordering computation overhead, but may severely              2) We also use targeted testbed experiments to ana-
+defer the completion time of the overall MPTCP flow.               lyze the impact of sub-flow number on FUSO’s perfor-
+Since packets may be retransmitted by other sub-flows,             mance. 3) Our detailed packet-level simulations confirm
+those packets OoS in sub-flow level may be in-sequence             that FUSO scales to large topologies.
+in the data level. As such, in-sequence data-level pack-           5.1    Schemes Compared
+ets may not be inserted to the data-level receive buffer              We compare the following schemes with FUSO in our
+even when they arrive at the receiver, because of being            testbed and simulation experiments. For the simulations,
+
+
+                                                               7
+we implement all the following schemes in ns-2 [30]                               5.2     Testbed Experiments
+simulator. For the testbed, we implement Proactive and                               Benchmark Traffic: Based on the code in [34], we
+Repflow [31] in Linux, and directly use the source codes                          develop a simple client-server application. Each client
+of other schemes.                                                                 sends requests to some randomly chosen servers for a
+   TCP: The standard TCP acting as the baseline. We en-                           certain size of data, with inter arrival time obeying the
+able the latest loss recovery schemes in IETF RFCs for                            Poisson process. There are two types of requests from
+TCP, including SACK [28], SACK based recovery [18],                               the client, 1) latency-sensitive queries with data sizes
+Limited Transmit [32] and Early Retransmission [19].                              smaller than 100KB, and 2) background requests with
+The rest of the compared schemes are all built on this                            sizes larger than 100KB. All the requests’ sizes are sam-
+baseline TCP.                                                                     pled from two real data center workloads, web-search [1]
+   Tail Loss Probe (TLP) [22]: The latest single-path                             and data-mining [10]. Each client initiates 10 long-lived
+TCP enhancement scheme using prober to accelerate loss                            transport connections (5 for latency-sensitive queries,
+recovery. TLP transmits one more packet after 2 RTTs                              and 5 for background requests) to each server, and round-
+when no ACK is received at the end of the transaction or                          robinly distributes the requests on each connection (of
+when the congestion window is full. This extra packet is                          their type) to the server. We generate different loads
+a prober to trigger the duplicate ACKs from the receiver                          through adjusting the requests’ inter arrival time. All 6
+before timeout.                                                                   hosts run both client and server processes. We separately
+   TCP Instant Recovery (TCP-IR)5 [23]: The latest                                enable the various compared schemes to serve the con-
+single-path TCP enhancement scheme using both prober                              nections for latency-sensitive queries, and use standard
+and redundancy. It generates a coded packet for every                             TCP for the rest of connections for background requests.
+group of packets sent in a time bin, and waits for 1/4 RTT                        Note that before all evaluations, we generate 100KB data
+to send it out. This coded packet protects a single packet                        to warmup each FUSO/MPTCP connection and wait for
+loss in this group providing “instant recovery”, and also                         an idle time to reset the initial window, thus to activate all
+acts like a prober as in TLP. According to the authors’                           the sub-flows. We compare the request completion time6
+recommendation [4], we set the coding timebin to be 1/2                           of those latency-sensitive queries.
+RTT and the maximum coding block to be 16.                                           Emulating failure loss: We use netem [20,21] to gen-
+   Proactive [4]: A single-path TCP enhancement                                   erate failure packet loss with different loss patterns and
+scheme to accelerate loss recovery by duplicating ev-                             loss rates. The network and edge loss are emulated by en-
+ery TCP data packet. We have implemented Proactive                                abling netem loss module on certain network interfaces
+in Linux kernel 3.18.                                                             (on the switches or hosts). Two widely-used loss patterns
+   MPTCP [15]: The state-of-the-art multi-path trans-                             are evaluated, random loss and bursty loss [35].
+port protocol. We use the latest Linux version of MPTCP                              Due to space limitation, we only present the testbed
+implementation (v0.90 [29]), which includes the oppor-                            results under random loss using web-search workload.
+tunistic retransmission mechanism [14].                                           We have evaluated FUSO under various settings, with
+                                                                                  different loss models (random and bursty [35]) using
+   RepFlow [31]: A simple multi-path latency improve-
+                                                                                  different workloads (web-search and data-mining), and
+ment scheme by proactively transmitting two duplicated
+                                                                                  FUSO consistently outperforms other schemes (reduce
+flows. We have implemented RepFlow in the application
+                                                                                  the latency-sensitive flows’ 99th percentile FCT by up to
+layer according to [31].
+                                                                                  ∼86.2% under bursty loss and data-mining traffic). All
+   For all compared schemes, the initial TCP window is                            the experiment results are from 10 runs in total, with 15K
+set to 16 [3]. Note that for FUSO and MPTCP, the initial                          flows generated in each run.
+window of each sub-flow is set to be number o16  f sub f lows ,
+which forms the same 16 initial window in total for a                             5.2.1 Failure Loss
+connection. Unless specified otherwise, we configure 4                               We first show how FUSO can gracefully handle fail-
+sub-flows for each FUSO and MPTCP connection in the                               ure loss in DCN. To avoid the interference of conges-
+testbed experiments, which offers the best performance                            tion, no background traffic is injected, and we deploy the
+for both methods in various conditions. We compare the                            clients on H4-H6 generating small latency-sensitive re-
+performance of FUSO/ MPTCP using different number                                 quests (data size < 100KB) respectively to H1-H3 with-
+of sub-flows in §5.2.4. FUSO’s path selection parameters                          out edge contention. We only focus on the failure loss in
+α, β (§3.2.1) are both set to be 0.5.                                             this experiment, and later we will show how FUSO per-
+                                                                                  forms when failure and congestion coexist. The requests
+     5 TCP-IR has published its code [33] and we successfully compiled            are generated in an average load of 10Mbps [1].
+it to our testbed hosts. However, after trying various settings, we are not
+able to get it running on our testbed environment due to some unknown                6 We use ‘flow’ and ‘request’, ‘request completion time’ and ‘FCT’
+
+reasons. As such, we evaluate TCP-IR only in simulation experiments.              interchangeably in §5.
+
+
+                                                                              8
+                           −1                                                        15                                                  −1                                                            30
+
+
+
+
+                                                              Timeout fraction (%)
+
+
+
+
+                                                                                                                                                                                Timeout fraction (%)
+                         10                                                                                                            10
+   FUSO
+   MPTCP
+                                                                                     10                                                                                                                20
+
+
+
+               FCT (s)
+
+
+
+
+                                                                                                                             FCT (s)
+   RepFlow                 −2                                                                                                            −2
+   TCP                   10                                                                                                            10
+   TLP                                                                                5                                                                                                                10
+   Proactive
+                           −3                                                                                                            −3
+                         10                                                           0                                                10                                                               0
+                          0.125 0.25    0.5     1     2   4                          0.125 0.25    0.5      1    2    4                 0.125 0.25      0.5     1     2     4                          0.125 0.25       0.5      1      2    4
+                                       lossrate (%)                                               lossrate (%)                                         lossrate (%)                                                    lossrate (%)
+                              (a) Net-loss: 99th FCT
+                                             (b) Net-loss: Timeout flows (%)                           (d) Edge-loss: Timeout flows (%)  (c) Edge-loss: 99th FCT
+Figure 4: Failure loss in the network or at the edge: 99th FCT (log scale) and timeout fraction of the latency-sensitive flows, while one
+network path is lossy or all the edge paths are lossy. Path loss rate varies from 0.125% to 4%.
+   Loss in the network: We first evaluate the condition                                                                                 −2
+                                                                                                                                              FUSO       MPTCP        RepFlow                               TCP
+                                                                                                                                                                                                            −1
+                                                                                                                                                                                                                       TLP     Proactive
+                                                                                                                                    10                                                                 10
+when failure loss happens in the network, by deliberately
+generating different loss rate for the path P1 in Fig. 3.
+
+
+
+
+                                                                                                                          FCT (s)
+
+
+
+
+                                                                                                                                                                                           FCT (s)
+                                                                                                                                                                                                            −2
+                                                                                                                                                                                                       10
+Note that the two directions of P1 both have the same
+loss rate. Fig. 4(a) and Fig. 4(b) present the 99th per-                                                                            10
+                                                                                                                                        −3
+                                                                                                                                                                                                       10
+                                                                                                                                                                                                            −3
+                                                                                                                                         0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9                                0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9
+centile FCT and the fraction of timeout ones among all                                                                                                  load                                                               load
+the latency-sensitive flows. The results show that FUSO                                                                                         (a) Avg FCT                                                        (b) 99th FCT
+                                                                                                                                         42
+
+
+
+
+                                                                                                                          Extra load
+maintains both very low 99th percentile FCT (<2.4ms)
+
+
+
+
+                                                                                                                             (%)
+                                                                                                                                         41
+and fraction of timeout flows (<0.096%), as the path loss                                                                                       FUSO
+                                                                                                                                         40
+rate varies from 0.125% to 4%. FUSO reduces the 99th                                                                                      0.1      0.2       0.3      0.4        0.5
+                                                                                                                                                                                load
+                                                                                                                                                                                                                 0.6     0.7      0.8       0.9
+
+percentile FCT by up to ∼82.3%, and the timeout frac-                                                                                       (c) Extra load in FUSO
+                                                                                                                     Figure 5: Failure & congestion loss: Average and 99th FCT (log
+tion up to 100% (no timeout occurs in FUSO), compared                                                                scale) of latency-sensitive flows, and the average extra load of all
+to other schemes. The improvement is due to the multi-                                                               FUSO flows. Each flow’s extra load is calculated by the extra bytes
+                                                                                                                     incurred by FUSO divided by the total bytes transmitted.
+path loss recovery mechanisms of FUSO, which can ex-
+plore and utilize good paths that are not lossy, and also                                                            rate. As such, FUSO reduces the 99th percentile FCT
+makes the FCT depend on the best path explored. Al-                                                                  by up to ∼80.4% compared to TCP, TLP and MPTCP.
+though MPTCP also explores multiple paths, each of its                                                               When loss rate exceeds 2%, FUSO still maintains the
+paths normally has to recover loss by itself (more de-                                                               99th FCT under 12.7ms. Although all sub-flows traverse
+tails in §2.4). Therefore, its overall completion time de-                                                           the same lossy path in this scenario, the chance that all
+pends on the last completed sub-flow on the worst path.                                                              four of them simultaneously hit the loss has been de-
+Lacking an effective loss recovery mechanism actually                                                                creased. FUSO can leverage the sub-flow which does
+lengthens the tail FCT in MPTCP, as exploring multiple                                                               not encounter loss currently to help recover lost packets
+paths actually increases the chance to hit the bad paths.                                                            in the sub-flow which hits loss at this moment. Due to the
+RepFlow offers a relatively better performance than other                                                            excessive redundancy, RepFlow and Proactive perform
+schemes by excessively duplicating every flow. How-                                                                  the best in this scenario when loss rate is high, but hurt
+ever, this way of redundancy is actually less effective                                                              the 99th FCT when the loss rate is low. Later (§5.2.3) we
+than FUSO, because each flow independently transmits                                                                 will show that this excessive load and the non-adaptive
+data with no cooperative loss recovery as in FUSO. Since                                                             redundancy ratio will substantially degrade the perfor-
+there is still a big chance for ECMP to hash the two dupli-                                                          mance of latency-sensitive flows, when the congestion is
+cated flows into the same lossy path, it makes RepFlow                                                               caused by themselves such as in the incast [5] scenario.
+have an ∼32%-64.5% higher 99th percentile FCT than                                                                   5.2.2                    Failure & Congestion Loss
+FUSO. Proactive also behaves inferiorly, suffering from
+similar problems as RepFlow. TLP performs almost the                                                                    Next we evaluate that how FUSO performs with co-
+same as TCP because it sacrifices the ability to prevent                                                             existing failure and congestion loss. We generate a 2%
+timeouts in order to keep low aggressiveness.                                                                        random loss rate on both directions of path P1, which
+                                                                                                                     is similar to a real Spine switch failure case in produc-
+   Loss at the edge: We then evaluate the extreme condi-                                                             tion DCN [3]. We deploy the aforementioned clients on
+tion when severe failure loss happens at the edge, by de-                                                            the H4-H6 and configure them to generate small latency-
+liberately generating different loss rates for all the access                                                        sensitive queries as well as background requests, to the
+links of H4-H6. We try to investigate how FUSO per-                                                                  servers randomly chosen from H1-H3. This cross-rack
+forms when sub-flows cannot leverage diversity among                                                                 traffic [13, 36] ensures that all the flows have a chance
+different physical paths. Fig. 4(c) and Fig. 4(d) show the                                                           going through the lossy network path. We inject differ-
+results. Even with all sub-flows passing the same lossy                                                              ent traffic load from light (0.1) to high (0.9), to inves-
+path, FUSO still can maintain a consistent low timeout                                                               tigate how FUSO performs from failure-loss-dominated
+fraction to be under 0.8% when the loss rate is below 1%.                                                            scenario to congestion-loss-dominated scenario.
+However, the timeout fraction of other approaches except                                                                Results: Fig. 5 shows the results. Under conditions
+RepFlow and Proactive exceeds 3.3% at the same loss                                                                  where failure and congestion loss coexist, FUSO main-
+
+
+                                                                                                                 9
+tains both very low average and 99th percentile FCT of                                      0.15
+
+
+
+
+                                                                      Completion Time (s)
+                                                                                                        FUSO        TCP
+latency-sensitive flows, from light to high load. Com-                                       0.1        MPTCP       TLP
+                                                                                                        RepFlow     Proactive
+pared to MPTCP, TCP and TLP, FUSO reduces the av-                                           0.05
+erage FCT by ∼28.2%-47.1%, and the 99th percentile
+                                                                                              0
+by ∼17.2%-80.6%. FUSO also outperforms RepFlow                                                     10         20          30            40
+                                                                                                                           Fanout (# of senders)
+                                                                                                                                                    50    60      70
+
+by ∼10%-30.3% in average and ∼20.1%-44.8% in tail,                                                                 (a) Request completion time
+due to two reasons: 1) the chance of two replicated flows                                     25
+
+
+
+
+                                                                      Extra load
+                                                                                              20                                                               FUSO
+
+
+
+
+                                                                         (%)
+in RepFlow being hashed to the same lossy path is non-                                        15
+                                                                                              10
+negligible, and 2) excessive redundancy RepFlow adds                                           5
+                                                                                                   10         20          30            40           50   60     70
+                                                                                                                               Fanout (# of senders)
+congestion when load is high. As for Proactive, the                                      (b) Extra load in FUSO
+replicated packets always go through the same path as               Figure 6: Incast: Request completion time and the average extra
+                                                                    load of all FUSO flows.
+the original data packets, which makes them share the
+same loss rate and further decrease its redundancy effi-            the bottleneck link. We deploy a receiver application on
+ciency compared to RepFlow. Moreover, the simple du-                H1 to simultaneously generate requests to a number of
+plicating behaviour extremely degrades its performance              sender applications deployed on H2-H6. After receiv-
+under heavy load. On the contrary, FUSO’s proactive                 ing the request, each sender immediately responds with
+multi-path loss recovery helps to recover the congestion            a 64 KB data using the maximum sending rate. This
+and failure loss fast, meanwhile remaining cautious to              traffic pattern, which is called incast [5], is very com-
+avoid adding aggressiveness. Even at the high load of               mon in MapReduce-like [37] applications. We use all
+0.9, FUSO maintains the average and tail FCT to be be-              physical sending hosts in our testbed to emulate multi-
+low 4.5ms and 17.1ms, respectively. TCP behaves inferi-             ple senders [38]. We measure the completion time when
+orly due to coexisting severe congestion and failure loss,          all the responses have been successfully received. In this
+while MPTCP performs better in this case. TLP’s faster              case we do not inject failure loss.
+loss recovery by adding moderate aggressiveness makes                  Results: Fig. 6(a) shows the request completion time
+it perform better than both TCP and MPTCP.                          as the number of senders (i.e., fanout) grows. When the
+   We show the average extra load of all FUSO flows in              fanout is below 44, FUSO, MPTCP, TCP and TLP be-
+Fig. 5(c). Each flow’s extra load is calculated by the extra        have similarly. As studied before [24, 39], a small min-
+bytes incurred by FUSO divided by the total bytes trans-            RTO and appropriate ECN setting can offer a fairly good
+mitted. The results show that FUSO’s fast loss recovery             performance for standard TCP in the incast scenario. Be-
+behaviour can gracefully adapt to the network condition.            cause the total response size equals 64KB×fanout, the
+Particularly, when the load is low, FUSO generates rela-            completion time linearly grows as the fanout increases.
+tively more recovery packets (∼42% extra load) to proac-            When fanout grows above 44, timeout occurs in MPTCP,
+tively recover the potential loss. Such relative high re-           which leads to a sudden rise of completion time. It is
+dundancy rate does not affect the FUSO flows’ FCT, be-              due to the relatively high burstiness caused by multiple
+cause that FUSO only generates redundancy utilizing the             sub-flows. However, FUSO’s multi-path loss recovery
+opportunity when the network is not congested (detected             scheme compensates this burstiness and remains an ap-
+from spare cwnd) and there is no more new data. As the              proximately linear growth of completion time in FUSO.
+congestion becomes severe, FUSO naturally throttles the             The performance begins to degrade for all methods when
+redundancy generation (down to ∼40% in 0.9 load) by                 the fanout exceeds 48. FUSO keeps performing the best,
+strictly following the congestion control behaviour. Later          and keeps the completion time below 51.2ms even when
+(§5.2.3) we will show that FUSO generates even lesser               the fanout becomes 70.
+redundancy when the network is more congested. Note                    RepFlow and Proactive always take roughly twice the
+that although FUSO’s redundancy helps to improve the                time to complete the query even when fanout is low (e.g.,
+latency flows’ FCT, they do incur some extra load to the            <23), because they duplicate every flow (or packet) and
+network and slightly affect the overall network through-            add a certain excessive extra load to the network. As the
+put. Compared with MPTCP, which uses the same con-                  fanout becomes larger, many timeouts occur and signif-
+gestion control as FUSO but incurs zero extra load, the             icantly impair the performance of them. For example,
+average throughput of all flows in FUSO is ∼7.8% lower              for a fanout of 30, RepFlow and Proactive need ∼47ms
+to ∼3.4% higher at various loads.                                   and ∼58ms to complete the request, respectively, while
+5.2.3 Congestion Loss: Incast                                       FUSO only needs less than 25ms. Although duplicat-
+   Now, we focus on the congestion loss at the edge                 ing small flows can help to improve their performance
+which is a very challenging scenario for FUSO, to in-               under some lossy cases, it is not adaptive to compli-
+vestigate whether FUSO is cautious enough to avoid                  cated DCN environments, and even deteriorates the per-
+adding congestion when there is no spare capacity in                formance especially when the network is congested by
+
+
+                                                               10
+            FUSO1     FUSO2       FUSO4     FUSO8                       MPTCP2      MPTCP4         MPTCP8
+             −1
+                                                                                                                    Empirical failure loss: To emulate the real condition
+
+
+
+
+                                                Timeout fraction (%)
+           10                                                          20
+
+                                                                       15
+                                                                                                                 in production data centers, we randomly set 5% links to
+ FCT (s)
+
+
+
+
+           10
+             −2
+                                                                       10
+                                                                                                                 be lossy. The loss rate of each lossy link is sampled from
+                                                                        5                                        the distribution measured in §2.1 (Fig. 1(a)). Note that
+           10
+             −3
+                                                                        0                                        we have excluded the part in the distribution with excep-
+            0.125 0.25    0.5     1     2   4                          0.125 0.25    0.5      1     2   4
+                         lossrate (%)                                               lossrate (%)                 tionally high loss rate (right most part in Fig. 1(a) with
+                    (a) 99th FCT       (b) Timeout flows (%)
+Figure 7: Various number of sub-flows: 99th FCT (log scale) and                                                  loss rate > 60%) for sampling. It is because that standard
+timeout fraction of the latency-sensitive flows, while one network                                               TCP flows almost cannot finish and often upper-layer ap-
+path is lossy.
+                                                                                                                 plications operations are triggered (e.g., requesting re-
+the small flows themselves. On the contrary, Fig. 6(b)                                                           sources from other machines) under such high loss rates.
+shows that FUSO can gracefully adapt to the network                                                              We randomly generate those lossy links at different lo-
+condition and throttle the extra load in such extremely                                                          cations including the edge and network, according to the
+congested scenarios.                                                                                             real location distribution7 in §2.1 (Fig. 1(b)).
+5.2.4 Various Number of Sub-flows                                                                                   Results: The results in Fig. 8 confirm that FUSO
+   Now, we investigate the impact of the number of sub-                                                          can gracefully scale to large topologies and complex
+flows on FUSO’s performance. The settings are the                                                                lossy conditions. Under all loads, the average FCT of
+same as in the network loss experiment in §5.2.1. We                                                             FUSO is ∼10.4%-60.3% lower than TCP, MPTCP, TLP
+compare FUSO with 1,2,4 and 8 sub-flows, denoted as                                                              and TCP-IR in web search workload, and ∼4.1%-39.4%
+FUSO1,2,4,8 . Note that FUSO1 simply retransmits the                                                             lower in data mining workload. Also, the 99th percentile
+suspected lost packets in the same flow after the original                                                       is ∼29.2%-87.4% and ∼0%-87.9% lower in the two
+packets before standard TCP loss recovery begins, with-                                                          workloads respectively. TCP-IR chooses a more aggres-
+out using multi-path.                                                                                            sive loss recovery manner than TLP. This improves the
+   Results: Fig. 7 shows the results. We can see that                                                            performance, but TCP-IR still has ∼29.2%-46.5% and
+FUSO behaves better as it explores more paths using                                                              ∼0%-6.1% higher 99th FCT than FUSO under two work-
+more sub-flows. Only adding redundancy without lever-                                                            loads, respectively. Lacking multi-path makes TCP-IR’s
+aging multi-path diversity causes the inferior perfor-                                                           loss recovery less efficient, because the recovery pack-
+mance of FUSO1 . FUSO4 can offer a fairly good per-                                                              ets may be also dropped while traversing the same lossy
+formance that is very close to FUSO8 , which means 4                                                             path as the former dropped data packets. Compared with
+sub-flows is enough for our small testbed with 3 paral-                                                          RepFlow and Proactive which use certain excessive re-
+lel paths. On the contrary, MPTCP behaves worse as the                                                           dundancy rate, FUSO still has up to ∼33.9% and ∼2.6%
+number of sub-flows grows, lagged by the last completed                                                          better 99th percentile FCT under the two workloads re-
+sub-flow on the worst path (see §2.4).                                                                           spectively, due to the reasons discussed before. Because
+5.3               Large-scale Simulations                                                                        the simulated topology has a much higher capacity in the
+   Simulation settings: Besides testbed experiments, we                                                          fabric link (40G) than the access link (10G), the con-
+also use ns-2 [30] to build a larger 3-layer, 4-pod sim-                                                         gestion is significantly alleviated compared to the small
+ulated Fat-tree topology. The topology consists of 4                                                             testbed topology in §5.2.2. Thus TCP performs better
+Spine switches and 4 pods below them, each containing                                                            than MPTCP for small flows in this scenario, because
+2 Aggregation and 2 ToR switches. All switches have                                                              their performance depends more on the failure loss.
+4 40Gbps ports, and each ToR switch has a rack of 8                                                              6 Discussion
+10Gbps servers below. Each switch has 1MB buffer per
+                                                                                                                    FUSO follows the principle of prioritizing new data
+port, with ECMP and ECN enabled. The whole topol-
+                                                                                                                 transmission over loss recovery, utilizing spare oppor-
+ogy contains 20 switches and 64 servers, i.e., the largest
+                                                                                                                 tunities to conduct proactive loss recovery when there
+scale for detailed packet-level simulation that could be
+                                                                                                                 is currently no new data. As such, FUSO avoids sacri-
+finished in an acceptable time on our servers. The base
+                                                                                                                 ficing throughput to transmit redundant recovery pack-
+RTT without queueing is ∼240µs. Given that, the ECN
+                                                                                                                 ets ahead of new data, which would increase the FCT.
+threshold is set to be 300KB [7]. We set the TCP min-
+                                                                                                                 Moreover, FUSO can dynamically adapt its redundancy
+RTO to be 5ms [3, 16]. The input traffic is generated
+                                                                                                                 rate to the network condition (Fig. 5(c) and Fig. 6(b)),
+the same as in §5.2.2, letting all the clients request both
+                                                                                                                 by strictly following the congestion control constraint.
+latency-sensitive queries and background data from ran-
+                                                                                                                 Thus, FUSO naturally generates relatively more redun-
+domly chosen servers. Besides web-search [1], we also
+                                                                                                                 dancy to accelerate loss recovery when the congestion
+evaluate another empirical data-mining workload [10].
+Both FUSO and MPTCP use 8 sub-flows to adapt to the                                                                 7 There are only 3 layers in our simulation topology, thus we merge
+large topology. The results are from 10 runs in total, with                                                      the portion of those lossy links at and above the 3rd layer in the real
+32K flows generated in each run.                                                                                 topology into one layer in the simulated topology.
+
+
+                                                                                                            11
+                           −3                                                    −2                                                    −3                                                    −2
+                          10                                                    10                                                    10                                                    10
+    FUSO
+    MPTCP
+
+
+
+
+                                                                      FCT (s)
+
+
+
+
+                                                                                                                                                                                  FCT (s)
+                FCT (s)
+
+
+
+
+                                                                                                                            FCT (s)
+    RepFlow
+    TCP
+                                                                                 −3                                                                                                          −3
+    TLP                                                                         10                                                                                                          10
+    TCP−IR                 −4                                                                                                          −4
+                          10                                                                                                          10
+    Proactive                   0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9                   0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9                   0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9                   0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9
+                                               Load                                                  Load                                                  Load                                                  Load
+              (a) Web-search: Avg FCT        (b) Web-search: 99th FCT      (c) Data-mining: Avg FCT         (d) Data-mining: 99th FCT
+Figure 8: Simulations under 10Gbps fat tree: Average and 99th FCT (log scale) of latency-sensitive flows from web-search and data-mining
+workloads. Lossy links are randomly generated according to realistic measurements in §2.1.
+is light, and becomes conservative when the congestion                                                                deployed Remote Direct Memory Access (RDMA) [52,
+is heavy, which outperforms other methods’ (e.g., TCP-                                                                53], a complementary technique to TCP. It relies on
+IR, Repflow, and Proactive) fixed redundancy rate. As                                                                 Priority-based Flow Control (PFC) to remove conges-
+such, FUSO’s redundancy helps to greatly decrease the                                                                 tion drops. However, RDMA would perform badly in
+FCT, meanwhile only slightly affecting the overall net-                                                               face of failure-induced loss (e.g., even a slight 0.1%)
+work throughput (§5.2.2).                                                                                             due to its simple go-back-N loss recovery schemes [3].
+   Although we focus on how FUSO improves the per-                                                                    FUSO is able to deal with both congestion-induced loss
+formance of small latency-sensitive flows in §5, FUSO is                                                              and failure-induced loss, and works for the widely used
+also applicable to long flows, which are typically band-                                                              TCP in DCN [3, 6, 16]. We will study how to apply the
+width greedy and cwnd limited. Therefore, the neces-                                                                  principle of FUSO to RDMA/PFC in the future.
+sary condition for proactive multi-path loss recovery in                                                              8               Conclusion
+FUSO (when there is no more new data to be sent and                                                                      The chase for ultra-low FCT in data center networks
+the flow has spare cwnd slots) is only triggered at the                                                               has been a very active research area, and the solutions
+end of the long flows. Previous studies [13] have shown                                                               range from better topology and routing designs, optical
+that MPTCP provides a very good performance for long                                                                  switching, flow scheduling, congestion control, to pro-
+flows. We first ran experiments to compare FUSO and                                                                   tocol architectures (e.g., RDMA/PFC), etc. This paper
+MPTCP, and the results (omitted for space limitation)                                                                 adds an important thread to this area, which is to prop-
+confirm that FUSO incurs a negligible overhead and be-                                                                erly leverage the inherent multi-path diversity for trans-
+haves almost exactly the same as the original MPTCP                                                                   port loss recovery, to deal with both failure-induced and
+for long flows. We then enabled FUSO for all small                                                                    congestion-induced packet loss in DCN. In our proposed
+and long flows and reran all experiments in §5, and ob-                                                               FUSO, when a multi-path transport sender suspects loss
+served that FUSO still outperforms other methods at the                                                               on one sub-flow, recovery packets are immediately sent
+tail FCT. We also note that enabling MPTCP in general                                                                 over another sub-flow that is not or less lossy and has
+in data centers may hurt the average FCT of small flows                                                               spare congestion window slots. Our experiments show
+for the following reason (also revealed in [36,41]): Orig-                                                            that the fast yet cautious FUSO can decrease the tail FCT
+inally designed for improving long flow’s throughput,                                                                 by up to ∼82.3% (testbed) and ∼87.9% (simulation).
+MPTCP’s current congestion control can cause bursti-
+ness of multiple sub-flows and drive up queue lengths on                                                              Acknowledgment
+all paths. How to improve multi-path congestion control,                                                                 We thank Albert Greenberg, Ming Zhang, Jennifer
+however, is orthogonal to FUSO and beyond the scope of                                                                Rexford, Fengyuan Ren, and Zhen Xiao for their valu-
+this paper.                                                                                                           able feedbacks on the paper’s initial version, and Xiao-
+                                                                                                                      hui Nie, Dapeng Liu, Kaixin Sui, and Hao Wang for their
+7     Related Work                                                                                                    suggestions on improving this work. We thank Wei Bai
+   Besides the works [4, 13–15, 22, 23, 31] that we have                                                              for the help on the implementation and experiments, and
+previously discussed in-depth, there is a rich literature                                                             Yousef Azzabi for the proofreading. We thank our shep-
+on the general TCP loss recovery (e.g., [18, 19, 32, 42]),                                                            herd Noa Zilberman and the conference reviewers for the
+short flows’ tail FCT in both DCN (e.g., [43–45]) and                                                                 helpful comments. This work was partly supported by
+Internet (e.g., [46, 47]), and utilizing multi-path in the                                                            the State Key Program of National Science of China un-
+transport (e.g., [48–51]). Due to space limitation, we do                                                             der grant 61233007, the National Natural Science Foun-
+not review these works in details. The key difference                                                                 dation of China under grant 61472214 and 61472210,
+between FUSO and these works is that, to the best of our                                                              the National High Technology Development Program of
+knowledge, FUSO is the first work to address the long                                                                 China (863 program) under grant 2013AA013302, the
+tail FCT of short flows in DCN caused by failure-packet-                                                              National Key Basic Research Program of China (973
+loss-incurred timeout. FUSO is also the first systematic                                                              program) under grant 2013CB329105, the Tsinghua Na-
+work to utilize multi-path diversity to conduct proactive                                                             tional Laboratory for Information Science and Technol-
+transport loss recovery in DCN.                                                                                       ogy key projects, and the China’s Recruitment Program
+   It is noteworthy that several data centers have recently                                                           (Youth) of Global Experts.
+
+
+                                                                                                                12
+References                                                                  [13] Costin Raiciu, Sebastien Barre, Christopher Pluntke, Adam
+ [1] Mohammad Alizadeh, Albert Greenberg, David A. Maltz, Jiten-                 Greenhalgh, Damon Wischik, and Mark Handley. Improving
+     dra Padhye, Parveen Patel, Balaji Prabhakar, Sudipta Sengupta,              Datacenter Performance and Robustness with Multipath TCP.
+     and Murari Sridharan. Data Center TCP (DCTCP). In Proceed-                  In Proceedings of the ACM SIGCOMM 2011 Conference, SIG-
+     ings of the ACM SIGCOMM 2010 Conference, SIGCOMM ’10,                       COMM ’11, pages 266–277. ACM, 2011.
+     pages 63–74. ACM, 2010.                                                [14] Costin Raiciu, Christoph Paasch, Sebastien Barre, Alan Ford, Mi-
+ [2] Nandita Dukkipati and Nick McKeown. Why Flow-completion                     chio Honda, Fabien Duchene, Olivier Bonaventure, and Mark
+     Time is the Right Metric for Congestion Control. SIGCOMM                    Handley. How Hard Can It Be? Designing and Implementing a
+     Computer Communnication Review, 36(1):59–62, January 2006.                  Deployable Multipath TCP. In 9th USENIX Symposium on Net-
+                                                                                 worked Systems Design and Implementation (NSDI ’12), pages
+ [3] Chuanxiong Guo, Lihua Yuan, Dong Xiang, Yingnong Dang,                      29–29. USENIX Association, 2012.
+     Ray Huang, Dave Maltz, Zhaoyi Liu, Vin Wang, Bin Pang, Hua
+     Chen, Zhi-Wei Lin, and Varugis Kurien. Pingmesh: A Large-              [15] Alan Ford, Costin Raiciu, Mark Handley, and Olivier Bonaven-
+     Scale System for Data Center Network Latency Measurement and                ture. TCP extensions for multipath operation with multiple ad-
+     Analysis. In Proceedings of the ACM SIGCOMM 2015 Confer-                    dresses. Internet Engineering Task Force, January 2013. RFC
+     ence, SIGCOMM ’15, pages 63–74. ACM, 2015.                                  6824.
+
+ [4] Tobias Flach, Nandita Dukkipati, Andreas Terzis, Barath Ragha-         [16] Glenn Judd. Attaining the Promise and Avoiding the Pitfalls of
+     van, Neal Cardwell, Yuchung Cheng, Ankur Jain, Shuai Hao,                   TCP in the Datacenter. In 12th USENIX Symposium on Net-
+     Ethan Katz-Bassett, and Ramesh Govindan. Reducing Web La-                   worked Systems Design and Implementation (NSDI ’15), May
+     tency: The Virtue of Gentle Aggression. In Proceedings of the               2015.
+     ACM SIGCOMM 2013 Conference, SIGCOMM ’13, pages 159–                   [17] M Allman, V Paxson, and E Blanton. TCP congestion control.
+     170. ACM, 2013.                                                             Internet Engineering Task Force, September 2009. RFC 5681.
+ [5] Yanpei Chen, Rean Griffith, Junda Liu, Randy H. Katz, and An-          [18] E Blanton, M Allman, L Wang, I Jarvinen, M Kojo, and
+     thony D. Joseph. Understanding TCP Incast Throughput Collapse               Y Nishida. A Conservative Loss Recovery Algorithm Based on
+     in Datacenter Networks. In Proceedings of the 1st ACM Work-                 Selective Acknowledgment (SACK) for TCP. Internet Engineer-
+     shop on Research on Enterprise Networking, WREN ’09, pages                  ing Task Force, 2012. RFC 6675.
+     73–82. ACM, 2009.
+                                                                            [19] M Allman, K Avrachenkov, U Ayesta, J Blanton, and P Hurtig.
+ [6] Arjun Singh, Joon Ong, Amit Agarwal, Glen Anderson, Ashby                   Early retransmit for TCP and stream control transmission proto-
+     Armistead, Roy Bannon, Seb Boving, Gaurav Desai, Bob Felder-                col (SCTP). Internet Engineering Task Force, April 2010. RFC
+     man, Paulie Germano, Anand Kanagala, Jeff Provost, Jason Sim-               5827.
+     mons, Eiichi Tanda, Jim Wanderer, Urs Hoelzle, Stephen Stuart,
+     and Amin Vahdat. Jupiter Rising: A Decade of Clos Topologies           [20] Netem page from Linux foundation. http://www.
+     and Centralized Control in Googles Datacenter Network. In Pro-              linuxfoundation.org/collaborate/workgroups/
+     ceedings of the ACM SIGCOMM 2015 Conference, SIGCOMM                        networking/netem.
+     ’15, pages 63–74. ACM, 2015.                                           [21] Stephen Hemminger et al. Network emulation with NetEm. In
+ [7] Haitao Wu, Jiabo Ju, Guohan Lu, Chuanxiong Guo, Yongqiang                   Linux conf au, pages 18–23. Citeseer, 2005.
+     Xiong, and Yongguang Zhang. Tuning ECN for Data Center Net-            [22] N Dukkipati, N Cardwell, Y Cheng, and M Mathis. Tail loss
+     works. In Proceedings of the 8th International Conference on                probe (TLP): An algorithm for fast recovery of tail losses. Internet
+     Emerging Networking Experiments and Technologies, CoNEXT                    Engineering Task Force, April 2013. RFC 5827.
+     ’12, pages 25–36. ACM, 2012.
+                                                                            [23] Tobias Flach, Yuchung Cheng, Barath Raghavan, and Nandita
+ [8] Matt Calder, Rui Miao, Kyriakos Zarifis, Ethan Katz-Bassett,                Dukkipati. TCP Instant Recovery: Incorporating Forward Er-
+     Minlan Yu, and Jitendra Padhye. Don’T Drop, Detour! In Pro-                 ror Correction in TCP. Internet Engineering Task Force, April
+     ceedings of the ACM SIGCOMM 2013 Conference, SIGCOMM                        2013. RFC 5827.
+     ’13, pages 503–504. ACM, 2013.
+                                                                            [24] Peng Cheng, Fengyuan Ren, Ran Shu, and Chuang Lin. Catch
+ [9] Mohammad Al-Fares, Alexander Loukissas, and Amin Vahdat. A                  the Whole Lot in an Action: Rapid Precise Packet Loss Notifica-
+     Scalable, Commodity Data Center Network Architecture. In Pro-               tion in Data Center. In 11th USENIX Symposium on Networked
+     ceedings of the ACM SIGCOMM 2008 Conference, SIGCOMM                        Systems Design and Implementation (NSDI ’14), April 2014.
+     ’08, pages 63–74. ACM, 2008.
+                                                                            [25] Mohammad Al-Fares, Sivasankar Radhakrishnan, Barath Ragha-
+[10] Albert Greenberg, James R. Hamilton, Navendu Jain, Srikanth                 van, Nelson Huang, and Amin Vahdat. Hedera: Dynamic Flow
+     Kandula, Changhoon Kim, Parantap Lahiri, David A. Maltz,                    Scheduling for Data Center Networks. In 7th USENIX Confer-
+     Parveen Patel, and Sudipta Sengupta. VL2: A Scalable and Flexi-             ence on Networked Systems Design and Implementation, NSDI
+     ble Data Center Network. In Proceedings of the ACM SIGCOMM                  ’10, pages 19–19. USENIX Association, 2010.
+     2009 Conference, SIGCOMM ’09, pages 51–62. ACM, 2009.
+                                                                            [26] Christian E Hopps. Analysis of an equal-cost multi-path algo-
+[11] Chuanxiong Guo, Guohan Lu, Dan Li, Haitao Wu, Xuan Zhang,
+                                                                                 rithm. Internet Engineering Task Force, 2000. RFC 2992.
+     Yunfeng Shi, Chen Tian, Yongguang Zhang, and Songwu Lu.
+     BCube: A High Performance, Server-centric Network Architec-            [27] Shuihai Hu, Kai Chen, Haitao Wu, Wei Bai, Chang Lan, Hao
+     ture for Modular Data Centers. In Proceedings of the ACM SIG-               Wang, Hongze Zhao, and Chuanxiong Guo. Explicit path con-
+     COMM 2009 Conference, SIGCOMM ’09, pages 63–74. ACM,                        trol in commodity data centers: Design and applications. In 12th
+     2009.                                                                       USENIX Symposium on Networked Systems Design and Imple-
+                                                                                 mentation (NSDI ’15), May 2015.
+[12] Yuval Bachar. Disaggregation - The New Way to Build Mega
+     (and Micro) Data Centers. In Architectures for Networking and          [28] S Floyd, J Mahdavi, M Mathis, and A Romanow. TCP Selec-
+     Communications Systems (ANCS), 2015 ACM/IEEE Symposium                      tive Acknowledgment Options. Internet Engineering Task Force,
+     on, pages 1–1. IEEE, 2015.                                                  1996. RFC 2018.
+
+
+                                                                       13
+[29] Christoph Paasch, Gregory Detal, Kenjiro Nakayama, Gucea                [44] Balajee Vamanan, Jahangir Hasan, and T.N. Vijaykumar.
+     Doru, Matthieu Baerts, Jaehyun Hwang, Sbastien Barr, and et al.              Deadline-aware Datacenter TCP (D2TCP). In Proceedings of the
+     MPTCP Linux kernel implementation. git://github.com/                         ACM SIGCOMM 2012 Conference, SIGCOMM ’12, pages 115–
+     multipath-tcp/mptcp.                                                         126. ACM, 2012.
+[30] The Network Simulator - ns-2.       http://www.isi.edu/                 [45] Matthew P Grosvenor, Malte Schwarzkopf, Ionel Gog,
+     nsnam/ns/.                                                                   Robert NM Watson, Andrew W Moore, Steven Hand, and Jon
+                                                                                  Crowcroft. Queues Dont Matter When You Can JUMP Them!
+[31] Hong Xu and Baochun Li. RepFlow: Minimizing Flow Comple-                     In 12th USENIX Symposium on Networked Systems Design and
+     tion Times with Replicated Flows in Data Centers. In Proceed-                Implementation (NSDI ’15), pages 1–14, 2015.
+     ings of the IEEE INFOCOM 2014 Conference, pages 1581–1589,
+     April 2014.                                                             [46] Qingxi Li, Mo Dong, and P Brighten Godfrey. Halfback: Run-
+                                                                                  ning Short Flows Quickly and Safely. In Proceedings of the 11th
+[32] Sally Floyd, Hari Balakrishnan, and Mark Allman. Enhancing                   International Conference on Emerging Networking Experiments
+     TCP’s loss recovery using limited transmit. Internet Engineering             and Technologies, CoNEXT ’15. ACM, 2015.
+     Task Force, January 2001. RFC 3042.
+                                                                             [47] Jianer Zhou, Qinghua Wu, Zhenyu Li, Steve Uhlig, Peter
+[33] Net-tcp-fec: Modifications to the Linux networking stack to                  Steenkiste, Jian Chen, and Gaogang Xie. Demystifying and Mit-
+     enable forward error correction in TCP. http://tflach.                       igating TCP Stalls at the Server Side. In Proceedings of the 11th
+     github.io/net-tcp-fec/.                                                      International Conference on Emerging Networking Experiments
+[34] Wei Bai, Li Chen, Kai Chen, and Haitao Wu. Enabling ECN                      and Technologies, CoNEXT ’15. ACM, 2015.
+     in Multi-Service Multi-Queue Data Centers. In 13th USENIX               [48] Ming Zhang, Junwen Lai, Arvind Krishnamurthy, Larry L Peter-
+     Symposium on Networked Systems Design and Implementation                     son, and Randolph Y Wang. A Transport Layer Approach for
+     (NSDI ’16), March 2016.                                                      Improving End-to-End Performance and Robustness Using Re-
+                                                                                  dundant Paths. In USENIX Annual Technical Conference, Gen-
+[35] Edgar N Gilbert. Capacity of a Burst-Noise Channel. Bell system
+                                                                                  eral Track, pages 99–112, 2004.
+     technical journal, 39(5):1253–1265, 1960.
+                                                                             [49] Peter Key, Laurent Massoulié, and Don Towsley. Path Selection
+[36] Mohammad Alizadeh, Tom Edsall, Sarang Dharmapurikar, Ra-                     and Multipath Congestion Control. In Proceedings of the IEEE
+     manan Vaidyanathan, Kevin Chu, Andy Fingerhut, Vinh The                      INFOCOM 2007 Conference, pages 143–151. IEEE, 2007.
+     Lam, Francis Matus, Rong Pan, Navindra Yadav, and George
+     Varghese. CONGA: Distributed Congestion-aware Load Balanc-              [50] Yong Cui, Lian Wang, Xin Wang, Hongyi Wang, and Yining
+     ing for Datacenters. In Proceedings of the ACM SIGCOMM 2014                  Wang. FMTCP: A Fountain Code-based Multipath Transmis-
+     Conference, SIGCOMM ’14, pages 503–514. ACM, 2014.                           sion Control Protocol. Networking, IEEE/ACM Transactions on,
+                                                                                  23(2):465–478, 2015.
+[37] Jeffrey Dean and Sanjay Ghemawat. MapReduce: Simplified
+     Data Processing on Large Clusters. Communications of the ACM,           [51] Morteza Kheirkhah, Ian Wakeman, and George Parisis.
+     51(1):107–113, 2008.                                                         MMPTCP: A Multipath Transport Protocol for Data Centers.
+                                                                                  In Proceedings of the IEEE INFOCOM 2016 Conference, April
+[38] Christo Wilson, Hitesh Ballani, Thomas Karagiannis, and Ant                  2016.
+     Rowtron. Better Never Than Late: Meeting Deadlines in Data-
+     center Networks. In Proceedings of the ACM SIGCOMM 2011                 [52] Yibo Zhu, Haggai Eran, Daniel Firestone, Chuanxiong Guo, Ma-
+     Conference, SIGCOMM ’11, pages 50–61. ACM, 2011.                             rina Lipshteyn, Yehonatan Liron, Jitendra Padhye, Shachar Rain-
+                                                                                  del, Mohamad Haj Yahia, and Ming Zhang. Congestion Con-
+[39] Vijay Vasudevan, Amar Phanishayee, Hiral Shah, Elie Krevat,                  trol for Large-Scale RDMA Deployments. In Proceedings of the
+     David G. Andersen, Gregory R. Ganger, Garth A. Gibson, and                   ACM SIGCOMM 2015 Conference, SIGCOMM ’15, pages 523–
+     Brian Mueller. Safe and Effective Fine-grained TCP Retransmis-               536. ACM, 2015.
+     sions for Datacenter Communication. In Proceedings of the ACM
+                                                                             [53] Radhika Mittal, Vinh The Lam, Nandita Dukkipati, Emily Blem,
+     SIGCOMM 2009 Conference, SIGCOMM ’09, pages 303–314.
+                                                                                  Hassan Wassel, Monia Ghobadi, Amin Vahdat, Yaogong Wang,
+     ACM, 2009.
+                                                                                  David Wetherall, and David Zats. TIMELY: RTT-based Con-
+[40] Mohammad Alizadeh, Shuang Yang, Milad Sharif, Sachin Katti,                  gestion Control for the Datacenter. In Proceedings of the ACM
+     Nick McKeown, Balaji Prabhakar, and Scott Shenker. pFabric:                  SIGCOMM 2015 Conference, SIGCOMM ’15, pages 537–550.
+     Minimal Near-optimal Datacenter Transport. In Proceedings of                 ACM, 2015.
+     the ACM SIGCOMM 2013 Conference, SIGCOMM ’13, pages
+     435–446. ACM, 2013.
+[41] Jiaxin Cao, Rui Xia, Pengkun Yang, Chuanxiong Guo, Guohan
+     Lu, Lihua Yuan, Yixin Zheng, Haitao Wu, Yongqiang Xiong,
+     and Dave Maltz. Per-packet Load-balanced, Low-latency Rout-
+     ing for Clos-based Data Center Networks. In Proceedings of the
+     Ninth ACM Conference on Emerging Networking Experiments
+     and Technologies, CoNEXT ’13, pages 49–60. ACM, 2013.
+[42] Matthew Mathis and Jamshid Mahdavi. Forward Acknowledge-
+     ment: Refining TCP Congestion Control. In ACM SIGCOMM
+     Computer Communication Review, volume 26, pages 281–291.
+     ACM, 1996.
+[43] David Zats, Tathagata Das, Prashanth Mohan, Dhruba Borthakur,
+     and Randy Katz. DeTail: Reducing the Flow Completion
+     Time Tail in Datacenter Networks. In Proceedings of the ACM
+     SIGCOMM 2012 Conference, SIGCOMM ’12, pages 139–150.
+     ACM, 2012.
+
+
+                                                                        14
+

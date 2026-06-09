@@ -1,0 +1,764 @@
+                                 Robust and Rapid Adaption for Concept Drift
+                                    in Software System Anomaly Detection
+
+
+                        Minghua Ma †§ , Shenglin Zhang ∗ ‡ , Dan Pei †§ , Xin Huang ¶ , Hongwei Dai ¶
+                            † Department of Computer Science and Technology, Tsinghua University,
+                     § Beijing National Research Center for Information Science and Technology (BNRist),
+                                     ‡ College of Software, Naikai University ¶ Sogou Inc
+
+
+
+
+   Abstract—Anomaly detection is critical for web-based soft-     or expected. An unexpected concept drift is an anomaly
+ware systems. Anecdotal evidence suggests that in these sys-      situation which is beyond operators’ expectations. In order
+tems, the accuracy of a static anomaly detection method that      to mitigate the losses imposed by unexpected concept drifts,
+was previously ensured is bound to degrade over time. It
+is due to the significant change of data distribution, namely     operators must immediately take actions, e.g., rolling back
+concept drift, which is caused by software change or personal     software changes, stopping traffic shifting. After that, the
+preferences evolving. Even though dozens of anomaly detectors     KPI stream distribution will return to what it was before
+have been proposed over the years in the context of software      the concept drift. On the contrary, an expected concept
+system, they have not tackled the problem of concept drift. In    drift yields the KPI distribution change under operators’
+this paper, we present a framework, StepWise, which can detect
+concept drift without tuning detection threshold or per-KPI       expectations. In this case, the anomaly detectors designed
+(Key Performance Indicator) model parameters in a large scale     for the old concept before the concept drift are no longer
+KPI streams, take external factors into account to distinguish    accurate in detecting the KPI anomalies of the new concept
+the concept drift which under operators’ expectations, and help   after the concept drift.
+any kind of anomaly detection algorithm to handle it rapidly.        Operators usually conduct software changes, namely soft-
+For the prototype deployed in Sogou, our empirical evaluation
+shows StepWise improve the average F-score by 206% for many       ware upgrades, on-demand scaling up, migration and config-
+widely-used anomaly detectors over a baseline without any         uration changes, in order to deploy new features, fix bugs, or
+concept drift detection.                                          improve system performance [10]. For example, if operators
+   Keywords-Anomaly detection; Concept drift; Software ser-       deploy a software service on more servers, the PV recorded
+vice KPI; Web-based software system.                              by each server will drop significantly because the total PV
+                                                                  remains stable. Apparently, this is an expected concept drift:
+                        I. I NTRODUCTION                          operators expect that the PV on each server will witness a
+   With the booming development of web-based software             prominent drop in a short time (e.g., within five minutes).
+systems like search engine, online shopping and social            Suppose that operators use TSD for anomaly detection [3],
+networks, careful analysis of monitoring data is becoming         and the parameters of TSD are trained based on the old
+increasingly important for software reliability. In general,      concept (trend and the standard deviation of noise) before
+operators of the above systems monitor millions of Key Per-       this concept drift. As Fig. 1 shows, since the data distribution
+formance Indicator (KPI, e.g. number of Page Views (PV),          has changed dramatically, TSD will generate a lot of false
+number of online users, average response time) streams [1].       alarms for a long time (the periodicity of KPI stream, say one
+Diverse types of detectors can be used to detect KPI              day) because it uses one period of historical data to predict
+anomalies, e.g., Moving Average (MA) [2] and Time Series          the upcoming “normal” data. Then, it will gradually catch
+Decomposition (TSD) [3]. In order to accurately detect            up with the trend of the new concept, but still cannot adapt
+KPI anomalies, operators carefully tune the parameters of         to the standard deviation of the noise in the new concept.
+detectors based on their domain knowledge [1], [4]–[6].           That is to say, TSD “believes” that most of the KPI data
+   Anecdotal evidence indicates that when there is a concept      points in the new concept are anomalous, while operators
+drift, the accuracy of detectors is bound to degrade [7]. In      consider these points as normal. In this work, we try to
+this work, “concept” means KPI stream distribution, and           adapt anomaly detection methods to avoid the long period
+the term “concept drift” means that KPI stream distribution       of accuracy loss after expected concept drifts.
+changes significantly [8]. In our scenario, a concept drift is       There are several interesting challenges:
+typically a level shift, e.g., a sudden drop in PV as shown       1. High frequency of expected concept drifts. In web-
+in Fig. 1, or a ramp-up/ramp-down, i.e., a deteriorating          based software systems, software upgrades and configuration
+condition [9]. A concept drift can be either unexpected           changes occur thousands of times every day [9], which leads
+                                                                  to a great number of concept drifts in KPI streams. For
+  ∗ Shenglin Zhang is the corresponding author.                   example, in the studied company Sogou, a top-tier search
+                                                       KPI: PV
+                                                                         before and after a concept drift are statistically correlated,
+                                        TSD Detection Boundary           namely, having a significant linear correlation.
+                                                                            Based on the above observations, StepWise has three
+                                                                         components to adapt anomaly detectors in a robust and
+                  Old Concept   New Concept                              rapid manner. (1) detection: StepWise adopts an iSST-EVT
+07-31     08-01    08-02        08-03         08-04     08-05    08-06   method to detect concept drift for a large number of KPIs,
+                           Time (Month-Day)                              without tuning detection threshold or model parameters per
+                                                                         KPI stream. The Extreme Value Theory (EVT) is used
+Figure 1: A toy example of concept drift. KPI data beyond
+                                                                         for the first time in the literature to set threshold for
+the detection boundary will trigger alarm.
+                                                                         change score (the output of concept drift detection model)
+                                                                         automatically, to the best of our knowledge. All model
+engine in China, there are more than 3000 concept drifts of              parameters can use model-wide empirical value which is
+KPI streams per day, more than 80% of which are expected                 shown to be robust in practice. (2) classification: StepWise
+ones. Manually tuning the parameters of anomaly detectors                takes into account external factors, namely software changes
+to adapt to such a large number of expected concept drifts is            and traffic shifting, to determine expected concept drifts
+infeasible, thus an automatic concept drift adaption approach            from unexpected ones (with operators’ confirmations). (3)
+should be provided.                                                      adaption: taking advantage of the significant statistical
+2. Huge amount of KPI data. In large web-based software                  correlation between the old concept and the new one,
+systems, tens of software systems are deployed on tens                   StepWise applies a novel concept drift adaption algorithm
+of thousands of servers [9]. Degradation of a software                   to automatically adapt anomaly detectors to accurately detect
+service KPI on (recorded by) a specific server may indicate              anomalies after concept drift (in terms of both trend and the
+that the service provided by this server is affected. As a               width of detection boundaries). The only work of operators
+result, anomaly detectors and their concept drift adaption               is to determine whether the concept drift is expected or
+(detection) approach must monitor the service KPIs on every              unexpected.
+server. In addition, typically tens of types of KPIs are                    Our contributions are summarized as follows:
+monitored for a single software system. That is, the concept             • To the best of our knowledge, there are no related
+
+drift adaption approach should continuously detect concept                  works on concept drift adaption methods for software
+drifts on millions of KPI streams. It will take operators a                 anomaly detection in the literature. This paper is the
+lot of time if the parameters of the concept drift adaption                 first one to identify the problem of robustly and rapidly
+(detection) approach have to be tuned manually for each KPI                 adapting anomaly detectors to the new concept after
+stream on each server.                                                      concept drift, and its research challenges in terms of
+3. Diverse types of detectors. Since no anomaly detector is                 scalability, robustness, and adaption delay.
+                                                                         • We implement a prototype of StepWise which addresses
+perfectly suitable for all types of KPI streams, it is a common
+practice that each KPI stream is assigned to a specialized                  the above challenges and integrate it in the operation
+anomaly detector or even a specialized combination of                       platform of Sogou. StepWise adopts a concept drift de-
+multiple detectors [1]. Therefore, the concept drift adaption               tection method that does not require parameter tuning or
+approach should be generic so that it can accommodate to                    threshold for change score, tells apart expected concept
+various types of detectors.                                                 drift from unexpected ones using external factors, and
+                                                                            employs a novel concept drift adaption method based on
+4. Rapid adaption. A burst of false alarms usually appear                   the statistical correlation between the old concept and the
+soon after a concept drift, because the anomaly detector                    new one.
+(or the combination of detectors) trained before the concept             • To demonstrate the performance of StepWise, we have
+drift cannot quickly adapt to the new concept. Therefore, the               conducted extensive evaluation experiments using the KPI
+concept drift adaption approach must detect concept drifts                  data collected from hundreds of servers over six months
+and help anomaly detectors adapt it in a rapid manner.                      from Sogou. The results show that StepWise can rapidly
+   To tackle the above challenges, we propose a concept drift               and robustly improve the performance of most anomaly
+adaption framework for software KPI anomaly detection,                      detectors by helping them rapidly adapt to new concepts.
+called StepWise, to robustly and rapidly adapt anomaly                      Our evaluation shows that StepWise improves the average
+detectors in order to accurately detect KPI anomalies after                 F-score by 206% for many widely-used anomaly detectors
+concept drift. Based on the KPI streams from Sogou, we                      over a baseline without any concept drift detection.
+made the following two main observations. First, in general
+system, KPI streams are strongly seasonal (a periodicity                                      II. BACKGROUND
+can be by the hour/day/week/month) because it is heavily                    In this section, we provide a brief introduction to software
+affected by the periodic user behavior. Second, distributions            service KPI anomaly, concept drift, and anomaly detection.
+                        Search Engine Service
+                                                                                                           Jitters
+                                          ŏ                                      Expected    Unexpected    Spikes
+            Server 1          Server 2          Server n                                                    Dips
+                                                                                                             …
+
+            Process 1         Process 2   ŏ     Process n                          Concept Drift     Anomaly
+
+                                                                  Figure 3: Relationship between concept drift and anomaly.
+          PV SRT ER         PV SRT ER         PV SRT ER
+                                                                  identify KPI anomalies [1]. Nevertheless, this knowledge is
+Figure 2: A toy example of how software service KPI               difficult to be precisely defined by some pre-defined rules
+measurements are collected.                                       and needs many rounds of time-consuming iterations [3].
+                                                                     Concept drift: The data distribution can change over
+   Software Service KPI: In this work, we collect KPI             time due to dynamically changing and non-stationary envi-
+streams from Sogou. Sogou is the second largest search            ronments [8], leading to the phenomenon of concept drift. A
+engine and the fourth largest Internet company of China,          concept drift in a KPI stream is typically an immediate level-
+with more than 511 million monthly active users and more          shift, a ramp up or a ramp down [9], which can be caused
+than 1 billion queries per day (in September 2017). In            by a software upgrade, a configuration change (e.g. shifting
+Sogou, there are tens of thousands of servers providing           traffic from one data center to another one), seasonality (e.g.,
+various types of software systems. Each software service          Christmas or Lunar New Year), a network breakdown, a
+runs on one or more servers with a specific process on            malicious attack, a flash event (e.g., breaking news), or a
+each server. Operators deploy an agent on each server to          change in a peer company, etc. As Fig. 1 shows, there is a
+continuously monitor the status of each process and collect       traffic shifting at 17:40 on August 2nd. The the distribution
+the KPI measurements of all processes, including PV, search       of PV changed significantly within 5 minutes and remained
+response time (SRT), error rate (ER), etc. For example,           unchanged for over three days.
+immediately after a process serves a user’s search request,          As shown in the Venn diagram in Fig. 3, there are
+the PV is incremented and an SRT is recorded. Figure 2            expected concepts drift and unexpected ones. An unexpected
+shows a toy example of how a software service KPI is              concept drift in a KPI stream is the one beyond opera-
+collected. Suppose that one of the search engine services         tors’ expectation. In order to mitigate loss imposed by an
+is deployed on server 1 to server n, and each server runs         unexpected concept drift, operators must immediately take
+a process (process 1 to process n) of the system. The             actions, e.g., rolling back the software change, stopping
+monitoring agent on each server collects KPI (PV, SRT, ER)        traffic shifting. After that, the distribution of the KPI
+measurements of process 1 to process n.                           stream will return to what it was before the concept drift.
+   After collecting KPI measurements of processes, the agent      On the other hand, an expected concept drift is the one
+on each server delivers the measurements to a distributed         under operators’ expectation. When it occurs, anomaly
+Apache Hbase database. The database also provides a               detectors usually cannot adapt to the new concept rapidly,
+subscription tool for other systems [11]–[13], to periodically    generating a lot of false alarms or false negatives (see §V for
+receive subscribed measurements. A data collection interval       details). Consequently, it is very necessary to adapt anomaly
+is typically one minute. Within one second, the measure-          detectors immediately after a concept drift.
+ments subscribed by StepWise are pushed to StepWise.                 Fig. 3 shows the similarities and differences between
+Typically, the KPI measurements of a process constitute a         concept drift and KPI anomaly. Both concept drift and
+KPI stream, with a format of (time, value) for each time          KPI anomaly include unexpected concept drift. However, an
+bin.                                                              expected concept drift is an expected pattern of KPI stream,
+   In this work, we focus on software service KPIs instead        while an anomaly is an unexpected one.
+of resource KPIs, e.g., CPU utilization, memory utilization.         Anomaly detection algorithm: Recently, an increasing
+For a resource KPI, operators usually care about whether it       number of studies have paid attention to anomaly detection
+reaches the threshold indicating the upper bound of physical      algorithms. An anomaly detection algorithm is a single
+ability. Instead, they do not care about concept drifts in        anomaly detector, e.g., Static threshold [14], TSD [3],
+resource KPIs.                                                    Diff [1], MA [2], Weighted MA [15], EWMA [15], Holt-
+   KPI Anomaly: An anomaly in the KPI stream is typi-             Winters [16], or a combination of two or more detectors,
+cally a sudden spike, a jitter, or a dip, etc., which indicates   e.g., Opprentice [1]. In Sogou, operators have deployed the
+an unexpected pattern of KPI. It is usually a short-term or       above seven detectors to detect anomalies in KPI streams.
+spasmodic change, but it can also be an unexpected level             The basic schema of an anomaly detector works in
+shift or ramp up/down. In general, operators deploy anomaly       the following way. When an anomaly detector receives an
+detectors which are based on their domain knowledge to            incoming KPI value, it internally produces a forecast value.
+                                                                                         their models need either parameter tuning or the change
+                                                                  PV
+                                                         Concept Drift                   score threshold tuning for each KPI stream, which are not
+                                                   iSST Change Score                     affordable in our scenario due to the large number and
+                                                                                         variety of KPI streams. Therefore, our goal for concept drift
+                                                                                         detection algorithm is the one that does not require per-KPI
+                                                                                         parameter tuning or change score threshold tuning.
+07-29   07-30   07-31   08-01    08-02   08-03   08-04   08-05   08-06   08-07   08-08      Previous studies on time series concept drift detection
+                                                                                         typically slide two adjacent (but non-overlapping) windows
+                                (a) Time (Month-Day)
+                                                                                         along time dimension on the KPI stream and compute the
+                                                iSST Change Score                        absolute or relative difference between the behavior of time-
+                                  Threshold Automatically Set by EVT
+                                                                                         series in these two windows [6], [17]–[20]. The output of
+                                                                                         these detection algorithms is the change score (indicating
+                                                                                         the severity level of the change) on each time interval rather
+                                                                                         than concept drift directly. Most of these models need either
+                                                                                         parameter tuning or change score threshold tuning for each
+07-29   07-30   07-31   08-01    08-02   08-03   08-04   08-05   08-06   08-07   08-08
+                                                                                         KPI stream. On the one hand, the internal parameters in
+                                (b) Time (Month-Day)                                     some models (e.g., CUSUM [18]), kernel-based model [20],
+Figure 4: A concept drift in original KPI stream (marked by                              SST [21], EGADS [6]) need to be tuned on a per-KPI basis
+red circles) is successfully detected by iSST-EVT because                                based on operators’ domain knowledge. On the other hand,
+the corresponding iSST change score is higher than the                                   the change score detection thresholds for some models (e.g.,
+threshold automatically set by EVT (§IV-A).                                              CUSUM [18], Multiscale Robust Local Subspace (MRLS)
+                                                                                         [19], improved Singular Spectrum Transform (iSST) [9])
+If the absolute difference between the incoming value and                                need to be tuned on a per-KPI basis so that the change
+the forecast one surpass a given threshold, an anomaly alert                             is severe enough to the operators. However, neither tuning
+will be triggered. The threshold is manually set by operators                            model parameters nor tuning detection thresholds on a per-
+with domain knowledge. For example, the threshold of TSD                                 KPI basis is affordable in our scenario due to the large
+is set by operators based on the underlying distribution of                              number and variety of KPIs.
+noises. However, if a concept drift occurs, the distribution                                After studying all these methods, our first insight is that
+of noises will change dramatically. Therefore, the trained                               the spike of change score stream indicates the time of
+TSD is no longer accurate in detecting anomalies after the                               concept drift. We can summarize the intuition as follows:
+concept drift. In addition, most detectors are parameterized
+and have a set of internal parameters. For example, Holt-                                Insight 1: Concept drift detection can be converted into a
+Winters has three parameters: α, β, γ . These parameters are                             spike detection problem in the change score stream.
+also set based on the distribution before a concept drift, and                              For instance, we can use the iSST [9] algorithm to
+thus should be re-trained after it.                                                      calculate the change score, as Fig. 4 (a) shows. There is
+                III. I NTUITION BEHIND S TEP W ISE                                       a spike in the iSST change score stream on 2 ∼ 3 August,
+                                                                                         at the time of concept drift. iSST [9] is a recent concept drift
+   This section presents the domain-specific insights we
+                                                                                         detection approach which is robust and rapid in that it can
+use to help address the challenges mentioned in §I. We
+                                                                                         use model-wide empirical values for model parameters, thus
+need to detect concept drifts in KPI streams in order to
+                                                                                         does not need model parameter tuning on a per-KPI basis.
+rapidly adapt to the expected concept drifts. The first insight
+                                                                                         However, for different KPI streams, the threshold of change
+is that concept drift detection can be converted into a
+                                                                                         score may be different, which is one remaining challenge.
+spike detection problem in the change score stream. After
+                                                                                         Inspired by Insight 1, we design a spike detection approach
+an expected concept drift, the performance of anomaly
+                                                                                         in §IV-A which do not need to tune per-KPI change score
+detectors degrades. It is difficult to tune parameters and
+                                                                                         threshold.
+the severity threshold for the anomaly detectors manually.
+Fortunately, we leverage a second insight that distributions
+                                                                                         B. Measurement Study
+before and after concept drift are statistically correlated. We
+conclude this section by concluding the two challenges in                                  For the KPI stream from web-based software systems,
+applying these insights in a practical system.                                           we discover that concept drift, if happening, almost always
+                                                                                         corresponds to concept drift caused by software changes.
+A. Concept Drift Detection Algorithm                                                     According to our statistics of concept drifts from Sogou,
+   There are many previous works on time series concept                                  95% of concept drifts are caused by software changes (62%
+drift detection (also known as change point detection), but                              by traffic shifting and 33% by code update), and the other
+         1                                                            1                                       Time
+                                                                                                                25 of                  1
+                                                                                                               Day
+        0.8                                                          0.8                                        20                    0.8
+
+
+
+
+                                                       New Concept
+
+
+
+
+                                                                                                                        New Concept
+        0.6                                                          0.6                                       15                     0.6
+
+        0.4                                                          0.4                                       10                     0.4
+                                                                                                                                                          6 ~ 7 am
+        0.2      Old Concept                                         0.2             KPI Value                 5                      0.2                 1 ~ 2 pm
+                New Concept                                                          Linear Fit                                                           5 ~ 6 pm
+         0                                                            0                                        0                       0
+              00 02 04 06 08 10 12 14 16 18 20 22 00                       0   0.2   0.4     0.6    0.8   1                                 0   0.2     0.4    0.6   0.8   1
+
+                          Time (Hour)                                            Old Concept                                                          Old Concept
+                             (a)                                                       (b)                                                               (c)
+Figure 5: (a) The comparison of median value for each daily time slot in new concept and old concept. (b) Each data point
+(old-concept, new-concept) is from the two Y-values of the same time of day in (a), and the color of the point indicates the
+time of day (X-value in (a)). The dotted line is the linear regression. (c) Three one-hour intervals picked from (b).
+
+
+5% are caused by holiday impact. We believe this is not rare                                  •    How to estimate the parameter of the linear model in
+in Web-based software systems.                                                                     real-time? More specifically, we observe that the points
+   The data distribution before a concept drift is considered                                      of continuous time are clustered in Fig. 5 (b) and this
+as old concept, while the data distribution after is considered                                    phenomenon is more clearly shown in Fig. 5 (c). If
+as new concept. Fig. 4 shows an example where new                                                  concept drift happens at 6 ∼ 7 am (see Fig. 5 (c)),
+concept looks similar to old concept. Fig. 5 (a) provides                                          there are too few data points to do the linear fitting,
+a more intuitive look. We take 10 days of old concept and                                          thus we cannot estimate the relationship between the old
+new concept data, and then calculate the median value for                                          concept and the new concept in real-time (within one
+each daily time slot (e.g., 20:00, 20:01...). The median value                                     hour). As aforementioned, concept drift is always caused
+can eliminate impact of the potential anomalous value. The                                         by sporadic software changes, which may happen at any
+comparison in Fig. 5 (a) shows that in this example the                                            time. This phenomenon brings a great challenge to design
+new concept is a “shrunk version” of the old one. Fig. 5                                           the adaption algorithm.
+(b) shows a more quantitative comparison, where each data
+point (old-concept, new-concept) is from two Y-values of                                                        IV. S TEP W ISE D ETAILED D ESIGN
+the same X-value in Fig. 5 (a), and the color of the point                                       We propose a practical framework, StepWise, for robust
+indicates the time of day.                                                                    and rapid adaption for concept drift in software anomaly
+                                                                                              detection. As Fig. 6 shows, our framework has three main
+Insight 2: The relationship between new concept and old                                       components: detection, classification, and adaption. First,
+concept can be almost perfectly fitted by linear regression.                                  in §IV-A we propose a concept drift detection method that
+                                                                                              does not require tuning model parameters or tuning change
+   Note that this KPI with concept drift is randomly picked                                   score threshold. Second, in §IV-B we classify concept drifts
+among 288 KPIs, we observe that new concept and old                                           into expected vs. unexpected ones. We apply causal impact
+concept consistently have a linear relationship with little                                   analysis to make this classification semi-automatic. Third, in
+variance across all 282 expected concept drifts recorded in                                   §IV-C, we propose a robust and rapid adaption algorithm.
+our dataset. This suggests that the liner model is a promising                                Our main contributions focus on the detection and adaption
+direction for concept drift detection in that we can “predict”                                components.
+the new concept with the old concept given the linear
+relationship.                                                                                 A. Concept Drift Detection without Tuning Model Parame-
+                                                                                              ters or Detection Thresholds
+C. Practical Challenges                                                                          Recall that the first practical challenge is to detect spikes
+                                                                                              in the change score stream without tuning per-KPI threshold.
+    There are two issues in the practical system design.                                      We design an Improved Singular Spectrum Transform with-
+•   How to detect spikes in the change score stream? This                                     out Thresholds (iSST-EVT) algorithm which take advantage
+    is challenging because the amplitude of spikes vary both                                  of both iSST and Extreme Value Theory.
+    across different KPIs and over time [9], and it is infeasible                                1) Improved Singular Spectrum Transform without
+    to manually configure the threshold of change score for                                   Thresholds (iSST-EVT): As aforementioned in §III-A,
+    each KPI stream.                                                                          we use iSST to calculate the change score on each time
+                                 Detection                     Classification                  Adaption
+                                                    Concept
+                                                     Drift      Diﬀerence in       Expected      Robust         Anomaly
+            KPI streams         Improved SST
+                                                                Diﬀerences                    Linear Model      Detectors
+                                Score   Threshold                     Unexpected
+
+                                Extreme Value                 Software Change                 Old Concept,
+                                    Theory                        Roll Back                   New Concept
+
+
+                                                Figure 6: Framework of StepWise.
+
+
+interval. Our core idea is to apply EVT to the change score             shown to work well in detecting spikes, which are the right
+stream because EVT is a powerful spike detection method.                time of concept drifts.
+   We provide a brief description of the theoretical back-                 In this way, the threshold for concept drift detection is
+ground of EVT. Extreme Value Theory (EVT) [22] can set                  automatically set by EVT. To the best of our knowledge,
+the threshold of data stream in an automatic fashion without            this paper is the first work to apply EVT to change score
+making any assumption about the data distribution. The goal             stream to automatically set the detection threshold for base
+of EVT is to find the law of extreme value. These extreme               concept drift detection including but not limited to iSST.
+value (spikes) have the same kind of distribution, regardless              Our proposed new concept drift detection approach, called
+of the original one. According to experiments from [7], the             iSST-EVT, has the following desirable properties: no detec-
+maximums of KPI streams from several fields (network,                   tion threshold to tune, no per-KPI-stream model parameters
+physics, finance) have almost the same distribution although            to tune, and all model parameters can use model-wide
+the distributions of the KPI streams are not likely to be the           empirical values which are shown to be robust in practice.
+same.                                                                      2) Model-wide empirical parameter values in iSST-EVT:
+   For a random variable X , F is cumulative distribution               Although both EVT and iSTT still have model parameters,
+function: F (x) = P (X ≤ x). We denote F̄ (x) as the “tail”             these parameters have model-wide empirical values that can
+of this distribution. This extreme value distribution has the           be applied to all KPI streams, without having to be tuned
+following form:                                                         per KPI stream. The model parameter t for EVT is set to a
+                                  1                                     high empirical percentile (98%) [7] and then σ and γ can be
+    Gγ : x 󰀁→ exp(−(1 + γx)− γ ), γ ∈ R, 1 + γx > 0.
+                                                                        estimated by the maximum likelihood estimation. For iSST,
+However, γ is the extreme value index which is hard to                  there is only one parameter to be set. According to [9], for a
+estimate efficiently in this original formula. To make EVT              system that needs quick mitigation on concept drift, window
+more practical, Pickands-Balkema-De Haan theorem [23],                  size ω can be set to a small value such as 5. For a system
+[24] (also called second theorem in EVT) is proposed as                 that needs more precise assessment of concept drift, ω can
+follows:                                                                be set to a large value such as 15. Empirically we set the
+                                                                        window size of 6 (minutes) in StepWise to declare a change
+Theorem IV.1 (Pickands-Balkema-De Haan). F converges
+                                                                        in KPI stream as a concept drift.
+in distribution Gγ , if and only if a function σ(t) exists, for
+all x ∈ R s.t. 1 + γx > 0:                                              B. Concept Drift Classification
+                                               γx − γ1                     After a concept drift is detected, we need to classify
+      F̄t (x) = P (X − t > x|X > t) ∼ (1 +          ) .
+                                               σ(t)                     whether concept drift is expected or unexpected. For external
+   This theorem shows that the excess over a threshold t,               events (e.g., sales promotion) that cause the expected concept
+denoted as X − t, follows Gγ with parameters σ , γ . t is the           drift, there might not be reliable data feeds, but when we do
+initial threshold, whose value is not paramount except that             have reliable event data feeds (e.g., software upgrade, con-
+it must be “high” enough.                                               figuration change, Christmas or Lunar New Year holidays),
+   As Fig. 4 (b) shows, we apply the Pickands-Balkema-                  we can apply causal impact analysis [25] to conduct semi-
+De Haan theorem to detect the spikes in the change score                automatic classification. Causal impact analysis [25] is the
+stream output by iSST (instead of the original KPI stream),             process of drawing a conclusion about a causal connection
+an extreme value of which can indicate a concept drift in the           based on conditions of the occurrence of an effect. In this
+original KPI stream. Based on domain experience and [7],                paper, we adopt the methodology similar to that used in
+we suggests that the model-wide empirical parameter t is                FUNNEL [9], namely Difference in Differences (DiD) [26],
+set to a high empirical percentile (say 98%). Then σ and γ              to automatically analyze whether a concept drift is caused
+can be estimated by Maximum Likelihood Estimation, and                  by a software change (e.g., code deployment, configuration
+these model-wide empirical values for EVT parameters are                change, traffic shifting) whose event logs are available as
+data feeds. If the causal analysis result indicates that a                          Expected Concept Drift Time: c
+concept drift is indeed caused by the software change, the
+final classification still has to be done manually by the                                                     Present Time: t
+operators since some software changes are not supposed
+to cause concept drift but might have done due to bugs or
+
+                                                                                                               }
+                                                                                                             A
+misconfiguration. If unexpected, the software change will           07-29   07-30    07-31   08-01   08-02   08-03   f = RLM(B ~ A)
+be rolled back. Otherwise, the concept drift adaption will                                                           A’ = f (A)
+                                                                                Median Value for             B
+be triggered because of the expected concept drift. Given                       Every Time Bin
+                                                                                                                     Anomaly Detection
+only the final confirmation is done manually, we call this                                                               Using A’
+classification semi-automatic. For adaption to concept drift,
+which we mentioned later, is only the expected one.               Figure 7: The core idea of the adaption algorithm. X-axis is
+                                                                  Time (Month-Day).
+C. Concept Drift Adaption
+   Anomaly detection is vital for managing the service            samples within the same time range as A are extracted from
+performance of web-based software systems. The best pa-           the Kold . Since the KPI values vary and there are even some
+rameters and thresholds of a given anomaly detector often         anomalies in the past, we use the median value for every
+highly depend on actual data in a given KPI, thus they are        time bin of these samples which is a robust estimation [27],
+very time-consuming to be tuned. In practice, operators take      denoted as B (in purple color).
+a long time to gradually do so. However, after the expected
+concept drift, the performance of anomaly detectors signif-          (2) A and B are fitted by Robust Linear Model (RLM)
+icantly degrade sharply. It is infeasible for the operators to    [28] with the output of the linear function f . There are
+manually tune the parameters and thresholds again in a very       many linear regression methods, like LSE (least squares
+timely manner.                                                    regression). However, LSE is highly sensitive to (not robust
+                                                                  against) anomalies. This is because a squared error penalizes
+   From the measurements in Fig. 5, we learn that it is
+                                                                  deviations quadratically, so points far from the line have
+reasonable to model the relationship between the old concept
+                                                                  more effect on the fitting than the points close to it. We want
+and the new one with linear regression. A simple and
+                                                                  to get rid of the impact of anomaly data points by using the
+effective idea is to use linear transformation to change
+                                                                  RLM. The way to achieve robustness against anomalies is to
+the magnitude of new concept to be the same as old
+                                                                  replace the Gaussian distribution for the response variable
+concept’s. This enables anomaly detectors to be still useful
+                                                                  with a distribution that has heavy tails, which will assign
+in new concept, even though there are not many data points
+                                                                  higher likelihood to anomalies, without having to perturb the
+available yet in the new concept alone.
+                                                                  straight line to “explain” them. More details of the RLM is
+   Note that we choose not to do it the other way around
+                                                                  out of the scope of this paper.
+(i.e., transforming old concept to new concept) for the
+following reasons. Our proposed method changes the input             (3) As soon as we get the linear model, we start a linear
+of anomaly detectors, rather than changes any part of             transformation to the current point A′ [t], which is fed into
+anomaly detectors which are introduced in §V-B. Should we         anomaly detectors.
+choose to transform the old concept instead, the parameters          (4) However, the RLM might not be exactly accurate when
+and thresholds of anomaly detectors should be re-trained.         there are not sufficient data points in the new concept. For
+As more points become available in the new concept, the           example, in Fig. 5 (c), the color in the continuous time
+distribution becomes more stable. Thus we have to keep            slot is constant and clustered, and the slopes of each of the
+doing re-training, which is not only difficult but also time-     three hours are slightly different from each other and also
+consuming. In addition, if there are real anomalies in the new    different from the global slope in Fig. 5 (b). Thus we keep
+concept and they are used as the basis to train the anomaly       re-fitting the linear relationship (by repeating steps 1, 2) as
+detector, the transformation becomes inaccurate.                  more new data points in the new concept become available.
+   We design a robust and rapid adaption algorithm. The           Fig. 8 shows how the average anomaly detection F -scorea
+input of the algorithm needs a concept drift time c to separate   (defined in §V-B) of StepWise gets higher and higher as
+the KPI stream as Kold and Knew . Note that Knew changes          more and more data points after the concept drift become
+as time goes by with t as the timestamp of the latest data        available. This re-fitting will continue until the adaption
+points. Other inputs are an empirical value of iSST window        termination time T after concept drift. T is set empirically to
+size ω , and a KPI periodicity T which is used as the             be one day since Fig. 5(b) indicates that one day is sufficient
+step-by-step adaption terminate time. The algorithm can be        to have a very good linear fitting. From Fig. 8 we can see
+summarized as the following four steps.                           that a good linear fitting can be achieved before one day
+   (1) The window size of iSST ω gives the first part of          (e.g., the average F -scorea gets to 0.60 by 6 hours after the
+data list, denoted by A (in green color). As Fig. 7 shows, n      concept drift).
+                                80                                                                                 Truth          0    0   1   1   1   0   0    1   1   1
+
+
+              Average F-score
+                                60                                                                                 Score         0.6 0.4 0.3 0.7 0.6 0.5 0.2 0.3 0.4 0.3
+
+                                40                                                                            Point-wise Alert    1    0   0   1   1   1   0    0   0   0
+
+                                20                                                                             Adjusted Alert     1    0   1   1   1   1   0    0   0   0
+                                                            Up-shift
+                                                          Down-shift
+                                 0                                                                      Figure 9: A toy example of how adjusted alerts of KPI
+                                     0      6   12   18   24   30     36   42   48                      anomaly are generated. The first row is the truth with 10
+                                         Number of Hours after Concept Drift                            contiguous points and two anomaly segments highlighted in
+Figure 8: The average F -scorea of anomaly detectors (for                                               the shaded squares. Detector scores are shown in the second
+the new concept) as time goes by after concept drifts.                                                  row. The third row shows point-wise detector results with a
+                                                                                                        threshold of 0.5. The fourth row shows the detection results
+                                     Table I: Summary of datasets.                                      after adjustment. We shall get precision 0.6, and recall 0.5.
+   Datasets                                                         Up-shift             Down-shift
+                                                                                                        Table II: Basic detectors and sampled parameters. Some
+   # KPIs                                                                          288
+                                                                                                        abbreviations are Diff (Differences), TSD (Time Series
+   # Unexpected concept drifts                                      14                   38
+   # Expected concept drifts                                        107                  175            Decomposition), MA (Moving Average), EWMA (Exponen-
+   # Total data points                                              175680               110880         tially Weighted MA), TSD (Time Series Decomposition).
+   Anomaly data points (ratio to the total)                         3316 (1.89%)         3808 (3.43%)
+                       Total data points                            87485                55775                     Detector                Sampled parameters
+   Old concepts
+                       Anomaly data points                          1810 (2.07%)         1804 (3.23%)              Static threshold [14]   none
+                       Total points                                 88195                55105                     TSD [3]                 period = 1 day
+   New concepts
+                       Anomaly data points                          1506 (1.71%)         2004 (3.64%)              Diff [1]                period = 1 week
+                                                                                                                   MA [2]                  window = 30 points
+                                                                                                                   Weighted MA [15]        window = 30 points
+                                                V. E VALUATION                                                     EWMA [15]               α = 0.1
+                                                                                                                   Holt-Winters [16]       α = 0.5, β = 0.1, γ = 0.3
+   StepWise is designed to rapidly and robustly adapt to the
+expected concept drift for anomaly detection algorithms. We
+deployed a prototype of StepWise in Sogou, a search engine                                              served as the ground truth of our evaluation experiments.
+company. In this section, we evaluate the performance                                                   We plan to release the dataset to the public. Although the
+of StepWise. We first evaluate the overall performance                                                  KPI data is collected from the search engine systems, we
+of StepWise in terms of how it robustly improves the                                                    believe that they are representative of the KPI data of most
+accuracy of anomaly detectors, as shown in §V-B. Then                                                   types of web-based software systems, e.g., social media,
+we compare our concept drift detection method with FUN-                                                 online shopping. As for future work, we will conduct more
+NEL [29] in §V-C. We show the adaption lag of StepWise                                                  evaluation experiments with data collected from other types
+at the end of this Section.                                                                             of software systems.
+A. Datasets                                                                                             B. Evaluation of The Overall Performance
+   Cooperating with operators, we have deployed a prototype                                                In this section, we try to evaluate how StepWise can
+of StepWise in Sogou. To evaluate the performance of                                                    robustly improve the accuracy of anomaly detectors without
+StepWise, we have collected a large volume of KPI data. The                                             tuning parameters for each detector.
+dataset consists of 288 KPI streams in a six-month period                                                  An anomaly detector’s capability to detect anomaly is
+with a one-minute sampling interval, which is randomly                                                  usually assessed by three intuitive metrics, i.e., precision,
+picked from the search engine systems by operators, as                                                  recall, F-score. Following [30], we apply the improved
+Table I shows. In addition, we classify concept drifts into                                             anomaly detection metrics, because in general operators do
+up-shift (Fig. 10 (a)) and down-shift (Fig. 10 (b)), for                                                not care about the point-wise alerts. Instead, they prefer
+the reason that an anomaly detector performs differently                                                to trigger an alert for any time interval in a contiguous
+during up-shift and down-shift. We list the number of total                                             anomalous segment. Fig. 9 shows a toy example of how
+data points and anomaly data points labeled by operators.                                               adjusted alerts of KPI anomalies are generated. If any point
+Although KPI anomaly occurs in a very low frequency,                                                    in an anomaly segment in the ground truth can be detected
+the six-month period is long enough to cover almost all                                                 (over a given threshold), we say this segment is detected
+types of anomalies, and this is sufficient for evaluating the                                           correctly, and all points in this segment are treated as they
+performance of StepWise.                                                                                can be detected. Comparing the truth points (the first row
+   Note that all anomalies and all concept drifts in our                                                in Fig. 9) and the adjusted alert points (the fourth row
+dataset are manually verified by operators, which can be                                                in Fig. 9), we label an anomaly detector’s outcome as
+Table III: The P recisiona , Recalla , and F -scorea of anomaly detectors in the Old concept, in the New concept without
+StepWise, and in the new concept with StepWise. Improvement rate (↑) is calculated by (StepWise - New) / New.
+  Drift type                               Up-shift                                                                   Down-shift
+  Metrics          P recisiona %          Recalla %             F -scorea %             P recisiona %                Recalla %                 F -scorea %
+  Algorithms     Old New Step- (↑)     Old New Step- (↑)     Old New Step- (↑)        Old New Step- (↑)           Old New Step- (↑)         Old New Step- (↑)
+                           Wise                 Wise                   Wise                      Wise                       Wise                      Wise
+  Column No.     1    2     3          4   5      6          7     8    9             10   11    12               13   14   15              16   17   18
+
+  Threshold      97   2    38 (1800)   41   100   64 (-36)   57   5    48 (860)       44       0    38 (-)        29     0     67 (-)       35     0      48 (-)
+  TSD            73   26   75 (188)    40   100   84 (-16)   52   41   79 (93)        75       67   46 (-31)      88     50    98 (96)      81     57     63 (11)
+  Diff           31   8    24 (200)    52   98    83 (-15)   38   16   37 (131)       71       7    64 (814)      72     31    72 (132)     72     12     68 (467)
+  MA             49   12   50 (316)    65   100   93 (-7)    56   22   65 (195)       63       90   61 (-32)      83     19    91 (379)     72     31     73 (135)
+  WMA            91   21   83 (295)    65   100   93 (-7)    76   35   87 (149)       94       92   89 (-3)       81     19    89 (368)     87     31     89 (187)
+  EWMA           94   24   86 (258)    66   100   93 (-7)    78   38   89 (134)       97       94   92 (-2)       81     19    84 (342)     88     31     88 (184)
+  Holt-Winters   87   21   63 (200)    90   100   93 (-7)    88   36   75 (108)       74       97   55 (-43)      100    40    97 (143)     85     57     70 (23)
+
+
+
+
+a true positive (T Pa ), true negative (T Na ), false positive             Table IV: The number of false positives (#F Pa ) and false
+(F Pa ), and false negative (F Na ). We calculated precision,              negatives (#F Na ) in the New concept without StepWise and
+recall, and F-score as follows: precisiona = T PTa +F      Pa              in the new concept with StepWise, respectively.
+                                                              Pa ,
+               T Pa                   2∗precisiona ∗recalla
+recalla = T Pa +F Na , F -Scorea = precisiona +recalla .                          Drift type                 Up-shift                      Down-shift
+                                                                                  False type           #F Pa          #F Na            #F Pa       #F Na
+   1) Choices of Detectors and Parameters: In the studied
+                                                                                                     New Step- New Step-             New Step- New Step-
+scenario, operators have deployed seven anomaly detectors                                                  Wise           Wise             Wise        Wise
+for the 288 KPI streams, as shown in Table II. All the seven                      Column No.         1      2       3      4         5      6     7     8
+anomaly detectors are widely-used in web-based software                           Threshold          52678 1645     0         535     0     2519        2004   661
+systems beyond the search engine [1]. Note that StepWise                          TSD                4144 418       0         230    414    2294        998     28
+is not limited to the seven anomaly detectors and instead                         Diff               15308 3910     16        245    7847   1338        1371   544
+                                                                                  MA                 10360 1418     0         104    19     1202        1622   166
+it can be applied to all anomaly detectors. In this paper,                        WMA                5514 282       0         104    13     212         1622   219
+our objective is to adapt to expected concept drifts for all                      EWMA               4805 233       0         104     9     136         1622   312
+anomaly detectors, instead of improving the accuracy of                           Holt-Winters       5507 852       0         104    23     1599        1195    55
+a specific anomaly detector by tuning its parameters. We
+believe the set of the seven anomaly detectors is general
+enough to represent other kinds of anomaly detectors.                      without StepWise the recalls of anomaly detectors witness
+   For each KPI stream, operators have previously configured               increases after up-shifts (see the 4th and 5th columns
+the parameters of its anomaly detector best for F-score.                   in Table III), which are higher than those of anomaly
+Without StepWise, the parameters of anomaly detectors                      detectors with StepWise (see the 5th and 6th columns
+remain unchanged after the concept drift, resulting in a lot               in Table III). On the contrary, with StepWise the recalls of
+of false alarms.                                                           anomaly detectors rise greatly after down-shifts (see the
+                                                                           14th, 15th columns in Table III). In addition, StepWise
+   2) Evaluation Results and Analysis: As aforementioned,
+                                                                           decreases the precisions of most anomaly detectors (except
+although the parameters of anomaly detectors are carefully
+                                                                           for Threshold and Diff) after down-shifts (see the 11th and
+tailored by operators before each concept drift, they are
+                                                                           12th columns in Table III).
+no longer suitable for the new concept after the concept
+drift, because the data distribution has greatly changed.                     To explain the above results, for each anomaly detector
+As Table III shows, without concept drift adaption, the                    (after the concept drift), in Table IV we list the number
+F -scorea of each anomaly detector degrades dramatically                   of false positives and false negatives, without StepWise
+after the concept drift, whether it is an up-shift or a down-              and with StepWise, respectively. As shown in the 1st
+shift (see the 7th, 8th, 16th and 17th columns in the table).              column of Table IV, after up-shifts each anomaly detector
+   StepWise improves the F -scorea s of all anomaly de-                    generates a large number of false positives when without
+tectors in the new concept by 206% on average (see the                     executed StepWise. In this way, most anomalies are recalled.
+8th, 9th, 17th and 18th columns in Table III), and makes                   That is to say, after up-shifts the anomaly detectors are so
+them comparable with those of anomaly detectors in the old                 sensitive that they successfully detect almost all anomalies
+concept. The results are quite satisfactory to operators based             (see the 3th column of Table IV), which results in very high
+on an on-site investigation.                                               recall ratios, at the cost of a large number of false alarms.
+   More specifically, with StepWise the precisions of                      For example, as shown in Fig. 10 (a), the MA method
+anomaly detectors increase dramatically after up-shifts                    which is without the adaption of StepWise remains the same
+(see the 2st, 3nd columns in Table III). However,                          sensitivity (in terms of the width of detection boundaries)
+                                                                    Table V: Comparison of precision, recall, F-score, and
+                      KPI                                           threshold tuning time between iSST-EVT and iSST
+            w/o StepWise
+            with StepWise                                                  Method                                iSST-EVT      iSST
+
+                                                                           P recisionc                           91.33%        91.09%
+                                                                           Recallc                               90.29%        88.46%
+                                                                           F -scorec                             90.81%        89.76%
+                                                                           Running time per time window          540.5µs       238.6µs
+       16:00 16:30 17:00 17:30 18:00 18:30 19:00 19:30 20:00               Avg. tuning time per KPI stream       0             ∼ 15 min
+
+                       Time (Hour:Minute)
+                                                                    Table VI: Adaption lag of StepWise, which is the summation
+                         (a) MA, Up-shift                           of the delay of the concept drift detection and running the
+                                                                    RLM algorithm
+                      KPI                                            Adaption lag   Delay of the concept drift detection    Delay of running RLM
+            w/o StepWise
+                                                                     ∼ 360.015s     ∼ 360s                                  0.015s
+            with StepWise
+
+
+                                                                    ground truth provided by the operators, the true positive is
+                                                                    the concept drift confirmed by operators and detected by
+       15:30 16:00 16:30 17:00 17:30 18:00 18:30 19:00 19:30        the algorithm. If the concept drift is labeled by operators
+                       Time (Hour:Minute)
+                                                                    while the algorithm neglects it, we label the item as a false
+                                                                    negative. The false positive is the concept drift detected
+                        (b) MA, Down-shift                          by the algorithm but it is not a concept drift labeled by
+Figure 10: The detection boundaries of MA during up-shift           operators. In the true negative, both operators and algorithm
+and down shift, with and without StepWise, respectively.            decide that the item is not a concept drift. We calculate
+                                                                    P recisionc , Recallc , and F -scorec in the same way as
+                                                                    P recisiona , Recalla , and F -scorea of anomaly detection,
+after the up-drift. As a result, the method determines a lot        because they just have slightly different definitions on
+of normal KPI data points as anomalies. However, with the           counting true positive, true negative, etc..
+adaption of StepWise, MA can quickly catch up with the                 Table V shows the comparison results of accuracy
+“correct” detection boundaries (§V-D). Similarly, we can            between iSST-EVT and iSST, in terms of P recisionc ,
+explain why StepWise decreases the precisions of anomaly            Recallc , and F -scorec . For a fair comparison, the threshold
+detectors after down-shifts, with the data listed in the 5th,       of iSST of every KPI stream is set as the best for accuracy
+6th, 7th and 8th columns of Table IV and the example shown          (F-score). We can observe that iSST-EVT and iSST achieve
+in Fig. 10 (b).                                                     very close precision, recall, and F-score.
+                                                                       As mentioned in §IV-A, the threshold of iSST has to
+C. Evaluation of Concept Drift Detection
+                                                                    be manually tuned for every KPI stream. For each KPI
+   As described in §IV-A, we propose a concept drift detec-         stream, it approximately takes fifteen minutes for operators
+tion method, iSST-EVT, which does not require parameter             to tune its threshold. As millions of KPI streams should be
+tuning or threshold of change score. To demonstrate the             monitored to determine whether they are impacted by the
+performance of iSST-EVT, we compare it with iSST in                 concept drift, tuning threshold for all KPI streams is almost
+FUNNEL [29], which has been deployed and proved to be               infeasible. Therefore, it is very important that thresholds
+efficient to detect concept drifts during software upgrades         are automatically tuned for the sake of scalability and
+and configuration changes in large web-based software               deployability. Our proposed iSST-EVT does not need to
+systems but need to tune threshold per-KPI-stream.                  manually tune any threshold or parameter, and thus it is
+   Similarly to the evaluation of overall system in §V-B, we        appropriate in our scenario.
+also use precision, recall and F-score which are intuitively
+interpretative to evaluate the performance of iSST-EVT              D. Evaluation of Adaption Lag
+and iSST. Note that concept drift detection is different               To see how “rapid” StepWise is, we evaluate the adaption
+from anomaly detection, and thus we re-define precision,            lag of StepWise, which is defined as the period between
+recall and F-score for concept drift detection. Specifically,       when a concept drift occurs and when the anomaly detector
+a concept drift detection algorithm is a binary classifier,         is adapted. Apparently, it is the summation of the delay of
+which gives yes or no decisions. We use true positive (T Pc ),      detection and adaption components.
+true negative (T Nc ), false positive (F Pc ), and false negative      The delay of detecting the concept drift is dominated by
+(F Nc ) to label the outcome of an algorithm. Based on              the window size of iSST, which is set to 6 in our scenario
+according to §IV-A. Since the KPI data is sampled every         from evolving data, e.g., retraining the new data [36] or
+minute, for StepWise (iSST-EVT) the delay of detecting the      incremental adaption updates of the model [37]. Supervised
+concept drift is at most six minutes (running time per time     adaptive systems rely loss estimation based on environment
+window is 540.5 µs in Table V).                                 feedback [38]. However, these methods are not suited for
+   To calculate the average delay of running the RLM            the KPI anomaly detection scenario because the learning-
+algorithm, we implement the algorithm with C++ and run          based algorithm needs the classification feedback in real-
+the program on a Dell PowerEdge R420 server with an Intel       time. Besides, we cannot forget the old concept but rather
+Xeon E5-2420 CPU and a 24GB memory. For each KPI                make good use of it.
+data point, the average delay of running the RLM algorithm
+is 0.015s, which is negligible compared to the delay of                               VII. C ONCLUSION
+the concept drift detection. In this way, the adaption lag         In this paper, we present StepWise, a framework for
+of StepWise is ∼ 360.015s, which is quite acceptable by         robustly and rapidly detecting concept drift and adapting
+operators based on the on-site investigation.                   anomaly detection algorithms to the new concept after
+                                                                concept drift. Our key observation is that most service
+                   VI. R ELATED WORK                            KPIs are strongly periodical, concept drift detection can
+   Anomaly detection: Time series anomaly detection has         be converted into spike detection in the change score
+been an active research topic [31]. Considering the perfor-     stream and the distributions in the old concept and the
+mance after concept drift, anomaly detection methods can        new one are statistically correlated. Based on that, StepWise
+be classified into the following three categories. However,     successfully addressed interesting challenges in the adaption
+all of them are not satisfied to operators’ need of robust      for concept drift in terms of scalability, robustness and
+and rapid adaption to the expected concept drift for online     adaption delay through two novel approaches, iSST-EVT and
+anomaly detection. First, some of the anomaly detection         adaption algorithm. Specifically, there is no manual tuning
+methods are designed for processing data in batches or          for threshold or parameter in the iSST-EVT. In addition,
+providing a historical analysis, e.g., Twitter’s S-H-ESD [4],   StepWise rapidly adapts all types of anomaly detectors after
+Netflix’s RPCA [5]. They are not suitable for the online sce-   concept drift, instead of tuning parameters for a specific
+nario. Second, based on supervised learning, Opprentice [1],    anomaly detector. Our evaluation experiments demonstrate
+Yahoo’s EGADS [6] and Donut [30] train an ensemble              StepWise that not only improves the F-score of anomaly
+detectors or neural network offline and use this model for      detectors by 206% over a baseline without any concept drift
+online detection. However, they can mitigate the impact         detection, but also is rapid with a detection lag of around 6
+imposed by concept drift after retraining the model. They       minutes.
+have high computational overhead and are not rapid for
+real-time requirements. Third, some studies like [7], [32]                      VIII. ACKNOWLEDGEMENTS
+proposed methods that keep a short time detection memory           We strongly appreciate Kaixin Sui, Xiaohui Nie and
+in order to quickly adapt to the concept drift, while they      Dapeng Liu for their valuable suggestions. We thank Juexing
+cannot record the historical anomaly pattern which is not       Liao and Nengwen Zhao for proofreading this paper. Thor-
+robust to detect anomalies.                                     ough comments and valuable feedbacks from the reviewers
+   Change detection: Previous studies focused on the un-        also helped us improve the work. This work was partly sup-
+supervised change detection are always parametric or have       ported by the National Natural Science Foundation of China
+high computational cost [17], for example, CUSUM [18],          (NSFC) under grant 61472214, 61472210, the Tsinghua
+MRLS [19], iSST [9], [33] and Yahoo’s EGADS [6].                National Laboratory for Information Science and Technol-
+However, all the above methods give the change score and        ogy key projects, the Global Talent Recruitment (Youth)
+it is hard to determine above which score is a significant      Program, the Tiangong Institute for Intelligent Computing,
+change in order to apply on the large-scale KPI streams         Tsinghua University.
+automatically.
+   Concept drift adaption in other fields: The study of                                   R EFERENCES
+concept drift in online classification scenario has attracted    [1] D. Liu, Y. Zhao, H. Xu, Y. Sun, D. Pei, and et.al, “Opprentice:
+considerable attention in recent years. [8] summarizes that          towards practical and automatic anomaly detection through
+an adaptive learning algorithm can typically have four               machine learning,” in Proceedings of IMC. ACM, 2015, pp.
+components, i.e., memory, change detection, learning, and            211–224.
+loss estimation. The intuitive method of adapting concept        [2] D. R. Choffnes, F. E. Bustamante, and Z. Ge, “Crowdsourcing
+                                                                     service-level network event monitoring,” in SIGCOMM,
+drift is to forget old information [34]. The change detection        vol. 40, no. 4. ACM, 2010, pp. 387–398.
+component is always necessary for explicit drift detection in    [3] Y. Chen, R. Mahajan, B. Sridharan, and Z. Zhang, “A
+such a rapid way [35]. The learning component means to               provider-side view of web search response time,” in
+generalize from examples and update the predictive models            SIGCOMM, vol. 43, no. 4. ACM, 2013, pp. 243–254.
+ [4] A. Kejariwal., “Twitter engineering: Introducing practical             in icdm. IEEE, 2007, pp. 559–564.
+     and robust anomaly detection in a time series,” 2015, https:      [21] V. Moskvina and A. Zhigljavsky, “An algorithm based
+     //blog.twitter.com/engineering/en us/a/2015/introducing-pra            on singular spectrum analysis for change-point detection,”
+     ctical-and-robust-anomaly-detection-in-a-time-series.html.             Communications in Statistics-Simulation and Computation,
+ [5] W. J., “Netflix surus github, online code repos,” 2015, https:         vol. 32, pp. 319–352, 2003.
+     //github.com/Netflix/Surus.                                       [22] J. Beirlant, Y. Goegebeur, J. Segers, and J. L. Teugels,
+ [6] N. Laptev, S. Amizadeh, and I. Flint, “Generic and scalable            Statistics of extremes: theory and applications. John Wiley
+     framework for automated time-series anomaly detection,” in             & Sons, 2006.
+     Proceedings of the 21th SIGKDD. ACM, 2015, pp. 1939–              [23] A. A. Balkema and L. De Haan, “Residual life time at great
+     1947.                                                                  age,” The Annals of probability, pp. 792–804, 1974.
+ [7] A. Siffer, P.-A. Fouque, A. Termier, and C. Largouet,             [24] J. Pickands III, “Statistical inference using extreme order
+     “Anomaly detection in streams with extreme value theory,” in           statistics,” the Annals of Statistics, pp. 119–131, 1975.
+     Proceedings of the 23rd SIGKDD. ACM, 2017, pp. 1067–
+                                                                       [25] K. H. Brodersen, F. Gallusser, J. Koehler, N. Remy, S. L.
+     1075.
+                                                                            Scott et al., “Inferring causal impact using bayesian structural
+ [8] J. Gama, I. Žliobaitė, A. Bifet, M. Pechenizkiy, and                 time-series models,” The Annals of Applied Statistics, vol. 9,
+     A. Bouchachia, “A survey on concept drift adaptation,”                 no. 1, pp. 247–274, 2015.
+     Computing Surveys (CSUR), vol. 46, no. 4, p. 44, 2014.
+                                                                       [26] O. C. Ashenfelter and D. Card, “Using the longitudinal
+ [9] S. Zhang, Y. Liu, D. Pei, and et.al, “Rapid and robust                 structure of earnings to estimate the effect of training
+     impact assessment of software changes in large internet-based          programs,” 1984.
+     services,” in Proceedings of the 11th CONEXT. ACM, 2015,
+                                                                       [27] Y. F. Mohammad and T. Nishida, “Robust singular spectrum
+     p. 2.                                                                  transform,” in IEA/AIE. Springer, 2009, pp. 123–132.
+[10] M. Farshchi, J.-G. Schneider, I. Weber, and J. Grundy,
+                                                                       [28] R. Maronna, R. D. Martin, and V. Yohai, Robust statistics.
+     “Experience report: Anomaly detection of cloud application
+                                                                            John Wiley & Sons, Chichester. ISBN, 2006, vol. 1.
+     operations using log and cloud metric correlation analysis,” in
+     International Symposium on Software Reliability Engineering       [29] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, Z. Zang,
+     (ISSRE). IEEE, 2015, pp. 24–34.                                        X. Jing, and M. Feng, “Funnel: Assessing software changes
+                                                                            in web-based services,” IEEE Transactions on Service
+[11] S. Zhang, W. Meng, J. Bu, S. Yang, Y. Liu, D. Pei, J. Xu,
+                                                                            Computing, 2016.
+     Y. Chen, H. Dong, X. Qu et al., “Syslog processing for switch
+     failure diagnosis and prediction in datacenter networks,” in      [30] H. Xu, W. Chen, N. Zhao, Z. Li, J. Bu, Z. Li, Y. Liu,
+     Quality of Service (IWQoS). IEEE, 2017, pp. 1–10.                      Y. Zhao, D. Pei, Y. Feng et al., “Unsupervised anomaly
+                                                                            detection via variational auto-encoder for seasonal kpis in
+[12] W. Meng, Y. Liu, S. Zhang, D. Pei, H. Dong, L. Song,
+                                                                            web applications,” in Proceedings of the 2018 World Wide
+     and X. Luo, “Device-agnostic log anomaly classification with
+                                                                            Web Conference. ACM, 2018, pp. 187–196.
+     partial labels,” in Quality of Service (IWQoS). IEEE, 2018,
+     pp. 1–10.                                                         [31] V. Chandola, A. Banerjee, and V. Kumar, “Anomaly detection:
+                                                                            A survey,” Computing surveys (CSUR), vol. 41, no. 3, p. 15,
+[13] Y. Sun, Y. Zhao, Y. Su, D. Liu, X. Nie, Y. Meng, S. Cheng,
+                                                                            2009.
+     D. Pei, S. Zhang, X. Qu et al., “Hotspot: Anomaly local-
+     ization for additive kpis with multi-dimensional attributes,”     [32] H. Huang and S. P. Kasiviswanathan, “Streaming anomaly
+     IEEE Access, vol. 6, pp. 10 909–10 923, 2018.                          detection using randomized matrix sketching,” Proceedings
+                                                                            of the VLDB Endowment, vol. 9, no. 3, pp. 192–203, 2015.
+[14] Amazon, “Cloudwatch alarm,” 2015, http://docs.aws.amazo
+     n.com/AmazonCloudWatch/latest/DeveloperGuide/Console              [33] S. Zhang, Y. Liu, W. Meng, Z. Luo, J. Bu, S. Yang, P. Liang,
+     Alarms.html.                                                           D. Pei, J. Xu, Y. Zhang et al., “Prefix: Switch failure
+                                                                            prediction in datacenter networks,” Proceedings of the ACM
+[15] B. Krishnamurthy, S. Sen, Y. Zhang, and Y. Chen,                       on Measurement and Analysis of Computing Systems, vol. 2,
+     “Sketch-based change detection: methods, evaluation, and
+                                                                            no. 1, p. 2, 2018.
+     applications,” in Proceedings of the 3rd IMC. ACM, 2003,
+     pp. 234–247.                                                      [34] A. Bouchachia, “Fuzzy classification in dynamic environ-
+                                                                            ments,” Soft Computing, vol. 15, no. 5, pp. 1009–1022, 2011.
+[16] H. Yan, A. Flavel, Z. Ge, A. Gerber, and et.al, “Argus: End-to-
+     end service anomaly detection and localization from an isp’s      [35] A. Haque, L. Khan, and M. Baron, “Sand: Semi-supervised
+     point of view,” in INFOCOM. IEEE, 2012, pp. 2756–2760.                 adaptive novel class detection and classification over data
+                                                                            stream.” in AAAI, 2016, pp. 1652–1658.
+[17] S. Aminikhanghahi and D. J. Cook, “A survey of methods
+     for time series change point detection,” Knowledge and            [36] J. Gama, P. Medas, G. Castillo, and P. Rodrigues, “Learning
+     information systems, vol. 51, no. 2, pp. 339–367, 2017.                with drift detection,” in Brazilian Symposium on Artificial
+                                                                            Intelligence. Springer, 2004, pp. 286–295.
+[18] A. A. Mahimkar, H. H. Song, Z. Ge, A. Shaikh,
+     J. Wang, J. Yates, Y. Zhang, and J. Emmons, “Detecting            [37] A. Haque, L. Khan, M. Baron, B. Thuraisingham, and
+     the performance impact of upgrades in large operational                C. Aggarwal, “Efficient handling of concept drift and concept
+     networks,” in SIGCOMM, vol. 40, no. 4. ACM, 2010, pp.                  evolution over stream data,” in 32nd ICDE. IEEE, 2016, pp.
+     303–314.                                                               481–492.
+[20] Y. Kawahara, T. Yairi, and K. Machida, “Change-point de-          [38] M. Harel, S. Mannor, R. El-Yaniv, and K. Crammer, “Concept
+     tection in time-series data based on subspace identification,”         drift detection through resampling,” in Proceedings of the 31st
+[19] A. Mahimkar, Z. Ge, J. Wang, J. Yates, Y. Zhang, and et.al,            ICML, 2014, pp. 1009–1017.
+     “Rapid detection of maintenance induced changes in service
+     performance,” in Proceedings of the 7th CONEXT. ACM,
+     2011, p. 13.
+

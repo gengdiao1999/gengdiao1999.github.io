@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>GTrace: From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach（ESEC/FSE 2023）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>GTrace: From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach（ESEC/FSE 2023）</h1>
+
+<blockquote>作者：Zhe Xie、Changhua Pei、Wanxue Li、Huai Jiang、Liangfei Su、Jianhui Li、Gaogang Xie、Dan Pei</blockquote>
+<blockquote>机构：清华大学、CNIC（中科院网络信息中心）、eBay Inc.</blockquote>
+<blockquote>发表年份：2023</blockquote>
+<blockquote>会议/期刊：ESEC/FSE 2023 (San Francisco, CA, USA, Dec 3–9, 2023)</blockquote>
+<blockquote>关联 PDF：同目录下 <code>GTrace_FSE_Industry2023_upload.pdf</code></blockquote>
+<blockquote>代码仓库：https://github.com/NetManAIOps/GTrace.git</blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>---</td><td>---</td></tr>
+<tr><td>标题</td><td>From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach</td></tr>
+<tr><td>作者</td><td>Zhe Xie, Changhua Pei, Wanxue Li, Huai Jiang, Liangfei Su, Jianhui Li, Gaogang Xie, Dan Pei</td></tr>
+<tr><td>机构</td><td>Tsinghua University; CNIC, CAS; eBay Inc.</td></tr>
+<tr><td>发表年份</td><td>2023</td></tr>
+<tr><td>会议/期刊</td><td>ESEC/FSE 2023 (Industry track)</td></tr>
+<tr><td>分类</td><td>微服务 trace 异常检测 / 时序异常检测</td></tr>
+<tr><td>核心问题</td><td>现有微服务 trace 异常检测方法以"逐条"方式独立检测每条 trace，导致在亿级 trace 流量下推理开销巨大且无法共享子结构的高层信息。</td></tr>
+<tr><td>主要贡献</td><td>(1) 首次提出"Group-wise" trace 异常检测范式；(2) 设计"predict latency with structure"学习范式解耦结构与时延；(3) 提出"group-wise VAE"（Tree-LSTM 编码子树）+ DP 缓存 + 合并图批推理加速方案；(4) 在 eBay 集群部署可视化工具。</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>微服务架构（Microservice Architecture）由于其灵活部署、动态扩容、模块独立等优势，已经成为大型互联网应用（电商、视频、搜索、银行等）的主流形态。在微服务系统中，单个外部请求会跨越数十甚至数百个服务实例，trace（调用链）以"调用树"的形式记录这次请求的完整执行过程：每个 span 代表一次 API 调用，包含 API ID、状态码、响应时间（latency）等元数据。</p>
+
+<p>工业上，trace 是故障定位最关键的数据之一：在 eBay、AWS、阿里、腾讯等公司，trace 日均产出动辄以"亿"为单位。研究 trace 上的异常检测，是要把"路径/结构异常"（缺失 span、错误状态码）与"时延异常"（响应时间飙升、调用链路变慢）自动识别出来，帮助 SRE 迅速锁定根因。</p>
+
+<p>但 trace 异常检测长期面临四大痛点：</p>
+<ol>
+<li><b>服务数量大、trace 结构复杂</b>：大型微服务系统通常包含上千个服务、十几万级不同 trace 结构，给结构建模带来挑战；</li>
+<li><b>时延分布差异大</b>：同一服务在不同下游路径上的时延分布差异显著，难以用统一阈值判定；</li>
+<li><b>数据量爆炸</b>：eBay 每分钟产生数百万条 trace，检测算法必须在毫秒-秒级完成推理；</li>
+<li><b>单次失败产生大量异常 trace</b>：故障扩散时可能瞬间产生大量异常 trace，仅靠 trace-by-trace 输出不便于运维人员把握全貌。</li>
+</ol>
+
+<p>在 GTrace 出现之前，业界工作大致分两类：</p>
+<ul>
+<li><b>统计方法</b>（如 CFG、FSA、TraceAnomaly）：按"调用路径"分组后用统计模型刻画时延分布，速度快但难处理"新结构"、且粗粒度分组会损失精度；</li>
+<li><b>深度模型方法</b>（TraceCRL、TraceLingo、TraceVAE、DeepTraLog 等）：用图神经网络/LSTM/VAE 学习 trace 特征，准确率高但每条 trace 都要走一次前向推理，推理开销与 trace 数量线性增长，在亿级流量下几乎不可用。</li>
+</ul>
+
+<p>这些方法都是"point-wise"的——即使多条 trace 共享同一个子树，每条都独立编码、无法共享。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+
+<p>GTrace 要解决的核心问题列表：</p>
+
+<ul>
+<li><b>痛点 1（检测效率低）</b>：point-wise 模型推理开销与 trace 数量线性相关，无法支撑亿级流量。</li>
+</ul>
+<p><b>方案</b>：将共享子结构的 trace 聚成"组"，用 group-wise VAE 一次性建模整组，推理时通过缓存 + 批合并大幅降低重复计算。</p>
+<ul>
+<li><b>痛点 2（无法学习高层信息）</b>：相同的子结构在不同 trace 中被独立编码成不同向量，模型难以学习"该子结构在不同上下文中的时延分布"这类高层信息。</li>
+</ul>
+<p><b>方案</b>：把 trace 按"子树"分组，所有同子树 trace 共享同一个结构编码，模型能直接学到"该结构对应的时延分布"。</p>
+<ul>
+<li><b>痛点 3（结构与时延耦合导致过拟合）</b>：传统 VAE 把时延作为输入一部分，模型容易过拟合到具体时延值，泛化差。</li>
+</ul>
+<p><b>方案</b>：创新地提出"predict latency with structure"——结构作为输入，时延由模型预测出来，从而把二者解耦。</p>
+<ul>
+<li><b>痛点 4（trace 数与子图规模膨胀）</b>：即使 group 化后，树规模膨胀和子图重复计算仍让推理变慢。</li>
+</ul>
+<p><b>方案</b>：设计 Trace Cache Tree（TCT）缓存节点编码 + LRU 图缓存 + 合并图（merged graph）做 batched DP 推理，把 group 内多个 trace 的计算合并到一次前向里。</p>
+<ul>
+<li><b>痛点 5（运维人员难以消化大量异常 trace）</b>：故障时会有海量结构各异的异常 trace，trace-by-trace 输出难以让运维人员快速 get 故障模式。</li>
+</ul>
+<p><b>方案</b>：提供图可视化工具，把丢失的 span 通过结构 Z 向量在 KD-Tree 中检索"最相似的正常模板"补全，再用 JI-score 排序异常 API，给运维一张"故障传播图"。</p>
+
+<h2>四、核心原理（Principles）</h2>
+
+<h3>系统总览</h3>
+
+<p>GTrace 训练阶段：以"组"为单位，将一组共享同一子树的 trace 输入 group-wise VAE；结构通过 Graph Encoder（Tree-LSTM 编码整棵树 + graph pooling）压缩成 <code>Z_S</code>；时延通过 Node Encoder（Tree-LSTM 编码每个子树的根节点）和 Node Decoder 反向解出"按节点的时延分布"，得到 <code>Z_T</code> 和预测时延。训练时，结构重建损失用 NLL 度量输入节点序列与解码节点序列的差异；时延重建损失用 NLL 度量真实时延与预测时延的差异；再叠加 KL 散度正则化两个隐变量。</p>
+<p>推理阶段：对每条新 trace，先在 LRU 子树缓存（TCT）中查 hit/miss，把 miss 的子树组织成"合并图"做一次 batched Tree-LSTM 推理；查询 LRU 图缓存得到 trace 级别的结构 Z；接着用 group-wise VAE 计算两个 NLL 分数（结构 NLL、时延 NLL），分别用于结构异常与时延异常的判定。</p>
+
+<h3>关键概念</h3>
+
+<ul>
+<li><b>Trace / Span / Tree / Sub-tree / Node Sequence</b>：trace 是请求级调用树，span 是树上节点（带 API ID/状态码/latency）。sub-tree 是以某 span 为根的子树。Node Sequence 是把树按 DFS 展开成的节点 ID 序列。</li>
+<li><b>Group-wise Model</b>：对一组共享同一子树的 trace 同时建模，组内共享编码。</li>
+<li><b>Group-wise VAE</b>：包含 Graph-wise 模型（编码整树）与 Node-wise 模型（编码子树、预测时延），两者各有独立隐变量 <code>Z_S</code>、<code>Z_T</code>。</li>
+<li><b>"Predict latency with structure"</b>：把"结构 → 时延"作为有方向的学习目标，避免模型在训练中直接"看到"时延。</li>
+<li><b>Trace Cache Tree (TCT)</b>：一棵以子结构为 key 的 LRU 树，节点保存子结构编码；支持 insert 和 query，用于在 DP 推理中复用子树表示。</li>
+<li><b>Merged Graph</b>：把一批 trace 的"miss 子树"和"data 子树"组织成一张图，做一次前向推理等价于逐 trace 推理。</li>
+<li><b>Anomaly Score</b>：用 NLL 估计 <code>p_θ(G) ≈ (1/n_Z) Σ p_θ(G|z^(i)) p_θ(z^(i)) / q_φ(z^(i)|G)</code>（Monte Carlo 重要性采样），NLL 越大越异常。</li>
+</ul>
+
+<h3>数学原理</h3>
+
+<p>Group-wise VAE 的 ELBO：</p>
+
+<br>\[\]<br>
+<p>\log p_{\theta}(G) \geq L_{\phi,\theta}(G) = \mathbb{E}_{z \sim q_{\phi}(z|G)}[\log p_{\theta}(G|z)] - \mathrm{KL}(q_{\phi}(z|G) \| p(z))</p>
+<br>\[\]<br>
+
+<p>其中 $p(z) = \mathcal{N}(0, I)$，对结构/时延两部分分别有自己的 ELBO。</p>
+
+<p>结构似然（trace 级）：</p>
+
+<br>\[\]<br>
+<p>p_{\theta}(G) \approx \frac{1}{n_Z}\sum_{i=1}^{n_Z} \frac{p_{\theta}(X|z_S^{(i)})\, p_{\theta}(z_S^{(i)})}{q_{\phi}(z_S^{(i)}|X,E)} \stackrel{\mathrm{def}}{=} L_{S,\theta}</p>
+<br>\[\]<br>
+
+<p>时延似然（节点 k 级）：</p>
+
+<br>\[\]<br>
+<p>p_{\theta}(T_k) \approx \frac{1}{n_Z}\sum_{i=1}^{n_Z} \frac{p_{\theta}(T_k|z_T^{(i)})\, p_{\theta}(z_T^{(i)})}{q_{\phi}(z_T^{(i)}|X,E)} \stackrel{\mathrm{def}}{=} L_{T,k,\theta}</p>
+<br>\[\]<br>
+
+<p>节点序列 X 与邻接矩阵 E 在编码前用嵌入层 + z-score 标准化表示；树边用邻接矩阵编码，结构特征（API ID / 状态码）经嵌入层与一维卷积后融合。</p>
+
+<h3>与现有技术的差异</h3>
+
+<ul>
+<li><b>vs. 统计方法（CFG/FSA/TraceAnomaly）</b>：能精确建模任意"子树级别"结构，而不仅按 stv（service trace vector）粗粒度分组；</li>
+<li><b>vs. TraceCRL/TraceVAE/TraceLingo</b>：是 group-wise 的，编码可在多条 trace 间共享，并通过 LRU 缓存 + 合并图把单 trace 推理降为"组级 + 批"推理；</li>
+<li><b>vs. DeepTraLog（trace+log 联合）</b>：纯 trace 方法，避免引入 log 解析开销；</li>
+<li><b>关键新意</b>：① 解耦结构与时延（"predict latency with structure"）；② Tree-LSTM 的消息传递天然适合子树共享 + DP 复用；③ 给出 LRU 双缓存 + 合并图的工程级加速方案。</li>
+</ul>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li><b>输入</b>：训练阶段为正常 trace 集合；推理阶段为单条 trace 的节点序列、邻接矩阵、API ID/状态码、时延向量。</li>
+<li><b>输出</b>：两个标量异常分数——<code>L_{S,θ}</code>（结构 NLL）与 <code>L_{T,k,θ}</code>（节点级时延 NLL），并据此判定异常（trace 级 + 节点级）。</li>
+</ul>
+
+<h3>2. 核心模块</h3>
+<ul>
+<li><b>Grouping Strategy</b>：按 sub-tree 把 trace 聚成组（论文通过实证发现 sub-tree 粒度下 log(latency) 的 σ 最小、最易学）。</li>
+<li><b>Group-wise VAE Encoder</b>：Tree-LSTM 自叶到根聚合消息得到节点表示；Graph-wise 用 graph pooling 得到 trace 级 <code>Z_S</code>；Node-wise 在 sub-tree 根节点上得到 <code>Z_T</code>。</li>
+<li><b>Group-wise VAE Decoder</b>：Graph-wise 解码器是 MLP，把 <code>Z_S</code> 解码成节点序列；Node-wise 解码器是 Tree-LSTM，从根向下把 <code>Z_T</code> 解码为每个节点的时延分布。</li>
+<li><b>Inference Acceleration</b>：</li>
+<li><b>TCT (Trace Cache Tree)</b>：LRU 树结构，key 为子结构，value 为子树编码；提供 insert 与 query 接口，query 返回 <code>G_i' = (V_miss ∪ V_data, E)</code>。</li>
+<li><b>Graph Cache</b>：标准 LRU 缓存 trace 级结构 <code>Z_S</code>，key 为整树 <code>graph_key</code>。</li>
+<li><b>DP-enhanced Node-wise Inference</b>：消息按拓扑序（叶→根）传递，相同子树直接复用 cache。</li>
+<li><b>Merged Graph</b>：把 batch 内所有 trace 的 miss + data 子树拼成一张大图，做一次 batched 前向。</li>
+</ul>
+
+<h3>3. 伪代码</h3>
+
+<pre><code class="language-python">
+# GTrace 离线训练
+for G in training_traces:
+    group = group_traces_by_subtree(G, others)        # 按 sub-tree 分组
+    X, E, T = encode_trace(G)                        # 节点序列、邻接矩阵、时延
+    # 编码
+    hx = node_encoder_tree_lstm(X, E)                # 节点表示
+    z_S = graph_encoder(hx)                          # trace 级结构隐变量
+    z_T = node_encoder(hx)                           # 子树级时延隐变量
+    # 解码
+    X_hat = graph_decoder(z_S)                       # 重建节点序列
+    T_hat = node_decoder_tree_lstm(z_T)              # 预测时延
+    # ELBO 损失
+    L = ELBO(X, X_hat, T, T_hat, z_S, z_T)
+    optimizer.step()
+</code></pre>
+
+<pre><code class="language-python">
+# GTrace 在线推理（带缓存与合并图）
+def detect(trace):
+    g_key = tree_fingerprint(trace)                  # 整树 key
+    if g_key in graph_cache: z_S = graph_cache[g_key]
+    else:
+        z_S, miss_nodes, data_nodes = graph_encoder_with_TCT(trace)
+        graph_cache[g_key] = z_S
+
+    # 合并 batch 内的 miss/data 子树 → merged graph
+    merged = build_merged_graph(batch_miss_nodes, batch_data_nodes)
+    z_T = node_decoder_merged(merged)                # batched DP inference
+
+    nll_S = -log_p_graph(z_S, trace.structure)
+    nll_T = -log_p_latency(z_T, trace.latency)
+    return nll_S, nll_T
+</code></pre>
+
+<h3>4. 关键数学</h3>
+<ul>
+<li><b>结构重建似然</b> $L_{S,\theta}$：trace 级，使用重要性采样估计 $\log p_\theta(X, E)$；</li>
+<li><b>时延预测似然</b> $L_{T,k,\theta}$：节点 k 级，预测分布与观测时延的 NLL；</li>
+<li><b>总损失</b> $L_{\phi,\theta} = \mathbb{E}_{z}[\log p_\theta(G|z)] - \mathrm{KL}(q_\phi(z|G) \| p(z))$，结构、时延各算一份再相加。</li>
+</ul>
+
+<h3>5. 复杂度分析</h3>
+<ul>
+<li>传统 point-wise VAE：$O(N \cdot H)$，$N$ 为 trace 数，$H$ 为每条 trace 编码时间；</li>
+<li>GTrace 训练：每组共享子树 → 实际推理次数远小于 $N$；</li>
+<li>推理：$O(C + B)$，其中 $C$ 是 cache miss 子树编码时间、$B$ 是 merged graph 一次前向时间；论文实测 21.9×–28.2× 加速。</li>
+</ul>
+
+<h3>6. 训练与推理</h3>
+<ul>
+<li>训练目标：最大化 ELBO（含结构重建 NLL + 时延预测 NLL + KL）；</li>
+<li>推理流程：序列化（DFS 节点序列）→ 嵌入（API ID + 状态码）→ 归一化（z-score）→ Tree-LSTM 编码 → 缓存查询/合并图批处理 → 计算两类 NLL → 阈值化（论文未给固定阈值，用 NLL 排序 + 业务侧可调）。</li>
+</ul>
+
+<h3>7. 示例（Figure 1 描述）</h3>
+<p>论文 Figure 1 展示了 Trace 1 / Trace 2 / Trace 3 三条 trace：它们共享同一棵树（节点 1→2/3→4/5）和同一棵子树（节点 2 → 4/5）。GTrace 把它们归为同一组（group by tree / sub-tree），并共享结构编码，只为每个 span 单独预测其 latency。这是 "group-wise + predict latency with structure" 的直观示例。</p>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[原始 trace 流量<br/>eBay / OpenTelemetry] --> B[预处理<br/>DFS 节点序列 + 嵌入 + 归一化]
+    B --> C{分组策略<br/>sub-tree grouping}
+    C -->|同子树| D[Group-wise VAE 训练]
+    D --> D1[Graph Encoder<br/>Tree-LSTM + pooling]
+    D --> D2[Node Encoder<br/>Tree-LSTM on sub-tree]
+    D1 --> E1[Z_S 结构隐变量]
+    D2 --> E2[Z_T 时延隐变量]
+    E1 --> F1[Graph Decoder<br/>MLP → 节点序列]
+    E2 --> F2[Node Decoder<br/>Tree-LSTM → 时延分布]
+    F1 --> G[ELBO 损失]
+    F2 --> G
+    G --> H[训练好的 GTrace 模型]
+    H --> I[LRU 缓存<br/>TCT + Graph Cache]
+    I --> J[在线推理<br/>merged graph + DP]
+    J --> K[NLL_S 结构异常分数]
+    J --> L[NLL_T 时延异常分数]
+    K --> M[异常判定 + 可视化<br/>KD-Tree + JI-score 排序]
+    L --> M
+    M --> N[运维人员]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[Step 1: 收集训练 trace] --> S2[Step 2: DFS 序列化生成节点序列]
+    S2 --> S3[Step 3: 按 sub-tree 分组]
+    S3 --> S4[Step 4: 训练 group-wise VAE<br/>最大化 ELBO]
+    S4 --> S5{推理时<br/>是否 cache hit?}
+    S5 -- 是 --> S6[直接复用子树编码]
+    S5 -- 否 --> S7[Tree-LSTM 编码子结构<br/>并写入 TCT]
+    S7 --> S8[构造 merged graph]
+    S6 --> S8
+    S8 --> S9[batched DP 推理<br/>得到 Z_S 与 Z_T]
+    S9 --> S10[计算结构 NLL + 时延 NLL]
+    S10 --> S11{NLL > 业务阈值?}
+    S11 -- 是 --> S12[报告异常<br/>可视化工具补全缺失 span]
+    S11 -- 否 --> S13[判定为正常]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ Group-wise 检测范式</b>：首次把"组级共享结构编码"引入微服务 trace 异常检测，把"point-wise 编码 → 组级编码"作为降低推理开销的核心武器。</li>
+<li><b>+ "Predict latency with structure" 学习范式</b>：把"结构"作为输入、"时延"作为预测目标，让模型学到"该结构对应什么样的时延分布"，从根本上避免对时延的过拟合。</li>
+<li><b>+ Tree-LSTM + DP 双缓存 + 合并图 加速栈</b>：用 Tree-LSTM 的消息传递实现子树编码共享；用 TCT（Trace Cache Tree）实现节点级 LRU 缓存；用图缓存与 merged graph 把"多条 trace 一次前向"做完，论文实测取得 21.9×–28.2× 加速。</li>
+<li><b>+ 可视化与 eBay 落地</b>：把 NLL 异常分数与 KD-Tree + JI-score 排序结合，给运维一张"故障传播图"，而不是 trace-by-trace 的散乱输出，已在 eBay 生产集群落地。</li>
+<li><b>+ AUC 2.64%–195.45% / F1 2.31%–40.92% 的精度提升</b>：在 eBay 真实数据集和故障注入测试集上同时验证了效果与效率。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>：</li>
+<li><b>Dataset A</b>：eBay 微服务系统真实 trace。314 个服务、1487 个 API。5 小时正常数据 + 2 小时故障数据；253 条结构异常、1417 条时延异常；P99 latency 7580 ms，P99 90 spans / 10 depth。</li>
+<li><b>Dataset B</b>：开源 microservice-demo（11 服务、65 API），通过 K8s 注入网络时延/丢包/CPU 压力等故障；140k trace；P99 latency 263 ms。</li>
+<li><b>Baseline</b>：CFG、FSA、TraceAnomaly (TA)、LSTM、CRISP、TraceCRL。</li>
+<li><b>主要指标</b>：best F-Score、AUC；分别按 Node Latency、Trace Latency、Trace Structure 报告。</li>
+<li><b>关键结果数字</b>（论文 Table 3）：</li>
+<li>Dataset A：GTrace Node Latency AUC 0.867 / F1 0.869；Trace Structure AUC 0.845 / F1 0.861；相比 TraceCRL 在结构 AUC 上提升 1200%，相比 TA 提升 195.5%。</li>
+<li>Dataset B：GTrace Trace Structure AUC 0.837 / F1 0.805；相比次优 baseline 在结构 F1 上提升 31.8%。</li>
+<li><b>消融实验</b>（Table 4）：</li>
+<li>去掉 "predict latency with structure"（即把时延作为输入 "+input T"）：Dataset A Node Latency AUC 0.439 vs GTrace 0.867；说明把时延从输入剥离对精度帮助巨大。</li>
+<li>去掉 "split Z"（结构/时延共用一个隐变量）：Dataset A Trace Structure F1 0.424 vs 0.861；说明解耦两个隐变量对结构异常尤其关键。</li>
+<li><b>效率分析</b>（Table 5 + Figure 10/11）：在 30,000 条 trace 上，完整 GTrace 总耗时 3.060 s（其中 cache R&W 0.419 s、inference 0.937 s），去除缓存后耗时 35.823 s；推理速度 A 上 28.2×、B 上 21.9× 加速。Cache 命中率随检测 trace 数增加最终稳定在 95% 以上。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>电商交易系统</b>：下单/支付链路涉及 50+ 微服务，每分钟百万级 trace，GTrace 能在分钟级检测出"payment→risk→order"链路的 latency spike。</li>
+<li><b>互联网广告投放</b>：广告请求链路对时延极敏感，结构异常（某个 span 缺失）往往意味着广告主配置错误，GTrace 能在结构 NLL 上稳定识别。</li>
+<li><b>云数据库 PaaS</b>：控制平面与数据平面 trace 共享同一子结构（如 SQL 解析 → 执行 → 返回），GTrace 用 sub-tree 分组非常贴合。</li>
+<li><b>视频流媒体</b>：CDN 边缘节点 trace 共享大量子树（回源、HLS 分片、DRM），可用 GTrace 监控边缘节点健康。</li>
+<li><b>大型企业 SaaS</b>：多租户微服务系统中，运维需要"一张故障传播图"快速定位责任团队，GTrace 的可视化工具直接对接工单系统。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li>TraceSieve（ISSRE 2023）：另一种 trace 异常检测 + 根因定位方法，使用 GAN 风格去噪 + VGAE-EWC。</li>
+<li>TSC23-DiagFusion（TSC 2023）：多模态（trace+log+metric）融合做根因分析，可以把 GTrace 作为其 trace 单模态子模块嵌入。</li>
+<li>3580305.3599902（KDD 2023，AnoFusion）：也是多模态异常检测，但侧重"trace 异常 + 失败检测"，与 GTrace 在 trace 单模态上互为补充。</li>
+<li>LogKG（TSC 2023）：日志失败诊断知识图谱方法，与 GTrace 的"结构异常"可视化解说有上下游关系。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>Trace</b>：单次外部请求的完整调用树。</li>
+<li><b>Span</b>：trace 中的一个节点，代表一次 API 调用。</li>
+<li><b>Sub-tree</b>：以某个 span 为根的子调用树，是 GTrace 的分组单位。</li>
+<li><b>Group-wise</b>：一组共享结构的样本共同编码。</li>
+<li><b>Point-wise</b>：每条样本独立编码，忽略共享信息。</li>
+<li><b>VAE (Variational Autoencoder)</b>：含编码器、隐变量、解码器的生成模型。</li>
+<li><b>Tree-LSTM</b>：把 LSTM 推广到树结构，自叶向根聚合消息。</li>
+<li><b>ELBO (Evidence Lower Bound)</b>：VAE 的优化目标下界。</li>
+<li><b>NLL (Negative Log-Likelihood)</b>：负对数似然，作为异常分数。</li>
+<li><b>TCT (Trace Cache Tree)</b>：论文提出的按子结构缓存的 LRU 树。</li>
+<li><b>Merged Graph</b>：将多条 trace 的待编码子结构合并为一张大图。</li>
+<li><b>KD-Tree</b>：K 维空间索引，用于按结构 Z 反查最相似正常 trace。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li><b>TraceAnomaly</b>（ISSRE 2020, Liu et al.）：提出"服务 trace 向量" (stv) 概念，是 point-wise VAE 的代表，论文与之一对一比较。</li>
+<li><b>CRISP</b>（USENIX ATC 2022, Zhang et al.）：基于"critical path / CCCT"的微服务 trace 关键路径分析。</li>
+<li><b>TraceCRL</b>（ESEC/FSE 2022, Zhang et al.）：用图对比学习做 trace 异常检测，论文中作为强 baseline。</li>
+<li><b>TraceVAE</b>（WWW 2023, Xie et al.）：作者团队前作，Graph VAE 用于 trace，是 GTrace 的前置工作。</li>
+<li><b>TraceLingo</b>（2021, Xu et al.）：用 Tree-LSTM 做 trace 表示学习，但仍是 point-wise。</li>
+<li><b>DeepTraLog</b>（ICSE 2022, Zhang et al.）：trace+log 联合 GNN，与 GTrace 互补。</li>
+<li><b>代码</b>：https://github.com/NetManAIOps/GTrace.git</li>
+<li><b>数据集</b>：来自 eBay 真实集群（非公开）+ 开源 microservice-demo（公开）。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

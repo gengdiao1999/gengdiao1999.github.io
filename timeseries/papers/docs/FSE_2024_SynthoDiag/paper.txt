@@ -1,0 +1,805 @@
+           Fault Diagnosis for Test Alarms in Microservices through
+                               Multi-source Data
+           Shenglin Zhang                                         Jun Zhu                             Bowen Hao                          Yongqian Sun∗
+            Nankai University                              Nankai University                        Nankai University                    Nankai University
+                & HL-IT                                     Tianjin, China                           Tianjin, China                       & TKL-SEHCI
+             Tianjin, China                                                                                                               Tianjin, China
+
+              Xiaohui Nie                                    Jingwen Zhu                                Xilin Liu                          Xiaoqian Li
+                CNIC, CAS                                  Nankai University                         Huawei Cloud                         Huawei Cloud
+               Beijing, China                               Tianjin, China                          Shenzhen, China                      Shenzhen, China
+
+                                                                Yuchi Ma                                 Dan Pei
+                                                             Huawei Cloud                        Tsinghua University &
+                                                            Shenzhen, China                              BNRist
+                                                                                                     Beijing, China
+
+ABSTRACT                                                                                        fault localization is 81.9%, significantly surpassing the previous
+Nowadays, the testing of large-scale microservices could produce an                             methods.
+enormous number of test alarms daily. Manually diagnosing these
+alarms is time-consuming and laborious for the testers. Automatic                               CCS CONCEPTS
+fault diagnosis with fault classification and localization can help                             • Software and its engineering → Software testing and debug-
+testers efficiently handle the increasing volume of failed test cases.                          ging; Software testing and debugging.
+However, the current methods for diagnosing test alarms struggle
+to deal with the complex and frequently updated microservices. In                               KEYWORDS
+this paper, we introduce SynthoDiag, a novel fault diagnosis frame-
+                                                                                                Microservice, Test Case, Fault Diagnosis, Execution Logs, Trace
+work for test alarms in microservices through multi-source logs
+                                                                                                Logs
+(execution logs, trace logs, and test case information) organized
+with a knowledge graph. An Entity Fault Association and Position                                ACM Reference Format:
+Value (EFA-PV) algorithm is proposed to localize the fault-indicative                           Shenglin Zhang, Jun Zhu, Bowen Hao, Yongqian Sun, Xiaohui Nie, Jingwen
+log entries. Additionally, an efficient block-based differentiation ap-                         Zhu, Xilin Liu, Xiaoqian Li, Yuchi Ma, and Dan Pei. 2024. Fault Diagnosis
+proach is used to filter out fault-irrelevant entries in the test cases,                        for Test Alarms in Microservices through Multi-source Data. In Companion
+significantly improving the overall performance of fault diagnosis.                             Proceedings of the 32nd ACM International Conference on the Foundations
+At last, SynthoDiag is systematically evaluated with a large-scale                              of Software Engineering (FSE Companion ’24), July 15–19, 2024, Porto de
+                                                                                                Galinhas, Brazil. ACM, New York, NY, USA, 11 pages. https://doi.org/10.
+real-world dataset from a top-tier global cloud service provider,
+                                                                                                1145/3663529.3663833
+Huawei Cloud, which provides services for more than three mil-
+lion users. The results show the Micro-F1 and Macro-F1 scores
+improvement of SynthoDiag over baseline methods in fault clas-                                  1    INTRODUCTION
+sification are 21% and 30%, respectively, and its top-5 accuracy of                             Microservices represent an architectural paradigm that decomposes
+                                                                                                the functional aspects of software applications into a collection of
+∗ Yongqian Sun is the corresponding author. Email: sunyongqian@nankai.edu.cn
+                                                                                                small, lightweight services [23]. This approach enables the divi-
+                                                                                                sion of the business functionality into independent segments that
+HL-IT, TKL-SEHCI, and BNRist are short for Haihe Laboratory of Information Tech-
+nology Application Innovation, Tianjin Key Laboratory of Software Experience and
+                                                                                                can be concurrently developed, meeting the demand for frequent
+Human Computer Interaction, Computer Network Information Center at Chinese                      iterations and rapid updates [22]. To guarantee the reliability of
+Academy of Sciences, and Beijing National Research Center for Information Science               service functionality, rigorous testing is conducted before launch-
+and Technology, respectively.
+                                                                                                ing or updating any business features [7]. Many research works
+                                                                                                have focused on developing test cases to thoroughly assess each
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed           component in a microservice [6, 18].
+for profit or commercial advantage and that copies bear this notice and the full citation          During the execution of test cases, several factors can lead to
+on the first page. Copyrights for components of this work owned by others than the              failed test cases and raise test alarms, including environment issues,
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission   code errors, incorrect testing procedures, etc. Testers are responsible
+and/or a fee. Request permissions from permissions@acm.org.                                     for addressing these test alarms by analyzing massive log files
+FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil                                  (as shown in Figure 1) scattered across different service modules,
+© 2024 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 979-8-4007-0658-5/24/07                                                                classifying the fault category, and diagnosing the root cause of each
+https://doi.org/10.1145/3663529.3663833                                                         failed test case [1, 11]. In this way, they can take the right remedial
+FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil                     S. Zhang, J. Zhu, B. Hao, Y. Sun, X. Nie, J. Zhu, X. Liu, X. Li, Y. Ma, D. Pei
+
+
+actions, such as resetting environmental configurations, reporting
+exception messages to developers, or rectifying test scripts [1, 11].
+    A thorough classification of failed test cases and a detailed lo-
+calization of fault-indicative logs is crucial for testers handling
+test alarms [11]. However, manually analyzing these logs is time-
+consuming and laborious [1, 18]. For example, we conducted a study
+at a top-tier global cloud service provider, Huawei Cloud, which
+provides services for over three million users. Thousands of test
+cases are executed daily, and even if only around 5% of these test
+cases result in faults, hundreds of test cases make it impractical for
+manual fault diagnosis. Previous studies [1, 2, 5, 11] classify failed
+test cases by their fault category or pinpoint the fault-indicative
+logs within the execution logs of test alarms. Nevertheless, they
+only process the execution logs while neglecting the trace logs,          Figure 1: Multi-source logs in a failed test case. The execution
+which could result in suboptimal fault diagnosis performance in the       logs are collected from the executor (client side), and the trace
+microservice system (see Section 2.2.1). Hence, it is urgently needed     logs are collected from the microservice system (server side),
+to design a new automatic fault diagnosis framework, including            and the testcase info is predefined by testers.
+fault classification and localization for test alarms, by analyzing
+multi-source logs in microservices. Yet, it faces the following three        test alarms in microservice systems, and SynthoDiag is intro-
+challenges (see § 2.2.3 for more details):                                   duced as the premier framework to employ multi-source logs,
+    Challenge 1: Underutilized multi-source logs. The disparate              encompassing execution logs, trace logs, and test case informa-
+formats of these multi-source logs have rendered previous methods            tion, for the diagnosis of failed test cases.
+ineffective in leveraging them, particularly in integrating execution      • We propose a simple yet effective block-based differentiation
+logs (semi-structured texts) with trace logs (tree-structured texts          strategy to enhance data quality, thereby addressing the chal-
+with span).                                                                  lenge introduced by the fault-irrelevant logs in the training
+    Challenge 2: Inefficient fault-irrelevant logs filtering. It has         data.
+been observed that not all the logs in the failed test case are associ-    • We propose EFA-PV to assess the significance of log entries,
+ated with faults [1]. These fault-irrelevant logs account for a large        leveraging both the content of log entries and the relationships
+proportion, which will hinder diagnosis models from accurately               between log entries.
+extracting fault features. The existing methods cannot effectively         • To substantiate the effectiveness of SynthoDiag, a comprehen-
+filter out these irrelevant log entries while keeping the relevant log       sive evaluation is conducted using a real-world test case dataset
+entries [11].                                                                obtained from Huawei Cloud. The improvements demonstrated
+    Challenge 3: Inaccurate localization for new types of logs.              by SynthoDiag over baseline methods in fault classification are
+Owing to the frequent software upgrades and configuration changes            remarkable, with Micro-F1 scores and Macro-F1 scores experi-
+of the microservice system and the corresponding test scripts, fault         encing a notable increase of 21% and 30%, respectively. Further-
+logs’ content may vary among test cases, even if they belong to the          more, it achieves a top-5 accuracy of 0.819 in fault localization.
+same fault category. Consequently, the fault log entries of historical       The subsequent sections of this paper are structured as follows:
+test cases may be dissimilar to those in the new failed test cases,       Preliminary knowledge is expounded upon in § 2, while the frame-
+which makes it fail to provide adequate reference information for         work of SynthoDiag is delineated in § 3. To demonstrate effective-
+localizing fault logs in new failed test cases using existing methods.    ness, the experiment setup and results are elaborated upon in § 4.
+    This paper proposes SynthoDiag, a novel fault diagnosis frame-        § 7 offers an overview of related works, culminating in a conclusion
+work for test alarms in microservice systems through multi-source         in § 8.
+logs. (1) To address challenge 1, recognizing the capacity of knowl-
+edge graphs to establish correlations among data in varying for-          2 PRELIMINARY AND MOTIVATION
+mats [4, 12, 21], we propose the utilization of knowledge graphs for
+diagnosing failed test cases that involve multi-source logs; (2) To       2.1 Background
+address challenge 2, we propose an effective block-based differenti-      The structure of a test case is intricately designed, incorporating
+ation strategy to eliminate fault-irrelevant logs while preserving        a sequence of operations along with their respective checkpoints.
+the contextual information of the remaining logs that are relevant        This design is pivotal for evaluating the functionality of services
+to faults; (3) To address challenge 3, we propose an Entity Fault As-     during the System and Integration Testing (SIT) phase [11].
+sociation score and Position Value (EFA-PV) algorithm to determine           Test Alarm Analysis. In the context of SIT, the occurrence of a
+the significance of each log entry by capitalizing on the content of      failure within a test case is signified by the triggering of an alarm.
+the logs as well as their relationships in multi-source logs.             This alarm indicates a discrepancy between the actual outcome
+    The contributions of this paper are summarized as follows:            of an operation and its anticipated result, which may arise due to
+                                                                          various factors such as an unstable network environment, incorrect
+ • As far as our knowledge extends, we are among the first to             execution of test steps, or underlying issues within the service
+   simultaneously conduct fault classification and localization for       itself. To effectively address these alarms, testers are required to
+Fault Diagnosis for Test Alarms in Microservices through Multi-source Data                    FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil
+
+
+implement tailored solutions that are contingent upon the specific              execution logs, and each group of trace logs can be related to
+category of the fault identified.                                               an operation in the execution logs. As such, trace logs meticu-
+                                                                                lously capture operational intricacies of microservice instances
+ Table 1: Cause and solution for different fault categories
+                                                                                and messages about faults arising from service issues and envi-
+                                                                                ronmental issues.
+     Fault
+                            Cause                        Solutions            • Testcase Information. It is written by the tester before testing
+   Category
+                                                                                and records the basic information about the test case, including
+    Service            Issues within             Submitting bug reports
+                                                                                the purpose, id, executors, etc., of the test case. This information
+     Issue               the service               to the developers
+                                                                                can be used to understand the test case and find the passed test
+                     Issue external to                                          cases with the same purpose in history, which can help us to
+ Environment          the service and           Re-executing test case or       make the comparison and understand the cause of the fault
+    Issue               unrelated to            setting the environment         more quickly.
+                       the test steps
+ Script Defect       Wrong test steps          Correcting the test script       Fault Diagnosis. Fault diagnosis in this paper refers to the
+     Tool               Third-party           Asking help from supporters    classification and localization of faults for failed test cases. Fault
+    Defect           test tools defect          of the third-party tools     classification is to determine which existing fault category a new
+                                                                             case belongs to, while fault localization is to identify and highlight
+   Fault Category. Test case faults are typically categorized into
+                                                                             which specific log entries are most likely to be related to the root
+the following four categories in Table 1. Among these, Environment
+                                                                             cause, i.e., fault-indicative log entries (e.g., the Request b to delete
+Issue and Script Defect emerge as the most prevalent categories.
+                                                                             tester_factory_001 Exception: Connection Timeout in Figure 2). Fault
+Environment Issue pertains to failures induced by external environ-
+                                                                             diagnosis can assist testers in quickly identifying and resolving
+mental factors, whereas Script Defect relates to failures caused by
+                                                                             faults.
+inaccuracies within the test scripts. The complexity of microser-
+vices environments and the dynamic nature of test script updates
+often contribute to the frequency of these issues. Conversely, Tool
+Defect represents a highly impactful category, as a single flaw in
+the testing tool can lead to multiple test case failures. Meanwhile,
+Service Issue stands out as the most critical category, given its role in
+uncovering potential service problems and facilitating preemptive
+measures to avert severe incidents. To accurately determine the
+category of a failed test case, testers are reliant on the analysis of
+logs from multiple sources.
+   It is worth noting that in our scenario, there is already a historical
+fault case category library, where many cases have been marked in
+these four categories by experienced testers, without the need to
+build it from zero.
+   Multi-source Logs. Log plays a pivotal role in diagnosing faults
+due to their semantic information of services and operations [11,
+21, 26] and the source of the log determines the focus of the content.
+As shown in Figure 5, each test case generates three types of logs,
+execution logs originating from the client side, trace logs from the
+server side, and testcase info pre-written by the tester:                    Figure 2: The same error logs in the execution logs can be
+                                                                             caused by diverse reasons as indicated in the trace logs.
+ • Execution Logs: The execution log is mainly composed of test
+   information for many test operations. There is a clear beginning
+   and end (e.g., Begin to send request and Check point fail entry           2.2    Motivation
+   in Figure 1) for each operation. Specific testing content was             Analyzing faults through logs is a labor-intensive task, necessitating
+   recorded between them, including testing preparations, testing            meticulous scrutiny of individual log entries by testers to accurately
+   operations, request parameters, response messages, checkpoint             identify the underlying causes of faults. Given the sheer volume of
+   outcomes, error messages etc. These messages can help us clas-            failed test cases and the extensive number of logs, manual inspec-
+   sify the test case into which category, often requires a combi-           tion of each test case becomes impractical. Therefore, providing the
+   nation of trace logs to achieve more accurate classification (see         tester with the fault category and fault-indicative log entries can
+   § 2.2.1). Note that an operation in the execution log corresponds         significantly enhance testing efficiency. These objectives align with
+   to a set of trace logs on the server side.                                the overarching goals of test case fault diagnosis[1, 11]. Nonetheless,
+ • Trace Logs: These logs are generated on the server side, and              when diagnosing failed test cases within a microservice system, we
+   encompass invocation flow traces among services and logs gen-             confront several challenges, including underutilized multi-source
+   erated by each service. There are multiple groups of trace logs           logs, inefficient fault-irrelevant logs filtering, and inaccurate local-
+   in a test case, which is decided by the request counts in the             ization for new template logs.
+FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil                         S. Zhang, J. Zhu, B. Hao, Y. Sun, X. Nie, J. Zhu, X. Liu, X. Li, Y. Ma, D. Pei
+
+
+2.2.1 Underutilized Multi-source Logs. The inherent complexity of            2.2.3 Inaccurate Localization for New Template Logs. Upon pre-
+microservice systems necessitates the analysis of multi-source logs          senting testers with fault categories, it becomes essential to provide
+to accurately diagnose fault test cases.                                     further details to enhance the interpretability of faults, which helps
+    However, prior research has predominantly concentrated on fea-           testers to comprehend faults better and verify the accuracy of diag-
+ture extraction from execution logs to diagnose fault categories,            nostic results through the localization of fault-indicative logs.
+because execution logs contain comprehensive information about                  The strategy proposed by LFF [1] is based on the premise that
+the test case in the traditional system. This is no longer applicable        logs associated with templates frequently observed in historical
+in the scenarios of a microservice system, because the intricate             failed test cases are more likely to indicate the underlying faults.
+environment introduces complexity, whereby the same log in exe-              Accordingly, this approach prioritizes logs in new failed test cases
+cution logs may stem from various underlying causes. For instance,           by quantifying the presence of their corresponding templates in
+Figure 2 show three distinct test cases exhibit an log entry of iden-        past failures. Nevertheless, due to the independent and frequent
+tical error message. Based solely on the execution logs, one might           deployment of services, microservice system test cases undergo
+assume that they belong to the same fault category. However, a               rapid updates, leading to the generation of the new template [7].
+closer examination of trace logs reveals disparate fault causes for          On the one hand, these newly generated templates will not appear
+each case. Test case A encounters fault due to an infinite loop in           in the historical failed test cases. On the other hand, the log with
+the service progress, classified as service issue. In contrast, test case    these newly generated templates can be the real fault-indicative
+B’s fault results from network interference which lead to the loss of        log. As is shown in § 4.2, these methods achieve a bad performance
+the response message, categorized as environment issue. Lastly, test         on the Top-5 accuracy. Consequently, fault-indicative log entries in
+case C’s fault is caused by permission denied from the database and          new test cases can not be localized by the existing method.
+is also characterized as service issue due to the wrong configuration           Challenge 3:The update of test cases leads to a mismatch between
+of service. Consequently, these diagnosing methods of the test case          new logs and old logs, which makes previous methods no longer
+in traditional, which only focus on the execution logs, are no longer        applicable to localize the historical fault-indicative log entries.
+adapted to the scenes of the microservice system, and multi-source
+logs must be used.                                                           2.2.4 Summary. To diagnose failed test cases in microservices ef-
+    Challenge 1: Fault diagnosis within microservices cannot solely          fectively, it is imperative to utilize both trace logs and execution
+depend on execution logs and there is a need for analyzing multi-            logs. Furthermore, addressing the disparity in the formats of these
+source logs.                                                                 logs from various sources is essential. Additionally, in light of the
+                                                                             detrimental effects of irrelevant log entries within the training data,
+2.2.2 Inefficient Fault-irrelevant Logs Filtering. Leveraging multi-         a more robust filtering mechanism must be devised. Moreover, to
+source logs for fault diagnosis typically involves analyzing the             enhance the interpretability of diagnostic results, there is a need
+entirety of the log data. However, most of the logs are irrelevant           to propose a localization method that adapts to the scenes of the
+to the failure, and often only a small fraction of the logs is critical      microservice system.
+to helping testers diagnose the failed test case. Remarkably, after
+carefully investigating thousands of failed test cases collected from        3 DESIGN
+Huawei Cloud, we find that less than 10% of these log entries pertain
+to faults. As is shown in § 4.3.1, this presence of irrelevant log entries   3.1 The Framework of SynthoDiag
+poses challenges to characterizing failed test cases accurately, which       The SynthoDiag framework comprises three main components: log
+leads to the final performance of the model dropping by more than            filtering, case embedding, and fault diagnosing, as illustrated in
+10%.                                                                         Figure 3. When parsing the logs of a failed test case, SynthoDiag
+   The prior research, such as LFF [1], attempts to address this             filters the irrelevant log entries in logs with log-block § 3.2 (ad-
+issue by using a template-based differentiation technique. This              dressing challenge 2). It then builds the knowledge graph of the
+method filters out the logs in the failed test case that share the same      failed test cases based on the remaining fault-relevant log entries
+template with the logs in the historically successful test cases. On         § 3.3 (addressing challenge 1). Next, SynthoDiag uses KGE with
+the one hand, the template is only the format of the output and              semantic information to embed each failed test case into a vector
+does not determine whether it is related to the exception, which             § 3.4. Finally, the historical failed test cases and labels will be stored
+means that the fault-relevant logs may have the same template                in a case category library. When a new failed test case needs to be
+as the successful logs will also be filtered. On the other hand, the         diagnosed, SynthoDiag gets the case vector and knowledge graph
+relationship between log entries, especially the context information,        of this test case with the same steps, and then it will output the
+will be lost with this method. In this way, as is shown in § 4.3.1,          fault category and localize the fault-indicative log entries in the
+these incorrectly removed fault-relevant logs and lost messages              test case for interoperability § 3.5 (addressing challenge 3).
+even cause performance worse than without filtering. Consequently,
+we will propose the concept of log block in (§ 3.2, which divides            3.2    Fault-Irrelevant Log Filtering
+logs according to test operations, which can more effectively filter         As previously elucidated in § 2.1, a test case comprises a single set
+irrelevant logs while retaining contextual information.                      of execution logs and multiple sets of associated trace logs. The
+   Challenge 2: Fault-irrelevant logs in the microservices will con-         execution logs of each operation can be related to the trace logs and
+fuse the diagnostic model and previous methods cannot filter out             the removal of irrelevant log entries from execution logs allows for
+them effectively.                                                            the elimination of redundant trace logs. Consequently, SynthoDiag
+Fault Diagnosis for Test Alarms in Microservices through Multi-source Data                      FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil
+
+
+
+
+                                                          Figure 3: The framework of SynthoDiag
+
+
+focuses exclusively on eliminating irrelevant log entries from exe-            operation, this step helps us narrow down the scope and quickly
+cution logs with two steps: log block division and irrelevant log              find the same pass log block.
+blocks removment.                                                                  Step 2: Find the same log block from the same passed case. Due
+   Log block division. As mentioned at the end of § 2.2.2, we                  to the request part (i.e., the request operation and parameters)
+involve the concept of log block to divide execution logs according            representing the content of the operation and the response part
+to test operations for retaining contextual information.                       (i.e., the checkpoint result) representing the test result, we can
+   What is a log block? We know that the execution log consists of             compare the test log block’s request part and response part with
+test operations’ information. A test operation is the smallest unit            the passed blocks’. If these two parts are the same, it means they
+for a test. Consequently, we define a log block corresponding to a             are the same test operation and have the same results. Then this
+test operation, which contains all test information related to that            test block should be removed.
+specific operation.                                                                Naturally, if we cannot find the same passed case in Step 1:,
+   How to divide log blocks? As described in § 2.1, there is a clear           we need to spend more time searching for the same log block in
+beginning and end for each test operation, which is pre-defined                different passed cases. Furthermore, if the same log block cannot be
+by testers. The testers have devised highly consistent beginning               found, we can only temporarily consider it a fault test and keep it.
+and end rules in our scenario, which ensures that the deviation of                 Step 3: Removement. If the same passed log block is found, not
+log blocks can be executed flawlessly by using a straightforward               only should the test block of the execution log, but the set of trace
+regular expression matching approach.                                          logs corresponding to the test operation should also be deleted, for
+   We will continue to utilize the examples presented in Figure                the whole operation testing is successful. In this way, irrelevant
+2 for illustrative purposes. The blue box marks the log block of               log blocks both in the execution log and trace log are removed, and
+Operation 17. Operation 17 starts with the log entry that marks the            relevant log entries are retained.
+test operation is going to send a request (Begin to send request) and
+ends with the log entry that marks the response of this operation
+                                                                               3.3    Knowledge Graph Construction
+as unsuccessful (Check point fail). And the other logs of Operation
+17 record the information of this request, such as the request object          SynthoDiag performs the steps of entity extraction, entity align-
+(Service III ), and the request parameters (tester_factory_001, delete).       ment and graph construction to build a knowledge graph that
+Consequently, each log block can comprehensively document the                  captures essential information of the failed test case from multi-
+details of a test operation on the client side and can be related to a         source logs. This subsection outlines the steps involved in knowl-
+group of specific trace logs on the server side.                               edge graph construction.
+   Irrelevant log blocks removement. In this part, we want to                     At the entity extraction step, SynthoDiag extracts three types
+remove the normal operation log blocks from the fault case log.                of entities from the original log entries.
+Specifically, we check whether each log block has appeared in the
+                                                                                • Attribute Entity. The attribute entity consists of structured
+passed cases to determine whether to delete it. This is because we
+                                                                                  data within the log entry, representing specific attributes of the
+have many passed test cases, all of which are operations that have
+                                                                                  log entry (e.g., INFO, WARN, and ERROR in the execution log
+successfully passed the test. The specific removement process for a
+                                                                                  entries that represent the level of the log entry or the service
+log block is divided into the following three steps:
+                                                                                  name of the trace log entry). Thus, we extract the attribute entity
+   Step 1: Find the same case in passed test cases. We check the
+                                                                                  directly from the original log entries using regular expressions,
+testcase information of the passed cases to find the case with the
+                                                                                  which are predefined with the testers according to the features
+same name. Since the same case usually involves the same testing
+                                                                                  of logs.
+FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil                     S. Zhang, J. Zhu, B. Hao, Y. Sun, X. Nie, J. Zhu, X. Liu, X. Li, Y. Ma, D. Pei
+
+
+ • Parameter Entity. The parameter entity represents the vari-           similar logs but differ in structure. On the other hand, the seman-
+   able component within the unstructured data. Consequently,            tic information contained in the fault relevant log entries is also
+   parameters contain highly specific information about each test        essential to identifying test cases with identical failed reasons. As
+   case. SynthoDiag utilizes the Drain log parsing method [8] to         discussed in prior research[3], SynthoDiag adopts MRotate [10], a
+   extract these parameters, which can separate the template and         knowledge graph embedding algorithm that embeds the knowledge
+   the parameters (e.g. in Figure 2, the tester_factory_001 and delete   graph into a continuous space by viewing relations as rotations in
+   in the execution logs and tester_factory_001, 76 and 20 in the        the complex vector space, where it models the interaction between
+   trace logs of test case A).                                           entities and relations, to obtain the structural representation vector
+ • Log Entity. The log entity represents the unstructured original       for each entity in the knowledge graph. This captures structural
+   log content, which is the most salient aspect of the original         information among diverse entities, providing an overview of the
+   log entry that testers prioritize. With the log entity, we can        relationships between log entries. Consequently, SynthoDiag uti-
+   build the relationship between the attribute entities and the         lizes Sentence-BERT[20], an adaptation of the pre-trained BERT
+   parameter entities. We extract the log entity from the original       model specifically tailored for sentence embedding tasks, to derive
+   log entries by excluding structured data (e.g. In Figure 2, Request   the semantic representation vector for each log entry. Following
+   Service: Service III in the execution logs or Connection Timeout      this, we get the vector for each entity by concatenating its structural
+   in the trace logs of test case B).                                    representation vector and the semantic representation vector of the
+   SynthoDiag takes entity alignment step to merge the parame-           corresponding log entry. Finally, we aggregate all entity vectors in
+ter entities with similar semantic representations. On the one hand,     each test case to compute an average vector, designated as the case
+the same parameter may be recorded in different formats by multi-        vector.
+source logs, on the other hand, there are still deviations in the log    3.5    Fault Diagnosing
+parsing method when they parse similar log content into different
+                                                                         At the fault diagnosing stage, SynthoDiag classify the test cases into
+parts, which will be regarded as different entities. To ensure the
+                                                                         a specific categories using case vectors we obtained above, and then
+robustness of the framework, SynthoDiag converts each parameter
+                                                                         proposes an measure mechanism of fault-indicative log entries for
+entity into vectors using a pre-trained language model BERT [20].
+                                                                         localization.
+In this way, the parameter entities with similar semantics can be
+                                                                            Fault Classification. Table 1 shows four fault categories that
+represented with vectors that are close to each other. Then, Syntho-
+                                                                         used in SynthoDiag. Noting that many historical cases have already
+Diag aggregates these close parameter entities together and takes
+                                                                         been marked by the testers in these four categories (as mentioned
+the parameter entity in the center of the cluster to represent the
+                                                                         in § 2.1). In addition, this library has the capability to continuously
+other parameter entities.
+                                                                         expand as more diagnostic outcomes are validated and feedback is
+   Finally, SynthoDiag takes the graph construction step with
+                                                                         incorporated, as shown in Figure 3.
+these three types of entities. As shown in Figure 4, when building
+                                                                            In this work, SynthoDiag utilizes the k-nearest neighbors (KNN)
+the graph of the failed test case, SynthoDiag builds the connection
+                                                                         algorithm to classify the failed test case based on the category-
+between the log entity and the corresponding attribute entities
+                                                                         labeled test cases, and subsequently provides the corresponding
+with the relationship at. The connection between the log entity
+                                                                         fault category with a diagnostic report with an explanation of fault
+and the extracted parameter entities can be with the relationship
+                                                                         classification. The K-NN algorithm represents a non-parametric,
+has. Besides, due to the feature of trace logs, SynthoDiag also builds
+                                                                         supervised learning method that determines an entity’s category
+the connection between the attribute entities, that represent the
+                                                                         based on the categories of its k closest neighbors. This approach is
+name of service, to reflect the request relationship between service
+                                                                         accessible to testers due to its straightforward conceptual basis and
+with request. In this way, the log entities from the same source can
+                                                                         ease of interpretation.
+be connected by attribute entities and parameter entities, and the
+                                                                            Fault Localization. Additionally, to facilitate more efficient
+log entities from different sources can be connected by the merged
+                                                                         root cause localization, SynthoDiag identifies the most likely fault-
+parameter entities.
+                                                                         indicative log entry within the test case. This identification is carried
+   This integrated approach to knowledge graph construction en-
+                                                                         out by using the extracted parameter entity, which records more
+ables SynthoDiag to represent and connect information from multi-
+                                                                         specific details of a test case in a more fine-grained form. We intro-
+source logs effectively, facilitating more comprehensive classifica-
+                                                                         duce the Entity Fault Association score (EFA) for individual entities
+tion and localization.
+                                                                         to assess their relationship with a specific fault category, along with
+3.4     Case Embedding                                                   the Position Value (PV) to gauge the entity’s significance within
+Utilizing the prior modules, we can construct a graph that focuses       the current test case.
+on the relationship between logs, and standardize the format of             Based on our observations, entities that predominantly manifest
+logs from different sources.                                             within a single fault category, with infrequent occurrences in other
+   To facilitate a more effective comparison of similarities between     categories, often exhibit relevance to the primary cause of that
+different test cases, SynthoDiag converts the failed test case into      specific fault category. Building upon this insight, we define the
+a vector representation with its knowledge graph and the filtered        EFA for Entity 𝑒 and fault Category 𝑖 as Equation 1:
+fault relevant log entries. On the one hand, the knowledge graph                                                                  1
+of the failed test case records the relationship among log entries,                         𝐸𝐹𝐴𝑖𝑒 = −𝑚𝑠𝑒 (𝐷𝑒 ) ·                     𝑛𝑒
+                                                                                                                                                            (1)
+enabling the distinction of various failed test cases that exhibit                                                       log 1 − 𝑁𝑖𝑖
+Fault Diagnosis for Test Alarms in Microservices through Multi-source Data                           FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil
+
+
+
+
+                                                      Figure 4: The knowledge graph of test case A.
+
+
+where 𝐷𝑒 denotes the distribution of entity 𝑒 in each fault category,              4.1    Experiment setup
+𝑁𝑖 denotes the number of test cases in fault category 𝑖, and 𝑛𝑖𝑒                   Dataset: We conduct experiments using a real-world Multi-source
+denotes the number of test cases in fault category 𝑖 where entity 𝑒                test case dataset collected from the production environment of a top-
+appears in. A higher 𝐸𝐹𝐴𝑖𝑒 value indicates a stronger link between                 tier global Cloud service provider (𝑯 𝒖𝒂𝒘𝒆𝒊 dataset ). The 𝑯 𝒖𝒂𝒘𝒆𝒊
+entity 𝑒 and fault category 𝑖.                                                     dataset includes execution logs and trace logs from 1687 failed test
+   In addition, for a parameter entity, the more log entities it relates           cases. To ensure consistent classification standards, we assigned
+to, the more important it is in the current use case because this                  one tester to manually re-label all 1600+ failed test cases into four
+parameter entity appears in many fault-indicative log entries and                  categories ("Service Issue"-9.0%, "Environment Issue"-53.2%, "Script
+can build the relationship between log entries. Thus, SynthoDiag                   Defect"-36.3%, "Tool Defect"-1.5%), and take the re-labeled result
+searches the knowledge graph of the current case to calculate the                  as the ground truth of each test case. We adopt a cross-validation
+PV of parameter entity 𝑒 as Equation 2:                                            strategy to assess performance. This strategy involves dividing all
+                                                                                 failed test cases into five equal subsets and selecting one subset
+                     𝑃𝑉 𝑒 = 𝐿𝑒𝑥𝑒
+                             𝑒          𝑒
+                                 + 1 · 𝐿𝑡𝑟𝑎𝑐𝑒 +1 ,                           (2)   as the test set while using the remaining four as the training set
+                                                                                   in rotation. The final performance is determined by averaging the
+         𝑒 is the number of connected execution log entries, and
+where 𝐿𝑒𝑥𝑒                                                                         results from these five datasets.
+ 𝑒
+𝐿𝑡𝑟𝑎𝑐𝑒 is the number of connected execution log entries. Then, we                     Baselines: We compare SynthoDiag with four fault classification
+get the 𝐸𝐹𝐴-𝑃𝑉𝑖𝑒 of entity 𝑒 with fault category 𝑖 by multiplying                  algorithms: running-system classification algorithm LogCluster
+𝐸𝐹𝐴𝑖𝑒 and 𝑃𝑉 𝑒 , as Equation 3:                                                    (trace logs) [14], Cloud19 (trace logs) [25] and fault test classification
+                                                                                   algorithm LFF (execution logs) [1], CAM (execution logs) [11]. We
+                         𝐸𝐹𝐴-𝑃𝑉𝑖𝑒 = 𝐸𝐹𝐴𝑖𝑒 × 𝑃𝑉 𝑒 .                           (3)   also compare SynthoDiag with LFF and CAM for fault localization.
+                                                                                   The parameters of these methods are optimized for performance.
+Next, we calculate the value score of each log entry by summing                       Evaluation Metrics: In this scenario, fault diagnosis can be
+up the 𝐸𝐹𝐴-𝑃𝑉𝑖𝑒 of the extracted parameter entities. Finally, we                   viewed as a multi-classification task. To measure the performance,
+sort the log entries with their value score and localize the top-K log             we take the Micro-F1 score and Macro-F1 score as the metrics [21],
+entries as the fault-indicative log entries.                                       where the Micro-F1 score is the percentile of fault test cases classi-
+                                                                                   fied into the correct category. And the Macro-F1 score is calculated
+4    EVALUATION
+                                                                                   as follows,
+In this section, we evaluate the performance of SynthoDiag using                                                  Í𝑘 2×𝑅𝑒𝑐𝑎𝑙𝑙𝑖 ×𝑃𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛𝑖
+the datasets collected from a top-tier global Cloud service provider.                                                 𝑖   𝑅𝑒𝑐𝑎𝑙𝑙𝑖 +𝑃𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛𝑖
+We aim to answer the following research questions (RQs):                                          𝑀𝑎𝑐𝑟𝑜 − 𝐹 1 =                                                (4)
+                                                                                                                                 𝑘
+   RQ1: How does SynthoDiag perform overall in log diagnosis
+                                                                                   where 𝑘 is the number of fault categories, 𝑅𝑒𝑐𝑎𝑙𝑙𝑖 is the percent-
+compared to baseline models?
+                                                                                   age of fault cases with category 𝑖 that are correctly classified into
+   RQ2: Does each component of SynthoDiag have significant con-
+                                                                                   category 𝑖 and 𝑃𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛𝑖 is the percentage of fault cases classified
+tributions to SynthoDiag ’s performance?
+                                                                                   into category 𝑖 with correct category 𝑖. The Micro-F1 score reflects
+   RQ3: Specifically, discuss the necessity of KNN in classification
+                                                                                   the overall performance on classification, and the Macro-F1 score
+and how its main hyperparameter 𝐾 affects the results. Noting that
+                                                                                   reflects the average performance among the fault categories, which
+there are no other important hyperparameters to discuss in the
+                                                                                   we focus more on. Besides, to measure the performance of fault
+whole framework besides 𝐾 here.
+FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil                                                                                                      S. Zhang, J. Zhu, B. Hao, Y. Sun, X. Nie, J. Zhu, X. Liu, X. Li, Y. Ma, D. Pei
+
+
+localization, we use Top-5 Accuracy [19], which is the percentage                                                                                         4.3    Ablation Study
+of localization results that contain correct fault log entries within 5                                                                                   We conduct ablation experiments on 𝑯 𝒖𝒂𝒘𝒆𝒊 dataset to evaluate
+candidates.                                                                                                                                               the effectiveness of key components in SynthoDiag: fault-irrelevant
+   Experimental Setup: We conduct all the experiments on a Fu-                                                                                            log filtering, multi-source log fusion, case embedding, and EFA-PV.
+sionServer G560 V5 server with Inter Xeon E5-2697 v4 CPU and
+251GB of memory. We implement SynthoDiag and the other four                                                                                               4.3.1 Fault-Irrelevant Log Filtering. Firstly, SynthoDiag utilizes the
+baselines with Python 3.7.                                                                                                                                block-based filtering strategy to filter out irrelevant log entries.
+                                                                                                                                                          We conduct experiments with the other two processing strategies:
+              SynthoDiag            LFF             CAM           Cloud19            LogCluster                    SynthoDiag           LFF         CAM
+        1.0                                                                                                  1.0
+                                                                                                                                                          line-based filtering and no filtering. As depicted in Figure 6 (a), the
+                  0.872                                   0.891
+                                                                                                                           0.819
+                                                                                                                                                          block-based filtering strategy yields the best performance because
+        0.8                       0.761                                                                      0.8
+                                                                                                                                                          it retains the most log entries relevant to faults. line-based filtering
+                                          0.602
+        0.6                                                               0.587                   Accuracy   0.6                                          almost removes all the log entries and only leaves the log entries
+Score
+
+
+
+
+                          0.536                   0.538
+
+
+        0.4                                                                                                  0.4
+                                                                                                                                                          of the error message, which means that there is not enough valid
+                                                                                  0.285 0.262
+                                                                                                                                    0.210
+                                                                                                                                                          information remaining to diagnose the fault. Conversely, the no
+        0.2                                                       0.175                                      0.2                            0.150
+                                                                                                                                                          filtering strategy retains all log entries, including irrelevant ones,
+        0.0
+                           Micro-F1 Score                          Macro-F1 Score
+                                                                                                             0.0
+                                                                                                                                Top-5 Accuracy            which adversely affect the extraction of features from failed test
+                                          (a) F1-Scores                                                            (b) Top-5 Accuracy                     cases.
+Figure 5: The effectiveness of different methods on 𝑯 𝒖𝒂𝒘𝒆𝒊                                                                                               4.3.2 Multi-source Log Fusion. In this work, we propose to use
+dataset. F1-Score for classification and Top-5 Accuracy for                                                                                               multi-source logs (execution logs from the client side and trace logs
+localization.                                                                                                                                             from the server side) to diagnose failed test cases. To verify the
+                                                                                                                                                          effectiveness of using multi-source logs, we only take execution
+                                  Table 2: Time for diagnosing one case                                                                                   logs (exe logs) and trace logs (trace logs) to build the failed test case
+                                                                                                                                                          with the same steps, and evaluate the performance on these three
+                                  SynthoDiag                      LFF             CAM             Cloud19                        LogCluster               metrics.
+         Time                                                                                                                                                As illustrated in Figure 6(b), the utilization of multi-source logs
+                                           0.39                    34              2.22                      0.23                       1.76              indeed aids in diagnosing the fault categories of failed test cases.
+        (s/case)
+                                                                                                                                                          While execution logs document test progress, trace logs from the
+4.2                 The Overall Performance                                                                                                               server side capture finer-grained server-side details. Therefore, the
+                                                                                                                                                          amalgamation of execution logs and trace logs can enhance diag-
+This section presents a comparative analysis of SynthoDiag and
+                                                                                                                                                          nostic performance. Service issues are responsible for only a small
+four baseline methods applied to 𝑯 𝒖𝒂𝒘𝒆𝒊 dataset for evaluating
+                                                                                                                                                          fraction of failed test cases; hence, the trace log contains limited
+the effectiveness of our approach.
+                                                                                                                                                          valuable information.
+   Figure 5 presents a comprehensive comparison between Syntho-
+Diag and the baseline methods in terms of F1-score, Top-5 accuracy,                                                                                       4.3.3 Case Embedding. After building the knowledge graph of
+and Table 2 presents the execution time.                                                                                                                  the failed test case, SynthoDiag embeds the case with structure
+   In summary, SynthoDiag outperforms all the baseline methods,                                                                                           and semantic vectors. We believe that this approach yields a case
+with a Micro-F1 score of 0.872 and a Macro-F1 score of 0.891. These                                                                                       vector that encompasses a richer set of information about the test
+scores are 21% and 30% higher than the best baseline method, re-                                                                                          case. To evaluate the effectiveness of this module, we take different
+spectively. To be specific, while CAM achieves a Micro-F1 score of                                                                                        embedding strategies: we only use the structure vectors (w/o Bert)
+0.761, it has a lower Macro-F1 score of 0.587, and the other three                                                                                        and the semantic vectors (w/o KGE), and we also take the traditional
+baselines all perform poorly on Macro-F1 score, which shows that                                                                                          template-based embedding strategy on the origin logs (One-hot),
+SynthoDiag has a better performance than these fault classifica-                                                                                          which take the template of the origin log entry to represent the test
+tion methods. And, SynthoDiag also shows the best performance                                                                                             case.
+on fault localization with a top-5 accuracy of 0.819, which shows                                                                                            In Figure 6 (c), it is evident that the combination of structure
+that both template-based or string-based localization methods are                                                                                         representation and semantic vectors significantly enhances the per-
+not suitable for localizing fault log entries in failed test cases of                                                                                     formance of SynthoDiag. Both w/o Bert and w/o KGE exhibit lower
+Microservice System. While LFF and CAM can do both the classifi-                                                                                          Micro-F1 and Macro-F1 scores in isolation. The exclusion of w/o
+cation and localization, the defects in their design make them not                                                                                        Bert results in the neglect of crucial semantic representation within
+adapt to this scenario.                                                                                                                                   the log content, which is essential for identifying similarities among
+   Furthermore, as shown in Table 2, SynthoDiag achieves prompt                                                                                           cases in the same fault category. w/o KGE cannot use the relation-
+diagnosis of each failed test case, with a time requirement of just                                                                                       ship between logs, which is a crucial feature for distinguishing cases
+0.39 seconds. This efficiency is over 100 times higher than previous                                                                                      among fault categories. SynthoDiag effectively combines both struc-
+manual diagnosis. According to testers’ statistics, manual diagnosis                                                                                      ture representation from KGE and semantic representation from
+of a case usually takes more than 5 minutes because it requires                                                                                           Bert, allowing for a more detailed extraction of features from failed
+complex analysis, including reading the origin execution logs, re-                                                                                        test cases. When the embedding method is replaced with one-hot,
+trieving the log entry that may be related to this fault, analyzing                                                                                       the performance deteriorates significantly, as the template-based
+both the fault-relevant log entries and the trace logs etc.                                                                                               approach fails to adapt to the varying recording styles of trace logs.
+Fault Diagnosis for Test Alarms in Microservices through Multi-source Data                                                                                                                                     FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil
+
+
+
+               block filter              line filter             no filter                      multi logs               exe logs             trace logs                 SynthoDiag             w/o Bert             w/o KGE             one-hot                 EFA-PV           EFA          PV           TF-IDF
+         1.0                                                                           1.0                                                                         1.0                                                                                     1.0
+               0.872                          0.891                                             0.872                         0.891                                                                        0.891
+                                                                                                                                      0.840                              0.872 0.858                               0.853 0.846
+                                                                                                         0.835                                                                         0.842                                     0.826
+                                                                                                                                                                                               0.794                                                                      0.819
+         0.8                                                                           0.8                                                                         0.8                                                                                     0.8
+                                 0.735                                                                                                                                                                                                                                                     0.763
+                                                                                                                                                                                                                                                                                   0.736
+                                                                 0.668                                                                                                                                                                                                                              0.697
+                        0.637
+                                                         0.577                                                   0.597
+         0.6                                                                           0.6                                                                         0.6                                                                                     0.6
+
+
+
+
+                                                                                                                                                           Score
+
+
+
+
+                                                                                                                                                                                                                                                   Score
+ Score
+
+
+
+
+                                                                               Score
+         0.4                                                                           0.4                                                                         0.4                                                                                     0.4
+                                                                                                                                               0.308
+
+                                                                                                                                                                   0.2                                                                                     0.2
+         0.2                                                                           0.2
+
+
+                                                                                                                                                                   0.0                                                                                     0.0
+         0.0                                                                           0.0                                                                                    Micro-F1 Score                   Macro-F1 Score                                                      Top-5 Accuracy
+                 Micro-F1 Score                  Macro-F1 Score                                      Micro-F1 Score             Macro-F1 Score
+
+
+                  (a) Filtering Strategy                                                                (b) Source of Logs                                                   (c) Case Embedding Strategy                                                            (d) Localization Strategy
+
+                                                                                                                 Figure 6: The effectiveness of each module
+
+
+Consequently, it can be concluded that SynthoDiag achieves supe-                                                                                                          with increasing values of 𝐾, the classification performance dimin-
+rior performance when both structure representation and semantic                                                                                                          ishes due to the imbalance in the fault category and the heightened
+representation are incorporated.                                                                                                                                          interference as 𝐾 increases.
+
+4.3.4 EFA-PV. We introduce EFA-PV as a method for identifying
+fault logs by computing the importance of parameter entities and                                                                                                          5        IMPLEMENTATION
+arranging the original log entries based on their value scores. EFA-
+PV combines EFA to determine the correlation between parameter
+entities and fault categories, and PV to assess the significance of
+parameter entities within the current test cases. In contrast to EFA-
+PA, TF-IDF solely gauges the uniqueness of parameter entities
+without quantifying their relationship with fault categories. To
+evaluate the effectiveness of this module, we only use part of EFA-
+PV (EFA) and (PV ) to localize the fault log entries. And we replace
+EFA-PV with TF-IDF to measure the importance of the log entry
+(TF-IDF).
+   As depicted in Figure 6 (d), EFA-PV attains the highest accuracy,
+surpassing EFA and PV when used individually. This is because EFA
+aids in identifying fault parameter entities, while PV gauges the sig-
+nificance of parameter entities in failed test cases. However, TF-IDF
+can solely identify unique log entries, which may not necessarily
+be associated with faults.
+
+4.4             Classification Algorithms                                                                                                                                 Figure 8: The deployment of SynthoDiag on the cloud plat-
+                  KNN(K=1)            KNN(K=3)                 KNN(K=5)                Random Forest             Bayes          GBC             ABC                       form.
+        1.0
+
+
+        0.9     0.872
+                         0.849
+                                           0.872               0.867
+                                                                                             0.891
+                                                                                                      0.858           0.872
+                                                                                                                                      0.836
+                                                                                                                                                                             SynthoDiag has been implemented on the automated testing
+                                  0.835                                                                       0.823
+        0.8                                                                                                                                                               cloud platform of Huawei Cloud. As illustrated in Figure 8, this
+                                                       0.736                                                                  0.732
+Score
+
+
+
+
+        0.7                                                                                                                                                               cloud platform is provided as a service (PaaS) for users to do the task
+        0.6
+                                                                       0.606
+                                                                                                                                                                          of testing automatically, including test script generation, fault diag-
+        0.5
+                                                                                                                                               0.463
+                                                                                                                                                                          nosis, board of test, etc. When users want to access these services,
+        0.4                                                                                                                                                               they connect their test pipeline to the interface provided by the
+                              Micro-F1 Score                                                            Macro-F1 Score
+                                                                                                                                                                          platform. The results of each test case will be uploaded and saved
+Figure 7: Performance with different classification methods
+                                                                                                                                                                          into the platform. When there are failed test cases, SynthoDiag will
+   We also discuss the effect of different classification algorithms.                                                                                                     be called and the final analyzed failure reason and log entries of
+We conduct experiments with five different classification algo-                                                                                                           the root cause will be presented in the platform to help testers take
+rithms: KNN (K=1), KNN (K=3), KNN (K=5), Random Forest, Bayes,                                                                                                            the right remedial actions.
+Gradient Boosting Classifier (GBC), Ada Boost Classifier (ABC). As                                                                                                           In the cloud platform, SynthoDiag works as a service for diag-
+depicted in Figure 7, both the KNN and Random Forest algorithms                                                                                                           nosing failed test cases. When there is a test alarm during testing,
+exhibit comparable performance. However, Random Forest is un-                                                                                                             the information about the test case will be sent to the SynthoDiag.
+able to provide a reasonable explanation for the output results. On                                                                                                       Then SynthoDiag will take the steps in § 3 to preprocess data and
+the other hand, KNN can adapt to updates by incorporating the                                                                                                             diagnose the failed test cases. The fault category and root cause
+newly labeled cases into the case category library. Furthermore,                                                                                                          will be presented on the platform to the users with the fault logs.
+FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil                    S. Zhang, J. Zhu, B. Hao, Y. Sun, X. Nie, J. Zhu, X. Liu, X. Li, Y. Ma, D. Pei
+
+
+    Deployment effectiveness. SynthoDiag has been implemented            alarms. CAM [11] exploits information retrieval techniques to clas-
+over 7 months, and diagnoses thousands of fault cases per week. Ac-      sify test faults. LogFaultFlagger (LFF) [1] distinguishes faults caused
+cording to the feedback from testers, Testers have provided feedback     by product problems from all test faults by ameliorating CAM [11].
+that it achieves over 85% classification recall and over 80% localiza-
+tion accuracy, which is consistent with our evaluation. Meanwhile,       7.2    Fault Localization
+it greatly improves the diagnostic efficiency of testers compared to     The testers need to find the information about the fault to solve
+manual labor before. The process of diagnosing failed test cases be-     problems faster. However, as software systems have expanded, the
+comes more straightforward, rapidly and automatically for testers.       volume of logs has surged, rendering manual log inspection an
+Besides, they believe thatSynthoDiag has strong generalization abil-     exceedingly time-consuming endeavor.
+ity and plan to apply it to more testing scenarios.                         MicroRank[24] combines anomaly detection with PageRank scor-
+                                                                         ing and extended spectrum analysis to effectively identify and rank
+6     DISCUSSION                                                         potential root causes of latency issues in microservice systems.
+                                                                         MicroHECL [15] identifies root causes by constructing a dynamic
+During the deployment, we also encountered some practical prob-
+                                                                         relation graph and employing finely tuned rules. AutoMap [17]
+lems that affected the performance of the results.
+                                                                         employs a modified PC algorithm to construct an anomaly behavior
+                                                                         graph and propose potential root causes. LogCluster [14] utilizes
+6.0.1 Data Quality. SynthoDiag employs a knowledge graph to
+                                                                         clustering techniques to decrease the number of logs that should
+construct test cases by leveraging multi-source logs. The effective-
+                                                                         be examined. Onion [27] provides debugging clues by locating
+ness of this construction process relies on the relationships between
+                                                                         incident-indicating logs. However, it is important to highlight that
+the various multi-source logs. A more distinct relationship between
+                                                                         these methods may not align with our specific scenario, as they
+multi-source logs (e.g., shared content or explicit request param-
+                                                                         are primarily designed for runtime microservice systems and offer
+eters), enhances the effectiveness of joint analysis. In real-world
+                                                                         debugging insights at the server level. While LFF [1], CAM [11],
+testing scenarios, the relationships between multi-source logs need
+                                                                         and Historian [13] use information retrieval techniques to flag fault
+to be well recorded, which is a prerequisite for using multi-source
+                                                                         log entries, they can not take advantage of multi-source logs and
+logs for diagnosis. Therefore, before implementing SynthoDiag, it
+                                                                         adapt the the demand of microservice systems.
+is crucial to understand the mechanism of the tested system.
+                                                                         8     CONCLUSION
+6.0.2 Ambiguity of Fault Category. SynthoDiag utilizes the KNN           After careful investigations on thousands of failed test cases col-
+approach to identify the most similar historical test case and as-       lected from a top-tier global cloud service provider, Huawei Cloud,
+signs the fault category of the matched test case to the current test    which provides services for millions of users, we identify the im-
+case. Consequently, the accuracy of the historical fault category        portance of fusing multi-source logs for test case fault diagnosis in
+label directly impacts the effectiveness of categorization. Neverthe-    microservices. Consequently, we propose a framework, SynthoDiag,
+less, in real-world scenarios, there are often over a dozen testers      for diagnosing failed test cases by fusing the information from ex-
+responsible for analyzing system failures, and the criteria for fault    ecution logs, test information, and trace logs with the knowledge
+categorization may differ among them. As a result, identical fault       graph technique. We present a log-block-based differentiation ap-
+test cases may receive different categorizations, leading to ambi-       proach to reduce the impact of fault-irrelevant log entries. To tackle
+guity that can hinder the accurate categorization of faults by the       the challenge introduced by the newly generated log templates, we
+diagnostic model. This is a recurring issue in situations involv-        introduce EFA-PV, which can effectively represent the relevance of
+ing numerous participants. In our future work, we will explore a         a log entry to a given fault. Finally, we conduct comprehensive ex-
+cost-effective method for label adjustment.                              periments on a real-world test case dataset collected from Huawei
+                                                                         Cloud, demonstrating that the proposed SynthoDiag outperforms
+7     RELATED WORK                                                       all state-of-the-art methods. SynthoDiag takes the first step towards
+                                                                         fusing multi-source logs for diagnosing failed test cases in microser-
+Numerous research approaches are dedicated to addressing the
+                                                                         vices. In the future, we will evaluate SynthoDiag in more scenarios
+challenges of diagnosing or localizing faults, which focus on iden-
+                                                                         to demonstrate its performance.
+tifying faults and localizing fault information respectively. In our
+work, we address both of these critical tasks, with the overarching
+                                                                         9     ACKNOWLEDGEMENT
+goal of reducing the workload on the tester.
+                                                                         This work is supported by the Advanced Research Project of China
+                                                                         (No. 31511010501), and the National Natural Science Foundation of
+7.1     Fault Diagnosis                                                  China (62272249, 62302244, 62072264).
+Diagnosing before manually analyzing can help the tester compre-
+hend faults. Lu et al. [16] classifies Spark faults with four distinct
+categories. Cloud19 [25] employs log associations with system tasks
+to classify faults within cloud systems. It’s worth noting that these
+studies conducted their analyses within run-time environments,
+a context that doesn’t precisely align with our specific scenario.
+Kim et al. [9] use association rule learning to identify false test
+Fault Diagnosis for Test Alarms in Microservices through Multi-source Data                                       FSE Companion ’24, July 15–19, 2024, Porto de Galinhas, Brazil
+
+
+REFERENCES                                                                                       102–111.
+ [1] Anunay Amar and Peter C Rigby. 2019. Mining historical test logs to predict bugs       [15] Dewei Liu, Chuan He, Xin Peng, Fan Lin, Chenxi Zhang, Shengfang Gong, Ziang
+     and localize faults in the test logs. In 2019 IEEE/ACM 41st International Conference        Li, Jiayu Ou, and Zheshun Wu. 2021. Microhecl: High-efficient root cause local-
+     on Software Engineering (ICSE). IEEE, 140–151.                                              ization in large-scale microservice systems. In 2021 IEEE/ACM 43rd International
+ [2] Zhichao Chen, Junjie Chen, Weijing Wang, Jianyi Zhou, Meng Wang, Xiang                      Conference on Software Engineering: Software Engineering in Practice (ICSE-SEIP).
+     Chen, Shan Zhou, and Jianmin Wang. 2023. Exploring better black-Box test case               IEEE, 338–347.
+     prioritization via log analysis. ACM Transactions on Software Engineering and          [16] Siyang Lu, BingBing Rao, Xiang Wei, Byungchul Tak, Long Wang, and Liqiang
+     Methodology 32, 3 (2023), 1–32.                                                             Wang. 2017. Log-based abnormal task detection and root cause analysis for spark.
+ [3] Yuanfei Dai, Shiping Wang, Neal N Xiong, and Wenzhong Guo. 2020. A survey                   In 2017 IEEE International Conference on Web Services (ICWS). IEEE, 389–396.
+     on knowledge graph embedding: Approaches, applications and benchmarks.                 [17] Meng Ma, Jingmin Xu, Yuan Wang, Pengfei Chen, Zonghua Zhang, and Ping
+     Electronics 9, 5 (2020), 750.                                                               Wang. 2020. Automap: Diagnose your microservice-based web applications
+ [4] Cheng Deng, Yuting Jia, Hui Xu, Chong Zhang, Jingyao Tang, Luoyi Fu, Weinan                 automatically. In Proceedings of The Web Conference 2020. 246–258.
+     Zhang, Haisong Zhang, Xinbing Wang, and Chenghu Zhou. 2021. Gakg: A                    [18] Shang-Pin Ma, Chen-Yuan Fan, Yen Chuang, Wen-Tin Lee, Shin-Jie Lee, and
+     multimodal geoscience academic knowledge graph. In Proceedings of the 30th                  Nien-Lin Hsueh. 2018. Using service dependency graph to analyze and test
+     ACM International Conference on Information & Knowledge Management. 4445–                   microservices. In 2018 IEEE 42nd Annual Computer Software and Applications
+     4454.                                                                                       Conference (COMPSAC), Vol. 2. IEEE, 81–86.
+ [5] Wojciech Dobrowolski, Maciej Nikodem, and Olgierd Unold. 2023. Software                [19] Suman Ravuri and Oriol Vinyals. 2019. Classification accuracy score for condi-
+     Failure Log Analysis for Engineers. Electronics 12, 10 (2023), 2260.                        tional generative models. Advances in neural information processing systems 32
+ [6] Luca Gazzola, Maayan Goldstein, Leonardo Mariani, Marco Mobilio, Itai Segall,               (2019).
+     Alessandro Tundo, and Luca Ussi. 2023. ExVivoMicroTest: ExVivo testing of              [20] Nils Reimers and Iryna Gurevych. 2019. Sentence-bert: Sentence embeddings
+     microservices. Journal of Software: Evolution and Process 35, 4 (2023), e2452.              using siamese bert-networks. arXiv preprint arXiv:1908.10084 (2019).
+ [7] Israr Ghani, Wan MN Wan-Kadir, Ahmad Mustafa, and Muhammad Imran Babir.                [21] Yicheng Sui, Yuzhe Zhang, Jianjun Sun, Ting Xu, Shenglin Zhang, Zhengdan
+     2019. Microservice testing approaches: A systematic literature review. Interna-             Li, Yongqian Sun, Fangrui Guo, Junyu Shen, Yuzhi Zhang, et al. 2023. LogKG:
+     tional Journal of Integrated Engineering 11, 8 (2019), 65–80.                               Log Failure Diagnosis through Knowledge Graph. IEEE Transactions on Services
+ [8] Pinjia He, Jieming Zhu, Zibin Zheng, and Michael R Lyu. 2017. Drain: An online              Computing (2023).
+     log parsing approach with fixed depth tree. In 2017 IEEE international conference      [22] Muhammad Waseem, Peng Liang, Mojtaba Shahin, Amleto Di Salle, and Gastón
+     on web services (ICWS). IEEE, 33–40.                                                        Márquez. 2021. Design, monitoring, and testing of microservices systems: The
+                                                                                                 practitioners’ perspective. Journal of Systems and Software 182 (2021), 111061.
+ [9] Kim Herzig and Nachiappan Nagappan. 2015. Empirically detecting false test
+                                                                                            [23] Zhe Xie, Haowen Xu, Wenxiao Chen, Wanxue Li, Huai Jiang, Liangfei Su,
+     alarms using association rules. In 2015 IEEE/ACM 37th IEEE International Confer-
+                                                                                                 Hanzhang Wang, and Dan Pei. 2023. Unsupervised Anomaly Detection on Mi-
+     ence on Software Engineering, Vol. 2. IEEE, 39–48.
+                                                                                                 croservice Traces through Graph VAE. In Proceedings of the ACM Web Conference
+[10] Xuqian Huang, Jiuyang Tang, Zhen Tan, Weixin Zeng, Ji Wang, and Xiang Zhao.
+                                                                                                 2023. 2874–2884.
+     2021. Knowledge graph embedding by relational and entity rotation. Knowledge-
+                                                                                            [24] Guangba Yu, Pengfei Chen, Hongyang Chen, Zijie Guan, Zicheng Huang, Linxiao
+     Based Systems 229 (2021), 107310.
+                                                                                                 Jing, Tianjun Weng, Xinmeng Sun, and Xiaoyun Li. 2021. Microrank: End-to-
+[11] He Jiang, Xiaochen Li, Zijiang Yang, and Jifeng Xuan. 2017. What causes my
+                                                                                                 end latency issue localization with extended spectrum analysis in microservice
+     test alarm? Automatic cause analysis for test alarms in system and integration
+                                                                                                 environments. In Proceedings of the Web Conference 2021. 3087–3098.
+     testing. In 2017 IEEE/ACM 39th International Conference on Software Engineering
+                                                                                            [25] Yue Yuan, Wenchang Shi, Bin Liang, and Bo Qin. 2019. An approach to cloud
+     (ICSE). IEEE, 712–723.
+                                                                                                 execution failure diagnosis based on exception logs in openstack. In 2019 IEEE
+[12] Amar Viswanathan Kannan, Dmitriy Fradkin, Ioannis Akrotirianakis, Tugba
+                                                                                                 12th International Conference on Cloud Computing (CLOUD). IEEE, 124–131.
+     Kulahcioglu, Arquimedes Canedo, Aditi Roy, Shih-Yuan Yu, Malawade Arnav,
+                                                                                            [26] Shenglin Zhang, Pengxiang Jin, Zihan Lin, Yongqian Sun, Bicheng Zhang, Sibo
+     and Mohammad Abdullah Al Faruque. 2020. Multimodal knowledge graph for
+                                                                                                 Xia, Zhengdan Li, Zhenyu Zhong, Minghua Ma, Wa Jin, et al. 2023. Robust
+     deep learning papers and code. In Proceedings of the 29th ACM International
+                                                                                                 Failure Diagnosis of Microservice System through Multimodal Data. arXiv
+     Conference on Information & Knowledge Management. 3417–3420.
+                                                                                                 preprint arXiv:2302.10512 (2023).
+[13] Jinhan Kim, Valeriy Savchenko, Kihyuck Shin, Konstantin Sorokin, Hyunseok
+                                                                                            [27] Xu Zhang, Yong Xu, Si Qin, Shilin He, Bo Qiao, Ze Li, Hongyu Zhang, Xukun Li,
+     Jeon, Georgiy Pankratenko, Sergey Markov, and Chul-Joo Kim. 2020. Automatic
+                                                                                                 Yingnong Dang, Qingwei Lin, et al. 2021. Onion: identifying incident-indicating
+     abnormal log detection by analyzing log history for providing debugging in-
+                                                                                                 logs for cloud systems. In Proceedings of the 29th ACM Joint Meeting on European
+     sight. In Proceedings of the ACM/IEEE 42nd International Conference on Software
+                                                                                                 Software Engineering Conference and Symposium on the Foundations of Software
+     Engineering: Software Engineering in Practice. 71–80.
+                                                                                                 Engineering. 1253–1263.
+[14] Qingwei Lin, Hongyu Zhang, Jian-Guang Lou, Yu Zhang, and Xuewei Chen. 2016.
+     Log clustering based problem identification for online service systems. In Pro-
+     ceedings of the 38th International Conference on Software Engineering Companion.       Received 2024-02-08; accepted 2024-04-18
+

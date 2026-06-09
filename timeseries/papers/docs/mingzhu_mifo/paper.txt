@@ -1,0 +1,788 @@
+                                     2015 44th International Conference on Parallel Processing
+
+
+
+
+                                  MIFO: Multi-Path Interdomain Forwarding
+
+
+                Ming Zhu∗† , Dan Li∗† , Ying Liu∗† , Dan Pei∗† , K.K. Ramakrishnan‡ , Lili Liu∗† , Jianping Wu∗†
+
+                              ∗ Tsinghua National Laboratory for Information Science and Technology
+       † Department of Computer Science and Technology, Tsinghua University ‡ University of California, Riverside, USA
+
+
+
+
+     Abstract—Today’s interdomain routing is trafﬁc agnostic                leads to even poorer performance. With BGP being trafﬁc
+  when determining the single, best forwarding path. Naturally,             agnostic, it fails to react to congestion and burstiness in the
+  as it does not adapt to congestion, the path chosen is not always         trafﬁc [4]. The most recent industrial report [5] conﬁrms that
+  optimal. In this paper, we focus on designing a multi-path
+  interdomain forwarding (MIFO) mechanism, where AS border                  congestion on the default path between popular ISPs (e.g.,
+  routers adaptively forward outbound trafﬁc from a congested               Verizon and Level3) is increasingly common.
+  default path to an alternative path, without touching the                    There are two fundamentally causes for this. First is the
+  interdomain routing protocols. Different from previous efforts            conﬂict between the rapid growth of trafﬁc load and BGP’s
+  which enable multi-path on control plane, MIFO achieves                   rigid, static, single-path routing principle. When there is
+  multi-path on data plane. The multiple alternative forwarding
+  paths are obtained by exploring local BGP RIB.                            higher load, the lack of ability to use all available paths
+     Multi-path forwarding on data plane can create a loop even             means that the one path used is congested because all the
+  within a stable network. MIFO solves this problem with a                  trafﬁc is forwarded on that path. Secondly, the mismatch
+  simple and practical approach. Several other challenges are               between fast dynamics of trafﬁc and slow route conver-
+  also addressed including preventing cycling packet between                gence results in poor end-to-end network performance. More
+  iBGP peers and choosing the best alternative path from
+  among multiple candidates. Our evaluations show that MIFO                 speciﬁcally, dynamic trafﬁc load leads to congestion hap-
+  signiﬁcantly improves the end-to-end throughput at the AS                 pening on data plane, while changing forwarding path is
+  level, compared to traditional BGP and MIRO. For example,                 realized in control plane, such as reconﬁguring the weight in
+  with only 50% of the ASes being MIFO capable, a signiﬁcant                routing protocols (e.g., local preference in BGP) or statically
+  percentage of the ﬂows (about 40%) can use at least 50%                   switching into an alternative path. The decoupling between
+  of the inter-AS link capacity. In contrast, BGP and MIRO
+  routing make less effective use of the inter-AS links, with               control plane and data plane makes it difﬁcult to adapt.
+  only 7% and 17% of the ﬂows can be so. Finally, we have                      In this paper we design Multi-Path Interdomain
+  developed a prototype implementation of MIFO on Linux                     FOrwarding (MIFO), which enables AS border routers to
+  with the forwarding engine in the kernel, with the routing                adaptively ofﬂoad outbound trafﬁc from a congested default
+  daemon developed on XORP platform. The experiments on a                   path to an alternate path with only data plane modiﬁcation,
+  testbed built with prototypes show that MIFO can improves
+  the aggregate throughput by 81% compared with BGP routing.                rather than having the load information communicated to
+                                                                            the control plane and using it to recognize alternate paths.
+                        I. I NTRODUCTION                                    Speciﬁcally, MIFO explores multiple paths learnt by the
+                                                                            control plane and uses load-aware forwarding at the data
+     A signiﬁcant challenge facing today’s Internet is the rapid            plane over different outgoing AS paths, so as to keep
+  growth of interdomain trafﬁc volume [1]. Daily trafﬁc in                  forwarding in line speed.
+  large Internet Exchange Points (IXP) is often in tens of                     AS border routers in MIFO directly utilize existing mul-
+  petabytes (PB) [2]. Meanwhile, the hierarchical structure of              tiple paths obtained from the local BGP RIB, without
+  the Internet is becoming ﬂatter [3], which leads to abundance             requiring any additional protocol exchange in the control
+  of paths existing between every pair of ASes. However, BGP,               plane. In the BGP RIB, different paths are learned from
+  as the dominant interdomain protocol, fails to take advantage             different AS neighbors. It is therefore better to achieve
+  of the availability of a multitude of paths to increase the               multi-path forwarding on data plane in order to reduce the
+  end-to-end network throughput. Instead, today’s BGP routers               overhead of looking up in the RIB.
+  only use a single, default path, which when congested                        MIFO is an entirely distributed system and is compatible
+  This work is supported by the National Key Basic Research Program         with legacy routing system. However, several challenges
+  of China (973 program) under Grant 2014CB347800, the National             must be addressed in designing a practical solution. The
+  Natural Science Foundation of China under Grant No.61170291,              ﬁrst and the greatest challenge is, in a distributed routing
+  No.61432002, the National High-tech R&D Program of China (863
+  program) under Grant 2013AA013303, and Tsinghua University Ini-           system, multi-path forwarding can always create a loop
+  tiative Scientiﬁc Research Program.                                       even within a stable network.Within present interdomain
+
+0190-3918/15 $31.00 © 2015 IEEE                                       181
+                                                                      180
+DOI 10.1109/ICPP.2015.27
+              'VW              $63DWK              2XW3RUW         topology and reasonable generated trafﬁc show that MIFO
+       %*3               ^;< `'HIDXOW                        can signiﬁcantly improve the end-to-end network throughput
+       5,% DEFG
+                        ^;= `$OWHUQDWLYH           
+                                                                        at the AS level, compared to traditional BGP and MIRO. For
+                                                                        example, with only 50% of the ASes being MIFO capable,
+                                                        
+                                                                        a signiﬁcant percentage of the ﬂows (about 40%) can use
+                                                                        at least 50% of the inter-AS link capacity, i.e., the average
+                                                        
+                                                                        throughput of these ﬂows is 500Mbps if the link capacity
+                                                                        is 1Gbps. In contrast, BGP and MIRO routing make less
+                     'VW     2XW3RUW    $OW3RUW
+           ),%
+                  DEFG                     
+                                                                        effective use of the inter-AS links, with only 7% and 17%
+                                                                        of the ﬂows attain 50% of the link capacity. We have also
+                      Figure 1: MIFO Overview.                          developed a prototype implementation of MIFO on Linux
+                                                                        with the forwarding engine in the kernel, with the routing
+                                                                        daemon developed on XORP platform. The experiment
+routing protocols (e.g., BGP), whenever a router forwards               on a testbed built with prototypes show that MIFO can
+packets along with an alternative path instead of the default           improves the aggregate throughput by 81% compared with
+path, a loop can be generated. We illustrate an example in              BGP routing.
+Section II-C to show that such loop can exist even under                   The rest of the paper is organized as follows. The fol-
+a simple topology (e.g., only 3 nodes). The reason is the               lowing section presents the overview of MIFO. Section III
+inconsistency between control plane and data plane. It is               analyzes the root cause of loops in multi-path forwarding
+“loop-free” on control plane since packet is considered to              and prove the correctness of our solution, as well as the
+be always forwarded along the default path. However, on                 design details. Section IV evaluates MIFO’s performance.
+data plane, the packet is possibly sent to an alternative path          Section V describes our prototype implementation of MIFO.
+to bypass a default congested outgoing link. In this case, the          Section VI discusses related work. Finally, Section VII
+loop may be generated in data plane, but is invisible to con-           concludes the paper.
+trol plane. The second challenge is, a cycle may be produced
+                                                                             II. OVERVIEW AND T ECHNICAL C HALLENGES
+once packets are deﬂected from the default egress router
+to another egress router directing to an alternative path,                In this section we present the basic idea and technical
+either in MIFO or in BGP. The reason is the inconsistency               challenges in designing MIFO.
+between iBGP peers: except for the default egress router
+itself, all the other routers are unaware of the congestion on          A. Basic Idea
+the default path and thus sending packets back to the default              We now illustrate the basic idea of MIFO. As shown in
+egress router. The third challenge is, once the default path            Figure 1, AS X learns two AS paths towards destination
+is congested, it is important to make the border router select          a.b.c.d (for convenience we ignore the length of preﬁx in
+the best alternative path for subsequent packets in line speed,         our notation). Assume that the path learned from AS Y
+in a fully distributed manner.                                          is selected as the default path (red arrow), while the path
+   MIFO addresses the ﬁrst challenge by leveraging a                    learned from AS Z is selected as the alternative one (green
+“valley-free” rule into the data plane. More precisely, we              arrow). We slightly modify the FIB by adding alt port ﬁled,
+add a simple and practical constraint in the data plane to let          which corresponds to the alternative path, as shown in Fig. 1.
+routers forward packets following a loop-free path. We not              As the trafﬁc volume towards a.b.c.d through AS X grows
+only prove the correctness of this idea in theory, but also             rapidly, congestion may occur on the default path. More
+propose an effective implementation by using just one bit               speciﬁcally, on the border router, more packets accumulate
+in the packets, which are supposed to be forwarded along                in the tx queue of the default output port, i.e., port 1.
+with an alternative path. In particular, MIFO consumes one              With MIFO, the router could adaptively deliver subsequent
+bit in packet header to denote the “valley-free” rule on                packets for a.b.c.d to port 2, which corresponds to an
+data plane. IP-in-IP encapsulation between iBGP routers is              underutilized alternative path {X, Z, ∗}. Note that MIFO
+applied to address the second challenge. By checking the                does not specify how to identify the congestion on border
+outer IP header, an iBGP router can easily decide whether               routers. It is an open to different congestion deﬁnitions.
+it can forward the packet to the iBGP peer on the default               Throughout this paper, we simply denote the queuing ratio
+path or not. Finally, to address the third challenge, border            of output ports as the congestion signal.
+routers measure the path quality by selective probing. In the              To keep forwarding at line speed, MIFO implements path
+current design, we also come up with a greedy solution to               selection in the data plane. In particular, once congestion
+let border routers select the best alternative path depending           occurs, the border router directly forwards the packet to the
+on local link capacity.                                                 alternate port denoted in the FIB, rather than looking up the
+   Extensive simulations based on traced AS-level Internet              BGP RIB in the control plane. Such a design signiﬁcantly
+
+
+
+                                                                  181
+                                                                  182
+                     SDFN
+                         HW           Æ                                                          $6 =
+                                     ÆÆ                               5
+                                                                                                                                      0ESV        $6 8
+                                      ÆÆ                                                                                    5
+                                                            $6 ;
+        Æ                      
+                                                                                                                                                0ESV      $6 9
+        ÆÆ                                                                                                          $6 ;           5
+        ÆÆ
+                                                         SDFNHW
+                                                                                  5               $6 <
+                                        Æ
+                                                                                                                                         &RQJHVWHG
+                                        ÆÆ                                                                                                            $6 :
+                                                                                                                      SDFNHW
+                                        ÆÆ                       3DFNHW SDWK     'HIDXOW SDWK   $OWHUQDWLYH SDWK                     5
+
+                  (a) Loop on data plane.                           (b) Cycling between iBGP peers.                            (c) Alternative path selection.
+
+                                                                Figure 2: Three challenges.
+
+
+    reduces the overhead caused by switching between the two                                     Loops on the Data Plane. We assume that the network
+    planes, considering that congestion occurs frequently on                                  is in the stable state, meaning traditional loops caused
+    interdomain border routers [6]. The alternate port in the FIB                             by inconsistent route views in a transient state are not
+    is updated by a MIFO daemon.                                                              considered. The standard route selection rule is also adopted,
+       To avoid packet reordering issues, forwarding is deter-                                meaning that customer routes are preferred over peer routes,
+    ministic at the ﬂow level. As Fig. 1 shows, packets with                                  which in turn are preferred over provider routes. In single
+    same color belong to the same ﬂow. The eventual path for                                  path routing, the full AS path vector in a BGP announcement
+    subsequent packet is determined by hashing1 . MIFO prefers                                guarantees that each AS can avoid loops by ﬁltering the
+    the alternative path that has the higher available bandwidth.                             paths which contain its own number. However, for multi-
+    More details of path selection is introduced in Section III-C.                            path routing, loops can still exists. More speciﬁcally, we
+                                                                                              state that, within present inter-domain routing protocols
+    B. Design Rationale
+                                                                                              (e.g., BGP), whenever a router forwards packets along an
+       Although several studies [7–10] have explored multi-path                               alternative path instead of the default path, a loop can be
+    interdomain routing, the additional overhead in obtaining                                 generated.
+    alternative paths extremely limits them for practical use.
+    For example, to make every AS advertise alternative paths,                                   Fig. 2(a) illustrates an example. ASes 1, 2 and 3 are
+    either a new message or an extra BGP attribute has to                                     peering with each other, while AS 0 is their customer.
+    be introduced. Moreover, routers have to maintain another                                 By following the route selection criteria, each AS uses the
+    routing table to track the alternate paths in fast memory. In                             direct link to AS 0 as its default path and routes via its
+    our design, we aim at obtaining multiple paths with zero                                  neighbors as its alternative path. Once congestion occurs on
+    overhead.                                                                                 the default path, rather than dropping the packets, each AS
+       To achieve this, we just utilize existing paths in BGP RIB,                            would leverage the alternative paths in forwarding packets.
+    where different paths are learned from different neighboring                              Considering the worst case where every default path (red
+    ASes. Given that paths are valid in BGP RIB (e.g., loop-                                  route) is congested, each AS may forward the packet along
+    free), no further examination is required. The degree of path                             with an alternative path (green route). As the dash lines
+    diversity gained by an AS is therefore dependent on how                                   show, a loop is generated if each AS chooses the alternative
+    many neighbors it has. By examining the BGP RIB provided                                  path in a clockwise direction. The root cause is the lack of a
+    by Routeview [11], we found that most of ASes are able to                                 constraint in forwarding packets on data plane. Recognizing
+    beneﬁt from multi-neighbor forwarding.                                                    this, we demonstrate a simple and practical approach to solve
+                                                                                              this problem in section III-A2.
+    C. Challenges
+                                                                                                 Cycling between iBGP peers. The multiple paths at the
+       Trafﬁc-sensitive forwarding via MIFO can be easily de-                                 AS-level can be translated to different AS border router-
+    ployed on border routers while being compatible with legacy                               s. Take Fig. 2(b) as an example, in contrast to Fig. 1.
+    routers. The key idea is to leverage alternative paths in                                 The alternative path is derived from another border router
+    forwarding packets while avoiding congestion on default                                   compared to the default path. Once packets are deﬂected
+    paths. However, several challenges must be addressed in                                   from the default path to an alternative path, a cycle may
+    designing a practical solution.                                                           be produced between iBGP peers. As Fig. 2(b) shows, only
+1   For example, a ﬂow is identiﬁed by a ﬁve-tuple: source address, destination               two paths are available towards the destination, where XY ∗
+    address, source port, destination port, protocol type.                                    and XZ∗ are selected as the default path and alternative
+
+
+
+
+                                                                                        182
+                                                                                        183
+                          9         9                                    The ﬁrst approach falls back to single path routing by
+                SDFNHW
+                                                                        only using default path, i.e., AS 1 either forwards packets
+                                                                        to AS 0 or drops them. The second approach means each
+                     9Q                   9                            AS knows instantaneous global information, i.e., AS 1 will
+                                                                        drop the packet right away as soon as it founds that AS 3
+                                                                        and AS 2 are both congested on default path. To achieve
+                               9M                                       this, the link utilization between each pair of ASes has to
+                                                                        be endlessly propagated on Internet, which is unscalable and
+                 Figure 3: Formalized Loop.                             impractical. Therefore, we adopt the third approach to break
+                                                                        the loop: add a simple constraint on data plane.
+                                                                           2) Main Idea of Loop Breaking: Currently, “valley-
+path respectively. Assume that the default path is congested.
+                                                                        free” [12] policies are only used on control plane to match
+Rather than sending packets to a eBGP peer, R1 prefers to
+                                                                        economic incentives, whereby routes through peers and
+forward packets to an iBGP peer, R2 , so as to deliver packets
+                                                                        providers are exported only to customers, and customer
+through the alternative path. However, R2 will send packets
+                                                                        routes are exported to everyone. However, we prove that
+back to R1 , which produces a cycle. The reason is that the
+                                                                        the loop issues can be easily resolved by building a similar
+iBGP peers are out of sync in the data plane. In particular,
+                                                                        regulation into data plane. Speciﬁcally, before forwarding
+R2 is unaware of congestion on the default path through
+                                                                        packets to an alternative path, current AS will examine
+R1 and still delivers packets to R1 to use the default path.
+                                                                        the business relationship with upstream neighbor (UN) and
+Section III-B presents an easy but elegant solution to solve
+                                                                        downstream neighbor (DN). Here upstream and downstream
+this problem.
+                                                                        denote the direction of packets, incoming and outgoing
+   Selecting the Best Alternative Path in a Distributed
+                                                                        respectively. The procedure of path veriﬁcation is described
+Manner. Given that MIFO works in an entirely distributed
+                                                                        as following:
+way, once congestion occurs on the default path, the border
+routers of every AS have to independently choose the best                 • If UN is a customer: forward the packet to this path.
+alternative path for each subsequent packet. Take Fig. 2(c) as            • If UN is a provider or a peer: forward the packet to
+an example. As soon as congestion is observed on the default                this path if and only if DN is a customer.
+path, the default egress router (R1 ) has to deliver subsequent           • Otherwise, drop the packet.
+
+packets to an alternative path with the most available band-               Take Fig. 2(a) for instance, when AS 2 receives packets
+width. Therefore, R1 prefers the alternative path through R3            (towards AS 0) from AS 1, by learning that default path
+since it has a larger available bandwidth (100Mbps) than                (2 → 0) is congested, it will choose an alternative path (2 →
+the path through R2 (10Mbps). We propose a simple, but                  3 → 0) to forward packets. However, other than sending
+practical, greedy method to address this challenge and is               packets to AS 3, AS 2 should directly drop packets since
+detailed in Section III-C.                                              both upstream neighbor (AS 1) and downstream neighbor
+                                                                        (AS 3) are AS 2’s peers, which violates the rule of path
+                     III. MIFO D ESIGN
+                                                                        veriﬁcation. Consequently, the potential loop (1 → 2 →
+  In this section we design MIFO in details, in a particulary           3 → 1) in data plane is immediately cut off.
+notice on how to address the challenges elaborated in the                  3) Correctness of the Idea: In our deﬁnition, a packet is
+previous section.                                                       forwarded in loop-free if the packet reaches the destination
+A. Breaking the Loop on Data Plane                                      without loop, or the packet is dropped before forming a loop.
+                                                                        We then draw the conclusion and prove the correctness as
+   1) The Root Cause of Loop: In multi-path forwarding,
+                                                                        follow:
+when an AS decides to forward a packet, the full path is
+indeterminate. As Fig. 2(a) shown, when AS 1 forwards                   Theorem. Within multi-path interdomain forwarding, by
+packets to AS 2, it supposes that packets will follow the               adding valley-free regulation in data plane, each packet is
+path described in control plane, 1 → 2 → 0. However,                    forwarded in loop-free.
+the real path in data plane is 1 → 2 → 3 → 1. This is
+                                                                             Proof: We ﬁrst declare that the necessary condition to
+different from existing single-path routing, where data plane
+                                                                        generate a loop is that, at least one AS adopts the alternative
+strictly follows the default path selected by control plane.
+                                                                        path other than the default path. This is an obvious fact since
+The inconsistency between control plane and data plane is
+                                                                        BGP already ensures loop-free on default path through full
+the root cause of generating loop in multi-path forwarding.
+                                                                        AS-path vector.
+Therefore, to prevent the loop: i) we can force the data plane
+deﬁnitely follows control plane, or ii) examine the exact                 We then focus on the graph, G(V, E), where vertices
+packet path before forwarding, or iii) add some constraints             {v ∈ V } denote ASes and edges {e ∈ E} denote inter-
+in data plane to drop the packet automatically.                         AS links. The business relationship between adjacent ASes
+
+
+
+
+                                                                  183
+                                                                  184
+can be deﬁned as algebraic logic:                                                                                                              WDJ  ELW
+
+
+       vi < vi+1 ,   if (vi , vi+1 ) is (customer, provider)                          FKHFN  ELW       WDJ  ELW              FKHFN  ELW
+                                                                                                                                                           9L
+       vi = vi+1 ,   if (vi , vi+1 ) is (peer, peer)
+       vi > vi+1 ,   if (vi , vi+1 ) is (provider, customer)                   9L                                    9L
+                                                                                                          5                       5
+Note that transitivity is only valid between customer and                                                                                                  9 L
+provider, saying that:                                                                    3DFNHW SDWK       'HIDXOW SDWK    $OWHUQDWLYH SDWK
+
+
+       if vi−1 > vi and vi > vi+1 , then vi−1 > vi+1           (1)                                  Figure 4: Tag-Check Strategy.
+       if vi−1 < vi and vi < vi+1 , then vi−1 < vi+1           (2)
+
+However, it is not suitable in peering: if vi−1 = vi and                      Therefore, to obtain a forwarding path in loop-free: R1
+vi = vi+1 , vi−1 and vi+1 can have any kinds of relation-                  should tell R2 that the upstream neighbor is Vi−1 , and R2
+ship. Accordingly, the procedure of path veriﬁcation can be                has to examine the relationships of (Vi−1 , Vi ) and (Vi , Vi+1 )
+formalized as: vi is allowed to transit packets from vi−1 to               in terms of Eq. 3. The key is to pass the relationship with
+vi+1 if and only if:                                                       upstream neighbor from the packet entering point to the
+                                                                           packet exit point. To achieve this, we show that “one bit
+                 vi−1 < vi     or vi > vi+1                    (3)         is enough”.
+                                                                              Take Fig. 4 as an example. To transit the packet from Vi−1
+   We next complete the proof by contradiction. As Fig. 3
+                                                                           to Vi+1 , border router R2 on Vi is required to verify that
+shown, we denote v1 to represent the node who takes
+                                                                           either Vi−1 < Vi or Vi > Vi+1 . Given that the relationship
+alternative path other than default path, which results in
+                                                                           between Vi and Vi+1 is known due to the direct connection,
+a loop. We assume the loop is clockwise (counterclock-
+                                                                           R2 only needs to determine whether Vi−1 < Vi or not. Such
+wise is the same), means packets are transferred through
+                                                                           information can be easily expressed by one bit: 1 denotes
+v1 → v2 → ...vn → v1 → v2 ... where n > 2 and vi also
+                                                                           Vi−1 < Vi and 0 denotes Vi−1 ≥ Vi . Therefore, a simple
+represents vn+i .
+                                                                           “Tag-Check” approach is used to fulﬁll the path veriﬁcation
+   If v1 > v2 , with Eq. 3, v2 can forward packets to v3 if
+                                                                           on data plane:
+and only if v2 > v3 . In a similar fashion along the loop, we
+                                                                              • When the border router (e.g., R1 ) receives a packet
+have v1 > v2 > v3 ... > vn . According to Eq. 1, it leads
+to v1 > vn . However, to construct the loop, vn should also                      from an eBGP peer, it tags one bit to identify the
+forward packet to v1 . Given that vn−1 > vn , by following                       relationship with corresponding upstream neighbor.
+                                                                              • When the border router (e.g., R2 ) intends to deliver a
+Eq. 3, it leads to vn > v1 . Contradiction is generated.
+   If v1 = v2 , with Eq. 3, it turns to v2 > v3 . Applying                       packet to an eBGP peer, it checks that bit in terms of
+Eq. 3 along the loop, we have v2 > v3 > ... > vn > v1 .                          Eq. 3.
+However, if vn > v1 , by Eq. 3, v1 can forward packet to v2                   It is easy in deploying “Tag-Check” strategy in practise.
+if and only if v1 > v2 , which contradicts with v1 = v2 .                  Multi-Protocol Label Switching (MPLS) is widely deployed
+   If v1 < v2 , to form a loop, vn should forward the packet               in ASes [13], where a label is inserted on each incoming
+to v1 . With Eq. 3, it turns to vn < v1 . Applying Eq. 3 in                packet at entering point and removed at the exit point. This is
+a counterclockwise direction, we have v2 < ... < vn−1 <                    just right for “Tag-Check” strategy by consuming an unused
+vn < v1 . According to Eq. 2, it leads to v2 < v1 , which                  bit in the label. Even for the ASes without using MPLS,
+contradicts with v1 < v2 .                                                 it could be accomplished by taking one reserved bit in IP
+   Therefore, by adding valley-free regulation on data plane,              header or allocate one bit in IP option ﬁled.
+it is loop-free in multi-path interdomain routing.
+   4) One More Bit is Enough: In AS level, the business                    B. Cycle Avoidance via IP-in-IP Encapsulation
+relationship with neighbors is predeﬁned in control plane.                    The primary cause of cycling packets in Fig. 2(b) is the
+However, in our system, such information is also request-                  asynchronism between iBGP peers. More speciﬁcally, R2
+ed in data plane to achieve loop-free packet forwarding.                   is unaware of the congestion through R1 , and thus sends
+Fig. 4 illustrates the forwarding process through three ASes,              packets back to R1 to use the default path. Therefore, a
+Vi−1 → Vi → Vi+1 . On one hand, as the packet entering                     notiﬁcation mechanism is requested to keep iBGP peers have
+point in AS Vi , R1 is the only device who knows the                       a consistent view on data plane.
+upstream neighbor is Vi−1 because of the direct connection.                   We adopt the means of IP-in-IP encapsulation for several
+On the other hand, as the packet exit point in AS Vi , R2                  promising reasons. First, it is practical given that IP-in-IP
+is the only device who knows the downstream neighbor is                    function is widely supported in current commercial routers.
+                                         ∗
+Vi+1 (on alternative path) other than Vi+1   (on default path).            Second, the reliability is guaranteed based on the existing
+
+
+
+
+                                                                     184
+                                                                     185
+Algorithm 1 Pseudocode of forwarding process                          C. Selecting the Best Alternative Path
+Input:                                                                   The priority of an alternative path is identiﬁed by the
+    p: Incoming packet; Iin : input port;                             available bandwidth. Within an AS, the border routers peri-
+ 1: if isIPinIP(p)                           IP-in-IP packet         odically measure the available bandwidth to other ASes and
+ 2:      s ← GetPacketSender(p)        Sender is iBGP peer           communicate the measurement results with each other. As
+ 3:      StripOuterIPHeader(p);                                       shown in Fig. 1, the alt port in FIB is corresponded to the
+                                                                      alternative path with most available bandwidth.
+ 4: Iout , Ialt ← FIBLookup(p);
+                                                                         Given that each pair of border routers are iBGP peer,
+ 5: if isConnectToEBGP(Iin )                  Entering Point
+                                                                      exchanging measurement results is easily implemented by
+ 6:      Vup ← GetNeibor(Iin );  Get Upstream Neighbor
+                                                                      reusing the TCP session between them. Therefore, the key
+ 7:      if isCustomer(Vup )                             Tag
+                                                                      step is to efﬁciently realize the measurement on border
+ 8:           SetOneBit(p);
+                                                                      routers. Plenty of measurement tools are developed in past
+ 9:      else
+                                                                      years [14]. However, none of these is suitable in our system.
+10:           ClearOneBit(p);
+                                                                      On one hand, packets are fast forwarded while end-to-end
+11: if isCongest(Iout ) or s = GetNextHop(Ialt )
+                                                                      bandwidth estimation is extremely slow in comparison. On
+12:      if isConnectToIBGP(Ialt )  Alt path on iBGP peer            the other hand, it is impractical to constantly measure such
+13:           Encap(p);             Encapsulate by IP-in-IP          many destinations, given that current BGP table has 500K
+14:           SendTo(p, Ialt );         Send to iBGP peer            entries [15]. Even in AS level, there are 50K [15] potential
+15:           return                                                  targets, which is still unacceptable.
+16:      Vdown ← GetNeibor(Ialt );                                       In our design, we adopt a greedy method by simply
+17:      if isCustomer(Vdown ) or isSetBit(p)         Check          turning “path” measurement into “link” monitoring. Specif-
+18:           SendTo(p, Ialt );      Alt path is Valley Free         ically, the border router takes remaining capacity on direct
+19:      else                                                         connected inter-AS link as the path available bandwidth.
+20:           Drop(p);                                                Take Fig. 2(c) as example, other than probing the path band-
+21:      return                                                       width [14], R2 and R3 merely monitor the spare capacity
+22: SendTo(p, Iout );                                                 on link XV and link XU respectively. Such greedy scheme
+23: return                                                            provides several advantages:
+                                                                         • It is considerably easier in exploring local link than
+                                                                            sending probe packets with complicated estimation
+                                                                            algorithm.
+                                                                         • Comparing with deferred path measuring, local link
+
+connection between each pair of iBGP peers. Finally, this                   monitoring achieves real-time results.
+is a lightweight in-band approach, without any additional                • As for a router, the amount of links is far less than the
+
+messages.                                                                   number of ASes to be monitored.
+                                                                      D. MIFO Forwarding Engine
+   The border router relies on the encapsulated IP header
+to determine the forwarding path: default one or alternative             The MIFO forwarding engine on data plane is described
+one. We take Fig. 2(b) as an instance to describe our non-            in pseudocode 1. When the border router receives a packet,
+trivial approach. R1 is the ﬁnal hop to exit local AS towards         it examines the packet type at ﬁrst. If the packet is encapsu-
+the destination. Once R1 sees congestion on default outgoing          lated by IP-in-IP (Line 1), it extracts the packet sender (Line
+link (red arrow), it encapsulates each subsequent packet with         2) and strips the outer IP header to obtain the origin packet
+an outer IP header and forwards it to an iBGP peer, R2 ,              (Line 3). The default output port and alternative output port
+to leverage the alternative path (green arrow). The source            are acquired by looking up FIB (Line 4). If the packet
+address and destination address in outer IP header are R1 and         comes from an eBGP peer (Line 5), it means current router
+R2 respectively. Once R2 receives the packet, it identiﬁes            is the packet entering point. Accordingly, it should check
+the sender (R1 ) by extracting the source address and obtains         the relationship with upstream neighbors (Line 6-7) and set
+the origin packet by decapsulating the outer IP header.               the bit to one if upstream neighbor is a customer (Line 8),
+To forward the origin packet, R2 primarily compares the               or clear the bit to zero in otherwise (Line 10). Finally, it
+corresponding nexthop with the sender. If the nexthop equals          sends the packet to intradomain (Line 22). As described
+to sender (means R1 is the nexthop as default), it indicates          in Section III-B, the router can detect congestion by either
+the packet is “deﬂected” from the default path because of the         seeing it on output port or receiving an encapsulated packet
+congestion. R2 thereupon sends the packet to an alternative           from the default path (Line 11). Therefore, the packet should
+path (green arrow) instead. Otherwise, R2 forwards packet             be forwarded through the alternative path. If the alternative
+to the nexthop (R1 ) directly.                                        path is on an iBGP peer (Line 12), the router encapsulates
+
+
+
+                                                                185
+                                                                186
+                                                                                                              10000
+
+
+
+
+                                                                                   The Number of Paths per Pairs
+  Date     # of Nodes   # of Links   P/C Links    Peering Links
+11/2014      44,340      109,360      75,046         34,314
+                                                                                                                   1000
+
+               Table I: Attributes of Data-set.
+                                                                                                                    100
+
+                                                                                                                                         50% Deployed MIRO
+the packet (Line 13) and sends it to that iBGP peer (Line                                                            10
+                                                                                                                                        100% Deployed MIRO
+                                                                                                                                         50% Deployed MIFO
+14). If the alternative path is on an eBGP peer, it forwards                                                                            100% Deployed MIFO
+                                                                                                                      1
+the packet to the alternative path (Line 18) if path is veriﬁed                                                           0   20      40      60      80     100
+                                                                                                                               Percentage of Node Pairs
+(Line 17), or drops the packet in otherwise (Line 20).
+                                                                                                                   Figure 7: Available Paths Comparison.
+              IV. P ERFORMANCE E VALUATION
+   In this section, we study the performance of MIFO and
+compare it with conventional BGP and MIRO [7] by using
+                                                                         with customer routes preferred over peer routes, which in
+an NS-3 simulation. MIRO implements multi-path interdo-
+                                                                         turn are preferred over provider routes. If multiple routes fall
+main routing by letting ASes advertise alternative routes to
+                                                                         in the same category, the ﬁrst tie breaker is the length of AS
+neighbors. To achieve scalability, MIRO strictly limits the
+                                                                         paths, and the second is the lowest next-hop AS identiﬁer.
+number of routes that each AS can advertise. In our simu-
+                                                                         As for MIRO, we adopt the strict policy described in [7],
+lation, all the link capacities are set to 1Gbps. The MIFO
+                                                                         which indicates that each AS only announces the alternative
+forwarding engine is implemented on each routing node. The
+                                                                         paths with the same local preference as the default path.
+evaluation is built on an actual AS-level topology [16] trace.
+                                                                            Fig. 7 illustrates the available paths between each AS pair
+In addition to every AS representing a node, we expand
+                                                                         in MIFO and MIRO. In particular, we present the results both
+several tier-1 ASes to capture all of their internal topologies
+                                                                         for fully deployment and partial deployment. It is notable
+at the router level; in doing so, we assume all the border
+                                                                         that with even half of the ASes being MIFO capable, more
+routers (iBGP peers) within a tier-1 AS are connected in a
+                                                                         paths are available than when MIRO is fully deployed.
+full mesh topology.
+                                                                         The reason is that the AS with MIRO only announces a
+   We ﬁrst show that MIFO provides sufﬁcient path diversity,
+                                                                         fraction of the alternative routes for the sake of scalability.
+and then evaluate the throughput improvement. Given that
+                                                                         In contrast, the ASes with MIFO are able to leverages all
+a complete view of interdomain trafﬁc matrix is difﬁcult
+                                                                         the available paths. In addition, as for the 100% deployment
+to obtain because of proprietary restrictions, we instead
+                                                                         of MIFO, 90% of the AS pairs have at least a hundred
+generate a synthetic trafﬁc matrix in two ways. One is
+                                                                         alternative paths, and nearly half of the AS pairs have
+to randomly choose a pair of ASes as the source and
+                                                                         thousands of available paths.
+destination, so as to analyze MIFO in a generic manner.
+The second is to think of popular content providers as trafﬁc            B. Throughput Improvement
+producers, such as Google (AS 15169) and Facebook (AS
+32934), and take stub ASes as trafﬁc consumers. We assume                   Given an AS-level trafﬁc matrix, we are interested in the
+that the trafﬁc follows a power-law distribution, in that the            end-to-end throughput of ﬂows compared to conventional
+higher a content provider ranks (by the number of providers              BGP routing (single path) and MIRO. We ﬁrst take an
+and peers), more of its trafﬁc is consumed. We believe that              uniformly distributed trafﬁc matrix with one million ﬂows.
+this helps to have a more realistic evaluation of typical                For each trafﬁc ﬂow, the source, destination are determined
+real-world workloads. The start time for each ﬂow follows                by randomly choosing a pair of ASes. Fig. 5 illustrates
+a Poisson process such that the average number of ﬂows                   the cumulative distribution of ﬂow throughput for varying
+initiated in one second is set to 100. The ﬂow size is chosen            ratios of the deployment of MIFO and MIRO. As expected,
+to be 10MB and packet size is set to 1KB.                                both MIFO and MIRO signiﬁcantly dominate BGP since
+                                                                         there is insufﬁcient network capacity when using single path
+A. Path Diversity                                                        routing. When MIFO and MIRO are fully deployed, MIFO
+   Given that both MIFO and MIRO exploit multiple paths,                 outperforms MIRO signiﬁcantly. Only half of the ﬂows get
+we ﬁrst study the path diversity with the AS-level topol-                more than 500 Mbps end-to-end throughput in MIRO, while
+ogy [16]. Table I summarizes the key features of the AS                  nearly 80% ﬂows can achieve more than 500 Mbps under
+topology. [16] measured global AS-links and inferred the                 MIFO. Within 50% deployment of MIFO, it still enables half
+business relationship on each link, indicating that 69%                  of the ﬂows to achieve 500 Mbps throughput, while only
+are provider-customer (P/C) and 31% are mutual peering                   35% ﬂows reach this in MIRO. Even under 10% deployed
+relationships.                                                           ratio, MIFO outperforms MIRO as well.
+   To build the BGP RIB on each node, we use the standard                   Next, we turn to a trafﬁc matrix distributed according to
+“valley-free” [12] export policies and route selection criteria,         the power-law distribution, which is closer to a real-world
+
+
+
+                                                                   186
+                                                                   187
+                                      100                                                                     100                                                                        100
+
+                                       80                                                                      80                                                                        80
+
+
+
+
+                                                                                                                                                                               CDF (%)
+                            CDF (%)
+
+
+
+
+                                                                                                    CDF (%)
+                                       60                                                                      60                                                                        60
+
+                                       40                                                                      40                                                                        40
+
+                                       20                                   BGP                                20                                    BGP                                 20                                BGP
+                                                             100% Deployed MIRO                                                        50% Deployed MIRO                                                     10% Deployed MIRO
+                                                             100% Deployed MIFO                                                        50% Deployed MIFO                                                     10% Deployed MIFO
+                                        0                                                                         0                                                                       0
+                                            0        200    400     600    800      1000                              0       200    400     600    800              1000                      0    200    400     600    800     1000
+                                                         Throughput (Mbps)                                                        Throughput (Mbps)                                                     Throughput (Mbps)
+                                                 (a) 100% Deployment                                                      (b) 50% Deployment.                                                      (c) 10%. Deployment
+
+                                                                   Figure 5: Throughput Comparison against Different Deployment Ratio.
+
+                                      100                                                                     100                                                                        100
+
+                                       80                                                                     80                                                                          80
+                        CDF (%)
+
+
+
+
+                                                                                                    CDF (%)
+
+
+
+
+                                                                                                                                                                               CDF (%)
+                                       60                                                                     60                                                                          60
+
+                                       40                                                                     40                                                                          40
+
+                                       20                                   BGP                               20                                     BGP                                  20                               BGP
+                                                              50% Deployed MIRO                                                        50% Deployed MIRO                                                     50% Deployed MIRO
+                                                              50% Deployed MIFO                                                        50% Deployed MIFO                                                     50% Deployed MIFO
+                                        0                                                                         0                                                                        0
+                                            0        200    400     600    800      1000                              0       200    400     600    800              1000                      0    200    400     600    800     1000
+                                                         Throughput (Mbps)                                                        Throughput (Mbps)                                                     Throughput (Mbps)
+                                                          (a) α = 0.8                                                            (b) α = 1.0                                                           (c) α = 1.2
+
+                                                                  Figure 6: Throughput Comparison against Power-Law Trafﬁc Generation.
+
+
+                                                                                                                                                     
+  % of Total Traffic
+
+
+
+
+                       60
+                                                Traffic on Alternative Paths (%)                                                                                                                            3URSRUWLRQ 
+                       50                                                                                                                                                     
+                                                                                                                                           RI7RWDO)ORZV
+
+
+
+
+                       40                                                                                                                            
+                       30
+                       20                                                                                                                            
+                       10
+                        0                   10       20     30    40    50    60     70       80      90              10                                        
+                                                 %     %      %     %     %     %         %     %             %          0%                                                                         
+                                                     Proportion in Deploying MIFO                                                                                                                                             
+                                                                                                                                                              
+                                                                                                                                                                                                                             
+                                      Figure 8: Trafﬁc Ofﬂoad on Alternative Paths.                                                                                             3DWK 6ZLWFK 7LPHV
+                                                                                                                                                                        Figure 9: Path Switch Distribution.
+
+workload [17]. More speciﬁcally, the probability of consum-
+ing trafﬁc fromthe i-th content provider is F (i) = a × i−α ,                                                                            trates the proportion of trafﬁc ofﬂoaded to alternative paths
+where a = 1/ i=1 i−a and N is the number of content
+                   N
+                                                                                                                                          for varying degrees of MIFO deployment. We collect the
+providers, which is set to one million. We ﬁx the deployment                                                                              number of ﬂows transferred on alternative paths and divide
+ratio to 50% and vary α to understand the performance                                                                                     it by the total number of ﬂows. With 100% deployment of
+under varying degrees of trafﬁc skewness. The performance                                                                                 MIFO, half of the ﬂows are delivered over alternative paths,
+of BGP routing degrades as the skewness grows, which can                                                                                  rather than competing for bandwidth on default paths. It
+be explained by the fact that serious congestion is caused by                                                                             indicates that MIFO utilizes more paths in order to provide
+the increasing trafﬁc ﬂowing through a limited number of                                                                                  more network capacity. Even with a small deployment of
+paths. In contrast, MIFO achieves much higher throughput                                                                                  MIFO (e.g., 10%), a non-trivial amount of trafﬁc (e.g., 9%)
+thanks to multi-path forwarding. MIFO outperforms MIRO                                                                                    is ofﬂoaded from the default paths.
+as well. Take α = 1.0 for instance. With MIFO, 40% of
+ﬂows get 500 Mbps bandwidth during the transfer, while                                                                                    D. Stability
+only 17% and 7% of the ﬂows can achieve this in MIRO
+and BGP routing, respectively.                                                                                                              We also evaluated the stability of MIFO. A path switch
+                                                                                                                                          happens if the border router deﬂects the trafﬁc from the
+C. Load Balancing                                                                                                                         default path to an alternative path, or resumes using the
+   It is important to understand how much congestion on                                                                                   default path after using an alternative path. It would be
+inter-AS paths is relieved with the help of MIFO. Fig. 8 illus-                                                                           unstable if most of the ﬂows have a large number of
+
+
+
+
+                                                                                                                                    187
+                                                                                                                                    188
+                                          263)                                                 $6
+            %*3                                                                                                                              5D                $6
+                             5,%                                                                   6
+                                                                                                                                                                                         '
+           0,)2'DHPRQ                    5,3
+                                                                                                                             $6                                                     $6
+                                                 ;253
+                                          /LQX[.HUQHO                              6                                                                                                   '
+                                                                                          $6                                           5G                    $6
+           0,)2)(              ),%
+        LSBPNURXWHBLQSXW     ILEBWDEOHB                                                                                       'HIDXOW SDWK        $OWHUQDWLYH SDWK
+
+
+    Figure 10: Main modules in Prototype Implementation                                                                  Figure 11: Experiment Topology
+
+                                                                                                              2                                        100
+
+
+
+
+                                                                              Aggregate Throughput (Gbps)
+                                                                                                            1.8
+switches, meaning trafﬁc all shifts over ﬁrst and then shifts                                               1.6                                               80
+back. However, as Fig. 9 showen, more than half of ﬂows                                                     1.4
+
+
+
+
+                                                                                                                                                    CDF (%)
+                                                                                                            1.2                                               60
+(67.7%) had a path switch only once and most ﬂows (97.5%)                                                     1
+switch paths no more than twice. This indicates that MIFO                                                   0.8                                               40
+                                                                                                            0.6
+associated with most of the trafﬁc is reasonably stable.                                                    0.4                                               20
+                                                                                                            0.2                     BGP                                             BGP
+       V. I MPLEMENTATION BASED E XPERIMENTS                                                                  0
+                                                                                                                                    MIFO
+                                                                                                                                                               0
+                                                                                                                                                                                    MIFO
+                                                                                                                  0    10 20 30 40 50                           0.5   1    1.5    2    2.5   3
+                                                                                                                         Time (seconds)                          Flow Transfer Time (seconds)
+  In this section we report on experiments based on a proto-
+                                                                                                       (a) Aggregate Throughput                         (b) Flow Completion Time
+type implementation of MIFO. The experiments were carried
+out on a testbed, so as to characterize the performance of                                                            Figure 12: Testbed Experimental Result.
+MIFO in a real system.
+A. Prototype Implementation
+                                                                         start transferring data at the same time. With BGP routing,
+   We have implemented the MIFO Daemon as a module in                    (S1 , D1 ) and (S2 , D2 ) take 1 → 3 → 4 → 5 and 2 →
+the eXtensible Open Router Platform (XORP) [18] for the                  3 → 4 → 5 as default AS path, respectively. Consequently,
+control plane, and developed the MIFO Forwarding Engine                  the link between AS 3 and AS 4 is the bottleneck, with
+(MIFO FE) in Linux kernel space for the data plane. The                  contention between the ﬂows (S1 , D1 ) and (S2 , D2 ). On
+implementation includes 1500 lines of code in C++ (XORP)                 the other side, with MIFO, the border router Rd is able
+and C (kernel).                                                          to relieve congestion on the default path by leveraging the
+   Fig. 10 shows the implementation architecture. We de-                 alternative path 3 → 6 → 5 through the iBGP peer, Ra . We
+veloped a new module in XORP to implement the MIFO                       run BGP routing as well as MIFO respectively, and observe
+Daemon. It interacts with the BGP module to acquire                      the completion time for each ﬂow as well as the aggregate
+available alternative paths. Further, it constantly collects             throughput of the network.
+available link capacity from the data plane (through MIFO
+FE) and updates the ’alt’ port in the FIB to direct packets              C. Experimental Results
+to the best alternative path. The MIFO Forwarding Engine                    From Fig. 12(a), we see that MIFO signiﬁcantly outper-
+is realized as a kernel module. In addition, we re-implement             forms BGP routing by achieving much higher aggregate
+the FIB lookup function, ip mkroute input(), by adding two               throughput. With BGP routing, each ﬂow gets limited link
+callback functions: one is used to monitor the utilization of            capacity as a result of congestion through Rd . In contrast,
+each link, the other to interact with theMIFO Daemon and                 by delivering trafﬁc through alternative paths through Ra , a
+update FIB entries. We also add ’alt port’ attribute into struct         higher total end-end capacity is achievable with MIFO. The
+ﬁb table and modify related manipulation functions, such as              aggregate throughput with MIFO is around 1.7Gbps, while
+ﬁb table insert() etc.                                                   it is 0.94Gbps with BGP routing. Thus, MIFO improves the
+                                                                         aggregate throughput by 81% compared with BGP routing.
+B. Experiment Setup
+                                                                         Fig. 12(b) illustrates the CDF of the ﬂow completion time.
+   The testbed comprises 15 desktop machines. 4 of them                  All the ﬂows complete within 1.1s in MIFO, while 80%
+are end hosts to send and receive ﬂows while the other 11                transferred ﬂows take more than 1.6s with BGP routing.
+machines are equipped with the MIFO implementation and                   Moreover, completing all the ﬂows take only 30s in MIFO
+function as routers. 6 ASes are constructed by these ma-                 , but takes 51s in BGP routing.
+chines as shown in Fig. 11. All the machines are connected
+by Gigabit Ethernet links.                                                                                                    VI. R ELATED W ORK
+   30 TCP ﬂows are produced from S1 to D1 one after                        Multi-path Interdomain Routing. Several works have
+another, as well as from S2 to D2 . Each ﬂow is 100MB                    been proposed to exploit path diversity by advertising
+in size and the data packet is set to 1KB. S1 and S2                     multiple paths in achieving a better interdomain routing.
+
+
+
+                                                                   188
+                                                                   189
+MIRO [7] enables each pair of ASes to negotiate an alterna-            an efﬁcient greedy method in selecting the best alternative
+tive path (e.g., bypass an AS with bad reputation). PDAR [8]           path. Our evaluation shows that MIFO can signiﬁcantly
+extends BGP to advertise a most disjoint alternative path              improve end-to-end throughput compared to conventional
+along with the best path. However, above solutions either              BGP routing and other multi-path routing methods (e.g.,
+require dedicated communication channel (e.g., MIRO) or                MIRO). We also implemented the prototype of MIFO on
+produce extra BGP UPDATE messages (e.g., PDAR), which                  Linux with the XORP router platform. The experimental
+causes additional communication overhead. In our design,               results also show that MIFO notably improves end-to-end
+MIFO obtains multiple paths with zero overhead by learning             throughput.
+alternative paths in local BGP RIB. Moreover, no further
+                                                                                                 R EFERENCES
+veriﬁcation is needed since every path in BGP RIB is
+                                                                        [1] C. Labovitz, S. Iekel-Johnson, D. McPherson, J. Oberheide,
+validate. Therefore, the magnitude of path diversity gained                 and F. Jahanian, “Internet inter-domain trafﬁc,” in SIGCOMM,
+in MIFO is relied on the node degree in AS-level Internet                   2010.
+topology.                                                               [2] “Amsterdam           Internet      IXP.”     https://www.ams-
+   Internet Topological Features. Previous measurements                     ix.net/technical/statistics, 2014.
+show that the hierarchy of Internet is becoming ﬂatter [3].             [3] P. Gill, M. Schapira, and S. Goldberg, “Let the market drive
+                                                                            deployment: A strategy for transitioning to BGP security,” in
+The inferred AS-level Internet topology in Nov. 2014 has                    SIGCOMM, 2011.
+a large average node degree but a small diameter [16],                  [4] H. Jiang and C. Dovrolis, “Why is the Internet trafﬁc bursty
+while the real-time information about backbone routers                      in short time scales?,” in SIGMETRICS, pp. 241–252, 2005.
+demonstrates the path richness in BGP RIB [11]. In addition,            [5] “INTERNET              INTERDOMAIN            CONGESTION.”
+popular content providers such as Google and Facebook                       http://www.caida.org/publications/presentations/2014/bitag-
+                                                                            congestion/bitag-congestion.pdf.
+have enormous amounts of peers [19]. All these evidence                 [6] D. Clark, S. Bauer, k. claffy, A. Dhamdhere, B. Huffaker,
+indicates that numerous paths are existed between each pair                 W. Lehr, and M. Luckie, “Measurement and Analysis of Inter-
+of ASes, which beneﬁts MIFO by allowing border routers                      net Interconnection and Congestion,” in Telecommunications
+to forward packets among multiple paths.                                    Policy Research Conference (TPRC), 2014.
+   Load Adaptive Forwarding. The fundamental goal of                    [7] W. Xu and J. Rexford, “MIRO: multi-path interdomain rout-
+                                                                            ing,” in SIGCOMM, 2006.
+MIFO is to optimize the network performance through load                [8] F. Wang and L. Gao, “Path diversity aware interdomain
+adaptive forwarding. Most of past works accomplish this by                  routing.,” in INFOCOM, IEEE, 2009.
+applying trafﬁc engineering (TE) protocols [20–22] on top of            [9] Y. Liao and L. Gao, etc., “Reliable interdomain rout-
+an existing MPLS infrastructure. Performance improvement                    ing through multiple complementary routing processes.,” in
+is achieved by adjusting the distribution of trafﬁc among the               CoNEXT, 2008.
+                                                                       [10] N. Kushman, S. Kandula, D. Katabi, and B. Maggs, “R-BGP:
+paths with the same ingress/egress nodes (e.g., TeXCP [21]).                Staying connected in a connected world,” in NSDI, 2007.
+However, these schemes only work on intradomain, with the              [11] University of Oregon, “Routeviews.” http://www.routeviews
+help of centralized control in local AS. Instead, MIFO works                .org/.
+on interdomain level in a fully distributed manner. MIFO               [12] L. Gao and J. Rexford, “Stable Internet routing without global
+enables AS border routers to adaptively forward packets to                  coordination,” IEEE/ACM Trans. Network., 2001.
+                                                                       [13] X. Xiao, A. Hannan, and B. Bailey, “Trafﬁc engineering with
+different paths.                                                            mpls in the internet,” IEEE Network Magazine, 2000.
+                                                                       [14] E. Goldoni and M. Schivi, “End-to-end available bandwidth
+                    VII. C ONCLUSION                                        estimation tools, an experimental comparison.,” in PAM,
+   In this paper, we proposed a Multi-path inter-domain                     2010.
+forwarding mechanism (MIFO) that enables border routers                [15] “BGP Table Size in 2014.” http://bgp.potaroo.net/, 2014.
+                                                                       [16] “AS Topology.” http://irl.cs.ucla.edu/topology/, 2014.
+of each AS to adaptively forward packets on alternative                [17] L. A. Adamic and B. A. Huberman, “Zipf’s law and the
+paths instead of being limited to a default path that may                   internet,” Glottometrics, vol. 3, pp. 143–150, 2002.
+be congested. MIFO allows the border routers to efﬁciently             [18] “The        eXtensible        Open       Router       Platform.”
+obtain multiple paths from the local BGP RIB, whereby                       http://www.xorp.org/.
+different paths are learned from different neighbors with              [19] Y. Shavitt and U. Weinsberg, “Topological trends of Internet
+                                                                            content providers,” CoRR, 2012.
+zero overhead comparing with previous methodologies. The               [20] A. Elwalid, C. Jin, S. H. Low, and I. Widjaja, “MATE: MPLS
+key contribution of MIFO is to solve the challenges faced                   adaptive trafﬁc engineering.,” in INFOCOM, 2001.
+in realizing multi-path forwarding in practice. First, MIFO            [21] S. Kandula, D. Katabi, B. S. Davie, and A. Charny, “Walking
+avoids loops on the data plane by subtly adopting “valley-                  the tightrope: responsive yet stable trafﬁc engineering.,” in
+free” rule in the forwarding process. In addition to the proof              SIGCOMM, 2005.
+                                                                       [22] “Trafﬁc engineering extensions to ospf version 3.”
+of correctness, we show that one more bit in the forwarding                 http://tools.ietf.org/html/rfc5329, 2008.
+policy is enough to realize MIFO in a real system. Second,
+the issue of cycling between iBGP peers is addressed by
+means of IP-in-IP encapsulation. Finally, MIFO provides
+
+
+
+
+                                                                 189
+                                                                 190
+

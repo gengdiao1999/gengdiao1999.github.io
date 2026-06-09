@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OmniCluster - 方案说明</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>OmniCluster：面向大规模 Web 服务的鲁棒系统实例聚类（WWW 2022）</h1>
+<blockquote>
+<p>作者：Shenglin Zhang, Dongwen Li, Zhenyu Zhong, Jun Zhu, Minghan Liang, Jiexi Luo, Yongqian Sun, Ya Su, Sibo Xia, Zhongyou Hu, Yuzhi Zhang, Dan Pei, Jiyan Sun, Yinlong Liu<br>
+机构：南开大学；海河实验室；天津操作系统重点实验室；清华大学；快手科技；中国科学院<br>
+发表年份：2022<br>
+会议/期刊：The Web Conference (WWW 2022), Virtual Conference, April 25-29, 2022 (CCF A)<br>
+关联 PDF：同目录下 <code>WWW22-OmniCluster张圣林.pdf</code></p>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Robust System Instance Clustering for Large-Scale Web Services</td></tr>
+<tr><td>作者</td><td>Shenglin Zhang, Dongwen Li, Zhenyu Zhong, Jun Zhu, Minghan Liang, Jiexi Luo, Yongqian Sun, Ya Su, Sibo Xia, Zhongyou Hu, Yuzhi Zhang, Dan Pei, Jiyan Sun, Yinlong Liu</td></tr>
+<tr><td>机构</td><td>Nankai University; HL-IT; TKL-OS; Tsinghua University; Kuaishou Technology; Institute of Information Engineering CAS</td></tr>
+<tr><td>发表年份</td><td>2022</td></tr>
+<tr><td>会议/期刊</td><td>WWW 2022 (CCF A)</td></tr>
+<tr><td>分类</td><td>聚类 / 异常检测前置步骤（task-agnostic）</td></tr>
+<tr><td>核心问题</td><td>工业级微服务系统中实例数量极大（百万级），给每个实例训练一个 MTS 异常检测模型成本太高；按指标形态给实例做聚类，把"每实例一模型"压缩为"每簇一模型"，同时还要在噪声、冗余、非周期指标下保持高准确度</td></tr>
+<tr><td>主要贡献</td><td>(1) 1D-CAE 做时序降维，缓解海量时点+噪声问题；(2) 三步特征选择策略（YIN 去非周期 + 冗余矩阵 + 4 条规则）筛除冗余和非周期指标；(3) HAC 聚类+欧氏距离，离线聚类 + 在线分类两段式；(4) ByteDance 十亿+MAU 真实数据 NMI=0.9160，并把 5 种异常检测模型训练时间平均降低 95.01%</td></tr>
+</tbody>
+</table>
+
+<h2>二、背景（Background）</h2>
+<p>云原生与微服务架构让 Web 服务可以快速弹性扩展，但代价是"实例爆炸"：单家厂商可能拥有百万级别的 service instance / container / VM / 物理机 / 交换机 / 路由器。每个实例都被实时打上数十到上百个指标（CPU、内存、磁盘 I/O、网络吞吐、平均响应时间、错误率、PV 等），形成多元时间序列（Multivariate Time Series, MTS）。一旦某个实例发生异常，告警会立刻对全网服务可用性造成影响。</p>
+<p>当前主流的深度 MTS 异常检测模型（USAD、OmniAnomaly、SDFVAE、InterFusion、DAGMM 等）通常要为"每个实例"训练一个专属模型，论文 Table 1 给出在高配服务器上的单实例训练耗时：USAD 8.63s、OmniAnomaly 2.99min、SDFVAE 4.08min、InterFusion 8.09min、DAGMM 17.81s。换算到 100 万实例，USAD ≈ 99.87 天，OmniAnomaly ≈ 5.70 年，InterFusion ≈ 15.40 年。训练成本"完全不可能承受"。</p>
+<p>但如果"全网一个模型"，又会因为不同实例的指标形态差异大而降低精度。自然的折中：先把实例聚成若干簇，再"每簇一个模型"。OmniCluster 的目标就是给出这种"快速 + 鲁棒 + 任务无关"的聚类方法。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<ul>
+<li><strong>痛点：实例数百万 + 时点数万 → 传统聚类的 pairwise 距离计算不可承受</strong> → <strong>方案</strong>：用 1D-CAE 把每条 MTS 在 temporal 维度做降维，同时自动规避噪声与异常点干扰。</li>
+<li><strong>痛点：每个实例的指标里既存在冗余又存在非周期噪声，污染聚类结果</strong> → <strong>方案</strong>：三步特征选择——YIN 去除非周期特征 + 冗余矩阵 + 4 条 RULE 1~4 解决冗余/全相关等退化情形。</li>
+<li><strong>痛点：实际生产中"哪些实例属于一个聚类"是动态的，需要在线分配</strong> → <strong>方案</strong>：离线 HAC 聚类得到簇心与 encoder 参数；在线只对新增实例做"特征子集 + 距离簇心"的快速分类，同时通过距离阈值检测离群实例。</li>
+<li><strong>痛点：聚类本身是 unsupervised，缺少评价手段与人工标注工具</strong> → <strong>方案</strong>：开源 GUI 标注工具，把聚类结果直接渲染给运维工程师打标。</li>
+<li><strong>痛点：MTS 含噪声、异常点，传统聚类方法表现差</strong> → <strong>方案</strong>：M 通道独立 1D-CAE（避免 2D-CAE 跨通道信息丢失）+ 滑窗平均平滑 + 异常剔除 + 标准化。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<ol>
+<li><strong>系统总览</strong>：图 2 把 OmniCluster 拆成两段：
+  <ul>
+    <li><strong>离线聚类</strong>：MTS → 预处理（极值剔除、缺失插值、移动平均平滑、归一化）→ 1D-CAE 降维到 z → 三步特征选择得到 z'' → HAC 聚类得到簇心 C。</li>
+    <li><strong>在线分类</strong>：新实例 → 同样的预处理 → 复用 encoder + 特征子集索引 → 与各簇心计算欧氏距离 → 距离小于阈值 τd 归入该簇；否则视为离群。</li>
+  </ul>
+</li>
+<li><strong>关键概念</strong>：
+  <ul>
+    <li><strong>MTS</strong> \( x^s \in \mathbb{R}^{M \times T} \)，M 是指标数，T 是时点数。</li>
+    <li><strong>1D-CAE</strong>：M 条独立 1D-CNN 编码器 + 对应的反卷积解码器，重建损失 = MSE。</li>
+    <li><strong>YIN 周期度</strong>：用于判断单条特征是否周期。</li>
+    <li><strong>冗余矩阵 \( R \in [0,1]^{M' \times M'} \)</strong>：基于归一化互相关 NCC 构造。</li>
+    <li><strong>HAC + 平均 linkage</strong>：聚类簇数由阈值 τd 控制（无需预设 K）。</li>
+    <li><strong>特征子集索引 \( S_F \)</strong>：保存下来用于在线推理。</li>
+  </ul>
+</li>
+<li><strong>数学原理</strong>：
+  <ul>
+    <li>预处理（归一化到 [0,1]）：\[ x'^{sm} = \frac{x^{sm}_t - \min_{t \in T} x^{sm}_t}{\max_{t \in T} x^{sm}_t - \min_{t \in T} x^{sm}_t} \]</li>
+    <li>1D-CAE 重建损失（MSE）：\[ \mathcal{L} = \frac{1}{M} \sum_{m=1}^{M} \text{MSE}(x^{sm}, \hat x^{sm}) \]</li>
+    <li>冗余矩阵：\[ R_{ij} = \mathbb{1}\big[ \text{NCC}(z'^s_i, z'^s_j) > \theta_s \big] \]</li>
+    <li>RULE 3(a) 选最不相关特征：\[ i = \arg\min_{i' \in F} \sum_{j \in S_F} R_{i'j} \]</li>
+    <li>簇间距离（average linkage）：\[ D_{\text{clust}}(A, B) = \frac{1}{|A| \cdot |B|} \sum_{a \in A} \sum_{b \in B} D_{\text{MTS}}(a, b) \]，其中 \( D_{\text{MTS}}(a, b) = \sum_{m=1}^{M''} \|a_m - b_m\|_2 \)，M'' 是特征选择后保留下来的指标数。</li>
+  </ul>
+</li>
+<li><strong>与现有技术的差异</strong>：
+  <ul>
+    <li>相对 TICC/Mc2PCA/FCFW/SPCA+AED：复杂度从 O(N²) 降至 11.69 分钟级（Table 2）；同时支持"先聚类再训练检测模型"的工程管线。</li>
+    <li>相对 2D-CAE：保留各指标的物理含义独立编码，避免跨通道信息丢失。</li>
+    <li>相对传统 HAC：MTS 先经 1D-CAE 降噪 + 三步特征选择，因此聚类更鲁棒，且能从数据本身学到"应该保留多少指标"。</li>
+  </ul>
+</li>
+</ol>
+
+<h2>五、算法详解（Algorithm）</h2>
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li>输入：M 个实例的 MTS \( X = \{x^1, ..., x^M\} \)，每条 \( x^s \in \mathbb{R}^{M \times T} \)。</li>
+<li>输出：每个实例的簇标签 \( \hat y^s \in \{1, ..., K\} \cup \{outlier\} \)，簇心集合 \( C = \{c^1, ..., c^K\} \)，保存的 encoder 与特征索引 \( S_F \)。</li>
+</ul>
+<h3>2. 核心模块</h3>
+<ul>
+<li>预处理模块</li>
+<li>1D-CAE（3 层 conv + 3 层 deconv，kernel=7，stride=2，通道数 (16,32,1)）</li>
+<li>特征选择三步法</li>
+<li>HAC 聚类 + 离群判定</li>
+</ul>
+<h3>3. 伪代码</h3>
+<pre><code># 离线聚类
+def OmniCluster_offline(X, M, T):
+    # step 1: preprocess
+    X = remove_extremes(X, top=5%)
+    X = interpolate_missing(X)
+    X = moving_average(X, w=12)
+    X = normalize(X)  # to [0,1]
+
+    # step 2: 1D-CAE reduction
+    encoder, decoder = train_1dcae(X, kernel=7, stride=2,
+                                   channels=(16, 32, 1),
+                                   loss='mse')
+    z = encoder(X)  # shape M x T' x M
+
+    # step 3: feature selection
+    # 3.1: non-periodic removal via YIN
+    z_prime = remove_non_periodic(z, theta_y=0.5)
+
+    # 3.2: redundancy matrix
+    R = build_redundancy_matrix(z_prime, theta_s=0.93, ncc)
+
+    # 3.3: apply 4 rules iteratively
+    F, SF, DF = apply_rules(R)  # SF = selected indices
+    z_double_prime = z_prime[:, :, SF]
+
+    # step 4: HAC
+    clusters, centroids = HAC(z_double_prime, linkage='avg', threshold=tau_d)
+
+    save(encoder, SF, centroids, tau_d)
+    return clusters, centroids
+</code></pre>
+<pre><code># 在线分类
+def OmniCluster_online(new_x):
+    new_x = preprocess(new_x)  # 同上
+    z = encoder(new_x)[:, :, SF]
+    best_cluster, best_dist = None, INF
+    for k, c in enumerate(centroids):
+        d = euclidean(z, c)
+        if d &lt; best_dist:
+            best_dist = d
+            best_cluster = k
+    if best_dist &lt; tau_d:
+        return best_cluster  # assign
+    else:
+        return 'outlier'  # report to operators
+</code></pre>
+<h3>4. 关键数学</h3>
+<p>上面已给出 5 个核心公式（归一化、重建损失、冗余矩阵、最小相关特征选取、平均 linkage）。</p>
+<h3>5. 复杂度分析</h3>
+<ul>
+<li>1D-CAE 训练：\( O(M \cdot T' \cdot K) \) per epoch，K 为卷积核数。</li>
+<li>冗余矩阵：\( O(M'^2 \cdot S \cdot T') \)（S 是样本数）。</li>
+<li>HAC 距离矩阵：\( O(N^2 \cdot M'' \cdot T'') \)。</li>
+<li>论文用 3175 个实例、19 个指标、2016 时点/周的数据，全流程 11.69 分钟，比 TICC 的 104.17 小时快约 500 倍。</li>
+</ul>
+<h3>6. 训练与推理</h3>
+<ul>
+<li>1D-CAE：3 卷积 + 3 反卷积，kernel=7，stride=2，channel=(16,32,1)，batch=128，Adam 优化器。</li>
+<li>HAC：average linkage，τd 自动取 7。</li>
+<li>在线：仅前向推理，距离计算为 \( O(K \cdot M'' \cdot T'') \)，单实例毫秒级。</li>
+</ul>
+<h3>7. 示例</h3>
+<p>论文 § 4.4：对 ByteDance 3175 个实例、19 维指标聚类，得到 19 个簇（ground truth 也是 19），NMI=0.9160、ACC=0.7990、F1=0.9057（outlier detection），聚类总耗时 11.69 分钟。</p>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[原始 MTS X: M instances x M metrics x T time points] --> B[预处理<br/>极值剔除/插值/MA平滑/归一化]
+    B --> C[1D-CAE<br/>M 个独立 1D-CNN 编码器]
+    C --> D[隐表示 z: M x T' x M]
+    D --> E[特征选择 Step1<br/>YIN 去除非周期]
+    E --> F[冗余矩阵 R<br/>NCC + 阈值]
+    F --> G[特征选择 Step2+Step3<br/>RULE 1~4]
+    G --> H[z'' 压缩后的隐表示]
+    H --> I[HAC average linkage 聚类]
+    I --> J[簇心 C, 簇标签, encoder, SF, tau_d]
+    J --> K[在线推理: 新实例 -> 同样的预处理 + encoder + SF -> 距离簇心 -> 分配 or outlier]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[输入原始 MTS] --> S2{含异常/噪声?}
+    S2 -- 是 --> S3[去极值 + 插值 + 滑窗平滑]
+    S2 -- 否 --> S4[直接归一化]
+    S3 --> S4
+    S4 --> S5[1D-CAE 训练, M 个独立编码器]
+    S5 --> S6[得到 z]
+    S6 --> S7[YIN 判断每条特征周期性]
+    S7 --> S8[剔除非周期特征 -> z']
+    S8 --> S9[计算 NCC 冗余矩阵 R]
+    S9 --> S10{按 RULE1~4 选择特征}
+    S10 --> S11[输出 SF 与 z'']
+    S11 --> S12[HAC 聚类, average linkage]
+    S12 --> S13[保存簇心 + encoder + SF + tau_d]
+    S13 --> S14[在线: 新实例 -> 距离计算 -> 簇分配]
+    S14 --> S15{距离 < tau_d?}
+    S15 -- 是 --> S16[分配到最近簇]
+    S15 -- 否 --> S17[报告为 outlier]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 把 1D-CAE 引入 MTS 聚类</strong>：每个指标用独立 1D-CNN 通道编码，保留物理含义同时压缩时序维度，对噪声/异常鲁棒（论文 § 3.3）。</li>
+<li><strong>+ 三步特征选择策略</strong>：YIN 周期度 + 归一化互相关冗余矩阵 + 4 条 RULE，把"哪些指标应该被聚类"这件事变成数据驱动的可解释步骤。</li>
+<li><strong>+ 离线聚类 + 在线分类 + 离群检测</strong>：用 τd 阈值即可同时处理"分类"与"发现新类型实例"，直接对接运维侧告警。</li>
+<li><strong>+ 任务无关（task-agnostic）</strong>：与 5 种 MTS 异常检测模型正交结合（OmniAnomaly、USAD、SDFVAE、InterFusion、DAGMM），训练时间平均下降 95.01%，F1 不掉。</li>
+<li><strong>+ 标注工具 + 数据集 + 代码全部开源</strong>：<a href="https://github.com/omni-cluster">github.com/omni-cluster</a> 三个仓库，方便后续工作复现与扩展。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>数据集</strong>：ByteDance 真实 MTS（3175 个系统实例，19 个指标，7 天 × 5 分钟间隔 = 2016 时点），含 29 个类 + 28 个 outlier 实例；运行在 2× Intel Xeon Gold 5218（16C32T @ 2.30GHz）+ NVIDIA Tesla V100S + 192GB RAM。</li>
+<li><strong>Baseline</strong>：TICC、Mc2PCA、FCFW、SPCA+AED（均需预指定 K）。</li>
+<li><strong>主要指标</strong>：NMI、ACC、outlier 检测的 F1、聚类时间、异常检测模型的训练时间。</li>
+<li><strong>关键结果数字</strong>：
+  <ul>
+    <li>聚类：NMI=0.9160、ACC=0.7990、Outlier F1=0.9057、#C=19（与 ground truth 完全一致）、聚类时间 11.69 min。最强 baseline NMI=0.6236、ACC=0.4117，且无法识别 outlier。</li>
+    <li>异常检测训练开销：5 种模型平均降低 95.01%（E1 vs E4，从"每实例一模型"压缩为"每簇一模型"），F1* 几乎不下降。</li>
+    <li>与 CTF 框架对比：CTF（专为 OmniAnomaly 设计的 coarse-to-fine 框架）耗时 5601.48s、F1* = 0.8323；OmniCluster + OmniAnomaly 耗时约一半、F1* 更高。</li>
+    <li>消融（C1~C4）：换 2D-CAE NMI 降到 0.8511；去 CAE 耗时 12 倍但 ACC 略升；去非周期去除 NMI=0.7602、#C=117；去冗余消除 NMI=0.8724。说明 1D-CAE + 周期去除 + 冗余消除三者缺一不可。</li>
+  </ul>
+</li>
+<li><strong>效率分析</strong>：用 OmniCluster 后，训练 19 个模型 vs 训练 3175 个模型，时间从 O(N·T) 降到 O(K·T)，N/K ≈ 167 倍压缩，与实测 95.01% 的下降吻合。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li>微服务 / 容器化平台：百万级实例的异常检测前置聚类，节约训练资源。</li>
+<li>AIOps 平台：在新实例接入时，自动分到现有簇，调度对应的异常检测模型。</li>
+<li>数据中心容量规划：聚类结果可用于识别"行为相似的服务器组"，支撑调度与灰度。</li>
+<li>业务侧异常归因：把异常范围缩小到具体的簇，便于按 SLA 评估。</li>
+<li>标签辅助：用开源 GUI 工具标注后，可以做半监督 / 监督的进一步分析。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>李之涵2022.pdf</code> (ACVAE)：把 OmniCluster 簇心作为 modelfull 训练样本，可进一步提升 ACVAE 的多场景鲁棒性。</li>
+<li><code>2022张圣林.pdf</code> (AnoTransfer)：AnoTransfer 处理 UTS 异常检测；OmniCluster 处理 MTS，聚类后每簇一台 CVAE 即可。</li>
+<li><code>Robust_Anomaly_Clue_孙永谦2022.pdf</code> (RobustSpot)：定位根因维度时，可先用 OmniCluster 把实例分组再做维度展开。</li>
+<li><code>卢香琳2022.pdf</code> / <code>KDD22-CIRCA.pdf</code> / <code>DejaVu-paper.pdf</code> / <code>RC-LIR.pdf</code>：根因方向，可消费 OmniCluster 簇标签。</li>
+<li><code>paper-ISSRE21-PUAD.pdf</code> / <code>kontrast-paper.pdf</code>：KPI UTS 异常检测 / 错误变更识别；可与 OmniCluster 在"实例级 vs 簇级"层面互补。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>MTS (Multivariate Time Series)</strong>：多维时间序列。</li>
+<li><strong>1D-CAE</strong>：一维卷积自编码器。</li>
+<li><strong>YIN</strong>：基频估计器，被论文借用来判断时序是否具有周期。</li>
+<li><strong>NCC (Normalized Cross-Correlation)</strong>：归一化互相关，用于度量两条曲线的形状相似度。</li>
+<li><strong>HAC (Hierarchical Agglomerative Clustering)</strong>：层次凝聚聚类。</li>
+<li><strong>Average linkage</strong>：簇间距离定义为所有样本对的平均距离。</li>
+<li><strong>NMI / ACC</strong>：聚类评估指标，分别基于互信息与匹配度。</li>
+<li><strong>F1 (outlier)</strong>：二分类 F1，用于评估 outlier 检测能力。</li>
+<li><strong>τd</strong>：距离阈值，决定新实例是否归入最近簇。</li>
+<li><strong>task-agnostic</strong>：与下游任务（异常检测）解耦，OmniCluster 的输出可对接多种模型。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Paparrizos J., Gravano L., "k-Shape: Efficient and Accurate Clustering of Time Series" (SIGMOD 2015)，SBD 距离的来源。</li>
+<li>Hallac D. et al., "Toeplitz Inverse Covariance-Based Clustering of Multivariate Time Series" (TICC, IJCAI 2018)。</li>
+<li>Li H., "Multivariate time series clustering based on common principal component analysis" (Mc2PCA, Neurocomputing 2019)。</li>
+<li>Su Y. et al., "Robust Anomaly Detection for Multivariate Time Series through Stochastic Recurrent Neural Network" (OmniAnomaly, KDD 2019)。</li>
+<li>Audibert J. et al., "USAD: UnSupervised Anomaly Detection on Multivariate Time Series" (KDD 2020)。</li>
+<li>代码 &amp; 数据集：<a href="https://github.com/omni-cluster/OmniCluster-code">github.com/omni-cluster/OmniCluster-code</a>、<a href="https://github.com/omni-cluster/OmniCluster-dataset">github.com/omni-cluster/OmniCluster-dataset</a>、<a href="https://github.com/omni-cluster/OmniClutser-labeling-tool">github.com/omni-cluster/OmniClutser-labeling-tool</a>。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

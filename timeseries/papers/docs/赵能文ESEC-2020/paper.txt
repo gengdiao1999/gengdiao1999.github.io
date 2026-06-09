@@ -1,0 +1,829 @@
+          Real-Time Incident Prediction for Online Service Systems
+
+                  Nengwen Zhao∗                                                    Junjie Chen†                                     Zhou Wang
+           Tsinghua University; BNRist                                  College of Intelligence and                   BizSeer; Beijing University of Posts
+                 Beijing, China                                        Computing, Tianjin University                       and Telecommunications
+                                                                              Tianjin, China                                    Beijing, China
+
+                      Xiao Peng                                                       Yong Wu                                      Xiaohui Nie
+                      Gang Wang                                                      Fang Zhou                            Tsinghua University; BNRist
+               China EverBright Bank                                                 Zhen Feng                                  Beijing, China
+                   Beijing, China                                            China EverBright Bank
+                                                                                 Beijing, China
+
+                   Wenchi Zhang                                                      Kaixin Sui                                       Dan Pei
+                         BizSeer                                                       BizSeer                            Tsinghua University; BNRist
+                      Beijing, China                                                Beijing, China                              Beijing, China
+
+ABSTRACT                                                                                      commercial banks in practice and shared some success stories and
+Incidents in online service systems could dramatically degrade sys-                           lessons learned from real deployment.
+tem availability and destroy user experience. To guarantee service
+quality and reduce economic loss, it is essential to predict the oc-                          CCS CONCEPTS
+currence of incidents in advance so that engineers can take some                              • Software and its engineering → Maintaining software.
+proactive actions to prevent them. In this work, we propose an effec-
+tive and interpretable incident prediction approach, called eWarn,                            KEYWORDS
+which utilizes historical data to forecast whether an incident will                           Incident Prediction, Online Service Systems, Real-time Prediction
+happen in the near future based on alert data in real time. More
+                                                                                              ACM Reference Format:
+specifically, eWarn first extracts a set of effective features (includ-                       Nengwen Zhao, Junjie Chen, Zhou Wang, Xiao Peng, Gang Wang, Yong Wu,
+ing textual features and statistical features) to represent omen alert                        Fang Zhou, Zhen Feng, Xiaohui Nie, Wenchi Zhang, Kaixin Sui, and Dan
+patterns via careful feature engineering. To reduce the influence of                          Pei. 2020. Real-Time Incident Prediction for Online Service Systems. In
+noisy alerts (that are not relevant to the occurrence of incidents),                          Proceedings of the 28th ACM Joint European Software Engineering Conference
+eWarn then incorporates the multi-instance learning formulation.                              and Symposium on the Foundations of Software Engineering (ESEC/FSE ’20),
+Finally, eWarn builds a classification model via machine learning                             November 8–13, 2020, Virtual Event, USA. ACM, New York, NY, USA, 12 pages.
+and generates an interpretable report about the prediction result                             https://doi.org/10.1145/3368089.3409672
+via a state-of-the-art explanation technique (i.e., LIME). In this way,
+an early warning signal along with its interpretable report can be                            1    INTRODUCTION
+sent to engineers to facilitate their understanding and handling for                          Nowadays, online service systems, such as online shopping, E-
+the incoming incident. An extensive study on 11 real-world online                             bank, and search engines, have become an indispensable part in
+service systems from a large commercial bank demonstrates the                                 our daily life. Although tremendous efforts have been devoted to
+effectiveness of eWarn, outperforming state-of-the-art alert-based                            software service maintenance (e.g., collecting various monitoring
+incident prediction approaches and the practice of incident predic-                           data for a service system such as metrics [44, 46, 54], logs [19, 31, 51],
+tion with alerts. In particular, we have applied eWarn to two large                           traces [55], and alerts [29]), due to their large scale and complexity,
+                                                                                              incidents (i.e., unplanned interruption/outage to a service [2, 16,
+∗ BNRist: Beijing National Research Center for Information Science and Technology             25]) are still inevitable, which could lead to system unavailability
+† Junjie Chen is the corresponding author.                                                    and huge economic loss [32]. For example, according to a recent
+                                                                                              survey [1], the average cost per hour of server downtime is between
+                                                                                              $301,000 and $400,000.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed            To reduce the influence of incidents and guarantee the quality of
+for profit or commercial advantage and that copies bear this notice and the full citation     software services, there are two widely-used ways in both academia
+on the first page. Copyrights for components of this work owned by others than ACM            and industry [32, 33], i.e., predicting the occurrence of an incident
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a   in advance so that engineers can take some proactive actions to pre-
+fee. Request permissions from permissions@acm.org.                                            vent it [18, 43] and mitigate the already happened incident as soon
+ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA                                         as possible [14, 15]. Our work focuses on the first way since this
+© 2020 Association for Computing Machinery.
+ACM ISBN 978-1-4503-7043-1/20/11. . . $15.00                                                  way is able to directly avoid the occurrence of service unavailability
+https://doi.org/10.1145/3368089.3409672                                                       rather than reduce the time of service unavailability.
+ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA                                                              Nengwen Zhao and Junjie Chen, et al.
+
+
+    In the literature, many efforts have been devoted to the first way,         We conducted an extensive study to investigate the performance
+i.e., predicting the occurrence of incidents in advance [18, 41, 42, 48],    of eWarn based on 11 real-world online service systems in a large
+but they still suffer from various limitations in practice. First, the       commercial bank (named A in this paper due to the double-blind
+vast majority of prediction approaches target at the prediction of a         policy), which supports more than one hundred million users and
+specific type of failures (such as disk failures [48], node failures [30],   includes hundreds of service systems. For each system, engineers
+switch failures [50], and equipment failures [42]), and thus are re-         provided us three-year alert data and incidents. Our experimen-
+stricting in practice. Moreover, these prediction approaches utilize         tal results show that eWarn performs the best by comparing with
+logs or metrics to extract omen patterns for predicting the spe-             the state-of-the-art alert-based incident prediction approach (i.e.,
+cific type of failures. However, tens of TBs of logs and more than           AirAlert [18]), a novel approach to predicting a specific type of
+thousands of metrics tend to be generated per day for a large-scale          failures based on logs [49] (we adapted it to fit our problem, i.e.,
+system [31], which could bring great challenges and costs to learn a         general incident prediction based on alerts), and the current prac-
+prediction model from massive data. Second, AirAlert was proposed            tice of incident prediction with alerts in bank A. For example, the
+recently to predict general incidents and relies on lightweight alert        average F1-score of eWarn is 0.82 while those of the other three
+data [18], but its performance is unsatisfactory since it just consid-       approaches are 0.51, 0.60, and 0.10 respectively. Also, our results
+ers the number of different types of alerts for prediction, which has        confirm the contributions of main components in eWarn (i.e., the
+been demonstrated to be ineffective in our study (to be presented in         multi-instance learning component, the feature engineering com-
+§ 4.2). Therefore, designing an effective and lightweight prediction         ponent, and the classification model building component) to the
+approach for general incidents is very essential.                            overall performance of eWarn. In particular, we have applied eWarn
+    In this paper, we aim to propose a novel approach to predicting          to two large commercial banks (including A) and indeed achieved
+general incidents in real time. Similar to AirAlert, we also utilize         great effectiveness in practice. We have presented four specific
+lightweight alert data for prediction since alerts are more high-            cases in practice and discussed lessons learned in § 5.
+level and comprehensive. More specifically, alerts are generated                To sum up, this work has the following major contributions:
+to report anomalies from other monitoring data (e.g., metrics [46],          • We propose an effective and interpretable approach, called eWarn,
+logs [19, 31], and traces [55]), and thus avoid processing massive             to predicting general incidents in real time based on alert data,
+logs or metrics. However, predicting incidents based on alert data             which could send an early warning signal about an incoming
+in practice also faces several challenges as follows. 1) Practical             incident including an interpretable prediction result for engineers
+alert data contain tens of attributes (to be introduced in § 2.1), and         to facilitate them to adopt proactive actions to avoid the incident
+thus how to extract useful information from them is challenging.               in advance.
+2) Not all alerts before the occurrence of an incident are helpful           • We conduct an extensive study based on 11 real-world online
+for prediction, and the existence of noisy alerts could destroy the            service systems (engineers provided us three-year alert data and
+prediction performance, and thus how to reduce the influence of                incidents for each system) by comparing state-of-the-art incident
+noisy alerts is the second challenge. 3) In addition to accurately             prediction approaches and the current practice for incident pre-
+predicting the occurrence of an incident, an interpretable prediction          diction based on alert data. Our experimental results demonstrate
+result should be provided to engineers in order to facilitate them to          the effectiveness of eWarn and confirm the contributions of main
+understand and handle this incident, which is also challenging.                components in eWarn.
+    To overcome these challenges, in this paper we propose eWarn             • We have applied eWarn to two large commercial banks, both of
+(short for early Warning), an approach utilizing historical data to            which support more than one hundred million users, and indeed
+predicting incidents in real time based on alert data. In particular,          achieved great effectiveness. We also shared four specific cases
+we formulate the problem of incident prediction as a binary clas-              during the practical usage of eWarn.
+sification task of observation windows (to be presented in § 2.3),
+where positive and negative samples refer to whether an incident             2 MOTIVATION & PROBLEM FORMULATION
+will occur or not within a particular time horizon based on the
+alert data within the corresponding observation window respec-               2.1 Background: Alert and Its Management
+tively. In detail, eWarn first conducts feature engineering to ex-           For online service systems, alerts are a key data source for recording
+tract a set of effective and interpretable features from alert data          the anomalies generated from various system components. More
+within an observation window. Then, eWarn incorporates multi-                specifically, monitoring systems continuously collect various data
+instance learning [11, 42] to reduce the influence of noisy alerts by        (e.g., metrics [46], logs [19, 31], and traces [55, 56]) from various
+assigning smaller weights to noisy alerts. Next, eWarn processes             service components, and engineers manually define many rules to
+the data imbalance problem due to the small frequency of incidents           check these monitoring data to ensure service availability. When a
+in practice and builds a classification model via machine learning           certain rule is violated, an alert would be generated to report the
+(XGBoost [17]). After getting the prediction result in real time by          anomaly. For example, when a metric (e.g., CPU utilization) exceeds
+the learned model, an early warning would be sent to engineers               a pre-defined threshold or some keywords (e.g., “error”, “failed” or
+if an incident is predicted to occur in the near future. Along with          “timeout”) appear in logs, alerts would be generated. Table 1 shows
+the prediction result, eWarn also utilizes LIME [38], a state-of-the-        examples of alerts from EPAY service in bank A. Each alert has
+art explanation technique, to generate a report for engineers to             many attributes, and we only show several important attributes due
+interpret the prediction result in a visualization manner.                   to the space limit. In this table, the columns represent the occurring
+                                                                             time of an alert, the detailed textual description about an alert, the
+Real-Time Incident Prediction for Online Service Systems                                                      ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA
+
+
+                                                  Table 1: Examples of alerts with multiple attributes
+
+       Time                     Content                                                              Server       Service   Severity      Type           Others
+       2020-02-03 08:24:11      Authentication failure for SNMP request from host P13.               P10          EPAY      3             Network        ...
+       2020-02-03 08:25:34      Can’t get Weblogic queue (EPAYAPP). Timeout.                         P31          EPAY      2             Middleware     ...
+       2020-02-03 08:26:04      The utilization of file system /home/etl441 is 82%, exceeding 80%.   P72          EPAY      2             OS             ...
+       2020-02-03 08:26:51      Business success rate is 88%, lower than 90%.                        P2           EPAY      1             Application    ...
+
+
+server generating an alert1 , the service generating an alert, the                                     Current time
+                                                                                               Observation       Lead        Prediction
+severity of an alert (“1” refers to the highest severity), the type of
+                                                                                               window 𝑤          Time 𝑡%     window 𝑡$      ？
+an alert, respectively.
+   Due to the importance of alerts, an alert management system is
+                                                                                           𝑡−𝑤                𝑡         𝑡 + 𝑡%             𝑡 + 𝑡% + 𝑡$    Time
+important for service system maintenance. Usually, when alerts are
+sent to the alert management system, the system handles them by                          Figure 1: Problem formulation of incident prediction
+three main steps: 1) Alert pre-processing, which filters out duplicate
+and redundant alerts by the means of alert denoising, compression,                   rule-based method cannot adapt to the dynamic environment and
+and/or correlation [29, 35, 47]. 2) Alert diagnosis, which prioritizes               concept drift [45] can largely affect manually-summarized rules,
+alerts [24], and then assigns each alert to the responsible team and                 causing that engineers have to spend many efforts in manually
+engineers in the team diagnose it as soon as possible [14]. 3) Alert                 checking and re-summarizing the rules.
+post-processing, which writes diagnosis reports and gains insights                      In summary, it is indeed important to predict incidents based on
+to guide the future improvement of alert management.                                 alert data but the current practices are very unsatisfactory. Thus, it
+                                                                                     is necessary to propose an effective automatic incident prediction
+2.2      Practice of Incident Prediction with Alerts                                 approach based on alert data, largely motivating our work.
+By communicating with our industry partners, i.e., two top com-
+mercial banks A and B in the country, both of them confirmed the                     2.3     Problem Formulation
+importance and feasibility of incident prediction based on alerts                    Motivated by existing related works [37, 40, 50], we formulate the
+so that some proactive actions can be adopted in advance to avoid                    problem of incident prediction as time window classification. We
+incidents and the corresponding economic loss. Moreover, both of                     use Figure 1 to illustrate the problem formulation. To ensure the
+them have tried to adopt some simple methods to predict incidents                    real-time online prediction, we adopt the strategy of moving time
+based on alerts in practice.                                                         window with size w and a fixed step ∆t. For the current time t,
+   The practice of incident prediction with alerts in A is that,                     we get the observation window [t − w, t]. Then, we use alert data
+they use the technique of association rule mining [21] (e.g., FP-                    within the observation window to predict whether an incident will
+Growth [22]) to automatically discover omen alerts for incidents.                    occur within the prediction window [t + tl , t + tl + tp ]. Lead time
+For example, if an alert always happens before an incident, this                     (tl ) in Figure 1 is the minimum time interval that engineers need to
+alert would be used to predict the incident. However, according                      react to an early warning (e.g., master-standby switch). That is, we
+to feedback from engineers, this method can only cover a very                        have to leave enough time (i.e., Lead time) for engineers to handle
+small set of incidents since most incidents do not have frequently                   the early warning after predicting an incident. To complete the
+associated alerts and cannot be accurately predicted in this way.                    prediction task, collecting training data is required. In historical
+   The practice of incident prediction with alerts in B is that, they                data, if there is an incident occurring within the prediction window,
+devote many efforts to manually summarize a set of prediction rules                  the corresponding observation window is labeled as a positive
+based on their experience and domain knowledge. Table 2 presents                     sample (i.e., an omen window). Otherwise, it is labeled as a negative
+some examples of rules summarized for incident prediction in B.                      sample (i.e., a non-omen window).
+Taking the first one as an example (No.1), if the alerts with the                         Note that we adopt the moving window strategy to ensure real-
+keyword “TCP is not responding” appear at least once (#Matching),                    time prediction, and thus an incident could appear in several predic-
+last for at least three minutes (Duration), involve four different                   tion windows (since ∆t tends to be smaller than tp , some prediction
+servers (#Servers), and do not happen in the period of software                      windows have overlaps). That is, we could obtain several adjacent
+change (Change), engineers infer that the involved servers would                     positive windows (omen windows) for an incident, and the number
+be down (Incident). However, the rule-based incident prediction                      of positive windows is tp /∆t. The larger/smaller the size of a pre-
+method performs not well in practice due to the following reasons.                   diction window is, the more/less positive windows we can obtain.
+First, it is time-consuming and tedious to manually summarize these                  That is, the value of tp could directly affect the labeling quality,
+rules from a large amount of historical data. Second, the design                     which will be discussed in detail in § 4.5. Other parameter settings
+and maintenance of the rules require experienced experts with                        (i.e., ∆t, w, and tl ) will be presented in detail in § 4.1.3.
+rich domain knowledge, and in the meanwhile different engineers
+tend to have their own preference when designing rules. Third, the                   3     APPROACH
+1 Due to confidentiality, we do not disclose the IP addresses and use P* to denote   In this section, we propose a real-time and lightweight approach,
+different servers.                                                                   named eWarn (short for early Warning), to predicting incidents
+ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA                                                                                    Nengwen Zhao and Junjie Chen, et al.
+
+
+                                    Table 2: Illustrating examples of rule-based incident prediction with alerts
+
+         No.   Keywords                              #Matching             Severity          Duration   #Servers   Change     Incident
+         1     TCP is not responding                 1                     2                 3min       4          No         Server may be down
+         2     CPU & currently 100%                  2                     2                 5min       2          No         System performance degradation
+         3     #Sessions exceeds threshold           2                     2                 5min       1          No         Transaction with long response time
+
+
+                             Feature engineering                     Online data                   be divided into two categories. The first one is statistical method,
+                             with MIL                              Prediction                      such as Term Frequency-Inverse Document Frequency (TF-IDF) [8]
+ Historical
+ alert data           +                            Training
+                                                                       Interpretable               and Topic Model [10], which are based on word frequency. The
+                                                                       analysis
+                      -                                                                            second one is neural network based method, such as word2vec [34],
+ Incident         Training     Feature      Feature                                Early
+                                                              Classifier                           TextCNN [27], and FastText [26]. Here, we choose Topic Model in
+ tickets          data         extraction   aggregation                            warning
+                                                                                                   the first category to extract textual features in eWarn due to the
+                    Figure 2: Overview of eWarn                                                    following reasons. First, the neural network based methods depend
+in advance based on alert data. According to § 2.3, for a system,                                  on a huge amount of training data and suffer from high computation
+we collect a set of time windows (i.e., observation windows) with                                  costs. Moreover, it is difficult to gain interpretable insights from
+historical alert data and their labels as training data. However, to                               black-box models built via neural networks. Second, the classical
+solve the problem, eWarn has to overcome the following challenges:                                 TF-IDF method could produce a very high-dimensional feature
+1) Since an alert contains many attributes presented in § 2.1, which                               vector, leading to the curse of dimensionality problem in machine
+alert information should be identified as the features for effectively                             learning.
+predicting incidents is the first challenge; 2) Since an observation                                  In particular, eWarn adopts the widely-used topic model, Latent
+window contains a number of alerts and not all the alerts are help-                                Dirichlet Allocation (LDA) [10], to extract textual features. In LDA,
+ful to anticipate incidents, how to reduce the influence of noisy                                  each document (referring to all the alert contents within a time
+alerts is the second challenge; 3) After predicting an incident, it is                             window in eWarn) is viewed as a mixture of various topics with
+also important to interpret the relationship between the predicted                                 different probabilities and the topic probability distribution is used
+incident and the alerts in the observation window, which is helpful                                as the feature vector of the time window. Each topic is characterized
+for engineers to understand and handle this incident in practice                                   by a distribution of words that frequently co-occur in the document.
+and is also the third challenge.                                                                   Hence, LDA can find hidden semantic information existing in the
+    Figure 2 shows the overview of eWarn. eWarn consists of four                                   window, which is helpful for incident prediction since positive
+main steps. First, eWarn conducts feature engineering to identify                                  windows may have similar topic distributions. More specifically,
+a set of effective and interpretable features from alert data in an                                eWarn first treats all the alert contents within a time window as a
+observation window to overcome the first challenge. Second, eWarn                                  document by concatenating these contents after stop words removal
+incorporates multi-instance learning (MIL) [11, 42] to distinguish                                 and tokenization, then uses historical time windows to build an LDA
+helpful alerts and noisy alerts in an observation window to over-                                  model, and finally obtains feature vectors based on the LDA model
+come the second challenge. Third, based on the set of training data                                for both incoming time windows and historical time windows.
+with identified features and labels, eWarn further processes them                                     Note that LDA requires an input, i.e., the number of topics (de-
+(i.e., dealing with class imbalance) and builds a classification model                             noted as K). The setting of K should consider the trade-off be-
+via machine learning, which is used to predict whether an incident                                 tween more coarse-grained (smaller K) and more fine-grained top-
+will occur within a prediction window based on incoming alert data                                 ics (larger K). eWarn determines the number of topics based on
+in real time. Fourth, after predicting an incident, eWarn sends an                                 the coherence score [39], which is a popular metric to evaluate the
+early warning to notify engineers. In the meanwhile, eWarn adopts                                  quality of output topics and the corresponding keywords. As a re-
+LIME [38], a state-of-the-art explanation technique, to interpret                                  sult, after feature representation via LDA, eWarn obtains the textual
+the prediction results for engineers to facilitate the understanding                               feature vector with K dimensions for each time window, where
+and handling of the incident, which is used to overcome the third                                  each element refers to the probability of each topic.
+challenge. In the following, we present each step in detail.
+                                                                                                   3.1.2 Statistical Feature. In addition to textual features extracted
+                                                                                                   from alert contents, inspired by Table 2, some other attributes are
+3.1      Identifying Features                                                                      also important for incident prediction and we identify them as the
+We identify two types of features from alert data to predict incidents                             second type of features in eWarn, called statistical features [53]. In
+in eWarn, i.e., textual features and statistical features [53].                                    particular, we summarize the extracted statistical features in eWarn
+3.1.1 Textual Features. As shown in Table 1, the most informa-                                     into the following four categories:
+tive attribute in alert data is its textual content, and the rule-based                            • Alert count, refers to the number of alerts that occur within a
+incident prediction method also focuses on the alert content (Key-                                   time window, including the total number of alerts, the number of
+words in Table 2). Therefore, we extract textual features from alert                                 alerts with different severities (1 ∼ 3), the number of alerts with
+contents as the first type of features in eWarn.                                                     different types (e.g., application, database, memory, middleware,
+   In the literature, many existing methods have been proposed                                       network, hardware, etc.). We infer that the more alerts there are
+for textual feature extraction or text representation, which can                                     in the window, the more likely incidents will occur.
+Real-Time Incident Prediction for Online Service Systems                                                  ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA
+
+
+• Window time, refers to the time of a window. Considering the oc-               observation window carry an omen signature, which is another
+  currence of incidents may be related to time (e.g., some incidents             reason why MIL is helpful to reduce the influence of noisy alerts.
+  tend to occur during business hours), we collect a series of time              Clustering-Based Feature Aggregation. There are some exist-
+  features, including hour of the day, weekend or not, day of week,              ing works about bag feature aggregation in the field of MIL, e.g., sim-
+  business hours or not, etc.                                                    ple feature averaging (or using minimum/maximum feature) [42],
+• Inter-arrival time, refers to the average time interval between                using neural network to learn instance weights [36], and adopting
+  contiguous alerts in a time window. Intuitively, if alerts occur               some statistical methods to compute instance weights [12].
+  more intensively, an incident is more likely to occur.                            In eWarn, it directly uses feature averaging to obtain bag features
+• Others. Inspired by Table 2 and domain knowledge, we also con-                 for negative bags, since all the instances in a negative bag are non-
+  sider additional features such as the number of alerting servers               omen and they would share the same weight. For positive bags, the
+  during a time window (the more servers involved, the more likely               instances that contain many omen alerts (omen instances) should
+  an incident will occur), whether in the software change period                 be assigned to larger weights, while the instances that contain
+  (software change is error-prone and needs more attention).                     a lot of noisy alerts (non-omen instances) should be assigned to
+   In summary, all these features used in eWarn are identified based             smaller wights. Here, eWarn distinguishes omen alerts and noisy
+on careful data analysis and domain knowledge from experts. Dis-                 alerts by the method of clustering based on the observation that
+cussions with several industry partners demonstrate the generality               omen instances tend to be similar and appear more than once in
+of these features in eWarn. Furthermore, eWarn also supports adding              training data, while non-omen instances tend to be various and
+or removing some features according to the application scenarios,                even chaotic.
+but the core idea and pipeline of eWarn are general. In particular,                 More specifically, eWarn adopts Hierarchical Clustering [20] to
+we also conduct an experiment to investigate the performance of                  cluster the instances from all the positive bags in training data.
+each type of feature, which will be presented in § 4.3.2.                        Actually, eWarn is not specific to this clustering algorithm, and
+                                                                                 we choose it since it does not require to pre-define the number
+3.2     Bypassing Noisy Alerts via Multi-Instance                                of expected groups. With our above-mentioned observation, we
+        Learning                                                                 suppose the clusters with more instances are more likely to be the
+                                                                                 clusters of omen instances and thus the instances in these clusters
+Usually, features are directly extracted from each observation win-
+                                                                                 should get larger weights, while the clusters with few instances
+dow. However, not all alerts in an observation window are helpful
+                                                                                 (also called outliers in clustering) are more likely to be the clusters
+to predict incidents, and the omen alerts may be flooded in the non-
+                                                                                 of non-omen instances. Formally, for the bag X = {x 1 , x 2 , · · · , xm },
+omen alerts. Due to the existence of noisy alerts in an observation
+                                                                                 the weight of the instance x i (i = 1, . . . , m) is calculated as:
+window, directly extracting features from the observation window
+                                                                                                              w′                  n(c x i )
+could lead to performance degradation [42, 50].                                                    w i = Ím i ′ , w i′ =                                (2)
+    To reduce the influence of noisy alerts, eWarn adopts multi-                                                 w
+                                                                                                             j=1 j                   n
+instance learning (MIL) [11]. It splits an observation window into               where the left formula aims to normalize the weight w i′ , c x i is the
+multiple small instance windows, where an observation window                     cluster that x i belongs to, n(c x i ) is the size of the cluster c x i , m is
+is regarded as a bag and each bag contains multiple instances (i.e.,             the number of instances in this bag, and n is the total number of
+instance windows). MIL explores more fine-grained time windows                   instances from all the positive bags in training data. For the instance
+(i.e., instance windows with size ti ) to bypass noisy alerts. That              windows in testing data with unknown bag labels, we assign each
+is, under the framework of MIL, eWarn first extracts features from               instance window to the corresponding cluster based on the distance
+each instance window instead of extracting features from the whole               between the instance to each cluster center, and the weight can
+observation window, and then aggregates the features of these in-                also be obtained using Eq.(2).
+stances into the features of a bag that is used for building a clas-                After obtaining the weight of each instance in a bag, the aggre-
+sification model. If an instance window does not contain many                    gated feature for this bag is calculated as:
+helpful alerts, it is feasible to assign a small weight to the instance                                           Õm
+during the aggregation process and thus reduce the influence of                                            fb =         (w i × fi )                         (3)
+noisy alerts. In the following we present the brief background of                                                  i=1
+MIL and how to aggregate instance features to a bag feature.                     where fi is the feature of the instance x i . We also conduct an
+Brief Background of MIL. MIL assumes that negative bags con-                     experiment to investigate the necessity and effectiveness of MIL in
+tain only negative instances and positive bags contain at least one              eWarn, which will be presented in § 4.3.1.
+positive instance. Formally, let Y be the label of a bag X containing a
+set of instances X = {x 1 , x 2 , · · · , xm }. Each instance x i corresponds    3.3     Building a Classification Model
+to a label yi . The label of the bag is given by:                                After obtaining bag features, eWarn will build a classification model
+                                                                                 via machine learning. Before that, it first addresses the problem
+                           +1, if ∃yi yi = +1,
+                         
+                    Y =                                                    (1)   of data imbalance. More specifically, for an online service system,
+                           −1, if ∀yi yi = −1.                                   the occurring frequency of incidents is very low, otherwise the
+For incident prediction, it is also more reasonable to assume that               service quality and user experience would be destroyed. Therefore,
+at least one instance before the occurrence of an incident carries               the number of positive observation windows and negative ones
+an omen signature than to assume that all the instances in the                   are very imbalanced, which leads to a significant challenge to the
+ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA                                                                           Nengwen Zhao and Junjie Chen, et al.
+
+
+ Current time: 2020-02-22 10:20:00                                                                Table 3: Statistical information of datasets
+ Warning: There is a probability of 0.76 that incident of “Long response time of this
+ service” will occur during 10:30-11:00. Please take actions!
+                                                                                              System    #Alerts    #Incidents      #Positive     #Negative
+ 1    Prediction probability       2 Feature contribution          3    Feature value           S1       18,821           173           524          8,460
+                                     Neg              Pos                                       S2       13,315           214           392          7,907
+                                             high                   Topic#27     0.5
+                                                  Topic#27 0.01     Topic#5      0.08           S3       14,211            59           322          4,014
+     Neg                           Topic#5 0.01                                                 S4        9,499            27           161          6,176
+                       0.24        Topic#4 0.01
+                                                                    Topic#4      0.01
+     Pos               0.76                       Level3 0.00       level3       1              S5        9,592            48           165          7,886
+                                                  Weekend 0.00      Weekend      0
+                                                                                                S6       13,811            39           101          8,603
+                                                  Hour10 0.00       Hour10       1
+                                                  Topic#14 0.00     Topic#14     0.00           S7        6,766            46           272          3,310
+                                    Server 0.00
+                                             low                    Server       2              S8        9,808            26           149          1,873
+ 4 Topic and keywords                                                                           S9        8,770            72           510          6,196
+      Topic #27   Oracle, AAS (average active session), SQL, lock, connection…                  S10     127,619           227         1,125         15,035
+      Topic #5    switch, port, unaccessible, network, ping…                                    S11      69,999           148         1,012         13,057
+      Topic #4    response, packet, order, accounting, communication…
+                                                                                        behavior of our XGBoost classifier). The value of each feature is pre-
+ Figure 3: An example interpretable report on a prediction                              sented in the third part ranking based on feature contributions. The
+                                                                                        report also contains detailed information (corresponding keywords)
+                                                                                        of each topic (the fourth part), so that engineers can understand
+objective of simultaneously achieving both high precision and high                      each topic intuitively. In particular, the most important feature may
+recall for machine learning based incident prediction.                                  be related to the root cause of the predicted incident, which may
+   To better handle imbalance data, eWarn adopts the widely-used                        assist engineers in incident troubleshooting. For example, the most
+SMOTE [13] oversampling strategy to balance the positive samples                        important feature in this example is Topic#27, whose keywords are
+and negative ones, in which the minority class (positive windows)                       all related to database, and thus we infer that the root cause comes
+is over-sampled by creating synthetic examples through finding                          from database (we will discuss the real case in detail in § 5.1).
+k-nearest neighbors along the minority class. In particular, we also                        Therefore, with an explainable report, engineers not only benefit
+conduct an experiment to show the effectiveness and necessity of                        from early warnings of incidents, but also gain some inspiration
+adopting SMOTE in eWarn, which will be presented in § 4.3.3.                            for incident diagnosis.
+   Based on the processed training set, eWarn adopts the gradient
+boosting tree based model (XGBoost) [17] to build a classification                      4     EVALUATION
+model. XGBoost is fundamentally a regression tree that has the
+                                                                                        In the study, we aim to address the following research questions:
+same decision rule as the traditional decision tree model. Some of
+the major benefits of XGBoost are its high scalability/parallelism, ef-                 • RQ1: How does eWarn perform in predicting incidents?
+ficiency, and outstanding performance. Besides, tree-based models                       • RQ2: Does each main component in eWarn contribute to eWarn?
+naturally have the ability of feature selection. With the built classifi-               • RQ3: How does eWarn perform in terms of efficiency?
+cation model, in the running process of the system, eWarn predicts                      • RQ4: How the choice of parameters affects eWarn?
+whether an incident will occur within the prediction window in
+real time based on the current observation window.                                      4.1    Experimental Setup
+                                                                                        4.1.1 Dataset. In the study, we used 11 representative online ser-
+3.4      Interpretability Analysis                                                      vice systems from bank A, which supports more than one hundred
+                                                                                        million users and includes hundreds of service systems (We do not
+When an incident is predicted by eWarn, an early warning will be                        disclose the service names due to the confidentiality in the bank.).
+sent to notify engineers, so that they can adopt some proactive                         For each system, engineers provided us three-year alert data and
+actions in advance. In addition, eWarn also provides an explanation                     incidents. Table 3 presents the details of the datasets used in our
+report about the prediction along with the early warning, to facili-                    study, including the number of alerts, the number of incidents, and
+tate engineers to understand and handle this incident in practice.                      the number of positive/negative windows for each online service
+Here, eWarn adopts Local Interpretable Model-agnostic Explana-                          system. Note that, if an observation window contains too few alerts
+tions (LIME) [38] to explain a prediction result by providing relative                  (i.e., less than 3 alerts), it is virtually impossible to extract either
+feature contributions for a single sample to the prediction result.                     the omen pattern or the non-omen pattern from it, and thus we
+More specifically, LIME is developed to identify an interpretable                       discarded these windows in the study. We split these data into
+model that is locally faithful for each individual prediction. It learns                training, validation and testing sets with a ratio of 6: 2: 2 in the
+a locally weighted linear model on this neighborhood data to ex-                        chronological order. Note that, the positive samples and negative
+plain each of classes in an interpretable way.                                          samples are indeed imbalance, ranging from 1:10 to 1:100.
+   We illustrate an example report for engineers generated by
+eWarn in Figure 3. The generated report contains four parts. The                        4.1.2 Measurements. In the study, we adopted the widely-used
+first part reports the predicted probability that an incident will oc-                  classification metrics, i.e., precision, recall, and F1-score, as our
+cur within the prediction window based on an observation window.                        measurements. Precision ( T PT+FP ) measures the percentage of in-
+                                                                                                                          P
+The second part reports feature contributions, whose values are the                     cidents really occurring within the prediction windows among all
+weights calculated by the linear model in LIME (approximating the                       the predicted incidents. Recall ( T PT+F
+                                                                                                                               P ) measures the percentage
+                                                                                                                                 N
+Real-Time Incident Prediction for Online Service Systems                                          ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA
+
+
+of incidents that are correctly predicted in advance among all the           within an observation window as features and utilizes XGBoost
+incidents. F1-score is the harmonic mean of precision and recall. In         to conduct binary classification.
+addition, a classification threshold is required to give a binary result   • TF-IDF-LSTM [49] is proposed to predict a specific type of failure
+from probability and compute precision/recall, and here we decided           (cluster failure) based on log data, which can be adapted to our
+the threshold based on the best performance on the validation set.           problem (incident prediction based on alert data). It uses TF-IDF
+Actually, false negative is much severer than false positive for inci-       to extract textual features from the observation window and
+dent prediction, since the cost of missing an incident is much larger        uses Long short-term memory (LSTM) [23] to predict incidents.
+than that of investigating a false alarm. Therefore, we pay more             Although some other recent works also focus on predicting a
+attention to recall in our study.                                            specific type of failures [28, 50], they are designed for a specific
+   Furthermore, considering the practicability of our proposed ap-           scenario and thus cannot be applied to alert data.
+proach in the real world, we also measured the time efficiency of          • FP-Growth [22] is a classical association rule mining method [21],
+eWarn. We recorded the time spent on the offline training stage,             and can be used to predict incidents by mining the correlated
+which learns a classifier for observation window classification, and         alerts that always occur before incidents occur. This approach
+the time spent on the online prediction stage, which provides a              is the practice of bank A presented in § 2.2. More specifically, it
+prediction result for the current observation window in real time.           mines the frequent alerts with high support and confidence from
+                                                                             historical data before the occurrence of incidents. During the
+4.1.3 Parameters and Environment. There exist several parameters             process of online prediction, once these alerts occur, it predicts
+in the problem formulation of eWarn, i.e., observation window size           that an incident will occur within the prediction window.
+(w), step of moving window (∆t), lead time (tl ), prediction window
+size (tp ) and instance size (ti ). Based on grid search of parameters        Table 4 shows the precision, recall, and F1-score comparison
+and the discussions with our industry partners (i.e., banks A and B),      results between eWarn and these compared approaches for 11 online
+we set ∆t = 10min (eWarn conducts a prediction every 10 minutes),          service systems. From this table, we find that eWarn outperforms
+w = 60min, tl = 10min and ti = 10min. The selection of prediction          all the three compared approaches on average in terms of all the
+window size will be discussed in § 4.5.                                    measurements (i.e., precision, recall, and F1-score). In particular,
+   About the parameters in eWarn, the number of topics is decided          the best F1-score of eWarn achieves 0.98 and its average F1-score
+based on coherence score [39] (presented in § 3.1.1). The positive         is 0.82, while the average F1-score of AirAlert, TF-IDF-LSTM, and
+samples are oversampled by SMOTE with a 1:10 sampling rate. We             FP-Growth is only 0.51, 0.60, and 0.10, respectively. Please note that,
+used the default settings of XGBoost provided by the xgboost li-           not the incidents of all systems can be predicted with very high
+brary [7]. For the compared approaches (to be introduced in § 4.2),        precision and recall (e.g., S3 and S8). This is because some incidents
+we set the support threshold in FP-Growth to be 0.3 and used the pa-       may occur by chance due to some unexpected factors and thus can
+rameter settings of AirAlert and TF-IDF-LSTM provided by their pa-         not be predicted in advance, which will be discussed in detail in
+pers respectively [18, 49]. For the hyperparameters of TextCNN [27]        § 5.2. Besides, considering false negative is more important than
+(§ 4.3.2), we set them as follows: the word-embedding size is 100,         false positive in our problem, eWarn indeed achieves stably high
+the kernel size and stride of 1-D convolution layer are 8 and 1 re-        recall compared with the three compared approaches in general. In
+spectively, the pool size and stride of the average pooling layer are      particular, the worst recall of eWarn is 0.69, while the worst recall
+2 and 1 respectively, the hidden size of the fully connected layer is      of AirAlert, TF-IDF-LSTM, and FP-Growth is 0.24, 0.31, and even 0,
+128. For the hyperparameters of FastText [26] (§ 4.3.2), we set them       respectively. Actually, eWarn can achieve higher recall (e.g., 100%
+as follows: the embedding model is cbow, the size of the context           recall with no false negatives) by tuning the classification threshold,
+window is 5, and the size of word vectors is 100. For the compared         but this will also lead to precision degradation.
+Deep Neural Network method for building a classification model                We further analyzed the reasons why the compared approaches
+(§ 4.3.3), we used three fully connected layers and the hidden size is     perform not well. For AirAlert, it only utilizes the number of each
+128. All these three neural network based methods adopt the adam           kind of alert as features, which cannot represent the complex alert
+optimizer with the learning rate of 0.01 and 30 epochs. We set these       data very well. The hidden semantic features of alerts, alert time
+hyperparameters based on the grid search and the validation set.           and some other information should also be considered. TF-IDF-
+   eWarn and all the compared approaches are implemented by                LSTM extracts textual features by TF-IDF, which is based on only
+Python with widely-used libraries, including NumPy [4],pandas [5],         word frequency, and in the meanwhile TF-IDF could produce high-
+scikit-learn [6], xgboost [7] and Keras [3]. Our study was conducted       dimensional feature vectors, which is unfriendly for classification.
+on Ubuntu 18.04.1 with 24-core Intel Xeon(R) CPU E5-2620 v3 @              Besides, the moving time window formulation in eWarn (presented
+2.40GHz, 64 GB memory, 64-bit operating system.                            in Section 2.3) has considered the time dependency, and thus LSTM
+                                                                           cannot make additional contributions to the performance compared
+4.2     Overall Performance of eWarn                                       with eWarn and it also increases the computation costs (to be pre-
+                                                                           sented in § 4.4). For FP-growth, it performs rather poorly since
+To answer RQ1, we compared eWarn with the following existing
+                                                                           omen patterns are very complicated and cannot be captured by
+approaches to demonstrate the effectiveness of eWarn in incident
+                                                                           simple alert matching. Besides, since an alert data has multiple
+prediction based on alert data.
+                                                                           attributes (shown in Table 1) and the alert content has many param-
+• AirAlert [18], which is the state-of-the-art alert-based incident        eters (e.g., different metric values, ports, API names, IP addresses,
+  prediction approach, uses the number of different kinds of alerts        etc.), it is very hard to find frequent alerts from historical positive
+ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA                                                                  Nengwen Zhao and Junjie Chen, et al.
+
+
+              Table 4: Precision (P), recall (R) and F1-score (F) comparison between eWarn and compared approaches
+
+          Approach               eWarn                    AirAlert           TF-IDF-LSTM            FP-Growth                  W/o MIL
+           System          P       R       F        P        R      F      P      R     F        P      R     F          P        R     F
+             S1           0.86    0.82    0.84     0.46     0.82 0.59     0.93 0.73 0.82        0.08 0.05 0.06          0.36    0.80 0.50
+             S2           0.86    0.97    0.91     0.81     0.94 0.87     0.80 0.88 0.84        0.25 0.22 0.23          0.82    0.97 0.89
+             S3           0.61    0.83    0.70     0.41     0.24 0.31     0.23 0.76 0.35        0.05 0.09 0.07          0.50    0.67 0.57
+             S4           0.92    0.84    0.88     0.34     0.81 0.48     0.58 0.39 0.46        0.16 0.27 0.20          0.97    0.52 0.68
+             S5           0.75    0.86    0.80     0.34     0.29 0.32     0.14 0.31 0.19        0.12 0.25 0.17          0.71    0.39 0.51
+             S6           0.96    1.00    0.98     0.21     1.00 0.35     0.91 1.00 0.95        1.00 0.05 0.09          0.96    1.00 0.98
+             S7           0.73    0.71    0.72     0.65     0.53 0.59     0.67 0.73 0.69        0.00 0.00 0.00          0.36    0.76 0.49
+             S8           0.56    0.92    0.69     0.22     1.00 0.36     0.17 1.00 0.30        0.13 0.10 0.11          0.60    0.61 0.61
+             S9           0.92    0.98    0.95     0.53     1.00 0.69     0.92 0.98 0.95        0.03 0.02 0.02          0.91    0.98 0.95
+             S10          0.70    0.79    0.76     0.55     0.86 0.67     0.52 0.90 0.66        0.53 0.06 0.11          0.51    0.92 0.66
+             S11          0.81    0.69    0.75     0.28     0.57 0.37     0.25 0.52 0.34        0.01 0.06 0.01          0.41    0.53 0.46
+          Average          –       –      0.82      –        –     0.51    –      –    0.60      –      –    0.10        –        –    0.66
+
+
+windows. More importantly, all of the three approaches do not deal              Table 5: F1-score comparisons to demonstrate the effective-
+with the negative effect caused by noisy alerts.                                ness of feature engineering in eWarn
+   Overall, compared with the three approaches, eWarn is indeed
+able to predict incidents with higher precision, recall, and F1-score.                                   Only       Only sta-
+                                                                                 System       eWarn                               TextCNN FastText
+                                                                                                        Textual      tistical
+4.3     Contributions of Main Components                                           S1         0.84       0.62          0.51          0.54         0.57
+                                                                                   S2         0.91       0.88          0.19          0.34         0.40
+To answer RQ2, we investigated the contributions of three main                     S3         0.70       0.48          0.30          0.37         0.43
+components in eWarn to its overall performance, including the                      S4         0.88       0.73          0.26          0.45         0.47
+multi-instance learning formulation, the feature engineering com-                  S5         0.80       0.57          0.41          0.50         0.53
+ponent, and the classification model building component.                           S6         0.98       0.90          0.38          0.61         0.65
+                                                                                   S7         0.72       0.69          0.44          0.56         0.52
+4.3.1 Contribution of Multi-instance Learning Formulation. As pre-
+                                                                                   S8         0.69       0.48          0.37          0.38         0.41
+sented in § 3.2, eWarn adopts multi-instance learning [11, 42] to                  S9         0.95       0.84          0.29          0.42         0.48
+reduce the influence of noisy alerts. To investigate the contribution              S10        0.76       0.70          0.49          0.64         0.69
+of MIL in eWarn, we compared eWarn with a variant of eWarn that                    S11        0.75       0.68          0.35          0.47         0.45
+directly extracts features from each observation window without                  Average      0.82       0.69          0.36          0.48         0.51
+splitting it into multiple instance windows. The last column (W/o
+MIL) in Table 4 shows the performance of the variant of eWarn. We
+find that the variant of eWarn without MIL indeed performs worse                contribution of each type of feature, and textual features are more
+than eWarn in terms of all the measurements (i.e., precision, recall,           powerful than statistical features for incident prediction.
+F1-score) in general. In particular, the average F1-score drops from                We then investigated the effectiveness of our white-box inter-
+0.82 to 0.66 after removing MIL from eWarn. In the meanwhile, the               pretable method for textual feature representation (i.e., LDA) com-
+performance of the variant of eWarn is the same as that of eWarn for            pared with two popular black-box neural network based textual fea-
+two online service systems (i.e., S6, and S9), probably because there           ture representation methods, i.e., TextCNN [27] and FastText [26],
+are little noisy data for them. Overall, our multi-instance learning            whose results are shown in the last two columns in Table 5. We find
+formulation is indeed effective to bypass noisy data and is able to             that eWarn using LDA significantly outperforms the two neural
+improve the F1-score by nearly 20% on average.                                  network based methods. The average F1-score of the former is 0.82
+                                                                                while those of the latter two are only 0.48 and 0.51, respectively. This
+4.3.2 Contribution of Feature Engineering. Faced with complex                   is because the two methods designing for natural language rely on a
+alert data with multiple attributes, eWarn extracts a set of powerful           sufficiently large training corpus. However, strictly speaking, alert
+features to represent alert patterns, including textual features and            contents are domain-specific (IT operations) and semi-structured
+statistical features. To demonstrate the contribution of our feature            short texts, so the two methods perform not well in our scenario.
+engineering, we first investigated the effectiveness of each type of            More importantly, eWarn does not use the two methods since fea-
+feature used in eWarn (i.e., textual features and statistical features).        tures extracted from these black-box models are hardly associated
+That is, we evaluated the effectiveness of eWarn using only one type            with domain knowledge directly. In contrast, eWarn carefully de-
+of feature, whose results are shown in Table 5 (the third and fourth            signs a set of effective textual features and statistical features based
+columns). We find that eWarn incorporating both kinds of features               on the white-box interpretable method and domain experience,
+achieves an average F1-score of 0.82 while the average F1-score                 which not only have physical significance but also can be easily
+of eWarn with only textual features is 0.69 and that of eWarn with              understood by engineers.
+only statistical features is only 0.36. The results demonstrate the
+Real-Time Incident Prediction for Online Service Systems                                                                 ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA
+
+                                                                                   Table 6: Average time cost comparison between eWarn and
+                       eWarn         DNN            RF           W/o SMOTE         compared approaches
+            1.0
+            0.8                                                                      Approaches                      Offline learning (min)                  Online prediction (s)
+ F1-score
+
+
+
+
+            0.6                                                                        eWarn                                   9.07                                  0.04
+            0.4                                                                       AirAlert                                 3.86                                  0.06
+            0.2                                                                     TF-IDF-LSTM                               32.30                                  1.13
+            0.0                                                                      FP-Growth                                 2.70                                  0.04
+                  S1    S2     S3   S4   S5    S6      S7   S8   S9   S10    S11
+                                              System
+                                                                                                 1.0                                               1.0
+Figure 4: F1-score comparisons to demonstrate the effective-
+                                                                                                 0.8                                               0.8
+ness of the classification model building in eWarn
+
+
+
+
+                                                                                      F1-score
+
+
+
+
+                                                                                                                                        F1-score
+                                                                                                 0.6                                               0.6
+4.3.3 Effectiveness of Classification Model Building. We evaluated                               0.4                                               0.4
+the effectiveness of the classification model building in eWarn from                             0.2                                               0.2
+two aspects: building a classifier via XGBoost and handling the data
+                                                                                                 0.0                                               0.0
+imbalance problem.                                                                                     0   40   80   120 160 200 240                     0   40   80   120 160 200 240
+                                                                                                           Prediction window size                            Prediction window size
+   To investigate the effectiveness of building a classifier via XG-
+                                                                                                                (a) S2                                            (b) S8
+Boost in eWarn, we compared XGBoost with two widely-used ma-
+chine learning algorithms, i.e., Deep Neural Network (DNN) [9] (the                Figure 5: Two examples to show the effect of different pre-
+used network structure has been introduced in § 4.1.3) and Random                  diction windows sizes (minutes) on F1-score
+Forest (RF) [9], whose results are shown in Figure 4. We find that
+XGBoost indeed outperforms the other two algorithms and RF also                    4.5            Effect of Parameters
+performs well in terms of F1-score, indicating that our features can
+                                                                                   Some parameters in eWarn have been introduced in § 4.1.3. Here, we
+be modeled well by tree structures. The results demonstrate the
+                                                                                   mainly discuss the effect of the prediction window size on prediction
+effectiveness of XGBoost for incident prediction.
+                                                                                   performance. As mentioned in § 2.3, the prediction window size (tp )
+   To investigate the necessity of dealing with the data imbalance
+                                                                                   is a vital parameter since it directly affects the labeling quality. Due
+problem, we compared eWarn with a variant of eWarn that does not
+                                                                                   to the space limit, we took two online service systems as examples
+deal with this data imbalance problem (i.e., removing SMOTE from
+                                                                                   to illustrate the influence of tp on the performance of eWarn, whose
+eWarn), whose results are shown in Figure 4 (W/o SMOTE). We find
+                                                                                   results are shown in Figure 5. In the figure, the x-axis represents
+that eWarn performs better than its variant without SMOTE for all
+                                                                                   different prediction window sizes while the y-axis represents F1-
+the studied online service systems. Without SMOTE, the F1-score
+                                                                                   score. Intuitively, the size of prediction windows has a significant
+of eWarn drops about 0.04 ∼ 0.16, demonstrating the contribution
+                                                                                   influence on the performance of eWarn, since it directly affects
+of dealing with the data imbalance problem in eWarn.
+                                                                                   the quality of labeling. More specifically, too large tp may lead to
+   To sum up, our classification model building component in eWarn
+                                                                                   an increase of false-positive observation windows during labeling,
+is effective in both building a classifier via XGBoost and handling
+                                                                                   while too small tp may lead to missing some positive windows.
+the data imbalance problem.
+                                                                                   From Figure 5, the influence of tp is indeed confirmed, and also the
+                                                                                   best tp varies for the incidents of different systems. For example,
+4.4           Efficiency
+                                                                                   the best tp for S2 and S8 is 70 and 90, respectively. Therefore, it is
+As a real-time incident prediction approach, time efficiency is a                  necessary to set an appropriate prediction window size for each
+vital factor. For incoming alert data, if the prediction result cannot             system. In our study, we identified the best prediction window size
+be provided in time, it could cause that engineers cannot take imme-               based on the performance on the validation set for each system,
+diate actions to prevent the incident. Table 6 presents the average                which is also applicable in practice since the historical data is usually
+time costs of eWarn and three compared approaches for all the                      accessible, especially in large companies. More discussions about
+online service systems, including offline learning time and online                 the prediction window size can be found in § 5.2.
+prediction time. We find that the average online prediction time of
+all these approaches are quite small, i.e., no more than 1.13 seconds.             5 DISCUSSION
+That is, it is very efficient for eWarn to provide the prediction result
+for the current observation window. Although the training time                     5.1 Success Stories
+of eWarn (i.e., 9.07 minutes) is slightly larger than AirAlert (i.e.,              5.1.1 Incident Prediction. We have successfully applied eWarn to
+3.86 minutes) and FP-Growth (i.e., 2.70 minutes), the time cost is                 two top commercial banks (i.e., A and B) in the country. Based
+actually acceptable since the training process is conducted offline.               on the feedback from engineers, eWarn is appreciated to be able to
+Among these approaches, TF-IDF-LSTM has significantly longer                       successfully assist them to anticipate incidents in advance, so that
+training time (up to 32.30 minutes), which could take up many                      proactive actions can be taken to prevent system unavailability. In
+resources during training and cannot be conducive to efficiently                   the following, we present four success cases collected from practice.
+update the learned model. Overall, eWarn has acceptable offline                    Case I: Long service response time caused by slow SQL. Re-
+training time and negligible online prediction time, indicating that               sponse time is a key performance indicator of a service, and long
+eWarn is indeed practical in the real world.                                       response time would destroy user experience. Root cause of this
+ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA                                                                        Nengwen Zhao and Junjie Chen, et al.
+
+
+                                   Long service                                         “AAS (average active session)”, “SQL”, etc., shown in Figure 3). In
+                                  response time                            Incident
+                                                                                        this way, engineers can infer that the possible root cause is related
+                                                                                        to database, which indeed narrows down the search space of diag-
+           Web server              Database             Computation        Service
+                                                                           component    nosis. Subsequently, they can take further actions to locate the root
+                                                                                        cause in database and prevent the incident as soon as possible.
+                              •    Database         •    Middleware
+       •    Server load
+                                   metrics               related metrics
+       •    Network
+       •    I/O
+                              •    Waiting event    •    Related server    Root cause
+       •    Log file
+                              •    Database
+                                   server metrics   •
+                                                         metrics
+                                                         Log file
+                                                                                        5.2    Lessons Learned
+       •    …
+                              •    …                •    …
+                                                                                        We summarize some lessons learned from our study.
+                   Incident prediction              Incident diagnosis                  Not all incidents can be predicted well in advance. In spite
+                                                                                        of the effectiveness of eWarn in predicting incidents, we have to
+Figure 6: An example to illustrate the relationship between
+                                                                                        admit that not all incidents can be predicted well in advance. More
+incident prediction and incident diagnosis
+                                                                                        specifically, some sudden incidents caused by unexpected factors
+                                                                                        (e.g., power outages) are difficult to be predicted. In our study, we
+incident is database index fault, so it took a long time to execute                     find that application-level (high-level) incidents are much easier
+several large SQL statements. Before the incident happens, eWarn                        to be predicted. This is because high-level incidents are generally
+successfully forecasted it based on database related alerts.                            caused by faults in low-level components, e.g., server, database and
+Case II: Frequent failed transactions caused by fullGC. Fre-                            network. Thus, eWarn can identify omen patterns from low-level
+quent failed transactions in banks would lead to user complaint and                     alerts to predict high-level incidents.
+huge economic loss. More specifically, this incident was caused by                      Prediction window size is important for incident prediction.
+buggy code imported by a recent software change, which created                          As presented in § 2.3 and § 4.5, the size of prediction windows
+many objects occupying too much heap space and led to frequent                          (tp ) has a significant influence on the performance of eWarn, since
+fullGC. It was successfully predicted in advance by eWarn based                         it directly affects the quality of labeling. In general, increasing
+on some resource metric alerts (e.g., memory usage and JVM heap                         the value of tp may increase the probability that an incident is
+usage) and JVM garbage collection (GC) log alerts.                                      predicted (e.g., when tp is set to +∞, simply predicting that an
+Case III: Success rate of service degradation due to unex-                              incident will occur would be always correct). If tp is too large, the
+pected stress. For business in banks, low success rate is critical                      prediction is useless since it is not clear when exactly the incident
+and would affect the amount of transactions, leading to economic                        will occur. Therefore, it is important for incident prediction to set
+loss. Due to an unexpected burst of user requests, CPU utilizations                     an appropriate prediction window size.
+of related servers were influenced. eWarn effectively captured the                      Incremental Updating. Online service systems are complex and
+omen patterns and predicted the incident accurately in advance.                         dynamic as developers continuously commit code and introduce
+Case IV: Server hang-up due to scheduled tasks. Server hang-                            new features. Consequently, new types of alerts and new omen
+up is a common incident in the real world because of system over-                       patterns of incidents may be introduced accordingly. This may
+load, which would cause related tasks on this server to fail. In this                   cause significant performance degradation if the prediction model
+case, running scheduled tasks led to system overload, and the server                    is trained based on a fixed set of historical data. To make eWarn
+was unresponsive. This incident was predicted accurately based on                       adapt to the dynamic environment and maintain the prediction
+the alerts of related server resource metrics (e.g., I/O waiting time                   performance, we build an incremental training pipeline where our
+and CPU utilization).                                                                   model is trained with newly arriving alert data and incidents pe-
+   In summary, eWarn has the ability to identify omen patterns                          riodically, so that new patterns can be captured properly in time.
+from alert data and forecast incidents accurately in practice, which                    Besides, retraining a model on new data from scratch suffers from
+can earn some bonus time for engineers to take some proactive                           high costs, but our XGBoost-based approach can be incrementally
+actions to prevent the incidents as soon as possible.                                   updated to achieve stably good performance with negligible cost.
+5.1.2 Incident Diagnosis. Although eWarn is designed for incident                       5.3    Threats to Validity
+prediction, it can also assist engineers for incident diagnosis. Even                   We identify the following threats to validity in our study:
+though interpretable results provided by eWarn may not directly                         Subject systems: In our study, we used alert data and incidents
+pinpoint the root cause (e.g. hardware errors, misconfigurations,                       from 11 different systems in a large commercial bank A. However,
+or software bugs) of an incident, they can provide useful clues to                      the results might not represent other systems from other companies.
+narrow down the search space of diagnosis. When eWarn gives a                           Actually, it is very challenging to get access to data from companies.
+positive result, the interpretable analysis component will tell engi-                   The bank we collaborate is very large-scale, which supports more
+neers which feature makes the largest contribution to the predicted                     than one hundred million users and includes hundreds of service
+result. The most important feature may be closely related to the                        systems, and thus we believe our results can demonstrate the value
+root cause of the incident.                                                             of our proposed approach. Moreover, we have applied eWarn to
+   Figure 6 takes case I above as an example to illustrate the rela-                    another large bank B (besides A) presented in § 5.1, further demon-
+tionship between incident prediction and incident diagnosis. eWarn                      strating the generality of eWarn. In the future, we will reduce this
+identifies the omen patterns from alert data to predict the incident of                 threat by evaluating eWarn on more subject systems.
+“long service response time” precisely. Also, eWarn tells engineers                     Measurements: To demonstrate the effectiveness of eWarn, we
+the most important feature (i.e., topic#27 with keywords “Oracle”,                      used precision/recall/F1-score as measurements, which have been
+Real-Time Incident Prediction for Online Service Systems                                                ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA
+
+
+widely used in the prediction problem [42, 50]. Besides, we also con-      7     CONCLUSION
+sider the efficiency of eWarn. In the future, we will reduce this threat   We propose eWarn, a novel approach to predicting general inci-
+by considering more comprehensive metrics, such as precision-              dents based on alert data, so as to take proactive actions to prevent
+recall curve, FPR/TPR metrics, and how far ahead we can raise a            the incoming incidents and ensure the quality of software services.
+true early warning.                                                        Three key ideas of eWarn are an effective feature engineering com-
+Noisy in labeling: For a well-performing machine learning model,           ponent to deal with complex alert data, multi-instance learning
+the training set and testing set should follow the same data distribu-     to handle noisy alerts, and interpretable analysis to generate an
+tion. However, some incidents are caused by some other unexpected          interpretable report about the prediction result to facilitate the un-
+or external factors, where there are no omen patterns before the           derstanding and handling of incidents. An extensive study on 11
+incidents. These cases violate the assumption of independent and           online service systems in a large commercial bank demonstrates the
+identical distribution and cannot be effectively predicted in advance.     effectiveness of eWarn (the average F1-score of 0.82), outperform-
+In our study, we ignored the effect caused by other factors and re-        ing three compared approaches. Besides, our results also confirm
+garded them as positive samples. In the future, we will reduce this        the contributions of main components in eWarn. In particular, real
+threat by incorporating detailed information of incident tickets and       deployments of eWarn in the real world further demonstrating its
+engineers’ experience to remove noisy positive labels.                     practical performance.
+
+
+6    RELATED WORK                                                          ACKNOWLEDGEMENT
+Incident Prediction. The most related work to ours is AirAlert [18],       We thank the anonymous reviewers for their valuable feedbacks.
+which also aims to predict general incidents based on alert data.          This work has been supported by the Beijing National Research Cen-
+However, it just simply considers the number of different kinds of         ter for Information Science and Technology (BNRist) key projects
+alerts and does not deal with noisy alerts, which has been demon-          and National Key R&D Program of China 2019YFB1802504.
+strated to be ineffective in our study. Different from it, eWarn sys-
+tematically overcomes main challenges in alert-based incident pre-         REFERENCES
+diction by careful feature engineering, MIL for bypassing noisy             [1] Average cost per hour of enterprise server downtime worldwide in
+alerts, and an interpretable generated report for a prediction result,          2019. https://www.statista.com/statistics/753938/worldwide-enterprise-server-
+                                                                                hourly-downtime-cost/. [Online; accessed 04-Mar-2020].
+significantly outperforming AirAlert in our study.                          [2] Incident Management. https://en.wikipedia.org/wiki/Incident_management_
+   There are also a great deal of efforts spent on predicting a specific        (ITSM). [Online; accessed 04-Mar-2020].
+                                                                            [3] Keras. https://keras.io/. [Online; accessed 04-Mar-2020].
+type of failures (which tend to be designed for a specific domain).         [4] NumPy. https://numpy.org/. [Online; accessed 04-Mar-2020].
+Moreover, these works utilize system logs or metrics for prediction.        [5] pandas. https://pandas.pydata.org/. [Online; accessed 04-Mar-2020].
+For example, Prefix proposed in [50] utilizes switch log data to            [6] scikit-learn. https://scikit-learn.org/.
+                                                                            [7] XGBoost. https://xgboost.readthedocs.io/. [Online; accessed 04-Mar-2020].
+predict switch failures, CDEF [48] and MING [30] utilizes related           [8] Charu C Aggarwal and ChengXiang Zhai. 2012. Mining text data. Springer
+metrics to predict disk failures and node failures, respectively. It is         Science & Business Media.
+common for a large-scale system to generate tens of TBs of logs and         [9] Christopher M Bishop. 2006. Pattern recognition and machine learning. springer.
+                                                                           [10] David M Blei, Andrew Y Ng, and Michael I Jordan. 2003. Latent dirichlet allocation.
+more than thousands of metrics per day [31], leading to bringing                Journal of machine Learning research 3, Jan (2003), 993–1022.
+great challenges to learn and incrementally update a prediction            [11] Marc-André Carbonneau, Veronika Cheplygina, Eric Granger, and Ghyslain
+                                                                                Gagnon. 2018. Multiple instance learning: A survey of problem characteristics
+model and consuming a large amount of storage space and com-                    and applications. Pattern Recognition 77 (2018), 329–353.
+puting resources. Different from them, our work proposes a novel           [12] Marc-André Carbonneau, Eric Granger, and Ghyslain Gagnon. 2018. Bag-level
+approach to predicting general incidents based on lightweight alert             aggregation for multiple-instance active learning in instance classification prob-
+                                                                                lems. IEEE transactions on neural networks and learning systems 30, 5 (2018),
+data, which are generated to report anomalies from other monitor-               1441–1451.
+ing data such as metrics and logs and thus avoid processing massive        [13] Nitesh V Chawla, Kevin W Bowyer, Lawrence O Hall, and W Philip Kegelmeyer.
+raw monitoring data. Our experimental results have demonstrated                 2002. SMOTE: synthetic minority over-sampling technique. Journal of artificial
+                                                                                intelligence research 16 (2002), 321–357.
+the effectiveness of eWarn.                                                [14] Junjie Chen, Xiaoting He, Qingwei Lin, Yong Xu, Hongyu Zhang, Dan Hao, Feng
+Alert Management. In recent years, tremendous efforts have been                 Gao, Zhangwei Xu, Yingnong Dang, and Dongmei Zhang. 2019. An empirical
+                                                                                investigation of incident triage for online service systems. In 2019 IEEE/ACM 41st
+devoted into alert management in both academia and industry. As                 International Conference on Software Engineering: Software Engineering in Practice
+introduced in § 2.1, alert management techniques can be categorized             (ICSE-SEIP). IEEE, 111–120.
+into three stages: alert pre-processing, alert diagnosis and alert         [15] Junjie Chen, Xiaoting He, Qingwei Lin, Hongyu Zhang, Dan Hao, Feng Gao,
+                                                                                Zhangwei Xu, Yingnong Dang, and Dongmei Zhang. 2019. Continuous incident
+post-processing. Existing works mainly focus on how to reduce                   triage for large-scale online service systems. In 2019 34th IEEE/ACM International
+the number of alerts (alert pre-processing). This is because various            Conference on Automated Software Engineering (ASE). IEEE, 364–375.
+service components could generate an overwhelming number of                [16] Junjie Chen, Shu Zhang, Xiaoting He, Qingwei Lin, Hongyu Zhang, Dan Hao, Yu
+                                                                                Kang, Feng Gao, Zhangwei Xu, Yingnong Dang, and Dongmei Zhang. 2020. How
+alerts and the majority of alerts are duplicate or correlated. The              Incidental are the Incidents? Characterizing and Prioritizing Incidents for Large-
+popular techniques of alert reduction include alert correlation [35]            Scale Online Service Systems. In The 35th IEEE/ACM International Conference on
+                                                                                Automated Software Engineering. to appear.
+and alert clustering [29, 47, 52]. There are also some works about         [17] Tianqi Chen and Carlos Guestrin. 2016. Xgboost: A scalable tree boosting system.
+alert prioritization [24, 53], which aims to recommend severe alerts            In Proceedings of the 22nd acm sigkdd international conference on knowledge
+to engineers, because the number of alerts is much more than what               discovery and data mining. ACM, 785–794.
+                                                                           [18] Yujun Chen, Xian Yang, Qingwei Lin, Hongyu Zhang, Feng Gao, Zhangwei Xu,
+engineers can properly investigate in practice. Different from them,            Yingnong Dang, Dongmei Zhang, Hang Dong, Yong Xu, et al. 2019. Outage
+our work aims to utilize alert data to conduct incident prediction.             Prediction and Diagnosis for Cloud Service Systems. In The World Wide Web
+ESEC/FSE ’20, November 8–13, 2020, Virtual Event, USA                                                                                        Nengwen Zhao and Junjie Chen, et al.
+
+
+     Conference. ACM, 2659–2665.                                                                  Mining. 1–10.
+[19] Rui Ding, Hucheng Zhou, Jian-Guang Lou, Hongyu Zhang, Qingwei Lin, Qiang                [38] Marco Tulio Ribeiro, Sameer Singh, and Carlos Guestrin. 2016. "Why should i
+     Fu, Dongmei Zhang, and Tao Xie. 2015. Log2: A cost-aware logging mecha-                      trust you?" Explaining the predictions of any classifier. In Proceedings of the 22nd
+     nism for performance diagnosis. In 2015 {USENIX } Annual Technical Conference                ACM SIGKDD international conference on knowledge discovery and data mining.
+     ( {USENIX } {ATC } 15). 139–150.                                                             1135–1144.
+[20] John C Gower and Gavin JS Ross. 1969. Minimum spanning trees and single                 [39] Michael Röder, Andreas Both, and Alexander Hinneburg. 2015. Exploring the
+     linkage cluster analysis. Journal of the Royal Statistical Society: Series C (Applied        space of topic coherence measures. In Proceedings of the eighth ACM international
+     Statistics) 18, 1 (1969), 54–64.                                                             conference on Web search and data mining. ACM, 399–408.
+[21] Jiawei Han, Jian Pei, and Micheline Kamber. 2011. Data mining: concepts and             [40] Felix Salfner, Maren Lenk, and Miroslaw Malek. 2010. A survey of online failure
+     techniques. Elsevier.                                                                        prediction methods. ACM Computing Surveys (CSUR) 42, 3 (2010), 1–42.
+[22] Jiawei Han, Jian Pei, and Yiwen Yin. 2000. Mining frequent patterns without             [41] Mohammed Shatnawi and Mohamed Hefeeda. 2015. Real-time failure predic-
+     candidate generation. ACM sigmod record 29, 2 (2000), 1–12.                                  tion in online services. In 2015 IEEE Conference on Computer Communications
+[23] Sepp Hochreiter and Jürgen Schmidhuber. 1997. Long short-term memory. Neural                 (INFOCOM). IEEE, 1391–1399.
+     computation 9, 8 (1997), 1735–1780.                                                     [42] Ruben Sipos, Dmitriy Fradkin, Fabian Moerchen, and Zhuang Wang. 2014. Log-
+[24] Guofei Jiang, Haifeng Chen, Kenji Yoshihira, and Akhilesh Saxena. 2011. Ranking              based predictive maintenance. In Proceedings of the 20th ACM SIGKDD interna-
+     the importance of alerts for problem determination in large computer systems.                tional conference on knowledge discovery and data mining. 1867–1876.
+     Cluster Computing 14, 3 (2011), 213–227.                                                [43] J Wang, C Li, S Han, S Sarkar, and X Zhou. 2017. Predictive maintenance based
+[25] Jiajun Jiang, Weihai Lu, Junjie Chen, Qingwei Lin, Pu Zhao, Yu Kang, Hongyu                  on event-log analysis: A case study. IBM Journal of Research and Development 61,
+     Zhang, Yingfei Xiong, Feng Gao, Zhangwei Xu, Yingnong Dang, and Dongmei                      1 (2017), 11–121.
+     Zhang. 2020. How to Mitigate the Incident? An Effective Troubleshooting Guide           [44] Lingzhi Wang, Nengwen Zhao, Junjie Chen, Pinnong Li, Wenchi Zhang, and
+     Recommendation Technique for Online Service Systems. In The 28th ACM Joint                   Kaixin Sui. 2020. Root-Cause Metric Location for Microservice Systems via Log
+     European Software Engineering Conference and Symposium on the Foundations of                 Anomaly Detection. In The 2020 IEEE International Conference on Web Services.
+     Software Engineering, Industry track. to appear.                                             to appear.
+[26] Armand Joulin, Edouard Grave, Piotr Bojanowski, Matthijs Douze, Hérve Jégou,            [45] Gerhard Widmer and Miroslav Kubat. 1996. Learning in the presence of concept
+     and Tomas Mikolov. 2016. FastText.zip: Compressing text classification models.               drift and hidden contexts. Machine learning 23, 1 (1996), 69–101.
+     arXiv preprint arXiv:1612.03651 (2016).                                                 [46] Haowen Xu, Wenxiao Chen, Nengwen Zhao, Zeyan Li, Jiahao Bu, Zhihan Li, and
+[27] Yoon Kim. 2014. Convolutional neural networks for sentence classification. arXiv             et.al. 2018. Unsupervised Anomaly Detection via Variational Auto-Encoder for
+     preprint arXiv:1408.5882 (2014).                                                             Seasonal KPIs in Web Applications. In WWW.
+[28] Zhijing Li, Zihui Ge, Ajay Mahimkar, Jia Wang, Ben Y Zhao, Haitao Zheng, Joanne         [47] Jingmin Xu, Yuan Wang, Pengfei Chen, and Ping Wang. 2017. Lightweight
+     Emmons, and Laura Ogden. 2018. Predictive Analysis in Network Function                       and Adaptive Service API Performance Monitoring in Highly Dynamic Cloud
+     Virtualization. In Proceedings of the Internet Measurement Conference 2018. 161–             Environment. In 2017 IEEE International Conference on Services Computing (SCC).
+     167.                                                                                         IEEE, 35–43.
+[29] Derek Lin, Rashmi Raghu, Vivek Ramamurthy, Jin Yu, Regunathan Radhakr-                  [48] Yong Xu, Kaixin Sui, Randolph Yao, Hongyu Zhang, Qingwei Lin, Yingnong Dang,
+     ishnan, and Joseph Fernandez. 2014. Unveiling clusters of events for alert and               Peng Li, Keceng Jiang, Wenchi Zhang, Jian-Guang Lou, et al. 2018. Improving
+     incident management in large-scale enterprise it. In Proceedings of the 20th ACM             service availability of cloud systems by predicting disk error. In 2018 {USENIX }
+     SIGKDD international conference on Knowledge discovery and data mining. ACM,                 Annual Technical Conference ( {USENIX } {ATC } 18). 481–494.
+     1630–1639.                                                                              [49] Ke Zhang, Jianwu Xu, Martin Renqiang Min, Guofei Jiang, Konstantinos Pelechri-
+[30] Qingwei Lin, Ken Hsieh, Yingnong Dang, Hongyu Zhang, Kaixin Sui, Yong                        nis, and Hui Zhang. 2016. Automated IT system failure prediction: A deep
+     Xu, Jian-Guang Lou, Chenggang Li, Youjiang Wu, Randolph Yao, et al. 2018.                    learning approach. In 2016 IEEE International Conference on Big Data (Big Data).
+     Predicting Node failure in cloud service systems. In Proceedings of the 2018 26th            IEEE, 1291–1300.
+     ACM Joint Meeting on European Software Engineering Conference and Symposium             [50] Shenglin Zhang, Ying Liu, Weibin Meng, Zhiling Luo, Jiahao Bu, Sen Yang, Peixian
+     on the Foundations of Software Engineering. ACM, 480–490.                                    Liang, Dan Pei, Jun Xu, Yuzhi Zhang, et al. 2018. Prefix: Switch failure prediction
+[31] Jinyang Liu, Jieming Zhu, Shilin He, Pinjia He, Zibin Zheng, and Michael R                   in datacenter networks. Proceedings of the ACM on Measurement and Analysis of
+     Lyu. 2019. Logzip: Extracting Hidden Structures via Iterative Clustering for                 Computing Systems 2, 1 (2018), 2.
+     Log Compression. In 2019 34th IEEE/ACM International Conference on Automated            [51] Xu Zhang, Yong Xu, Qingwei Lin, Bo Qiao, Hongyu Zhang, Yingnong Dang,
+     Software Engineering (ASE). IEEE, 863–873.                                                   Chunyu Xie, Xinsheng Yang, Qian Cheng, Ze Li, et al. 2019. Robust log-based
+[32] Jian-Guang Lou, Qingwei Lin, Rui Ding, Qiang Fu, Dongmei Zhang, and Tao                      anomaly detection on unstable log data. In Proceedings of the 2019 27th ACM
+     Xie. 2013. Software analytics for incident management of online services: An                 Joint Meeting on European Software Engineering Conference and Symposium on
+     experience report. In 2013 28th IEEE/ACM International Conference on Automated               the Foundations of Software Engineering. 807–817.
+     Software Engineering (ASE). IEEE, 475–485.                                              [52] Nengwen Zhao, Junjie Chen, Xiao Peng, Honglin Wang, Xinya Wu, Yuanzong
+[33] Jian-Guang Lou, Qingwei Lin, Rui Ding, Qiang Fu, Dongmei Zhang, and Tao Xie.                 Zhang, and et al. 2020. Understanding and Handling Alert Storm for Online
+     2017. Experience report on applying software analytics in incident management                Service Systems. In 2020 IEEE/ACM 41st International Conference on Software
+     of online service. Automated Software Engineering 24, 4 (2017), 905–941.                     Engineering: Software Engineering in Practice (ICSE-SEIP). ACM.
+[34] Tomas Mikolov, Ilya Sutskever, Kai Chen, Greg S Corrado, and Jeff Dean. 2013.           [53] Nengwen Zhao, Panshi Jin, Lixin Wang, Xiaoqin Yang, Rong Liu, Wenchi Zhang,
+     Distributed representations of words and phrases and their compositionality. In              Kaixin Sui, and Dan Pei. 2020. Automatically and Adaptively Identifying Severe
+     Advances in neural information processing systems. 3111–3119.                                Alerts for Online Service Systems. In IEEE INFOCOM 2020-IEEE Conference on
+[35] Seyed Ali Mirheidari, Sajjad Arshad, and Rasool Jalili. 2013. Alert correlation              Computer Communications. IEEE, 2420–2429.
+     algorithms: A survey and taxonomy. In Cyberspace Safety and Security. Springer,         [54] Nengwen Zhao, Jing Zhu, Yao Wang, Minghua Ma, Wenchi Zhang, Dapeng Liu,
+     183–197.                                                                                     Ming Zhang, and Dan Pei. 2019. Automatic and Generic Periodicity Adaptation for
+[36] Nikolaos Pappas and Andrei Popescu-Belis. 2014. Explaining the stars: Weighted               KPI Anomaly Detection. IEEE Transactions on Network and Service Management
+     multiple-instance learning for aspect-based sentiment analysis. In Proceedings of            16, 3 (2019), 1170–1183.
+     the 2014 Conference on Empirical Methods In Natural Language Processing (EMNLP).        [55] Xiang Zhou, Xin Peng, Tao Xie, Jun Sun, Chao Ji, and et al. 2019. Latent error
+     455–466.                                                                                     prediction and fault localization for microservice applications by learning from
+[37] Parivash Pirasteh, Slawomir Nowaczyk, Sepideh Pashami, Magnus Löwenadler,                    system trace logs. In ESEC/FSE. ACM, 683–694.
+     Klas Thunberg, Henrik Ydreskog, and Peter Berck. 2019. Interactive feature              [56] Xiang Zhou, Xin Peng, Tao Xie, Jun Sun, Chao Ji, Wenhai Li, and Dan Ding. 2018.
+     extraction for diagnostic trouble codes in predictive maintenance: A case study              Fault analysis and debugging of microservice systems: Industrial survey, bench-
+     from automotive domain. In Proceedings of the Workshop on Interactive Data                   mark system, and empirical study. IEEE Transactions on Software Engineering
+                                                                                                  (2018).
+

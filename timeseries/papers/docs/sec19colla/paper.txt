@@ -1,0 +1,975 @@
+      Collaborative Learning between Cloud and End Devices: An
+                Empirical Study on Location Prediction
+                 Yan Lu†‡ , Yuanchao Shu‡ , Xu Tan‡ , Yunxin Liu‡ , Mengyu Zhou‡ , Qi Chen‡ , Dan Pei∗
+                                             Microsoft Research‡ , New York University† , Tsinghua University∗
+
+ABSTRACT                                                                                      on Edge Computing, November 7–9, 2019, Arlington, VA, USA. ACM, New
+Over the years, numerous learning methods have been put forward                               York, NY, USA, 13 pages. https://doi.org/10.1145/3318216.3363304
+to model and predict different user behaviors on end devices (e.g.,
+                                                                                              1   INTRODUCTION
+ads click, location change, app launch). While the learn-then-deploy
+approaches achieve promising results in many scenarios, data                                  User behavior prediction on end devices (e.g., PCs, laptops,
+heterogeneity and variability throw impediment in the way of                                  smartphones) has long been a topic of interest in both system
+deploying pre-learned models to a large cluster of end devices.                               and machine learning community. Researches have been carried
+On the other hand, learning on devices like smartphones suffers                               out to predict, for example, online user behaviors from weblogs [1],
+from limited data, computing power and energy budget. This paper                              word input [2] and app usages [3] from OS system logs, and
+proposes Colla, a collaborative learning approach for behavior                                physical activities such as locations which user will visit [4] based
+prediction that allows cloud and devices to learn collectively                                on data from portable sensing devices. These prediction results
+and continuously. Colla finds a middle ground to build tailored                               benefit numerous third-party applications including personal digital
+model for each device, leveraging local data and computation                                  assistant, recommendation systems, advertising etc.
+resources to update the model, while at the same time exploits                                   Despite a broad range of applications, the vast majority of
+cloud to aggregate and transfer device-learned knowledge across                               approaches used for user behavior prediction are data-driven - use
+the network to solve the cold-start problem and prevent over-                                 data mining and machine learning techniques to learn behavior
+fitting. We fully implemented Colla with a multi-feature RNN                                  models from historical data [5–11]. More recently, Deep Neural
+model on both smartphones and in cloud, and applied it to predict                             Networks (DNNs) have also been widely applied in behavior
+user locations. Evaluation results based on large-scale real data                             modeling due to its great success in sequence prediction [4, 12, 13].
+show that compared with training using centralized data, Colla                                Albeit implementation differences, these approaches learn in a
+improves prediction accuracy by 21%. Our experiments also validate                            centralized way (e.g., in the cloud) from labeled activities, and make
+the efficiency of Colla, showing that one overnight training                                  predictions on each end device (e.g., desktops and smartphones).
+on a commodity smartphone can process one-year data from a                                       This classical learning paradigm has several downsides. First,
+typical smartphone, at the cost of 2000mWh and few hundreds KB                                most designs focus on building one single model that achieves
+communication overhead.                                                                       the best performance on a given "mixed-user" dataset. However,
+                                                                                              when deployed to end devices, the global model may perform
+CCS CONCEPTS                                                                                  badly for some users due to the skewed data distributions. For
+                                                                                              instance, mobility patterns of kids, college students and company
+• Computer systems organization → Distributed architec-                                       employees are distintive from each other. A natural solution is to
+tures; Cloud computing; • Information systems → Data analyt-                                  train different models for different groups of users. However, it
+ics; • Networks → Network algorithms.                                                         is non-trivial to determine the number of groups as well as the
+                                                                                              consequent methodology of training and deployment. Second, to
+KEYWORDS                                                                                      achieve good performance on the "mixed-user" dataset, large model
+edge computing; collaborative learning; smartphone; DNN; location                             capacity is needed, eventually increasing the resource usage on
+prediction; knowledge distillation                                                            end devices. Third, the learn-then-deploy paradigm does not take
+                                                                                              runtime model execution results as well as newly-generated data
+                                                                                              on end devices into account, failing to adapt to data drift over time.
+ACM Reference Format:
+Yan Lu, Yuanchao Shu, Xu Tan, Yunxin Liu, Mengyu Zhou, Qi Chen, Dan
+Pei. 2019. Collaborative Learning between Cloud and Edge Devices: An
+                                                                                                 This paper is driven by a simple question: can each end device
+Empirical Study on Location Prediction. In SEC ’19: ACM/IEEE Symposium                        (e.g., smartphones) learn its own prediction model and improve
+                                                                                              it over time? We believe the answer is yes. Our key insight is
+                                                                                              that despite limited amount of data and skewed data distribution
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed         on each device, in user behavior prediction, there exist common
+for profit or commercial advantage and that copies bear this notice and the full citation     patterns [14] cross users/devices due to the intrinsic correlations in
+on the first page. Copyrights for components of this work owned by others than ACM            the physical space, hence allowing cloud and (multiple) end devices
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a   to complement each other and learn collectively. For example, users
+fee. Request permissions from permissions@acm.org.                                            may install very different apps on their smartphones. But all these
+SEC ’19, November 7–9, 2019, Arlington, VA, USA                                               apps come from the same app store, and Yelp, for instance, is more
+© 2019 Association for Computing Machinery.
+ACM ISBN 978-1-4503-6733-2/19/11. . . $15.00                                                  likely to be launched around the same time (e.g., lunch time) on all
+https://doi . org/10 . 1145/3318216 . 3363304                                                 devices.
+    Design of such a system, however, has to address several                     • We revisit the problem of user behavior prediction, and
+challenges. The key is to enable effective and efficient local training,           propose Colla, a collaborative learning framework that
+allowing knowledge transfer from both cloud to device and device                   allows devices and the cloud to learn collectively. In contrast
+to device, while at the same time, accommodating the huge gap                      to the traditional learn-then-deploy paradigm, Colla allows
+between the cloud and end devices in terms of compute power,                       local devices to play an active role in learning their own data,
+data variation, and energy budget. To realize the benefits of cloud-               and wisely leverages the cloud and other devices for both
+device collaboration, we let the cloud side do the heavy lifting at                data and computational resources.
+beginning to train an initial cloud model. Devices then take over                • We study the feasibility of Colla by applying a multi-
+to perform incremental learning tasks using their local data, and                  feature RNN network to the problems of smartphone-based
+build their own models (a.k.a., client model) in a distributed way                 location prediction. A novel dual distillation mechanism with
+for local inference. In the meantime, cloud serves as a sink node                  model customization and grouping mechanisms is proposed,
+that enables knowledge share across the network from time to time,                 demonstrating superior prediction accuracy over the state-
+expediting learning progress on each device and alleviating the                    of-the-art methods.
+impact of insufficient data and over-fitting.                                    • We fully implement Colla on Android and Microsoft Azure,
+    Under this framework, we choose recurrent neural networks                      and evaluate its performance on a large-scale real dataset.
+(RNN) as a template predictive model, and further propose diverse                  Key observations and insights are reported, shedding light
+model architectures for cloud and end devices. Specifically, cloud                 on how collaborative learning would work for behavior
+hosts a heavy model with more layers and a larger hidden layer                     prediction in practice, and how a better learning system
+size, resulting in a larger capacity, while each device only maintains             can be designed with a swarm of networked devices.
+a lightweight model tailored to local data and computing power. To
+enable knowledge sharing between models, an update mechanism               2     USER BEHAVIOR PREDICTION: A
+using a novel dual knowledge distillation approach is devised. At                NON-COLLABORATIVE PERSPECTIVE
+the client side, akin to classical knowledge distillation [15, 16],        We set the context by formulating behavior prediction problems
+device fine-tunes its model using both local ground truth (i.e., hard      from a non-collaborative perspective (§2.1). This represents a
+labels) as well as soft labels created by the cloud model, whereas         class of classical prediction algorithms that run on centralized
+on the cloud side, the cloud model is updated by distilling the            data. Amidst these methods, RNN has demonstrated superior
+knowledge from lightweight device models1 . To deal with data              performance recently due to its ability on handling sequence
+variation, a model grouping mechanism is incorporated in the               dependence. Hence, in § 2.2, we first introduce an RNN with
+cloud. It dynamically classifies device models, and updates the cloud      Long Short-Term Memory (LSTM) unit, and use it as our template
+by generating multiple cloud models. This way, each client only            model design. Note that although the design of RNN is not a key
+pulls one cloud model and hence client model benefits from peer            contribution of this paper, it lays a foundation on the design of
+devices’ training process on correlated data. The cloud model is           Colla (§3), making it a generally applicable method for different
+also enhanced over time, providing a good baseline for new coming          behavior predictions.
+devices thus solving the cold-start problem. In what follows, we
+first talk about problem formulation and model design in §2, and           2.1     Problem Formulation
+then elaborate knowledge transfer and model update in §3.
+                                                                           Sequence data is one of the most widely collected data on end
+    To explore the feasibility of applying collaborative learning to
+                                                                           devices. The particular focus of this paper on sequence prediction
+user behavior prediction and quantify the benefits along multiple
+                                                                           is to decide with given time series patterns – (randomly sampled)
+dimensions, we take smartphone as an example and conduct a case
+                                                                           data observations from the past – can we learn to make reasonable
+study on location prediction. Our empirically experiments over a
+                                                                           prediction on future data, such as the next location. Formally, we
+large-scale dataset collected from real users reveal the following key
+                                                                           define the problem as follows.
+observations. First, we found that, despite limited amount of data
+and computation resources, end devices can still develop knowledge           Definition 2.1 (Sequence.). S d is a sequence of samples qd1 qd2 ...qdn
+of their mobility patterns promptly and efficiently by training            on device d, where qdi = (ti , vi ), ti and vi ∈ V are the timestamp
+a neural network model. The key is to customize device model               and value of sample qdi . The time gap between ti and ti+1 may vary
+architecture and leverage cloud to bootstrap the learning process.         between samples, and we mainly focus on the discrete sequence
+Second, by exploiting knowledge distilled from the crowd, the              where vi is a discrete value, such as location landmarks and
+collaboratively-trained model achieves a higher prediction accuracy        application ID.
+than both centralized-trained model based on the aggregated data
+and the client-trained models by individual devices, as well as state-        Definition 2.2 (Sequence Prediction Problem.). Given sequence
+of-the-art baseline prediction methods. Third, prediction accuracy         data S d , where d is from a set of end devices D = {d 0 , ...d k },
+increases with successive model updates with the help of model             sequence prediction problem seeks to predict the next data point
+grouping. Nevertheless, device variations are observed and the gain        qdn+1 for each device d ∈ D.
+from each update diminishes over time. Our main contributions in              Note that qdn+1 is a tuple of timestamp tn+1 and value vn+1 , which
+the paper are as follows.                                                  makes prediction a complicated multivariate prediction problem.
+                                                                           In this study, the timestamp information is taken as the input of
+1 Note that raw data uploading is not required.                            RNN and the value vn+1 is the prediction value. Therefore, we can
+vary input tn+1 to predict the next value vn+1 at any given time.                                we take Gap as an input to predict future locations at any given
+As we assume discrete values of a sequence, the prediction can be                                time. Second, we transform the extracted information above into
+regarded as a series of multiclass classification problem, with each                             discrete id features. The numbers of discrete ID for Hour , Minute
+class represents the possible value of vn+1 .                                                    and W eekday are 24, 60 and 7, respectively. Duration and Gap are
+                                                                                                 discretized into 144 values, with each one covering a time span of
+   In § 2.2, we take location prediction as an example to describe
+                                                                                                 10 minutes, and 144 in total covering 1440 minutes (i.e., one day). It
+our model design. In this situation, the sequence data consists of
+                                                                                                 is the upper bound of the time span of a sequence we consider in
+trajectory sequence which records the time and location ID of a
+                                                                                                 location prediction. Finally, we convert the trajectory sequence into
+device. Note that in many applications like keyboard, location and
+                                                                                                 6 discrete ID sequences, each representing the Location sequence,
+app launch prediction, ground truth values vn+1 at tn+1 can be
+                                                                                                 Hour sequence, Minute sequence, W eekday sequence, Duration
+naturally obtained so there is no need for local data labeling.
+                                                                                                 sequence and Gap sequence.
+                                                                                                     After extraction, we get six sequences of features in total
+2.2    Prediction Methods
+                                                                                                 (location sequence plus five time-related sequences). We use
+RNNs has demonstrated outstanding performance recently due to                                    location ID sequence in a 10-minutes time window (like a sentence
+its advantages in sequence dependency modeling, generalization                                   in natural language processing) to pre-train the embedding model
+ability, high flexibility and scalability [4, 12, 13]. Considering                               to convert the location ID into a dense vector. Similarly, at each
+contextual data such as time also provides valuable information for                              timestamp, we train other embeddings end-to-end, and concatenate
+user-behavior prediction, we propose a Multiple Feature RNN (M-                                  the embeddings of the six different ids as the input for the M-RNN
+RNN) model. Figure 1 shows the structure of M-RNN. In mobility                                   model. We use X n to represent the embedding concatenation at the
+prediction, the M-RNN model takes multiple sequence data streams                                 nth step.
+as input, and outputs a vector of multi-class probabilities with each                                The M-RNN model contains an LSTM layer. We feed the output
+entry representing the probability of each possible location.                                    hidden of the last step in the sequence to a fully connected layer f
+                                                                                                 and then map feature vector into a |V |-dimensional vector, where
+                                                                 Class Probability
+                                                                                 …
+                                                                                                 |V | is the number of location IDs. In LSTM, h 0 and c 0 are the initial
+                                                           0.01 0.11 0.03 0.01       0.02 0.08
+                                                                                                 hidden state and cell state, and
+                                                                   Linear
+                                                                                                                    hn , c n = LST M(X n , (hn−1 , c n−1 )),                 (1)
+
+                                                                                                 which denotes the hidden state and cell state at nth step. In the fully
+             LSTM             LSTM         LSTM         …           LSTM                         connected layer f , we use the locationn+1 = f (hn ) to represent
+                                                                                                 the future location at the n + 1 step. Since devices have different
+                                                        …                                        visit locations, in Colla, each device customizes its local model by
+                                                                                                 setting an adaptive value of V (§ 3.3). For example, a device sets the
+                                                                                                 size of its fully-connected layer to 25 when it has visited 25 unique
+                                     Concatenation Layer                                         locations. If it collects 5 new location IDs, it will expand the size to
+                                                                                                 30.
+                                                                                                    In training, we split a sequence which has n elements into n −
+             Embedding                    Embedding                         Embedding
+                                                                                                 1 training sequences. For instance, [id 1 , id 2 , id 3 ] would be split
+          Location sequence             Hour sequence                  Minute sequence
+                                                                                                 into [id 1 ]->[id 2 ] and [id 1 , id 2 ]->[id 3 ]. Finally, softmax operation is
+                                                                                                 performed to get output probability.
+             Embedding                    Embedding                         Embedding
+                                                                                                 3     COLLA LEARNING FRAMEWORK
+          Weekday sequence             Duration sequence                 Gap sequence
+                                                                                                 In this section, we describe the collaborative learning framework. It
+                                                                                                 consists of cloud and a set of end devices such as smartphones. We
+                  Figure 1: M-RNN architecture.                                                  illustrate the learning process using a star topology as an example
+   To leverage RNN, we first convert location ID and relevant time                               where each device connects directly to the cloud. In Colla, cloud
+information in trajectory sequence into a vector that is friendly to                             trains and maintains a large base model M whereas each device
+neural networks. We borrow the idea of word embedding [17, 18],                                  holds a small client model m customized for itself. We call the base
+and convert each location ID into an embedding with the embedding                                model on the cloud and the client model on a device cloud model
+lookup table. Five time-related features are extracted and converted                             and client model, respectively.
+to discrete values here. In specific, Hour , Minute and W eekday
+features represent the likelihood of seeing similar mobility patterns                            3.1     Learning Flow
+in the temporal domain. Using timestamps of consecutive data                                     As shown in Figure 2, Colla learning process consists of the
+points that contain the same location ID, we extract Duration,                                   following four stages.
+which represents how long a user stays at one location. We also                                     Stage 1: Bootstrapping. The cloud trains the very first cloud model
+extract Gap, the time gap between two adjacent but different                                     from an initial dataset. This is done only once when the system is
+locations, to characterize e.g., commute time. During inference,                                 deployed, e.g., when a keyboard application releases a new version
+    !                                          "                           $                          #                              $
+                                                   M0                          M1                                                        M2
+                                                                                                                cloud
+                                                           cloud                                              distillation
+                                                        compression
+                                                   M0
+        initial data
+                                                                               M1                                                        M2
+                                                                                       client
+        cloud model                                                                 distillation            model
+                                                                                                          parameters
+        cloud model after distillation                        inference                                                                         2
+                                                   !                           !            1                                            "
+                                                                                                                 inference
+        client model                               mi0                                      mi1                                                mi2
+                                          di
+        client model after distillation
+
+
+                                                   T0                                T1                                              T2
+
+
+        Figure 2: Colla learning flow. Number in dashed red box represents learning stage. Model grouping not included.
+
+that can learn a model to predict next word given the prefix or                       model M 2 (or M 2k if d i was classified into group k) and distills the
+previous word [19]. At this stage, it is reasonable to expect that the                knowledge into client model mi1 using the data collected during time
+cloud owns some data (e.g., anonymous user data or existing large                     period T2 − T1 , resulting a new client model mi2 , and then pushes it
+public dataset like word corpus) to initiate the learning process.                    to the cloud. Similarly, cloud updates its model from time to time
+    Stage 2: First pulling. When a new device d i joins the system at                 using received models from devices. Since we perform distillation
+time T0 , it asks the cloud for the latest model. The cloud compresses                to transfer knowledge from multiple devices to cloud as well as
+(see § 3.2 for more details) its latest cloud model M 0 into a small                  from cloud to each device, we call the mechanism dual knowledge
+one and sends it to the device. d i uses the compressed small model                   distillation. Note that model updates in cloud and device may work
+as its first client model mi0 to perform inference in the coming time                 in an asynchronous way so as to adapt to various data collection
+period T = T1 − T0 .                                                                  rates and different device constraints (e.g., energy).
+    Stage 3: Client model update. After collecting a reasonable amount
+of data or simply after a fixed time period T , device d i pulls the
+latest cloud model M 1 and merge it with the current client model                     3.2       Model Compression and Grouping
+mi0 through knowledge distillation, resulting in a new client model                   To reduce the overhead of running model inference on resource-
+mi1 . In the simplest form of distillation, the heavy cloud model is                  limited end devices and consider the behavior diversity of different
+used as the teacher model to fine-tune the client model (i.e., the                    groups of users, Colla uses model compression and model
+student model) over the local dataset (a.k.a., the transfer set). Thus,               grouping.
+client model is able to learn from both its local data and the cloud                  Model compression. As end devices usually have limited memory
+model. § 3.3 will describe our knowledge distillation process in                      and computation resources, it is critical not to run a large model
+detail. In § 5.4 and § 7, we also evaluate the cost of model training on              on end devices. However, the cloud needs to use a large model
+commodity smartphones, and list works that can further expedite                       with enough capacity to combine the knowledge learned from all
+DNN execution on resource-constrained devices. After client model                     devices. We propose to use model compression to balance the needs
+mi1 being generated, its parameters are pushed to the cloud while the                 of both the cloud and devices. To this end, the cloud compresses its
+device uses the lightweight client model mi1 to perform inference                     large base model into a small one through knowledge distillation
+till time T2 .                                                                        over the cloud dataset. As shown in Stage 2 in Figure 2, when a
+    Stage 4: Cloud model update. Once receiving model parameters                      new device comes, the cloud sends the compressed small model to
+from N of devices, cloud also updates its model. This is done again                   the device. The large model and the small model pair have different
+by knowledge distillation, but with multiple teacher models (i.e., N                  sizes of LSTM units and different embedding sizes. Specifically,
+pushed models from end device d i , i ∈ [1, N ]). Here the transfer                   for the large model, we set the size of LSTM unit to 128, and the
+set includes all data available in the cloud. This stage results in a                 embedding size for all six different ID spaces to 32. In total, the
+new cloud model. Besides updating the base cloud model, Colla                         large M-RNN model contains 128, 796 parameters with a size of
+also performs model grouping, dividing N device models into K                         503KB (128, 796 ∗ 4 Bytes). For the small model, we set the hidden
+groups. Each model group is used to teach the base cloud model                        size of LSTM unit to 16 and the embedding size to 4, resulting in a
+into a new classified cloud model (not shown in Figure 2). Details                    model with 11, 868 parameters and a size of 88KB (11, 868 ∗ 4 Bytes).
+are described in § 3.2.                                                               In § 5.4, we show the impacts of different sizes of embedding and
+    Client model update (Stage 3) and cloud model update (Stage 4)                    LSTM unit on prediction accuracy as well as execution cost on
+happen repeatedly. For example, at time T2 , d i pulls the latest cloud               mobile devices.
+Model grouping. With growing number of users in Colla,                    teach itself and generate new models via consecutive distillation. It
+maintaining a single model in cloud may not achieve a satisfied           also adopts ensemble learning to aggregates predictions of these
+prediction accuracy for all users as different groups of users may        models to generate a more reliable teacher model. Inspired by these
+have very different behavior patterns. To solve this problem, instead     works, we extend basic knowledge distillation to a dual distillation
+of using a one-fits-all cloud model, Colla splits up the cloud model      paradigm both in client and cloud. When cloud model teaches the
+over time to serve different groups of users. Doing so requires           client model, devices can utilize the general knowledge from cloud
+dividing devices into different groups where users in the same            model to avoid overfitting despite the variations of local data. On
+group share similar behavior pattern. To this end, Colla conducts         the contrary, cloud model benefits from the ensemble learning by
+model grouping in Stage 4 in Figure 2. After receiving N small            aggregating outputs from multiple client model.
+client models, cloud performs model inference using each of the N
+                                                                          Client Distillation. On the device side, knowledge is transferred
+models over the cloud dataset. Based on N output feature vectors,
+                                                                          from cloud model to client model. Therefore, we use cloud model
+we use the cross entropy between two feature vectors as the
+                                                                          as teacher model and conduct knowledge distillation on the data
+distance of two models, and cluster models into K groups using the
+                                                                          available on each device. Follow Equation 2, the loss function of
+Affinity Propagation [20]. In our current implementation, we take
+                                                                          client model i can be calculated as
+a brute force approach and choose K with the highest Silhouette
+Coefficient [21] from a set of {2, 3, 5, 10}.                                            Ldi = λd L(yid , pid ) + (1 − λd )L(qc , pid ),      (3)
+   Afterwards, cloud uses client models in each group to generate         where superscript c and d denote the cloud side and device side.
+cloud model M k , k ∈ [1, K] per group, through cloud distillation        yid represents the label of the data on device i, pid and qc represent
+(see § 3.3) using the cloud dataset. This happens at every cloud          the output probabilities of the client model (student) and cloud
+model update stage (i.e., Stage 4 in Figure 2) and generates a new        model (teacher) on device i, respectively. We use early stopping in
+set of groups each time. The cloud records which client model             client distillation to avoid over-fitting on limited local data. Here we
+(and thus the corresponding device) belongs to which group. As a          assume local data is annotated (i.e., with known labels). This might
+result, when a device asks for the latest cloud model again (Stage        be impractical for tasks like object segmentation, but is trivial in
+3 in Figure 2), the cloud will send back the classified cloud model       many applications like sequence prediction, where word inputs,
+of the device rather than the base cloud model. Note that the base        device locations, app launches are natural labels.
+cloud model is also updated using all the received client models and
+thus new devices may always get the latest cloud model to start           Cloud Distillation. Cloud distillation uses multiple client models
+with, before it goes to a group.                                          to teach the cloud model by fine-tuning it on the cloud dataset. It
+                                                                          aims to match the output probabilities of the cloud model to the
+3.3    Model Update through Dual Distillation                             average of the softmax output of each client model. Similarly, we
+Client and cloud model update are both critical in Colla which            have
+transfer knowledge between cloud and different client models.                                                            1 Õ d c
+                                                                                     Lc = λc L(y c , p c ) + (1 − λc )L(    qi , p ),    (4)
+Knowledge distillation [15, 16] is widely used in machine learning                                                       N
+                                                                                                                             i ∈N
+to transfer the knowledge from a heavy model (a.k.a., teacher
+                                                                          where the superscript c and d denote the cloud side and device side
+model) to a cheap model (a.k.a., student model) that is more suitable
+                                                                          respectively. y c represents hard labels of the cloud data, p c and qdi
+for deployment on edge devices [16, 22–26]. Taking classification
+                                                                          represent the class probabilities of the cloud data by the cloud model
+problem as an example, for the training process without knowledge
+                                                                          and client model i, respectively. This cloud distillation procedure
+distillation, the model generates class probabilities using softmax
+                                                                          is the same for both the base cloud model and the classified group
+function, and then matches them to one-hot ground truth labels
+                                                                          models. The only difference is that the number of client models
+to calculate loss for back propagation. The major difference after
+                                                                          used in the distillation is different.
+adding knowledge distillation is that, the student model not only
+                                                                              Note that in Colla, devices have different values of V (i.e.,
+matches the output probabilities p of the input x to the true label
+                                                                          customized FC layers) to cover diverse data classes on the client
+y, but also matches p to the class probabilities q predicted by the
+                                                                          side. Usually, client models have a smaller label size |V | than that
+teacher model on the same input x. Mathematically, distillation loss
+                                                                          of the cloud model. In order to facilitate knowledge distillation that
+is calculated as:
+                                                                          requires the same label set between teacher and student model,
+                    L = λL(y, p) + (1 − λ)L(q, p),                 (2)    we modify the output probabilities of teacher model. Specifically,
+where L(∗, ∗) is the loss function (i.e., Cross-Entropy or Kullback       in client distillation, only the output probabilities that matches to
+Leibler (KL) Divergence), L(y, p) is the original loss term and L(q, p)   existing labels of the client model are picked and re-normalized
+is the distillation loss term, λ is a hyper-parameter to trade off        as soft labels. In cloud distillation, the output probabilities of the
+the contribution of the two loss terms. It can be determined by           device model are padded with zeros to match the feature vector
+hyper-parameter search during training.                                   size of the cloud model.
+   With the popularity of distillation, much of the work [27, 28] has
+been proposed to allow two models teach each other. For instance,         4    DATASET AND IMPLEMENTATION
+Deep Mutual Learning [27] trains two models on the same dataset           To empirically evaluate Colla, we fully implement them on
+simultaneously and makes them match the probability estimates of          Microsoft Azure cloud and Android smartphones, and conduct
+each other. BAN [28], on the other hand, enables one network to           trace-driven emulations using large-scale real data.
+4.1            Dataset Description                                                       mobile GPUs3 , we train the M-RNN model on smartphones using
+Location prediction is conducted using WiFi AP scanning results                          CPU. Execution cost is presented in § 5.4.
+collected on a large university campus for four months (from March                          In terms of training configurations, we use cross entropy as loss
+to June in 2016). In total, there are 120, 624, 600 WiFi scanning                        function both for the true loss and distillation loss. Both λc and λd
+records between 201, 041 devices and 2, 890 Cisco enterprise APs                         in Equation 4 and Equation 3 are set to 0.5 after a hyperparameter
+deployed in 116 buildings on the campus. At peak time, there are                         search. Batch size is set to 32 and we use Adam optimizer with
+∼20, 000 devices concurrently connected to the campus WLAN. The                          a learning rate of 0.1. We adopt cross validation with the ratio
+total number of unique devices is more than 60, 000 each day. On                         of training/validation/test set setting to 16 : 4 : 5. Early stop
+average, 4.89 APs are scanned by each device per day.                                    mechanism is adopted which terminates training if loss on the
+    Based on the hypothesis that APs close to each other are more                        validation set doesn’t increased in consecutive twenty epochs.
+likely to be observed by the same mobile device, we group all 2, 890
+APs into a smaller number of clusters (|V | = 368). Colla aims to                        5     EVALUATION
+figure out which AP cluster each device is more likely to visit given                    We present evaluation results of Colla in this section, using the
+a future time t. To extract devices’ trajectory sequences, we slice                      dataset described in Section 4.1.
+scanning records using a 10-minute time window. Device location
+is set to the cluster ID that contains the most visited AP in each                       5.1     Experimental Settings
+time window. In data preprocessing, we filter out inactive devices
+that have less than 10 active days per month – a day is active only                      Colla: We use synchronized model update by default. Model
+if it contains more than 5 unique location IDs. As a result, there                       update cycle is set to T = 20 days. It means all devices pull the cloud
+are 12540 devices left. The distributions of the number of active                        model at the end of each cycle, and upload (changed) parameters
+days per month and the length of location sequences (i.e., number                        right after their local models have been updated using local data
+of different locations) across all devices are shown in Figure 3.                        from the past period. Cloud periodically updates its model based
+                                                                                         on the model parameters from all clients.
+                                                                                         Model: As described in Section 3, Colla adopts different M-RNN
+          1.0                                        1.0                                 architectures in the cloud and on devices. The embedding layer of
+          0.8                                        0.8                                 the heavy M-RNNs are sized at 32 with hidden layer size of 128,
+ Probability
+
+
+
+
+                                            Probability
+
+
+
+
+          0.6                                        0.6                                 whereas the cheap model is sized at 4 with hidden layer size of 16.
+          0.4                                        0.4
+                     Before preprocessing                       Before preprocessing
+          0.2        After preprocessing             0.2        After preprocessing      Data: We select 10, 000 devices that contain at least 10 active days
+          0.0 0   5 10 15 20 25 30                   0.0 0 20 40 60 80 100 120           per month, and evaluate Colla across the entire four months (i.e.,
+                    Active days                           The length of sequence         March 2016 to June 2016). Particularly, we take a closer look at
+ (a) Distributions of the number of active (b) Distributions of the length of location   collaboration performance between 100 most active devices (a.k.a.,
+ days per month                            sequences                                     top-100). Data from the first month is used as initial training set for
+                                                                                         the cloud. Because we set T = 20 days and extract the first month
+               Figure 3: Location prediction data distribution.                          as initial data, we split the data from mobility prediction (April 2016
+                                                                                         to June 2016) into four parts. In evaluation, we use the current part
+                                                                                         as training set and the next part as evaluation set. Thus, there are
+4.2            Implementation                                                            three cycles in mobility prediction and two cycles in app launch
+                                                                                         prediction.
+We implement the cloud part of Colla on Microsoft Azure
+cloud. In specific, we use an Azure virtual machine with Intel                           Metrics: Trained models are evaluated on the data from the
+Xeon CPU@2.60GHz, 128GB memory and 3TB storage, 8 NVIDIA                                 subsequent cycle. We use following metrics to evaluate the
+Tesla P100 GPU cards (CUDA 9.0.0) with 16GB GPU memory for                               performance of Colla:
+experiments. The cloud part has three main components: data                                 prediction accuracy: the portion of correct prediction to the total
+storage, model training engine and communication interface. Model                        predictions (i.e., top-1 accuracy)
+structure is stored in a .json file and the weights are stored in a
+                                                                                                                                                            Í |V |
+                                                                                                                                                                     T Pi
+                                                                                             weighted-precision and weighted-recall: P r = w i ∗ Í|V | i =1
+.npy file (numpy array). Initial training data is stored in HDFS                                                                                           i =1 (T Pi +F Pi )
+format using Azure HDInsight. Model training is conducted using
+                                                                                                             Í |V |
+                                                                                                                      T Pi
+                                                                                         and Re = w i ∗ Í|V | i =1           , which are widely used in multi-class
+Keras (v1.0.0) and Theano (v1.0.0). RESTful API is provided for the                                       i =1 (T Pi +F NÍi)
+
+communications between cloud and devices.                                                classification [29]. w i = Í|V(i| ) is the percentage of i in all data.
+                                                                                                                         i =1 (i )
+    On the client side, we use Android smartphones and PyDroid                              execution cost: local model inference time, training time and
+32 , an IDE for Android featuring offline Python (v3.6) interpreter                      communication cost of smartphones.
+and built-in C and C++ compiler. We install Keras, numpy, scipy                             Since there is no well-developed Reception Operating Charac-
+and Theano on Pydroid 3 using pip to enable model training with                          teristic (ROC) analysis for multi-class classification or prediction,
+data stored in SD card. Due to the lack of programming model for
+                                                                                         3 Most smartphones feature GPUs from Qualcomm and Intel, which only focus on
+                                                                                         speeding up inference/prediction but not training. We expect computing platforms
+2 https://play.google.com/store/apps/details?id=ru.iiec.pydroid3                         like CUDA will be released for smartphone GPU-based training in the near future.
+         1.0                                               1.0                                             1.0
+         0.8                                               0.8                                             0.8
+Probability
+
+
+
+
+                                                  Probability
+
+
+
+
+                                                                                                  Probability
+         0.6                                               0.6                                             0.6
+                                        DT                                             DT                                              DT
+         0.4                            CT                 0.4                         CT
+                                                                                                           0.4                         CT
+         0.2                            DT-ws              0.2                         DT-ws               0.2                         DT-ws
+                                        COLLA                                          COLLA                                           COLLA
+         0.0                                               0.0                                             0.0
+               0.0 0.2 0.4 0.6 0.8 1.0                           0.0 0.2 0.4 0.6 0.8 1.0                         0.0 0.2 0.4 0.6 0.8 1.0
+                       Accuracy                                          Precision                                        Recall
+
+                      Figure 4: CDF of overall mobility prediction accuracy, precision and recall in three updates.
+
+
+         1.0                                               1.0                                             1.0
+         0.8                                               0.8                                             0.8
+Probability
+
+
+
+
+                                                  Probability
+
+
+
+
+                                                                                                  Probability
+         0.6                      Decision Tree            0.6                   Decision Tree             0.6                   Decision Tree
+         0.4                      Markov 2
+                                  Markov 4
+                                                           0.4                   Markov 2
+                                                                                 Markov 4                  0.4                   Markov 2
+                                                                                                                                 Markov 4
+         0.2                      RNN                      0.2                   RNN                       0.2                   RNN
+                                  M-RNN                                          M-RNN                                           M-RNN
+         0.0                                               0.0                                             0.0
+               0.0 0.2 0.4 0.6 0.8 1.0                           0.0 0.2 0.4 0.6 0.8 1.0                         0.0 0.2 0.4 0.6 0.8 1.0
+                       Accuracy                                          Precision                                        Recall
+                      Figure 5: CDF of mobility prediction accuracy, precision and recall with baseline methods.
+
+
+we do not include AUC (Area under the ROC Curve) in the list of             best accuracy among all four methods on 68 devices (out of 100).
+measures.                                                                   Another interesting finding is that the performance of DT is nearly
+                                                                            equal to DT-ws in Figure 4. Given DT-ws outperforms DT by 10%
+5.2           End-to-end Prediction Performance                             in terms of median accuracy after the first update, this comparison
+                                                                            reveals that the help from warm start diminishes with successive
+We first evaluate end-to-end performance between four different             client model updates.
+methods at the end of the evaluation period. These four methods are
+i) device-training (DT), where each device trains its own model from
+scratch using its own data and never exchanges any information              Table 1: Mobility prediction performance. Best percentage
+with cloud nor other devices. ii) cloud-training (CT), where cloud          means the percentage of the devices where the correspond-
+collects data from all devices periodically and trains a global model       ing method performs the best.
+(using heavy M-RNN) for prediction. i) and ii) are two extremes that
+are commonly used in legacy prediction approaches where clients                Method            Best pct.           Avg. acc.   Med. acc.
+are either treated independently or uniformly. iii) device-training             DT                 0.0%                0.40        0.40
+with warm-start (DT-ws), where each device pulls the very first                 CT                28.00%               0.40        0.39
+trained model from cloud, and utilizes local data to fine-tune it              DT-ws              4.00%                0.41        0.42
+at the beginning of each cycle. However, devices never exchange                Colla              68.00%               0.47        0.51
+parameters with cloud nor other devices after the first pulling. This
+is the default approach to deploy models in transfer learning. iv)
+Colla, where collaborative learning is adopted.                                Figure 5 also compares Colla with multiple state-of-the-art
+                                                                            methods including decision tree [6], Markov Chain model [7] and
+5.2.1 Top-100 devices with fixed size of initial dataset. Figure 4          RNN [4] after the first update. As can be seen, Colla with M-
+shows the overall performances in three updates for mobility                RNN achieves a superior performance in all three metrics. For
+prediction. We see that CT performs slightly better than both               instance, M-RNN exceeds RNN 116% (0.39 vs. 0.18) in terms of
+DT and DT-ws, due to the extra data from other devices. In all              median accuracy.
+three figures, Colla performs the best among these methods,
+demonstrating the effectiveness of collaborative learning. Some             5.2.2 Random sampled devices with varying sizes of initial dataset.
+detailed accuracy numbers are listed in Table 1. It can be seen             In a more realistic setting, we sample 100 devices randomly from
+that the median accuracy of Colla is 0.51, 21.42% higher than               all 100,00 devices, and extend the cloud initial dataset to top-104
+the second best approach (0.42 of DT-ws), and Colla yields the              devices.
+          1.0                                             1.0                                    subsequent local training, which can be seen as regularization to
+          0.8                                             0.8                                    prevent over-fitting from happening.
+ Probability
+
+
+
+
+                                                 Probability
+          0.6                                             0.6                                       We found the continuous improvement from each model update
+          0.4                           CT
+                                        DT
+                                                          0.4                           CT
+                                                                                        DT       is largely brought by model grouping. From Figure 9(a), it can
+          0.2                           DT-ws             0.2                           DT-ws
+                                                                                                 be seen that without grouping, although prediction results get
+                                        COLLA                                           COLLA
+          0.0                                             0.0                                    better over time, the gain becomes marginal after three months.
+                0.0 0.2 0.4 0.6 0.8 1.0                         0.0 0.2 0.4 0.6 0.8 1.0
+                        Accuracy                                        Accuracy                 We also investigate the performance of the Affinity Propagation
+         (a) Initial dataset with 103 devices            (b) Initial dataset with 104 devices    with Silhouette Coefficient to determine the number of groups K
+                                                                                                 (algorithm in Section 3.2). To this end, during cloud model update,
+Figure 6: CDF of prediction accuracy on the random-100                                           we cluster models into different numbers of groups K, and examine
+devices in mobility prediction.                                                                  their end-to-end prediction performance. For the top-100 devices,
+                                                                                                 we find clustering into two groups achieves the best overall accuracy
+                                                                                                 (Figure 9(b)) after the second update, matching with the rank of
+    In Figure 6, we can see that model fine-tuning-based methods                                 Silhouette Coefficient (inside legend box in Figure 9(b)). It verifies
+(i.e., DT, DT-ws and Colla) obtain better performance when the                                   the effectiveness of grouping using model inference results.
+initial dataset is small. However, with a large initial dataset in the                              Another component that has impacts on local model update is
+cloud, CT catches up and outperforms DT and DT-ws. In the best                                   the customization of FC layer. Here we compare Customized FC,
+case, it achieves a median accuracy of 0.33 when the initial training                            where each device dynamically expands the size of FC layer, against
+set contains 104 devices. Note that the gain of CT comes at the                                  Unified FC, where each device owns identical model architecture
+cost of continuous local data uploading and heavy model exchange.                                (cheap model with a same size of the FC layer), on top-100 devices
+Execution cost of local inference using a heavy model could also be                              in the first update. In Figure 10(a), we can see that Customized
+prohibitively expensive (more experimental results in Section 5.4).                              FC strictly outperforms Unified FC in terms of accuracy. This can
+Compared with CT and DT-ws, Colla obtains the best prediction                                    be explained by the location class distribution of each user across
+accuracy on different initial datasets. In addition, between these                               cycles - new locations are more likely to be seen in the first few
+two figures, we can see it also benefits from the improvement of                                 cycles (Figure 10(b)). Therefore, the gain from having a smaller FC
+the pre-trained cloud model, bringing median accuracy from 0.32                                  layer, thus a higher prediction confidence, outweighs prediction
+to 0.39.                                                                                         errors from missing location classes in next cycle.
+
+
+          1.0                                             1.0                                    5.4    Execution Cost
+          0.8                                             0.8                                    Colla obtains aforementioned accuracy improvements at the cost
+                                                 Probability
+ Probability
+
+
+
+
+          0.6                                             0.6                                    of periodical on-device model training and cloud model update.
+          0.4                                             0.4
+                                     Top-100
+                                                          0.2
+                                                                                     Top-100     Due to orders of magnitude less computing power and energy
+          0.2                        Top-1000                                        Top-1000
+
+          0.0
+                                     Top-10000
+                                                          0.0
+                                                                                     Top-10000   budget, we focus on execution cost on smartphones. To obtain a
+                0.0 0.2 0.4 0.6 0.8 1.0                         0.0 0.2 0.4 0.6 0.8 1.0          comprehensive understanding of runtime cost, we compare three
+                        Accuracy                                        Accuracy
+                                                                                                 model update approaches. They are i) Same-Whole, where devices
+                       (a) CT                                        (b) COLLA
+                                                                                                 share the same architectures (i.e., cheap M-RNN) and fine-tune the
+                                                                                                 whole network during update; ii) Same-FC, where devices share the
+Figure 7: CDF of prediction accuracy using different meth-                                       same architectures but only fine-tune the last fully connected layer;
+ods in mobility prediction.                                                                      iii) Customization, where devices gradually expand (and fine-tune)
+                                                                                                 the last FC layer with growing local observations. All other layers
+                                                                                                 are frozen during training. We conducted experiments on multiple
+   Figure 7 shows another perspective of Figure 6 by putting                                     smartphones at different levels. Results from four M-RNNs with
+together models trained in the same way but with different initial                               different sizes (i.e., 4-16, 8-32, 16-64, 32-128) are presented, where,
+data sizes. It is clearer that the larger data size we used for CT, the                          4-16, for instance, means the embedding size is 4 and the hidden
+better generalization capability the model can achieve, hence the                                size is 16. Sizes of these models are shown in Figure 11(a), where
+higher prediction accuracy.                                                                      Customization(n) denotes the n − th local update in customization
+                                                                                                 update approach.
+5.3             Model Update Performance                                                             We firstly examine the number of parameters to evaluate the
+In this section, we zoom in to examine gains from each model                                     communication overhead. For down-link, all three model update
+update.                                                                                          approaches send the same cloud model to the client side. However,
+   Figure 8 shows mobility prediction performance from top-                                      for the client-to-cloud communication, Same-FC and Customization
+100 devices over four months (three updates). Compared with                                      only need to upload the parameters of the fully connected layer
+steady improvements of Colla, DT-ws can hardly boost devices’                                    while Same-Whole needs to upload all parameters, since only
+prediction capabilities over time. Since DT-ws purely relies on each                             modified model parameters are required for cloud model update.
+device’s own data, over-fittings are more likely to happen. However,                             Figure 11(b) shows the communication overhead from top-100
+in Colla, devices take advantages of the cloud model during                                      devices. In our current implementation with client model sized
+                1.0                                                                         1.0                                                         1.0
+                0.8                                                                         0.8                                                         0.8
+Probability
+
+
+
+
+                                                                                   Probability
+
+
+
+
+                                                                                                                                               Probability
+                                                               DT-ws (1)                                                        DT-ws (1)                                                    DT-ws (1)
+                0.6                                            DT-ws (2)                    0.6                                 DT-ws (2)               0.6                                  DT-ws (2)
+                                                               DT-ws (3)                                                        DT-ws (3)                                                    DT-ws (3)
+                0.4                                            COLLA (1)
+                                                                                            0.4                                 COLLA (1)
+                                                                                                                                                        0.4                                  COLLA (1)
+                0.2                                            COLLA (2)                    0.2                                 COLLA (2)               0.2                                  COLLA (2)
+                                                               COLLA (3)                                                        COLLA (3)                                                    COLLA (3)
+                0.0                                                                         0.0                                                         0.0
+                       0.0 0.2 0.4 0.6 0.8 1.0                                                     0.0 0.2 0.4 0.6 0.8 1.0                                      0.0 0.2 0.4 0.6 0.8 1.0
+                               Accuracy                                                                    Precision                                                     Recall
+
+                                    Figure 8: CDF of top-100 devices’ performances during three updates in mobility prediction.
+
+
+           1.0                                                     1.0                                                 top-100 list, and use the total 293 data samples from the first cycle
+           0.8                                                     0.8                                                 (i.e., 20 days) to fine-tune the local model, whereas 224 samples
+  Probability
+
+
+
+
+                                                          Probability
+
+
+
+
+           0.6                             COLLA-1 (1)             0.6                                                 from the subsequent cycle are used for testing. Note that this user
+           0.4
+                                           COLLA-1 (2)
+                                           COLLA-1 (3)             0.4
+                                                                                                 Ten Groups (0.06)
+                                                                                                 Five Groups (0.05)
+                                                                                                                       is at 23% percentile of all users in terms of the size of local samples.
+           0.2
+                                           COLLA-2 (1)
+                                           COLLA-2 (2)             0.2
+                                                                                                 Three Groups (0.08)
+                                                                                                 Two Groups (0.10)
+                                                                                                                       Figure 12(a) shows local model update time of four M-RNNs on five
+           0.0                             COLLA-2 (3)
+                                                                   0.0                           One Group             smartphones. We find that customization has the least training time
+                  0.0 0.2 0.4 0.6 0.8 1.0                                 0.0 0.2 0.4 0.6 0.8 1.0                      among three updating approaches in all cases - it only takes 2.42
+                          Accuracy                                                Accuracy
+                              (a)                                                     (b)
+                                                                                                                       minutes on average to fine-tune the local model on a commodity
+                                                                                                                       smartphone, which is order of magnitude smaller than fine-tuning
+                                                                                                                       the whole model. Similar results are observed in Figure 12(b), where
+Figure 9: The accuracy without grouping (COLLA-1) and                                                                  one prediction execution only needs 133.5 milliseconds. This makes
+with grouping (COLLA-2) during three updates (Figure                                                                   it a feasible solution to turn location prediction as a component to
+a). The accuracy and corresponding Silhouette Coefficient                                                              third party applications on end devices. In terms of different model
+score (inside legend box) with different size of groups after                                                          sizes, interestingly, we find model 8-32 needs the maximum time
+the second update (Figure b).                                                                                          to fine-tune on all five phones. This is because although 8-32 ranks
+                                                                                                                       third in size, it demands much more training epochs to converge
+                                                                                                                       (as shown in Figure 13). We also used a Monsoon Power Monitor
+                1.0                                                     1.00                                           as a power supply for the smartphone, and tracks both runtime
+                0.8                                                     0.95
+  Probability
+
+
+
+
+                                                                                                                       current and voltage to calculate energy consumption (Table 2).
+                                                         Percentage
+
+
+
+
+                0.6                                                     0.90                                           In summary, although training a large CNN model (e.g., ResNet-
+                0.4                                                     0.85     First cycle
+                0.2                   Unified FC                                 Second cycle                          152) is still prohibitively expensive for smartphones, we find the
+                                      Customized FC                     0.80     Third cycle
+                0.0                                                     0.75 0                                         cost of training a lightweight but effective RNN model is very
+                      0.0 0.2 0.4 0.6 0.8 1.0                                    20 40 60 80 100                       viable in terms of both time, energy and network consumption.
+                              Accuracy                                              Device-id
+                                                                                                                       For applications like mobility prediction, one-hour training on a
+                  (a) Prediction accuracy CDF                      (b) Class distribution across cycles
+                                                                                                                       commodity smartphone can handle data collected over one year,
+                                                                                                                       at the cost of 2000 mWh energy consumption and few hundreds
+           Figure 10: Performance of local model customization.                                                        KB communication overhead. Note that training can be further
+                                                                                                                       accelerated using GPU, FPGA, and it can also be scheduled to run
+                                                                                                                       at night when charger plugged in.
+to 4-16, communication cost of one model update is as low as
+520KB(130000 ∗ 4byte).                                                                                                      Table 2: Time (s) and energy consumption (mWh).
+   Another concern of running Colla on smartphones is the cost
+of local inference and client model training. As inference time
+                                                                                                                                                        Huawei Mate 9 Pro   Huawei Mate 10
+can be affected by many factors (i.e., different optimizations on                                                                  Model arch.          Time      Energy    Time    Energy
+matrix multiplication), we use FLOPS to measure the inference
+cost. In Figure 11(c), compared with Same-FC and Same-Whole                                                                           4 - 16            492.6     276.2     216.6   127.3
+(they have the same FLOPS due to the same model architecture),
+Customization nearly halved inference computation. Due to the
+smallest numbers of uploaded parameters, inference’s FLOPS and
+model size, FC customization is proved to be the most efficient local                                                  6   DISCUSSION
+model update approach in iterative training.                                                                           Despite promising results yielded by collaborative learning on
+   Next, we dig deep to measure model training/inference time as                                                       mobility prediction, there are several practical issues and limitations
+well as energy consumption. We randomly sampled a user from the                                                        of this study that warrant further investigation.
+                                                                             1.8                                                40K
+ Model-size (Byte)
+
+
+                                                                                                                                           Customization(1)
+                110K            Customization(1)
+                                                                             1.7          Customization(1)                      35K
+
+
+
+
+                                                                    #Parameters
+                                                                                          Customization(2)                                 Customization(2)
+                100K
+                                Customization(2)
+                                Customization(3)                             1.6          Customization(3)                      30K        Customization(3)
+                                                                                                                                25K
+
+
+
+
+                                                                                                                           Flops
+                                                                                          Same-FC                                          Same-FC and Same-Whole
+                 90K            Same-FC and Same-Whole
+                                                                             1.5          Same-Whole                            20K
+                 80K                                                         1.4                                                15K
+                 70K                                                         1.3                                                10K
+                            0    20 40 60 80 100                             1.2 0        20 40 60 80 100                        5K 0      20 40 60 80 100
+                                    Device-id                                                Device-id                                        Device-id
+                                  (a) Model size                                   (b) Number of parameters (*1e5)                         (c) Inference FLOPS
+
+
+                                                                            Figure 11: Runtime cost of Colla.
+
+
+                                Same-Whole            Same-FC             Customization                 predict the next app to be launched using features like time,
+                                                                                                        previous app launch instances, battery level, CPU usage that might
+                      27                                                                                have strong correlations with app launch behaviors.
+                      25
+ Minute
+
+
+
+
+                                                                                                           On an app launch prediction dataset collected from 27 volunteers
+                      23                                                                                using SherLock smartphone agent between January and March in
+                      21                                                                                2016 [30], Colla achieved comparable results with Table 1, where
+                     2−1                                                                                a 31.8% improvement of median prediction accuracy is achieved by
+                            Huawei Huawei Xiaomi Xiaomi                           Pi el                 Colla over CT. The evaluation used same settings in Section 5.2 and
+                           Mate 9 Pro Mate 10 Mi Note 3 5X                         3XL
+                                                                                                        we constructed app launch sequence from the resource utilization
+                                          (a) Fine-tuning time                                          traces sampled every five seconds.
+
+                                Customization             Same-FC and Same-Whole                                Table 3: App launch prediction performance.
+                     211
+                     210
+  Millisecond
+
+
+
+
+                      29                                                                                     Method       Best pct.         Avg. acc.            Med. acc.
+                      28                                                                                      DT           22.2%              0.52                 0.48
+                      27
+                      26                                                                                      CT           22.2%              0.40                 0.44
+                      25                                                                                     DT-ws          0.0%              0.47                 0.46
+                            Huawei Huawei Xiaomi Xiaomi                           Pixel                      Colla         55.6%              0.55                 0.58
+                           Mate 9 Pro Mate 10 Mi Note 3 5X                         3XL
+  (b) Inference time. Note that Same-FC and Same-Whole are strictly higher than
+  Customization but their values are very close in many cases.
+                                                                                                        Learning process. Open questions on learning process also remain.
+                                                                                                        First, in our design, learning starts from a fixed amount of initial
+Figure 12: Fine-tuning and inference time. Each bar repre-                                              data. There are still insights to be gained on the quality (e.g.,
+sents one M-RNN architecture.                                                                           diversity) of initial data that would be needed for a confident
+                                                                                                        general model. It is also interesting to explore the gains from extra
+                                                                                                        data uploading after bootstrapping. For instance, each new-coming
+            500                  4-16              8-32          16-64               32-128             device could push certain amount of data for one time, or some
+            400                                                                                         edge devices may be willing to upload data constantly but at a very
+Epoch
+
+
+
+
+            300                                                                                         low frequency. Besides, the fixed architectures of client model may
+            200                                                                                         be not suitable for incremental settings. When the capacity of client
+            100                                                                                         model cannot handle the change of all new data, Colla needs to
+              0                                                                                         tune the architecture of client model.
+                            Same-Whole              Same-FC            Customization                       Selectively using device models for cloud model update could
+                                                                                                        not only brings cloud model a better generalization ability, but also
+                                Figure 13: Fine-tuning epochs.                                          prevent cloud model from being corrupted by adversarial input. As
+                                                                                                        shown in Figure 14, our preliminary results from filtering out 30%
+                                                                                                        device-uploaded models with poor inference accuracy on the cloud
+Beyond location prediction. Colla can naturally be adapted to                                           dataset shows an end-to-end median accuracy increase of 3.46%.
+user behavior predictions other than location changes. Taking app                                       Extending Colla to CNNs is also an interesting subject to pursue.
+launch prediction as another example, we can replace trajectory                                            With growing concern about data privacy, it is also worth
+sequence used in M-RNN (§ 2.2) with app launch sequence and                                             investigating how Colla can be designed in a privacy-preserving
+                                                                             Researchers have been exploring various approaches to enable
+       12.5%                                        Top70-Top100         deep learning on mobile and edge devices that have limited com-
+        10%                                                              puting power and energy budget. Those efforts including building
+        7.5%
+Accuracy
+
+
+
+
+                                                                         smaller models without sacrificing too much accuracy [42–44],
+          5%                                                             leveraging or building customized hardware for fast learning [45–
+        2.5%
+                                                                         48], model compression to reduce resource consumption [49–
+          0%
+       -2.5%                                                             51], or system optimization to achieve a better resource-accuracy
+         -5%                                                             tradeoff [52–54]. For example, DeepEar [42] proposes a special
+               0      20         40        60         80        100      model for audio sensing on smartphones in unconstrained acoustic
+                                  Device ID
+                                                                         environments. DianNao [45] designs a dedicated ASIC to accelerate
+                                                                         ubiquitous machine learning. NestDNN [55] designs a dynamic
+Figure 14: Location prediction accuracy gap between using                framework to choose the most suitable model when the resource
+Top-70 and Top-100.                                                      of application is changed. DeepX [49] leverages Runtime Layer
+                                                                         Compression (RLC) and Deep Architecture Decomposition (DAD)
+                                                                         to reduce resource usage. These learning practices on mobile edges
+                                                                         all focus on individual devices and thus are complementary to our
+way. This is challenging given that prior works [31] have shown
+                                                                         collaborative learning.
+that even the most innocuous aggregate, including the parameters
+                                                                             User behavior prediction has been studied for decades. It was
+of ML models, can reveal information about the training sets.
+                                                                         indicated that the potential average predictability in, for example,
+                                                                         human mobility can be as high as 93% [9, 56, 57]. Various methods
+ 7         RELATED WORK                                                  have been proposed to profile user behaviors and make predictions
+Distributed machine learning has been a hot topic in the machine         on whereabouts, including Markov models [7, 8, 58–60], neural
+learning community due to the emerging big data and big models.          networks [12, 61], Bayesian networks [62], random forest [63],
+Model average [32–35] is a simple yet efficient technique which          eigendecomposition [64] etc. Markov model, as well as its variations,
+iteratively averages the locally trained models and performs             model the probability of future movements by building a transition
+parameter synchronization. Allreduce-based communication [36]            matrix between several locations based on past trajectories.
+is also used for the gradient communication in the data parallelism      Given its success in speech and NLP, RNN is also proposed for
+setting both for the single-machine multi-GPUs and multi-machines        mobility prediction. For instance, Spatial Temporal Recurrent
+multi-GPUs. A more flexible architecture for distributed machine         Neural Networks (ST-RNN) is designed to model temporal and
+learning is parameter server [37–39], which uses dedicated               spatial contexts [4]. Nevertheless, it only applies to continuous
+servers to synchronize model parameters and implement other              spatial prediction, and assumes distances between location points
+computation logic related to the optimization algorithms. However,       are known. More recently, DeepSense, a unified deep learning
+most previous work on distributed machine learning treat each            framework for mobile sensing data is proposed by integrating
+working node as a computing machine, receiving i.i.d. data and           convolutional and recurrent neural network [65]. However, it
+model parameters, generating gradients or updated parameters             focuses on accommodating diverse sensor noise patterns with a
+for synchronization. Endpoints in this work is not simply a              model trained remotely from uniform sampling data. Different from
+computing device, but also consuming trained model by itself with        existing work, we demonstrate the advantages of applying a more
+local generated non i.i.d. training data. More recently, federate        general learning framework that combines intelligence from both
+learning [19, 40, 41] attempts to leverages local collected data to      the cloud and edges on location prediction problem.
+train a global model. However, it fails to take into device diversity
+into consideration and no model customization is allowed.
+   Knowledge distillation was first proposed to transfer the
+knowledge from a cumbersome model (or ensemble of models)                8   CONCLUSION
+to a single small model more suitable for deployment [15]. It has        We propose Colla, a learning framework designed for user
+been used since then in a wide range of tasks such as image              behavior prediction by enabling end devices and a cloud to
+classification [16], neural machine translation [22, 23] and speech      learn from sequence data in a collaborative way. A cloud-client
+recognition [16, 24]. The typical setting of knowledge distillation      collaboration mechanism is carefully designed to make the learning
+transfers knowledge from a teacher model to a student model, while       approach flexible and scalable. In particular, we propose a novel dual
+there have been studies transferring knowledge cross all the models      distillation method with model compression and model grouping
+in a collaborative way, in order to boost task execution performance     to empower the cloud to aggregate the knowledge learned from
+of all participants [25, 26]. Unlike CoDistillation [26] that uses the   end devices into a global cloud model and enable each device to
+same dataset to train all the models, or Mutual Learning [25] that       distill knowledge from the cloud model and build a customized
+advocates an ensemble of students to learn collaboratively and           client model. We demonstrate the feasibility of the framework on
+teach each other, dual distillation in Colla features a completely       mobility prediction using a multi-feature RNN. Experimental results
+different network where N different client models distill knowledge      on Azure and commodity smartphones with large-scale real data
+from their own data and share it between each other with the help        show that Colla establishes effective device models in terms of
+of the cloud.                                                            both prediction accuracy and execution cost.
+REFERENCES                                                                      [22] Yoon Kim and Alexander M. Rush. Sequence-Level Knowledge
+ [1] P. G. Om Prakash and Dr. A. Jaya. Analyzing and Predicting User                 Distillation. In EMNLP, 2016.
+     Behavior Pattern from Weblogs. International Journal of Applied            [23] Markus Freitag, Yaser Al-Onaizan, and Baskaran Sankaran. Ensemble
+     Engineering Research, 11(0973-4562):62786283, 2016.                             distillation for neural machine translation. CoRR, abs/1702.01802, 2017.
+ [2] Zhe Zeng and Matthias Roetting. A text entry interface using smooth        [24] Liang Lu, Michelle Guo, and Steve Renals. Knowledge distillation for
+     pursuit movements and language model. In ACM Symposium on Eye                   small-footprint highway networks. In ICASSP, pages 4820–4824. IEEE,
+     Tracking Research & Applications, 2018.                                         2017.
+ [3] Chang Tan, Qi Liu, Enhong Chen, and Hui Xiong. Prediction for              [25] Ying Zhang, Tao Xiang, Timothy M. Hospedales, and Huchuan Lu.
+     Mobile Application Usage Patterns. In Nokia MDC Workshop, 2012.                 Deep Mutual Learning. In IEEE CVPR, 2017.
+ [4] Qiang Liu, Shu Wu, Liang Wang, and Tieniu Tan. Predicting the Next         [26] Rohan Anil, Gabriel Pereyra, Alexandre Passos, Robert Ormándi,
+     Location : A Recurrent Model with Spatial and Temporal Contexts. In             George E. Dahl, and Geoffrey E. Hinton. Large scale distributed neural
+     AAAI, 2016.                                                                     network training through online distillation. CoRR, abs/1804.03235,
+ [5] Joao Bartolo Gomes, Clifton Phua, and Shonali Krishnaswamy. Where               2018.
+     Will You Go? Mobile Data Mining for Next Place Prediction. Lecture         [27] Ying Zhang, Tao Xiang, Timothy M. Hospedales, and Huchuan Lu.
+     Notes, 8057 LNCS:146–158, 2013.                                                 Deep Mutual Learning. In Conference on Computer Vision and Pattern
+ [6] Ivana Semanjski and Sidharta Gautama. Smart City Mobility                       Recognition. CVPR-2018, 2018.
+     Application Gradient Boosting Trees for Mobility Prediction and            [28] Tommaso Furlanello, Zachary C. Lipton, Michael Tschannen, Laurent
+     Analysis Based on Crowdsourced Data. Sensors, abs/15974.15987, 2015.            Itti, and Anima Anandkumar. Born-Again Neural Networks. In Thirty-
+ [7] Akinori Asahara, Kishiko Maruyama, Akiko Sato, and Kouichi Seto.                fifth International Conference on Machine Learning. ICML-2018, 2018.
+     Pedestrian-movement Prediction Based on Mixed Markov-chain Model.          [29] Marina Sokolova and Guy Lapalme. A Systematic Analysis of
+     In ACM SIGSPATIAL, 2011.                                                        Performance Measures for Classification Tasks. Inf. Process. Manage.,
+ [8] Sébastien Gambs, Marc-Olivier Killijian, and Miguel Núñez del                   45(4):427–437, July 2009.
+     Prado Cortez. Next Place Prediction Using Mobility Markov Chains. In       [30] Yisroel Mirsky, Asaf Shabtia, Lior Rokach, Bracha Shapira, and
+     Proceedings of the First Workshop on Measurement, Privacy, and Mobility,        Yuval Elovici. SherLock vs Moriarty: A Smartphone Dataset for
+     2012.                                                                           Cybersecurity Research. In AISec with CCS, 2016.
+ [9] C. Song, Z. Qu, N. Blumm, and A.-L. Barabasi. Limits of Predictability     [31] Reza Shokri, Marco Stronati, and Vitaly Shmatikov. Membership
+     in Human Mobility. Science, 327(5968):1018–1021, 2010.                          Inference Attacks against Machine Learning Models. In IEEE
+[10] Fatma Somaa, Cédric Adjih, Inès El Korbi, and Leila Azouz Saidane. A            Symposium on Security and Privacy, 2017.
+     Bayesian model for mobility prediction in wireless sensor networks.        [32] Martin Zinkevich, Markus Weimer, Lihong Li, and Alex J Smola.
+     In International Conference on Performance Evaluation and Modeling in           Parallelized Stochastic Gradient Descent. In NIPS, 2010.
+     Wired and Wireless Networks, 2016.                                         [33] Ryan McDonald, Keith Hall, and Gideon Mann. Distributed Training
+[11] Nam T. Nguyen Binh T. Nguyen, Nhan V. Nguyen and My Huynh T.                    Strategies for the Structured Perceptron. In ACL, 2010.
+     Tran. A Potential Approach for Mobility Prediction using GPS Data.         [34] Daniel Povey, Xiaohui Zhang, and Sanjeev Khudanpur. Parallel
+     In ICIST, 2017.                                                                 Training of Deep Neural Networks with Natural Gradient and
+[12] Z Lin, M Yin, S Feygin, M Sheehan, and JF Paiement. Deep Generative             Parameter Averaging. arXiv, 2014.
+     Models of Urban Mobility. In ACM KDD, 2017.                                [35] Sixin Zhang, Anna E Choromanska, and Yann LeCun. Deep Learning
+[13] Qiang Liu, Shu Wu, Liang Wang, and Tieniu Tan. Predicting the Next              with Elastic Averaging SGD. In NIPS, 2015.
+     Location: A Recurrent Model with Spatial and Temporal Contexts. In         [36] Priya Goyal, Piotr Dollár, Ross Girshick, Pieter Noordhuis, Lukasz
+     AAAI, 2016.                                                                     Wesolowski, Aapo Kyrola, Andrew Tulloch, Yangqing Jia, and Kaiming
+[14] Yoshua Bengio Jason Yosinski, Jeff Clune and Hod Lipson. How                    He. Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.
+     transferable are features in deep neural networks? In NIPS, 2014.               arXiv, 2017.
+[15] Cristian Bucila, Rich Caruana, and Alexandru Niculescu-Mizil. Model        [37] Jeffrey Dean, Greg Corrado, Rajat Monga, Kai Chen, Matthieu Devin,
+     compression. In ACM KDD, 2006.                                                  Mark Mao, Andrew Senior, Paul Tucker, Ke Yang, Quoc V Le, et al.
+[16] Geoffrey Hinton, Oriol Vinyals, and Jeffrey Dean. Distilling the                Large Scale Distributed Deep Networks. In NIPS, 2012.
+     Knowledge in a Neural Network. In NIPS Deep Learning and                   [38] Mu Li, David G Andersen, Jun Woo Park, Alexander J Smola, Amr
+     Representation Learning Workshop, 2015.                                         Ahmed, Vanja Josifovski, James Long, Eugene J Shekita, and Bor-Yiing
+[17] Tomas Mikolov, Ilya Sutskever, Kai Chen, Greg S Corrado, and Jeff               Su. Scaling Distributed Machine Learning with the Parameter Server.
+     Dean. Distributed representations of words and phrases and their                In USENIX OSDI, 2014.
+     compositionality. In Advances in neural information processing systems,    [39] Eric P Xing, Qirong Ho, Wei Dai, Jin Kyu Kim, Jinliang Wei, Seunghak
+     pages 3111–3119, 2013.                                                          Lee, Xun Zheng, Pengtao Xie, Abhimanu Kumar, and Yaoliang Yu.
+[18] Tomas Mikolov, Kai Chen, Greg Corrado, and Jeffrey Dean. Efficient              Petuum: A New Platform for Distributed Machine Learning on Big
+     estimation of word representations in vector space. arXiv, 2013.                Data. IEEE Transactions on Big Data, 1(2):49–67, 2015.
+[19] Jakub Konecný, H. Brendan McMahan, Felix X. Yu, Peter Richtárik,           [40] Brendan McMahan, Eider Moore, Daniel Ramage, Seth Hampson,
+     Ananda Theertha Suresh, and Dave Bacon. Federated Learning: Strate-             and Blaise Agüera y Arcas. Communication-Efficient Learning of
+     gies for Improving Communication Efficiency. CoRR, abs/1610.05492,              Deep Networks from Decentralized Data. In Proceedings of the 20th
+     2016.                                                                           International Conference on Artificial Intelligence and Statistics, 2017.
+[20] Renchu Guan, Xiaohu Shi, Maurizio Marchese, Chen Yang, and                 [41] Jakub Konecný, Brendan McMahan, and Daniel Ramage. Federated
+     Yanchun Liang. Text Clustering with Seeds Affinity Propagation. IEEE            Optimization: Distributed Optimization Beyond the Datacenter. CoRR,
+     Transactions on Knowledge and Data Engineering, 23(4):627–637, 2011.            abs/1511.03575, 2015.
+[21] Peter J. ROUSSEEUW. Silhouettes: a graphical aid to the interpretation     [42] Nicholas D. Lane, Petko Georgiev, and Lorena Qendro. DeepEar:
+     and validation of cluster analysis. Journal of Computational and Applied        Robust Smartphone Audio Sensing in Unconstrained Acoustic
+     Mathematics, 87(21):0377–0427, 1986.                                            Environments Using Deep Learning. In ACM UbiComp, 2015.
+[43] Guoguo Chen, Carolina Parada, and Georg Heigold. Small-footprint          [62] Sherif Akoush and Ahmed Sameh. Mobile User Movement Prediction
+     Keyword Spotting Using Deep Neural Networks. In IEEE ICASSP, 2014.             Using Bayesian Learning for Neural Networks. In International
+[44] Andrew G. Howard, Menglong Zhu, Bo Chen, Dmitry Kalenichenko,                  Conference on Wireless Communications and Mobile Computing, 2007.
+     Weijun Wang, Tobias Weyand, Marco Andreetto, and Hartwig Adam.            [63] Zidong Yang, Ji Hu, Yuanchao Shu, Peng Cheng, Jiming Chen, and
+     MobileNets: Efficient Convolutional Neural Networks for Mobile                 Thomas Moscibroda. Mobility Modeling and Prediction in Bike-
+     Vision Applications. arXiv, 2017.                                              Sharing Systems. In ACM International Conference on Mobile Systems,
+[45] Tianshi Chen, Zidong Du, Ninghui Sun, Jia Wang, Chengyong Wu,                  Applications, and Services (MobiSys), 2016.
+     Yunji Chen, and Olivier Temam. DianNao: a Small-footprint High-           [64] Nathan Eagle and Alex Sandy Pentland. Eigenbehaviors: Identifying
+     throughput Accelerator for Ubiquitous Machine-Learning. In ACM                 Structure in Routine. Behavioral Ecology and Sociobiology, 63(7):1057–
+     ASPLOS, 2014.                                                                  1066, 2009.
+[46] Chen Zhang, Peng Li, Guangyu Sun, Yijin Guan, Bingjun Xiao, and           [65] Shuochao Yao, Shaohan Hu, Yiran Zhao, Aston Zhang, and Tarek
+     Jason Cong. Optimizing FPGA-based Accelerator Design for Deep                  Abdelzaher. DeepSense: A Unified Deep Learning Framework for
+     Convolutional Neural Networks. In ACM/SIGDA FPGA, 2015.                        Time-Series Mobile Sensing Data Processing. In WWW, 2017.
+[47] Yu-Hsin Chen, Joel S. Emer, and Vivienne Sze. Eyeriss: A Spatial
+     Architecture for Energy-Efficient Dataflow for Convolutional Neural
+     Networks. In ACM/IEEE ISCA, 2016.
+[48] Song Han, Xingyu Liu, Huizi Mao, Jing Pu, Ardavan Pedram, Mark A.
+     Horowitz, and William J. Dally. EIE: Efficient Inference Engine on
+     Compressed Deep Neural Network. In ACM/IEEE ISCA, 2016.
+[49] Nicholas D. Lane, Sourav Bhattacharya, Petko Georgiev, Claudio
+     Forlivesi, Lei Jiao, Lorena Qendro, and Fahim Kawsar. DeepX: A
+     Software Accelerator for Low-power Deep Learning Inference on
+     Mobile Devices. In ACM/IEEE IPSN, 2016.
+[50] Jiaxiang Wu, Cong Leng, Yuhang Wang, Qinghao Hu, and Jian Cheng.
+     Quantized Convolutional Neural Networks for Mobile Devices. In
+     IEEE CVPR, 2016.
+[51] Emily L. Denton, Wojciech Zaremba, Joan Bruna, Yann LeCun, and Rob
+     Fergus. Exploiting Linear Structure Within Convolutional Networks
+     for Efficient Evaluation. In NIPS, 2014.
+[52] Junchen Jiang, Ganesh Ananthanarayanan, Peter Bodik, Siddhartha
+     Sen, and Ion Stoica. Chameleon: Video analytics at scale via adaptive
+     configurations and cross-camera correlations. In ACM SIGCOMM,
+     2018.
+[53] Seungyeop Han, Haichen Shen, Matthai Philipose, Sharad Agar-
+     wal, Alec Wolman, and Arvind Krishnamurthy. MCDNN: An
+     Approximation-Based Execution Framework for Deep Stream Pro-
+     cessing Under Resource Constraints. In ACM MobiSys, 2016.
+[54] Ganesh Ananthanarayanan, Victor Bahl, Landon Cox, Alex Crown,
+     Shadi Nogbahi, and Yuanchao Shu. Demo: Video Analytics - Killer
+     App for Edge Computing. In ACM MobiSys, 2019.
+[55] Biyi Fang, Xiao Zeng, and Mi Zhang. NestDNN: Resource-Aware
+     Multi-Tenant On-Device Deep Learning for Continuous Mobile Vision.
+     In Proceedings of the 24th Annual International Conference on Mobile
+     Computing and Networking. ACM, 2018, 2018.
+[56] Xin Lu, Erik Wetter, Nita Bharti, Andrew J. Tatem, and Linus Bengtsson.
+     Approaching the Limit of Predictability in Human Mobility. Scientific
+     Reports, 3:1–9, 2013.
+[57] Xin Lu, Linus Bengtsson, and Petter Holme. Predictability of
+     Population Displacement after the 2010 Haiti Earthquake. Proceedings
+     of the National Academy of Sciences, 109(29):11576–11581, 2012.
+[58] George Liu and Gerald Maguire. A Class of Mobile Motion Prediction
+     Algorithms for Wireless Mobile Computing and Communications.
+     Mobile Networks and Applications, 1(2):113–121, 1996.
+[59] Yu Zheng, Quannan Li, Yukun Chen, Xing Xie, and Wei-Ying Ma.
+     Understanding Mobility Based on GPS Data. In ACM UbiComp, 2008.
+[60] L. Song, D. Kotz, R. Jain, and Xiaoning He. Evaluating Location
+     Predictors with Extensive Wi-Fi Mobility Data. In IEEE INFOCOM,
+     2004.
+[61] Shiang-Chun Liou and Hsuan-Chia Lu. Applied Neural Network for
+     Location Prediction and Resources Reservation Scheme in Wireless
+     Networks. In International Conference on Communication Technology
+     Proceedings, 2003.
+

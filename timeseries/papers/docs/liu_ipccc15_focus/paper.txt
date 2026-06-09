@@ -1,0 +1,936 @@
+                        Narrowing Down the Debugging Space of
+                              Slow Search Response Time
+                                   Dapeng Liu† , Youjian Zhao† , Dan Pei† ⇤ , Chengbin Quan†
+                        Qingqian Tao‡ , Pei Wang‡ , Xiyang Chen‡ , Dai Tan‡ , Xiaowei Jing§ , Mei Feng§
+                                         †
+                                           Tsinghua University    ‡
+                                                                    Baidu    §
+                                                                               PetroChina
+                         †
+                           Tsinghua National Laboratory for Information Science and Technology (TNList)
+
+
+   Abstract—When using search engines, users often care about search        object model) load time is long, operators should investigate whether
+response time (SRT) in addition to result accuracy. It is thus the          the modual regarding ad is inefficient, or contains some bugs.
+operators’ responsibility to closely monitor and improving SRT. The
+                                                                               The task of FOCUS in practice is challenging due to the following
+first critical step of improving SRT is to pinpoint the root causes of
+slow SRT. However, this task is very challenging because SRT can be         aspects. First, SRT can be affected by many factors such as servers,
+impacted by many factors, e.g., networks, data centers, browsers, and       networks, browsers, and users’ devices. Second, since these factors
+the page content.                                                           inherently overlap each other, it is difficult to identify which factor
+   In this paper, we propose FOCUS, a systematic framework to narrow        is responsible for the slow SRT. For example, a condition that
+down the debugging space of slow SRT by identifying the bottleneck of
+slow SRT regarding various factors. The bottleneck provides operators
+                                                                            Chrome runs on a less powerful device. Third, the output should be
+more specific direction for further investigation. We deployed FOCUS in     specific and straightforward for operators. For example, the output
+a global top search engine. Based on the output of FOCUS, operators         of traditional clustering methods like k-means do not have clear
+successfully identified four potential causes which would not have been     boundaries, thus unintuitive.
+easy to find without FOCUS. Our what-if simulation analysis shows that,        To tackle these challenges, we first develop a multi-dimensional
+the proposed solutions, focusing on these bottlenecks, can improve SRT
+significantly, and they are more effective than some ad hoc solutions.      hierarchy clustering to provide clear and meaningful boundaries of
+                                                                            the bottlenecks. This ensures that the clusters we find out are specific
+                          I. I NTRODUCTION                                  for operators. Then we leverage a technique called hierarchical heavy
+                                                                            hitter (HHH) [12], that has been commonly used to locate iceberg
+   Search engine is no doubt one of the most prevalent applications         in network traffic. This technique can help identify in the multi-
+of the Internet. Billions of queries are launched from all over the         dimensional hierarchy which clusters are the real bottlenecks and
+world everyday, and then handled by search engines such as Google,          which ones are redundant. Once bottleneck clusters have been found,
+Baidu, Yahoo, Yandax, and Bing [1]. Operating such a giant search           we design a method based on Occam’s razor to further determine
+system is very challenging, and operators have to work very hard to         which SRT components can best explain the slow SRT.
+satisfy dozens of KPIs (key performance indicators). Among them,               We deploy FOCUS in one of the global top search engines.
+search response time (SRT) is one of the biggest concerns for search        Based on the bottlenecks identified by FOCUS, operators successfully
+providers [2]. SRT refers to the user perceived waiting time between        locate four causes of slow SRT and propose solutions. Our what-if
+when a query is submitted and the time when the result page is fully        simulation further demonstrates that, the solutions focusing on the
+rendered. As such, SRT has a measurable impact on users’ experience         bottlenecks by FOCUS are much more effective than ad hoc solutions
+as well as providers’ profit. [3], [4] found that less than half a second   in improving SRT. Some of these ad hoc solutions were actually being
+increase of SRT can lead to 0.6% fewer searches and 1.2% drop in            considered by the operators for deployment in the studied search
+revenue. As a result, operators are responsible for monitoring and          engine before using FOCUS. These results highlight the value of
+improving SRT, especially the slow SRT, so that it can satisfy the          FOCUS in the field of debugging slow SRT.
+growing requirement. For example, the search engine we studied                 The remainder of the paper is organized as follows. Section II
+requires the 80th percentile of SRT less than 1 second.                     provides the basic background of SRT and our problems. Section III
+   Recently, many acceleration solutions have been proposed [5], [6],       describes the details of FOCUS. Section IV shows the results of
+[7], [8], [9], [10], [11] . They aim to fix particular problems in the      FOCUS over real data and the simulation. Section V reviews the
+fourth step. Yet, a key missing part before applying a solution is          related work, and Section VI concludes the paper.
+to identify the bottleneck of slow SRT. In particular, we want to
+answer the following two questions: Under which conditions queries                           II. BACKGROUND AND P ROBLEM
+are slow? Which components of SRT is slow? These two questions              A. About SRT and Requirement
+can help operators debug slow SRT.                                             To better understand SRT, we first introduce the events happened
+   In this paper, we propose a novel systematic framework, called           after submitting a query. Instead of discussing the details, we here
+FOCUS, to systematically answer the above two questions. FOCUS              only provide a simplified view to build high level intuitions. Fig. 1
+intends to automatically identify the bottleneck conditions, and the        shows five steps. (1) When query is submitted (if the result is not
+bottleneck SRT components. The results, outputted by FOCUS,                 cached by the client), the host name of the search engine will be
+provide operators specific investigation directions and enable them         resolved by the the provider’s DNS. The DNS responds the IP address
+to further identify the root causes. For example, if we find that many      of a close data center. (2) Then the browser sends a query to the search
+queries triggering ad are responded slowly, and their DOM (document         data center. The data center conducts a series of complex processes,
+                                                                            such as results ranking, ad strategies, and page constructing, before
+  ⇤ Dan Pei is the corresponding author.
+                                                                            sending the result page to the browser. (3) The browser starts parsing
+                            c
+978-1-4799-7575-4/14/$31.00 �2015 IEEE                                      the page and loading DOM. (4) Embedded images of the page are
+                                                                                                         Client           Search data center     CDN
+acquired. These images are geographically distributed among plenty                                          t1
+                                                                                                                    DNS
+of CDN (content delivery network) nodes for accelerating. (5) At
+last, the page is completely visible for the user.
+                                                                                                 Tnet                                  TSrv
+                                           1. DNS Resolving                                                 t2
+                                                                                            SRT Tdom                       V1
+                                                                    Search DNS                              t3
+                                          2. Query and Results
+                                                                                                Tembed
+                                                                 Search Data Center                         t4
+            3. DOM Loading                                                                                                 V2
+                                          4. Embedded images
+           5. Page Complete
+
+                                                                       CDN            Fig. 3. The timeline of a search. During the search, four time points are
+                                                                                      recorded. SRT and four components are calculated based on them.
+                     Fig. 1. Typical steps of a search.
+   The time between submitting a search query and the result page
+                                                                                          1) SRT and Components: Fig. 3 shows the timeline of a search.
+being completely rendered is called search response time (SRT). SRT
+                                                                                      Four critical time points are recorded by the agent. When a user
+is the user perceived waiting time. It thus has significant influence on
+                                                                                      launches a search query, we record t1 . After an alternative DNS
+users’ experience, and can further affect providers’ revenue. Hence,
+                                                                                      resolving, the query is sent to a search data center and the result
+operators need to carefully monitor and improve SRT, so that it can
+                                                                                      page is returned. When the page is completely received, we record
+satisfy the SRT requirement. The requirement is usually to focus on
+                                                                                      t2 . Then the browser starts parsing and loading DOM, and after the
+percentiles rather than the average, as percentiles can describe how
+                                                                                      DOM has been fully loaded, we record t3 . At this time, the page
+many queries should be served as expected. For example, the 80th
+                                                                                      appears like V1 . The main frame and the result list are visible, but
+percentile of SRT less than 1000ms means that the SRT of 80% of
+                                                                                      the images are empty. Next, the embedded images are acquired from
+queries should be no more than 1000ms.
+                                                                                      CDN and rendered into the pages. When this process is finished, the
+B. Data Collection                                                                    page is completely visible like V2 , and we record t4 then.
+                                                                                          Though we omit more details, these four deliberate time points are
+   In this paper, we leverage two categories of data for each query, i.e.,            sufficient to calculate SRT and its key components. The SRT for a
+the SRT measures and impact factors1 . As shown in Fig. 2, the SRT                    query is time between t1 and t4 . The server processing time Tsrv
+measures include SRT and its components, and the impact factors are                   is recorded by the server and sent back to the agent. Then we have
+several conditions that can potentially affect SRT. Their details are                 Tnet = t2 − t1 − Tsrv , including the DNS time and the network
+described later.                                                                      transmission time of the query and the result page. The DOM load
+                                A Query Record                                        time of the browser is Tdom = t3 −t2 and the time consumed by other
+                                                                                      embedded elements is Tembeded = t4 −t3 . We see that SRT is the sum
+   SRT measures：
+                                                                                      of Tnet , Tsrv , Tdom , and Tembeded . These four major components
+     SRT      Tnet              Tsrv         Tdom        Tembed
+                                                                                      reflect different parts of SRT, and are useful for debugging slow SRT.
+   Impact factors：                                                                        2) Impact factors: Another job of the agent is to gather impact
+    Computing power (CP)      Network status (NS )    #Image      Browser    Ad
+                                                                                      factors, that can potentially affect SRT. The factors we collect are
+                                                                                      shown in Fig. 2. (1) Computing power (abbreviated CP ): this factor
+                   Fig. 2. The content of query records.
+   Though web servers are usually configured to maintain web access                   is measured by a piece of benchmark code. The code is executed
+log, this sort of data lacks detail. For example, the response time                   by the users’ browser, and its runtime is used to estimate CP . So,
+logged is actually the server processing time, which is only a part                   CP captures the synthetical performance of CPU, browser, etc. (2)
+of SRT. Additionally, only a few impact factors is logged, e.g.,                      Network status (abbreviated N S): it intends to measure the network
+browser types. Therefore, we build our data collection agent to gather                performance of users. We approximate this factor by Tnet . As the
+necessary information for identifying SRT bottlenecks. The agent                      DNS server takes advantage of efficient cache, the DNS revolving
+takes advantage of a technique called web instrumentation, which                      takes very short time at the DNS server. Besides, the page size does
+is commonly used by search providers [2]. Specifically, the agent is                  not vary a lot, so we ignore the error caused by different sized
+a piece of javascript codes, that equipped into the pages and run at                  pages. (3) browser: we distinguish browsers by their basic types
+user side. During a search, it is responsible for recording the SRT                   and major version numbers, and we have 8 major browsers, denoted
+and its components, as well as several impact factors. It can also                    as x1, x2, ..., x8. For nondisclosure reasons, we cannot report their
+receive information from servers, such as the server processing time.                 specific names. (4) #image: as many images can considerably slow
+Finally, the query record is logged by the agent and sent back to                     down the page load, we record the number of embedded images of
+storage servers. The advantage of the agent is that it can be deployed                each page. (5) ad: the page with ad contains more complex codes
+at large scale. But as it can introduce extra overhead for users, we                  to realize business function and enable advanced interaction effects.
+have to simplify the agent and give up fine grained data. Now, we                     We simply use “yes” or “no” to represent whether a page includes
+characterize how the query records are measured by the agent.                         ads or not.
+                                                                                          We collect the above representative factors based on domain
+  1 In compliance with confidentiality constraints, the specific names and            knowledge. But our analysis framework is not limited to the factors
+values in this paper are anonymized and normalized.                                   we used, and can be easily extended to other factors.
+                                                                                                                     FOCUS
+C. Problem Statement and Goal                                                            SRT
+                                                                                     Requirement
+   First, we define the gap to the SRT requirement. Let R(p%, t) be                                       Identify           Identify
+                                                                                                         Bottleneck         Bottleneck           Bottlenecks
+the SRT requirement, which means reducing the pth percentiles of
+                                                                                        Query             Clu sters        Components
+SRT to t milliseconds. We call t the desired SRT. R(p%, t) can also
+                                                                                       Records
+be interpreted as that the SRT of at least p% of queries should be no
+more than t. The requirement can be reflected by a CDF. As shown
+in Fig. 4, the dashed line indicates a SRT distribution that satisfies                                            Potential Causes
+the requirement. We call a query slow query if its SRT is larger than
+t, or fast query otherwise. Then R(p%, t) is equivalent to owning                     What-if Simulation              Solu tions
+p% fast queries. Yet within the current query records, we only have                                                                              Operators
+                                                                                                                                           Further Investigation
+p0 % fast queries, as shown by the solid line in Fig. 4. Consequently,
+                                                                                                      Fig. 5. High level overview of FOCUS.
+to achieve the requirement, at least = p%−p%0 slow queries need
+to be changed to fast ones, after considering the case of fast queries              A. Defining Cluster
+changed to slow ones. We use        to denote the gap between current                  The impact factors are measured with either classes such as
+SRT and the requirement.                                                            browser or numeric values such as #image and CP . Generally
+                         SRT requirement                                            evaluating all possible subset of each factor will generate unneces-
+             CDF
+                                                                                    sarily large number of clusters. Moreover, such clusters would be too
+              p%                                                                    spotty for operators to understand. Instead, we first group the values
+              Δ                      Current SRT Distribution                       of each factor into meaningful units, then define clusters upon these
+              p%                                                                    units. This kind of clusters are much more intuitive to be used.
+                                                             SRT                       For ad, it has just two units, ad = yes or ad = no, as it appears
+                              t                                                     originally. For browser, we treat some browsers as the same unit,
+                                                                                    as they have the same compatibility and similar performance. As
+                   Fast query            Slow query                                 a result, there are five units out of 8 browsers, U 1 = {x1, x2},
+                                                                                    U 2 = {x3}, U 3 = {x4}, U 4 = {x5, x6, x7}, and U 5 = {x8}.
+                          Fig. 4. SRT requirement.
+   Subsequently, operators need to debug at least        slow queries,                 On the other hand, for the other three numeric valued factors,
+in other words, locating their causes. Then they can take action to                 i.e., #image, CP , and N S, we divide them all into four units,
+accelerate them2 and filling in the gap, e.g., deploying accelerating               which are fine-grained enough for our problem, and they also have
+solutions or fixing bugs.                                                           clear meanings, such as the #image can be f ewer, f ew, many,
+   Our goal is to help narrow down the debugging space. Specifically,               and more. Now we take #image as an example to show our
+we first aim at identifying what kinds of impact factors generate at                determination of each unit. For practice, we design an automatic
+least    slow queries. These factors are namely bottleneck clusters.                splitting schema rather than divide units statically. The schema starts
+Then, in each bottleneck clusters, we further find out which compo-                 with the observation that when we decide the #image is many or
+nents can best explain the slow SRT. These components are namely                    few, we actually consider SRT. For example, if the SRT of queries wit
+bottleneck components. These bottlenecks can provide operators a                    10 images is faster than the SRT of overall queries, then 10 images
+more specific debugging direction to identify the root causes. In                   seem not a lot; on the contrary, if 15 images can result in a slower
+this paper, we use the requirement of the search engine we studied:                 SRT than the overall SRT, 15 images are many. As such, we first
+R(80%, 1000ms). Here, 1000ms is the time that can potentially                       decide SRT ranges in current queries, which is quite straightforward,
+interrupt users’ flow of thought [13] and the time that search engines              and use these ranges to determine the units of each factors.
+like Google [14] and the one we studied try to avoid.                                  Here, we also use pth percentile as the metric of SRT. Let t0 be
+                                                                                    the pth percentile of SRT in current queries. Then we have four SRT
+                                  III. D ESIGN                                      ranges (0, t0 − ✏], (t0 − ✏, t0 ], (t0 , t0 + ✏], and (t0 + ✏, 1), representing
+                                                                                    varying deviations from t0 . Here ✏ is a time interval and can be set
+   At a high-level, as shown in Fig. 5, FOCUS take as input the SRT
+                                                                                    according to demands, e.g., 100ms or 10% · t0 . Note that we do not
+requirement and the query records, and identify the bottlenecks of
+                                                                                    use the desired SRT t to divide SRT, because t is relatively small and
+SRT as output. In the first steps, we hunt for the clusters of impact
+                                                                                    independent of current SRT, thus the SRT ranges based on t cannot
+factors that contains at least      slow queries. To ensure intuitive
+                                                                                    decide the units appropriately.
+clusters, we employ a novel schema to define the boundaries of
+clusters on each factors. In nature, all these clusters are organized                  Subsequently, for an arbitrary #image, it is called f ewer, f ew,
+in multi-dimensional hierarchy, and we exploit HHH to identify the                  many, or more respectively if the pth percentile of its SRT is within
+bottleneck clusters in this structure. Afterwards, for each bottleneck              (0, t0 −✏], (t0 −✏, t0 ], (t0 , t0 +✏], or (t0 +✏, 1). By this means, the four
+cluster, we determine bottleneck components based on Occam’s                        units of #image are dynamically determined and also meaningful.
+razor. The basic idea is that the most succinct one should be                          Another practical issue is that from Fig.6 (a), we see that though
+the best explanation. The above bottlenecks are the output of                       more images can inflate SRT more significantly, the SRT is not
+FOCUS. Operators can further investigate along the directions of                    monotonically increasing with #image from the perspective of real
+the bottlenecks to locate potential causes, and design solutions. We                data. This fluctuation can be due to other confounding factors. As
+also conduct what-if simulation to evaluate the effectiveness of these              a result, strictly following the above dividing schema can make the
+solutions (Section IV).                                                             #image in the same unit inconsecutive. For example, in the unit of
+                                                                                    (0, t0 −✏], #image can be 0, 1, 2, and 6, as the SRT of 6 images is a
+   2 In this paper, accelerating slow queries refers particularly to improve them   small valley and fall into (0, t0 − ✏] too. This kind of units is actually
+to fast ones, in other words, reducing their SRT from > t to  t.                   confusing for operators. To avoid this, we employ a trick based on
+              n+1.7                                                       n+1.7                                                                      n+1.7
+                              pth %ile of SRT                                               pth %ile of SRT                                                           pth %ile of SRT
+   SRT (ms)
+
+
+
+
+                                                               SRT (ms)
+
+
+
+
+                                                                                                                                        SRT (ms)
+                t'+ε                                                        t'+ε                                                                       t'+ε
+                  t'                                                          t'                                                                            t'
+                t'-ε                                                        t'-ε                                                                          t'-ε
+
+                  n                                                           n                                                                             n
+                       n s1         s2            s3   n+4.2                       n   s1      s2       s3                      n+6.8                            n    s1       s2        s3                n+5.0
+
+                                         #Image                                              Computing power (ms)                                                          Network status (ms)
+                                           (a)                                                       (b)                                                                          (c)
+Fig. 6. Splitting numeric factors. The dotted lines are the split lines at t0 − ✏, t0 , and t0 + ✏. The split points of each factor are denoted as s1, s2, and s3.
+
+the assumption of that #image and SRT are positively correlated.                                          To overcome this drawback, we introduce the concepts of duplicate
+Specifically, instead of checking the SRT of each #image, we decide                                    and valid number of slow queries to help define bottleneck clusters in
+three split points of #image. As shown in Fig.6 (a), along SRT                                         multi-dimensional hierarchy. This definition is inspired by HHH [12].
+axis, we draw three split lines at t0 − ✏, t0 , t0 + ✏. The #image                                     The main idea is to attribute slow queries to descendant bottleneck
+most close to the first cross point of each split line from left side                                  clusters rather than ancestors, as descendant clusters are more
+is defined as the split point, which are s1, s2, and s3. These three                                   specific.
+split points finally generate four consecutive units of #image, that                                          Normal cluster
+is [0, s1], (s1, s2], (s2, s3], (s3, 1). CP and N S are handled in                                                                                                     20%    (*)
+                                                                                                              Bottleneck cluster
+the same way, as shown in Fig.6 (b) and (c), except we preliminarily
+                                                                                                              Parent to child
+discretize their values into small equal-sized bins, e.g., bins of 20ms.
+The four units for CP and N S are both called better, good, bad,
+and worse respectively. Notice that units can be empty as well. For                                            a1                                                                   b2                      13% a2
+                                                                                                                     7%                            a1b2                                        a2b2
+                                                                                                                                                                             10%
+example, the first unit of CP has only one bin, and a larger ✏ will
+                                                                                                                                                                                               7%
+make it empty.                                                                                                                                      3%
+   Eventually, a cluster is defined on each factor by either a particular                                                                                            10%
+unit or wildcard * for all possible units. For example, cluster C =                                                                                                  b1
+(#image = many, browser = U 1, CP = ⇤, N S = ⇤, ad = ⇤)                                                                    a1b1         4%                                                    6%    a2b1
+represents the queries originated from browsers of U 1 and their
+numbers of embedded images are many. For brevity, we omit                                              Fig. 7. An example of 2-dimensional clusters. The two dimensions are a and
+those factors with *, so the cluster C can be simply denoted as                                        b respectively. We use abbreviation to denote clusters, e.g., a1b1 is short for
+(#image = many, browser = U 1). We also use (⇤) to denote                                              (a = 1, b = 1) and a1 is short for (a = 1, b = ⇤). Each circle represents a
+                                                                                                       cluster. The number in the circle is the (relative) number of the slow queries
+the cluster with ⇤ on every factors.                                                                   contained by the cluster. In this example, we set     = 5%.
+B. Bottleneck Cluster and Identification                                                                  The duplicate number of slow queries of a cluster C is denoted by
+   All the clusters are organized into a 5-dimensional hierarchy (since                                DC , and it represents the number of slow queries that have already
+we have five factors). Now, we introduce some basic concepts of                                        been attributed to the descendants of C and C . Thus, these slow
+multi-dimensional clusters. Fig. 7 shows an example of 2-dimensional                                   queries should not bePcounted repeatedly by the ancestors of C. We
+clusters. The two dimensions are a and b. In this structure, if a cluster                              also define DdC =        DC 0 , where C 0 is the children of C along
+is more specific than another cluster, they are linked by one or more                                  dimension d. If C has no children along dimension d, we treat DdC
+directed edge(s), from the general one to the specific one, e.g., a1 !                                 as 0. Then the valid number of slow queries of C is defined as
+a1b1. For cluster C, we name the cluster directly linked from C the                                    S?C = SC − max{DdC |d 2 D}, where D is the dimension set, i.e.,
+child of C, and name the set of clusters that can be reached from C                                    five factors in our problem. Finally, we have the following definition:
+via one or more edge(s) the descendants of C. Correspondingly, C is                                                    ⇢
+                                                                                                                          bottleneck cluster       , if S?C ≥
+called the parent of its children and the ancestor of its descendants.                                           C=
+                                                                                                                             normal cluster        , if otherwise
+Within this multi-dimensional hierarchical structure, a cluster can
+have multiple children and parents along different dimensions, e.g.,                                      We can see that a bottleneck cluster should still contain enough
+for (⇤), it has children a1 and a2 along dimension a, and children                                     slow queries after excluding those attributed to descendant clusters.
+b1 and b2 along dimension b; for a1b1, it has two parents a1 and b1                                    For bottleneck cluster C, we attribute its slow queries to it by setting
+from dimension a and b respectively.                                                                   DC = SC , so that its ancestors will not further recount them; for
+   Let SC be the number of slow queries in C (relative number w.r.t.                                   normal cluster C, as no more slow queries are attributed, we set
+the total number of queries). Basically, a bottleneck cluster refers to                                DC = max{DdC |d 2 D} to pass on only the slow queries that have
+the cluster with no less than slow queries, i.e., SC ≥ . However,                                      been already attributed.
+the nature of multi-dimension of clusters can lead to a lot of redundant                                  In this definition, the slow queries of a normal cluster can be
+bottleneck clusters under this definition. This is because a cluster is                                counted by its multiple ancestors of different dimensions, yet this
+the superset of its descendants, and its slow queries must be no less                                  should not be regard as redundancy. Because the bottleneck clusters
+than the ones contained by its descendants. For example, Sb1 =                                         of different dimensions actually uncover different problems.
+10% ≥ Sa2b1 = 6%. As such, according to the basic definition,                                             Based on the above bottleneck cluster definition, one can see that
+many clusters in Fig. 7 ( = 5%) are bottleneck clusters as they                                        the bottleneck clusters are identified bottom up in nature. We use
+contain more than 5% slow queries. Yet, reporting all these clusters                                   the example in Fig. 7 to show how it works. First, we evaluate the
+are more than necessary, and some of them are too general to narrow                                    leaf clusters, a1b1, a1b2, a2b1, and a2b2. As they do not have any
+down the debugging direction, e.g., reporting (⇤) is helpless at all.                                  children, we have S?i = Si for them. For these four clusters, only
+S?a2b1 = 6% ≥        and S?a2b2 = 7% ≥ , so a2b1 and a2b2 are             we formally define the bottleneck components by explaining the SRT
+identified as bottleneck clusters. Accordingly, we set Da1b1 = 0,         difference between slow queries and fast queries.
+Da1b2 = 0, Da2b1 = 6%, and Da2b2 = 7%. Then come to the                                                 TABLE I
+next level of a1, a2, b1, and b2. For a1, it has children only on          T HE AVERAGE TIME ( MS ) OF THE COMPONENTS OF FAST QUERIES AND
+                                                                               SLOW QUERIES IN A BOTTLENECK CLUSTER . C OLUMN 4 IS THE
+one dimension (i.e., dimension b). So we have Dba1 = Da1b1 +               ESTIMATED COMPONENTS OF THE DESIRED SRT. T HE LAST COLUMN IS
+Da1b2 = 0, and S?a1 = Sa1 − Dba1 = 7% > . As such, a1 is                   THE DIFFERENCES BETWEEN THE COMPONENTS OF SLOW QUERIES AND
+a bottleneck cluster, and set Da1 = 7%. For b1, similarly, we have                               ESTIMATED ONES .
+Dab1 = Da1b1 + Da2b1 = 6%, then S?b1 = Sb1 − Dab1 = 4% < .
+                                                                                                 Fast      Slow                    Extra
+So b1 is a normal cluster, and set Db1 = 6%. Likewise, a2 and b2                 Components
+                                                                                                queries   queries
+                                                                                                                    Estimation
+                                                                                                                                 time (ms)
+are normal clusters too. The last root cluster (⇤) has children along
+                                                                                    Tnet         100        500        300          200
+two dimensions. We first calculate Da(⇤) = 20%, and Db(⇤) = 13%.                    Tsrv         250        300        275           25
+Then we get S?(⇤) = S(⇤) − max{Da(⇤) , Db(⇤) } = 0 < . As a result,                 Tdom         100        200        150           50
+(⇤) is not qualified for a bottleneck cluster.                                     Tembed         50        500        275          225
+   The bottleneck clusters can be identified by a typical post-order                 SRT         500       1500       1000          500
+traverse of the multi-dimensional tree, such as [12]. Due to the             Given a bottleneck cluster, let δ be the difference between the
+limitation of space, we omit the particular algorithm.                    average SRT of the slow queries and that of the fast queries. Similarly,
+                                                                          for a component Ti , where i 2 {net, srv, dom, embed}, let δ(Ti )
+C. Bottleneck Components                                                  be the difference between Ti of the slow queries and Ti of the
+                                                                          fast queries. The explanatory power of Ti is denoted as EP (Ti ),
+   Once a bottleneck cluster has been identified, we attempt to find
+                                                                          and EP (Ti ) = δ(Ti )/δ. The bottleneckP     components is a set of
+out bottleneck components. Our definition of bottleneck components
+                                                                          components, denoted as BC, that satisfies T 2BC EP (T ) ≥ H, at
+is based on Occam’s razor, which is also used by [15]. It suggests
+                                                                          the same time, minimizing |BC| (i.e., succinctness). While there exist
+that the most succinct components that can explain the extra SRT
+                                                                          multiple
+                                                                             P qualified BC, we further select the BC with the maximum
+should be the bottleneck components. Now we introduce the basic
+                                                                          of T 2BC EP (T ).
+idea via a mock example.
+                                                                             Since there are only four components, we identify bottleneck
+   Table I shows each component of the fast queries and the slow          components using a brute force approach of enumerating all possible
+queries in a bottleneck cluster. Suppose that the desired SRT t =         candidate sets. One can design more efficient algorithm, such as the
+1000ms, then the average SRT of the slow queries is 500ms longer          greedy algorithm proposed in [15], to deal with large-scale data.
+than that. Ideally, we should identify which components of slow
+queries can best explain this extra 500ms. To achieve this, we                                      IV. E VALUATION
+should first determine the extra time each components of the slow            We have deployed FOCUS in a global top search engine. During
+queries take. This step requires the desired time of each component to    one week in October, 1% of the provider’s queries are collected by
+compare. However, only t rather than its components is provided. In       our agent (as described in Section II-B). Overall, there are over 28
+order to tackle this problem, we exploit the fast queries to estimate     million query records.
+those components of t. For example, in Table I, for fast queries,            We first present the bottlenecks identified by FOCUS from those
+Tnet is 100ms and the SRT is 500ms. Compare with slow queries,            query records, and discuss our observations. Then we show the
+we see that while the SRT increases by 1000ms, Tnet increases by          further case studies on the results conducted by the operators of the
+400ms. We assume that each component is linearly increases as SRT,        search engine. It turns out that those bottlenecks successfully help the
+so that we can estimate that the increase of Tnet accounts for 40%        operators pinpoint some potential causes, and come up with solutions
+of the total increase of SRT. As a result, for t = 1000ms, which          to fix them. Last, we perform what-if simulation of these solutions.
+is 500ms longer than the SRT of fast queries, we can estimate the         In comparison, several ad hoc solutions are also simulated, some of
+increase of its Tnet as 500 ⇤ 40% = 200ms and finally we have             which were actually proposed by the operators before FOCUS. The
+its Tnet = 100 + 200 = 300ms. Similarly, we can estimate other            simulation results prove that the solutions focusing on the bottlenecks
+components of t, and they are shown in Table I.                           can improve SRT strikingly; conversely, the improvement of those ad
+   Based on the estimated components, we identify which components        hoc solutions are much less.
+can explain H of this extra 1300ms. H is a threshold of explanatory
+power. The rule of thumb is that H should neither be small (e.g.,         A. Results and Observations
+30%) nor over large (e.g., 90%), which can both lead to less helpful         FOCUS identify bottlenecks based on the real SRT requirement
+results. In our problem, we set H = 80% and it works well. The            of the search engine. The requirement focus on the 80th percentile
+last column in Table I shows the extra time each component of slow        of SRT. The desired SRT is not shown due to confidentiality. Under
+queries takes when comparing with that of estimated ones. Then,           this requirement, 75.4% of the queries are fast queries and the other
+according to Occam’s razor, the most succinct set of components,          24.6% are slow queries. As such, the gap to the requirement is =
+whose extra time is at least H ⇥ 1300ms, is the bottleneck                4.6% slow queries.
+components. In this example, the bottleneck components are Tnet              The bottlenecks identified are listed in Table II, ranked by the
+and Tembed . This is because the sum of their extra time is 425ms,        fraction of slow queries in each bottleneck (the column of %Slow
+longer than 500 ⇥ 80% = 400ms, and they also the most succinct            query). Each row displays one bottleneck, including the clusters,
+set (with two components) to satisfy the this condition.                  components, and other details. We now characterize some key
+   Actually, under the linear increasing assumption, explaining t is      observations from the results.
+equivalent to explaining the SRT of fast queries. For example, in            Observation 1: Focusing on the bottleneck clusters, we see
+Table I, if we try to explain why the SRT of slow queries is 1000ms       that they concentrate on different units of each factor. Particularly,
+longer than that of fast queries, we would get the same results. Hence,   bottleneck clusters do not always have bias on the worst units of
+                                                               TABLE II
+T HE B OTTLENECKS IDENTIFIED FROM ONE - WEEK QUERY RECORDS . E ACH ROW REPRESENTS ONE BOTTLENECK , INCLUDING ITS ID, THE BOTTLENECK
+  CLUSTER AND COMPONENTS . L AST THREE COLUMN ALSO SHOWS THE RELATIVE NUMBER OF FAST AND SLOW QUERIES (#FAST QUERY AND # SLOW
+                           QUERY ) AND THE FRACTION OF SLOW QUERIES IN THIS BOTTLENECK (%S LOW QUERY ). .
+                                       Bottleneck Clusters                          Bottleneck Components                                         #Fast                   #Slow               %Slow
+                ID
+                       CP         NS        #image        browser   ad     Tnet      Tsrv      Tdom     Tembed                                    query                   query               query
+                B1      *       worse         *             *       yes     X                                 X             X                      2.1%                       4.6%            68.8%
+                B2      *       worse       many            *        *      X                                               X                      3.4%                       7.0%            67.1%
+                B3      *       worse         *            U4        *      X                                               X                      3.8%                       6.1%            61.6%
+                B4      *       worse         *             *       no      X                                               X                      5.2%                       8.2%            61.0%
+                B5    good      worse         *             *        *      X                                               X                      4.1%                       5.9%            59.1%
+                B6    worse       *           *             *        *      X                                 X             X                      6.7%                       7.8%            53.9%
+                B7      *         *         many            *       yes     X                                 X             X                     10.9%                       5.7%            34.5%
+                B8      *         *           *            U1        *      X                                 X             X                     13.6%                       5.0%            26.9%
+                B9      *         *         many            *       no      X                                               X                     24.7%                       8.3%            25.1%
+                B10     *         *         many           U4        *      X                                               X                     22.8%                       6.9%            23.2%
+                B11   good        *         many            *        *      X                                               X                     23.0%                       6.2%            21.1%
+                B12     *         *         f ew            *       no      X                    X                          X                     19.4%                       5.0%            20.5%
+                B13   good        *           *            U4       no      X                                               X                     23.5%                       4.7%            16.5%
+                B14     *       better        *             *        *                           X                          X                     47.4%                       5.3%            10.0%
+                                                                                  n+1.9                                                n+0.8          n+0.4
+each factors. For example, for #image, many bottlenecks appear                                       #Query          %Slow query                                                    #Slow query               Split point
+                                                                                                                                                                              s1         s2              s3
+in #image = many rather than #image = more; as for CP ,
+
+
+
+
+                                                                                                                                                            #Slow Query
+                                                                                                                                     Pecentage
+                                                                                   #Query
+CP = good is more popular in bottlenecks. Since bottleneck clusters
+intend to find out at least slow queries, we take #image, CP and
+N S as examples to explain how slow queries are distributed.
+                                                                                       n                                              n                            n
+                                                                                             n                #Image               n+5.5                                  n                   #Image                    n+5.5
+                                TABLE III
+                                                                                                               (a)                                                                                 (b)
+T HE DISTRIBUTION OF SLOW QUERIES IN EACH FACTOR . T HE UNITS ARE
+                                                                                  n+1.2                                                n+0.9          n+0.4
+DIVIDED BY SPLIT POINTS s1, s2, AND s3 IN F IG . 8. T HE UNITS THAT HAS                              #Query          %Slow query                                                    #Slow query               Split point
+       APPEARED IN BOTTLENECK CLUSTERS ARE HIGHLIGHTED .                                                                                                                  s1        s2        s3
+
+
+
+
+                                                                                                                                                          #Slow Query
+                                                                                                                                      Pecentage
+                                                                                    #Query
+
+
+                       Unit1      Unit2       Unit3      Unit4
+            Factors
+                      [0, s1]    (s1, s2]    (s2, s3]   (s3, 1)
+                      f ewer      f ew       many        more
+          #image
+                        7%        27%         57%          9%                          n                                              n                            n
+                                                                                             n       Computing Power (ms)          n+7.3                                  n         Computing Power (ms)                n+7.3
+                      better      good        bad        worse
+             CP                                                                                                (c)                                                                                 (d)
+                       11%        44%        14%          31%
+                      better      good        bad        worse                    n+4.2                                                n+1.1          n+0.4
+             NS                                                                                      #Query          %Slow query                                                    #Slow query               Split point
+                       21%        18%         8%          53%
+
+
+
+
+                                                                                                                                                          #Slow Query
+                                                                                                                                                                                   s1 s2 s3
+   Table III gives the distributions of slow queries along the three
+                                                                                                                                      Pecentage
+                                                                                   #Query
+
+
+
+
+factor. As expected, the units of each factor, that appear in bottleneck
+clusters in Table II, also contain a large number of slow queries
+(highlighted cells). Now the question is why the slow queries are                      n
+                                                                                             n         Network status (ms)
+                                                                                                                                      n
+                                                                                                                                   n+8.5
+                                                                                                                                                                   n
+                                                                                                                                                                          n           Network status (ms)               n+8.5
+distributed like this. For each unit, we have #slow queries = #query                                           (e)                                                                                 (f)
+⇥ %slow query. As shown in Fig. 8 (a), (c), and (e), it is true that
+                                                                                Fig. 8. The distribution of queries, the percentage of slow queries, and slow
+as #image increases, and CP and N S become worse, the %slow                     queries in each factor. The spilt points divide each factor into four units, i.e.,
+query rise up. In other words, bad factors can impact SRT more                  [0, s1], (s1, s2], (s2, s3], and (s3, 1), as described in Section III-A.
+significantly. However, the #slow queries is mainly determined by
+#query. In Fig. 8, compare the left figures (#query) with the right ones        transmission time between users and search data centers. One should
+(#slow query), the distributions of slow queries are more similar with          pay more attention to troubleshoot their causes. In addition to the
+that of queries, other than that of the %slow query. This is because            slow access network of users, the search engine can be responsible
+the distribution of queries changes sharply, yet the %slow query only           for these problem as well. Further debugging is described latter in the
+varies in relative small range. As a result, slow queries are mainly            case studies. On the other hand, Tsrv and Tdom appear less frequently
+distributed to the popular units (high #query) other than the poor unit         in the bottleneck components. This implies that for some bottlenecks,
+(high %slow query), and so do bottleneck clusters. The split points             they are not critical for the slow SRT.
+in Fig. 8 have been introduced before in Section III-A. Note that as               We also calculate EP of the four components for all the slow
+CP and N S both have a long tails, their last units (i.e., units of             query, and their CDF is illustrated in Fig. 9. Focusing on the 80%
+worse) receive a substantial number of slow queries, and also appear            level, we can get that EP (Tembed ) = 83%, EP (Tnet ) = 46%,
+in the bottleneck clusters.                                                     EP (Tsrv ) = 23%, and EP (Tdom ) = 14%. These results, once
+   In addition, this observation also demonstrate that even for a single        again, prove that Tembed and Tnet are the most important reasons
+factor, where slow queries concentrate cannot be decide directly. It            for slow SRT. Additionally, an interesting phenomenon is that despite
+is far more complicated when multiple factors overlap each other.               that Tdom has the least EP in Fig. 9, Tdom appears in 4 bottlenecks
+   Observation 2: As for the bottleneck components in Table II,                 (B1, B6, B7, and B8). Whereas, Tsrv only shows up in 2 bottlenecks
+overall, Tembed , Tnet are the two dominated ones. They are the bot-            ( B12 and B14). The reason is that DOM load can be seriously
+tleneck components for every bottleneck, except Tnet missing B14,               affected by the factors of ad (B1 and B7), worse CP (B6), and
+where the N S = better. This indicates that the major constraints for           browsers of U 1 (B8), which turns out to be a set of old-fashion
+current SRT are the extra time introduced by images, and the network            browsers. On the other side, server process is basically independent
+of all these factors. Therefore, those queries with high EP (Tsrv ) are       Case 4 (B8): U 1 is a set of old-fashion browsers. Besides the
+evenly distributed among different clusters, which makes EP (Tsrv )        common bottleneck components Tembed and Tnet , U 1 also suffers
+small in each cluster.                                                     from long Tdom . It is due to both its low performance and the bad
+        1                                                                  compatibility, that hamper page code optimization. When compare
+                EP(Tnet)
+      0.9       EP(Tsrv)                                                   with other advanced browsers, U 1 has 65% longer Tdom . Actually,
+      0.8       EP(Tdom)
+                EP(Tembed)                                                 facing such browsers, operators’ hands are tied. Although operators
+      0.7                                                                  have already prepared pages with low overhead for U 1, but it seems
+CDF
+
+
+
+
+      0.6
+                                                                           not enough. To avoid U 1 impacting SRT, operators need to prepare
+      0.5
+      0.4
+                                                                           simpler pages with less overhead for U 1.
+      0.3                                                                     Above experience proves the value of FOCUS. The bottlenecks
+      0.2                                                                  identified by FOCUS can help the operators quickly focus on the
+        0.1%                 1.0%                10.0%        100.0%       right debugging directions, and arrive at the causes of slow SRT.
+                                    Explanatory Power
+                                                                           C. What-if Simulation
+       Fig. 9. CDF of explanatory power of different components.
+                                                                              Furthermore, we quantify the benefit of using FOCUS via a
+B. Case Study for Debugging Bottlenecks                                    series of what-if simulations. We simulate the SRT improvements of
+   By leveraging the bottlenecks in Table II, the operators from           different solutions, including the ones in the above case studies, that
+the search engine further debug along three directions. They finally       focus on the bottlenecks by FOCUS, and several ad hoc solutions.
+identify some causes and propose corresponding solutions.                  Some of these ad hoc solutions are proposed by the operators before
+   Case 1 (B1-B5): These bottlenecks shows that a plenty of slow           using FOCUS. By comparing their improvements, we demonstrate
+queries originate from N S = worse. Through further investigating,         that FOCUS is an effective tool for realizing the SRT requirement.
+the operators find out that other than the users’ slow access network,        1) Simulation Methodology: Given a solution, we first decide the
+the provider’s DNS is to blame as well. The DNS is responsible for         affected cluster after it is deployed. This is based on the constraints
+directing each query to a close data center. However, the DNS policy       and the characteristic of the solution. For example, the solution of
+is not always optimal. The main reason is that the DNS policy updates      “self-contained ad” in Case 3 can only affect the queries that trigger
+every two weeks, so that the DNS lacks the ability of choosing best        ad. Afterwards, in the affected cluster, the solution can improve a
+path in the face of realtime events, e.g., ISP network congestions and     particular SRT component according to the problem it intends to
+DDoS attack. To prove this, operators leverage another measurement         solve. For example, “self-contained ad” is designed to eliminate the
+by a client software of the search provider. The software is used by       blocking of DOM load introduced by ad, so it can improve Tdom .
+over 12,000,000 users every day. These users are widely distributed        Last, we divide the overall queries into two parts, one suffers from
+and also use the provider’s search engine. Every client downloads          the problem that the solution aims at, the other do not. We measure
+a 20KB image from a random search data center every hour. The              the difference of the components from the two parts, e.g., Tdom of
+data center is accessed via IP directly instead of following the DNS       the pages without ad is 41% shorter than that of the pages with
+direction. As the image costs negligible time of the data center to send   ad. In some cases, we also conduct offline control experiments to
+out, the download time can be deemed as network transmission time.         measure the difference. We use this measurement as the assumed, or
+Operators use this data to generate a speed map of all the search          estimated improvement of the solution. For example, according to the
+data centers every minute for every province. For a province, the          measurement, we assume that “self-contained ad” can improve Tdom
+fastest path is called ideal path. They compare the speed of the ideal     by 41%. All the solutions are simulated on the same query records.
+path with the path suggested by the DNS, and find out that only in            Table IV shows the simulation assumptions for each solution. The
+19% of the cases, the path specified by DNS is the optimal. For other      first four solutions are designed based on the output of FOCUS,
+cases, the ideal path can yield, on average, 26% faster download from      and their details have been described in the prior four case studies.
+search data centers. So, they believe that a dynamic DNS based on          In contrast, we also simulate another five ad hoc solutions without
+the speed map can, in principal, improve Tnet of worse N S greatly.        considering the bottlenecks given by FOCUS. Some of these solutions
+   Case 2 (B10): Many embedded images can inflate SRT greatly. An          were actually being considered by the operators for deployment in
+underlying reason is that the browser acquire these images only after      the studied search engine. Their descriptions are as follows.
+the result page is completely received from the server. This problem          • Reduce images. This solution intends to improve Tembed by
+seems unavoidable at first glance, but after noticing that U 4 is a set          simply limiting the number of embedded images of a page.
+of advanced browsers, the operators come up with a solution, called              Specifically, #images = more is not allowed. As a result,
+image pre-fetching, to solve the dilemma. The main idea is that after            original queries with #images = more can be changed to
+a query arrived, the server immediately responds the image URL list              queries with #images = many. The measurement shows that
+to the client, in the meanwhile it prepares the result page. By this             under #images = many, Tembed is on average 27% shorter
+means, the images can be fetched in advance and loaded into the                  than that under #images = more. Therefore, the assumed
+page when it is arrived. This function is only supported well by U 4.            improvement of the solution on Tembed is 27%.
+An offline experiment shows that it can improve Tembed by 20%.                • Disable DAT. About 11% users experience an advanced page
+   Case 3 (B1, B7): These two bottlenecks suggest that ad can                    effect, called “display as typing”, or DAT for short. It auto-
+increase Tdom obviously. Though further debugging, the operators                 matically exhibits the result pages after each query has been
+find out that the page with ad usually includes some external                    typed. This kind of frequent page loading can bring in high
+resources, which can block the DOM load. A comparison with ad                    transient computing overhead, and based on the measurement,
+free pages shows that ad can delay Tdom by 41% on average. A                     it can noticeably affect Tdom for CP = worse, about 38%
+possible solution is to eliminate the external dependency, and make              longer. This solution is turning DAT off for CP = worse.
+ad code self-contained.                                                          The measurement shows that, 5% queries from CP = worse
+    trigger DAT. So the affected cluster of disabling DAT is 5% of        are not. In particular, solutions of “Reduce images” is deployed on
+    CP = worse.                                                           #image = more, which is not a bottleneck cluster. As a result,
+  • Complete IP Dictionary. The DNS direct queries based on               though “Reduce images” and “Image pre-fetching” are both designed
+    an IP dictionary. Unfortunately this dictionary is incomplete.        to improve Tembed , and the former even has a higher improving
+    The query, whose IP is not in the dictionary, is directed to          percentage, the results in Fig. 10 shows that “Reduce images” is
+    a default data center, which can be less than optimal. The            much less effective than “Image pre-fetching”. This demonstrates the
+    measurement proves that the average Tnet of queries hitting           importance of bottleneck clusters for improving SRT. Additionally,
+    the dictionary is 36% shorter than those missing the dictionary.      “Disable DAT”, “Complete IP Dict.”, and “Improve CDN cache”
+    This solution aims at completing the dictionary. As a result, if      only affect a small part of the bottleneck clusters, they thus cannot
+    a query originally misses the dictionary, we reduce its Tnet by       accelerate too many slow queries either.
+    36% to simulate the improvement of the complete dictionary.
+    According to the measurement, dictionary miss happens to 9%                             40%
+
+
+
+
+                                                                          % of Completion
+                                                                                                                        Source: FOCUS
+    of N S = worse and 4% of other N S. These are the affected                              30%
+                                                                                                                         Source: ad hoc
+    clusters for this solution.                                                             20%
+  • Improve CDN cache. The CDN is an effective infrastructure
+                                                                                            10%
+    to decrease Tembed . Besides its close location to users, it can
+                                                                                            0%
+    further accelerate the download speed of images by caching
+
+
+
+
+                                                                                                  D
+
+                                                                                                  Im
+
+                                                                                                  Se
+
+                                                                                                  Si
+
+                                                                                                  R
+
+                                                                                                  D
+
+                                                                                                  C
+
+                                                                                                  Im
+
+                                                                                                  Fa
+                                                                                                    yn
+
+
+
+
+                                                                                                    ed
+
+                                                                                                    is
+
+                                                                                                    om
+    them. In fact, the cache hit rate is around 90%, and it turns
+
+
+
+
+                                                                                                     m
+                                                                                                     ag
+
+
+
+
+                                                                                                     pr
+
+                                                                                                     st
+                                                                                                      lf-
+
+
+
+
+                                                                                                       en
+                                                                                                        pl
+                                                                                                        am
+
+
+
+
+                                                                                                        uc
+
+
+
+
+                                                                                                         ov
+                                                                                                          co
+
+
+
+
+                                                                                                          pl
+                                                                                                          e
+
+
+
+
+                                                                                                          ad
+                                                                                                           e
+
+
+
+
+                                                                                                           ab
+                                                                                                             e
+
+
+
+
+                                                                                                             et
+                                                                                                             pr
+
+
+
+
+                                                                                                             e
+                                                                                                             nt
+                                                                                                              ic
+
+
+
+
+                                                                                                               Pa
+    out that the cache miss can add 50% extra time for Tembed .
+
+
+
+
+                                                                                                               pr
+                                                                                                                le
+                                                                                                                im
+
+
+
+
+                                                                                                                e
+
+
+                                                                                                                 C
+                                                                                                                 e
+
+                                                                                                                 ai
+                                                                                                                 D
+
+
+                                                                                                                   -fe
+
+
+
+
+                                                                                                                   oc
+                                                                                                                   ge
+
+
+
+
+                                                                                                                   IP
+
+                                                                                                                   D
+                                                                                                                    ne
+
+
+
+
+                                                                                                                    D
+                                                                                                                    ag
+                                                                                                                    N
+
+
+
+
+                                                                                                                     N
+                                                                                                                      AT
+
+
+
+
+                                                                                                                      es
+                                                                                                                      S
+
+                                                                                                                       tc
+
+
+
+
+                                                                                                                       D
+                                                                                                                        d
+    So this solution tries to improve the CDN cache hit rate. We
+
+
+
+
+                                                                                                                        es
+
+
+
+
+                                                                                                                         ca
+                                                                                                                          hi
+
+
+
+
+                                                                                                                          ic
+
+
+
+
+                                                                                                                           s
+                                                                                                                           ad
+                                                                                                                             ng
+
+
+
+
+                                                                                                                             t.
+
+
+                                                                                                                              ch
+    assume the ideal situation of no cache miss, which means that
+
+
+
+
+                                                                                                                                 e
+                                                                          Fig. 10. Individual simulation result of each solution. Each bar represents
+    10% queries can yield a 50% reduction in Tembed . These 10%           the percentage of requirement completion of a solution.
+    queries are randomly selected from the whole queries.
+                                                                             The second reason is whether the improved components is the
+  • Fast ad process. If a query triggers ad, the server needs a
+                                                                          bottleneck components. We see that “Fast ad process” is deployed
+    little more time to prepare the content. This solution focuses
+                                                                          for ad = yes, which indeed covers bottleneck clusters. Whereas, it
+    on decreasing the extra Tsrv for ad. Our measurement shows
+                                                                          tries to improve Tsrv , which is not in the bottleneck components.
+    that ad can increase Tsrv by 5% when comparing with ad free
+                                                                          This indicates that Tsrv only accounts for a small part of slow SRT.
+    queries. As such, the simulation of the solution is to reduce Tsrv
+                                                                          The point is further verified by the real measurement. It shows that
+    by 5% for queries that trigger ad.
+                                                                          the Tsrv with and without ad only differs by 5%, and improving
+                              TABLE IV
+           T HE SIMULATED SOLUTIONS AND THEIR ASSUMPTIONS .
+                                                                          Tsrv is thus less worthy here. On the contrary, “Self-contained ad” is
+                                                                          deployed on the same cluster, but it targets at Tdom , which turns out
+                                      Affected       Improved   Assumed   to be a bottleneck component. As expected, the measurement shows a
+ Sources          Solutions
+                                      Clusters      SRT Comp    Imprv %
+                                                                          high improving percentage for “Self-contained ad”, i.e., 41%. Finally,
+                Dynamic DNS           NS=worse       Tnet        26%
+              Image pre-fetching     browser=U4     Tembed       20%      “Self-contained ad” performs much better than “Fast ad process” in
+ FOCUS
+               Self-contained ad       ad = yes      Tdom        41%      the simulation.
+                 Simple Page         browser=U1      Tdom        65%
+                                                                             3) Results of Combined Solutions: Although the solutions from
+               Reduce images        #image=more     Tembed       27%
+               Disenable DAT       5% of CP=worse    Tdom        38%      FOCUS present much more effectiveness than the ad hoc ones, the
+  Ad hoc      Complete IP Dict.
+                                   9% of NS=worse
+                                                      Tnet       36%      results in Fig. 10 suggest that they cannot realize the requirement
+                                   4% of NS=other
+             Improve CDN cache       10% of (*)     Tembed       50%
+                                                                          individually. This is because even in the same bottleneck cluster, the
+               Fast ad process        ad = yes       Tsrv         5%      slow queries are caused by different SRT components. As such, a
+   To compare the effectiveness of different solutions, we adopt          solution, improving only one component, can hardly accelerate all
+a criterion, called the percentage of requirement completion. As          the slow queries in the bottleneck cluster.
+described earlier, another       = 4.6% slow queries need to be              In practice, many solutions are deployed simultaneously to improve
+accelerated to satisfy the requirement. In the simulation, solution i     SRT. Therefore, we also simulate the effectiveness of combined
+can accelerate Ni slow queries. Therefore, we define the percentage       solutions. As the improvements of those ad hoc solutions are relative
+of completion of solution i as Ni / . It indicates how much the           small, we only simulate the combinations of solutions from FOCUS,
+requirement has been achieved by solution i, and can be used to           i.e., the first four solutions in Table IV. We evaluate the situation of all
+measure the effectiveness of solution i. We conduct two types of          the four solutions deployed simultaneously, as well as the situations of
+simulations, one is simulating the individual deployment of each          any three of them working together. The results are shown in Fig. 11.
+solution, and the other is for combined solutions.                        For the case of four solutions deployed together, the percentage of
+   2) Results of Individual Solution: The individual result of each       requirement completion is 113%, implying that the requirement has
+solution is shown in Fig. 10. Overall, we see that the first four         been better achieved. If three of them are deployed, the requirement
+solutions, designed according to FOCUS, yield a relative high             cannot be fully satisfied, but the results are still reasonably good,
+percentages of requirement completion, ranging from 25% to 36%.           ranging from 80% to 92%. When comparing this result to those ad
+On the other hand, the other five ad hoc solutions achieve much less,     hoc solutions in Fig. 10, we find that requirement completion of
+only from 1% to 12%. The reasons are two folds:                           FOCUS based solutions is four times higher than those ad hoc ones.
+   The first one is whether the affected clusters are the bottleneck         In summary, without the outcome of FOCUS, one might come up
+clusters. In Table IV, we see that the affected clusters of the first     with any solutions. At first glance, they all seem like promising. Yet,
+four solutions are the bottleneck clusters, which ensure at least         from the simulation results, we see that the solutions, focusing on
+slow queries. Conversely, the affected clusters of the ad hoc solutions   the bottlenecks, can work more effectively.
+                  120%
+% of Completion
+                  100%
+                                                                                        successfully help the operators locate four main causes of slow
+                  80%
+                                                                                        SRT, which, without FOCUS, would have been the needles in a
+                  60%                                                                   haystack. Our what-if simulation also proves that, for the given SRT
+                  40%                                                                   requirement, the solutions focusing on those bottlenecks are much
+                  20%                                                                   more effective than ad hoc ones.
+                   0%                                                                      As far as we know, FOCUS is the first work towards systematically
+                         All   With       With       With        With
+                                    out Dy     out        out         out               debugging slow SRT. Since both the data collection and analysis
+                                           nam Image          Self
+                                                                   -con
+                                                                           Sim
+                                                                               ple
+                                               ic D
+                                                    NS
+                                                         pre-
+                                                              fetc      tain       P
+                                                                             ed a age
+                                                                                        methodology of FOCUS are general, FOCUS can be easily applied
+                                                                   hing          d
+                                                                                        to other search engines as well.
+Fig. 11. Simulation results of combined solutions ( from FOCUS). The bar                                          ACKNOWLEDGEMENT
+of ”All” is the result of all the four solutions combined together. The other
+four bars represent the results of combining any three of the four solutions,              This work was supported by the National Natural Science Founda-
+where the label of X axis indicates the omitted one.                                    tion of China (NSFC) under Grant No. 61472214, the National Key
+                                                                                        Basic Research Program of China (973 program) under Grant No.
+                               V. R ELATED W ORK                                        2013CB329105, the State Key Program of National Science of China
+   Web acceleration. Many efforts have been put into the improve-                       under Grant No. 61233007, the National Natural Science Foundation
+ment of web page load, which can also benefit SRT, such as TCP fast                     of China (NSFC) under Grant No. 61472210, the National High
+open [16], TCP timeout mitigation [5], host name pre-resolving and                      Technology Development Program of China (863 program) under
+TCP pre-connecting [6], [7], CDN technologies [8], [9] and front-end                    Grant No. 2013AA013302.
+architecture [10], [11]. While these approaches can accelerate some
+                                                                                                                       R EFERENCES
+aspects of SRT, our work focus on revealing the bottlenecks of slow
+SRT and help operators debug the problem. We argue this job is the                       [1] Search     engine.             http://googleresearch.blogspot.com/2009/06/
+                                                                                             speed-matters.html/.
+step before deploy any acceleration methods.                                             [2] Yingying Chen, Ratul Mahajan, Baskar Sridharan, and Zhi-Li Zhang. A
+   Web performance analysis. To help locate reasons of slow web                              provider-side view of web search response time. In SIGCOMM 2013.
+page, some researchers have built elaborate tools. For example, [17],                    [3] Speed        matters.                   http://www.sportrichlist.com/top10/
+[18] leverage browser instrumenting techniques to demystify the page                         best-search-engines-in-the-world/.
+                                                                                         [4] Eric Schurman and Jake Brutlag. The user and business impact of server
+objects loading dependency. [19] seeks the bottleneck of page load                           delays, additional bytes, and http chunking in web search. In Velocity
+time from the home gateway. Also, there are many other tools such                            Conference Talk, 2009.
+as online services [20], [21] and browser plugins [22], [23] that can                    [5] Tobias F., Nandita D., et al. Reducing web latency: the virtue of gentle
+help providers debug the page load time. However, neither these                              aggression. In SIGCOMM 2013. ACM.
+                                                                                         [6] E. Cohen and H. Kaplan. Prefetching the means for document transfer:
+active measurements can deploy at a large scale, nor they can reveal
+                                                                                             a new approach for reducing web latency. In INFOCOM 2000.
+the experience of real users. As a result, they are not feasible for                     [7] Srikanth S., Nazanin M., Nick F., and Renata T. Accelerating last-mile
+debugging slow SRT from the perspective of search providers.                                 web performance with popularity-based prefetching. CCR, 42(4), 2012.
+   SRT and debugging. [2] conducts a research for understanding                          [8] Ao-Jan Su, David R Choffnes, Aleksandar Kuzmanovic, et al. Drafting
+SRT variations from the provider side view. They attempt to diagnose                         behind akamai (travelocity-based detouring). CCR 2006.
+                                                                                         [9] Ao-Jan S. and A. Kuzmanovic. Thinning akamai. In IMC 2008.
+the significant change of SRT, but their empirical decision logic is                    [10] Yingying Chen, Sourabh Jain, Vijay Kumar Adhikari, and Zhi-Li Zhang.
+not general. Many papers performs debugging in network [24], [25]                            Characterizing roles of front-end servers in end-to-end performance of
+and ad system [15]. The solution of [15] inspirits our definition of                         dynamic content distribution. In SIGCOMM 2011.
+bottleneck components. Besides, machine learning is a general and                       [11] Adam Lazur. Building a billion user load balancer. In Velocity Web
+                                                                                             Perfomance and Operations Conference. O’REILLY, 2013.
+effective tool. Especially unsupervised learning (e.g., k-means and                     [12] Cristian E., Stefan S., and George V. Automatically inferring patterns
+DBSCAN [26]) can identify patterns of data automatically and seems                           of resource consumption in network traffic. In SIGCOMM 2003.
+feasible for our problem. However, they involve several obstacles.                      [13] http://www.nngroup.com/articles/response-times-3-important-limits/.
+In addition to the drawback of specifying intrinsic parameters, the                     [14] Pagespeed. https://developers.google.com/speed/docs/insights/mobile.
+                                                                                        [15] Ranjita B., Rahul K., Ramachandran R., George V., Surjyakanta M.,
+clusters they identified do not have clear boundary along each
+                                                                                             Hemanth M., and Piyush S. Adtributor: revenue debugging in advertising
+dimension and are usually represented by their centroid and deviation                        systems. In NSDI 14.
+level, thus difficult to interpret. Instead, we take advantage of another               [16] Sivasankar Radhakrishnan, Yuchung Cheng, Jerry Chu, Arvind Jain, and
+approach, i.e., hierarchical heavy hitter(HHH) [12], which can lead                          Barath Raghavan. Tcp fast open. In CoNext 2011.
+to more meaningful results.                                                             [17] Xiao Sophia W., Aruna B., Arvind K., and David W. Demystifying page
+                                                                                             load performance with wprof. In NSDI 2013.
+                                                                                        [18] Zhichun Li, Ming Zhang, Zhaosheng Zhu, et al.                  Webprophet:
+                                VI. C ONCLUSION                                              Automating performance prediction for web services. In NSDI 2010.
+   Search response time (SRT) is a very critical KPI for search                         [19] Srikanth S., Nick F., T., et al. Measuring and mitigating web performance
+                                                                                             bottlenecks in broadband access networks. In IMC 2013.
+engines. Milliseconds increase in SRT can lead to millions of searches
+                                                                                        [20] Google page speed. https://developers.google.com/speed/pagespeed/.
+lost. In order to improve SRT, debugging slow SRT is indispensable                      [21] Web page test. http://www.webpagetest.org/.
+as the first step. But so far, it has not been explored very much.                      [22] Firebug. getfirebug.com/.
+In this paper, we propose FOCUS, a systematic framework to                              [23] Chrome developer tools. https://developer.chrome.com/devtools.
+automatically identify bottlenecks of slow SRT. We collect diverse                      [24] He Yan, Lee Breslau, Zihui Ge, Daniel Massey, Dan Pei, and Jennifer
+                                                                                             Yates. G-rca: a generic root cause analysis platform for service quality
+impact factors and SRT components, and use HHH and explanatory                               management in large ip networks. Networking, Transactions on, 2012.
+power to pinpoint the bottlenecks. With FOCUS narrowing down the                        [25] Paramvir B. et al. Towards highly reliable enterprise network services
+debugging space, operators can further investigate the root causes of                        via inference of multi-level dependencies. In CCR 2007. ACM.
+slow SRT in a more specific direction. We deploy FOCUS in one                           [26] Martin Ester, Hans-Peter Kriegel, et al. A density-based algorithm for
+                                                                                             discovering clusters in large spatial databases with noise. In KDD, 1996.
+of global top search engines. The bottlenecks provided by FOCUS
+

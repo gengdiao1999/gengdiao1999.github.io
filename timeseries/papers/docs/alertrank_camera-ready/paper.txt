@@ -1,0 +1,804 @@
+               Automatically and Adaptively Identifying
+               Severe Alerts for Online Service Systems
+                           Nengwen Zhao†k , Panshi Jin‡ , Lixin Wang‡ , Xiaoqin Yang‡ , Rong Liu§ ,
+                                       Wenchi Zhang¶ Kaixin Sui¶ , Dan Pei∗†k
+                    † Tsinghua University ‡ China Construction Bank § Stevens Institute of Technology ¶ BizSeer
+                       k Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+
+   Abstract—In large-scale online service system, to enhance the                                     #Alerts in total        #Alerts per day
+quality of services, engineers need to collect various monitoring
+data and write many rules to trigger alerts. However, the number                           105
+
+
+
+
+                                                                                 #Alerts
+of alerts is way more than what on-call engineers can properly                             104
+investigate. Thus, in practice, alerts are classified into several pri-
+ority levels using manual rules, and on-call engineers primarily                           103
+focus on handling the alerts with the highest priority level (i.e.,                        102
+severe alerts). Unfortunately, due to the complex and dynamic                                    0   5       10         15    20      25       30
+nature of the online services, this rule-based approach results                                                Day of Month
+in missed severe alerts or wasted troubleshooting time on non-            Fig. 1: The number of alerts in a large commercial bank in a
+severe alerts. In this paper, we propose AlertRank, an automatic          given month (Y-axis is in logarithmic scale for clarity) [8].
+and adaptive framework for identifying severe alerts. Specifi-
+cally, AlertRank extracts a set of powerful and interpretable
+features (textual and temporal alert features, univariate and             levels, e.g., P1-critical, P2-error and P3-warning. These rules
+multivariate anomaly features for monitoring metrics), adopts             typically contain fixed threshold for KPIs (e.g., CPU utilization
+XGBoost ranking algorithm to identify the severe alerts out of            over 90% is P2-error, while exceeding 80% renders P3-
+all incoming alerts, and uses novel methods to obtain labels for
+                                                                          warning), keywords matching for logs (e.g., different keywords
+both training and testing. Experiments on the datasets from a top
+global commercial bank demonstrate that AlertRank is effective            like “warning”, “error” and “fail” indicate different severities)
+and achieves the F1-score of 0.89 on average, outperforming               and so on. In general, given the limited man power, on-call
+all baselines. The feedback from practice shows AlertRank can             engineers mainly focus on the alerts with top priority (called
+significantly save the manual efforts for on-call engineers.              severe alerts hereinafter), whose daily count can be still be
+                         I. I NTRODUCTION                                 in hundreds in bank C, before working on other alerts.
+                                                                             However, simple manual rules cannot sufficiently capture
+   Large-scale and complex online service systems, such as
+                                                                          the patterns of complex and interacting factors that influence
+Google, Amazon, Microsoft and large commercial banks,
+                                                                          the priorities of the alerts. Furthermore, it is labor intensive
+consist of thousands of distributed components and support
+                                                                          for engineers to manually define and maintain rules, because
+a large number of concurrent users [1]. To maintain high-
+                                                                          1) there are many types of alerts; 2) new types of alerts might
+quality services and user experience, these companies use
+                                                                          be added due to system changes; 3) engineers might have
+monitoring systems to collect various monitoring data from
+                                                                          different priority preferences [5]. As a result, in practice, above
+service components, for example, metrics/Key Performance
+                                                                          rule-based approach often results in missed severe alerts and
+Indicators (KPIs) [2], logs [1] and events [3]. Typically,
+                                                                          lengthened time-to-repair, or results in wasted troubleshooting
+engineers set up many rules to check the monitoring data
+                                                                          time on non-severe alerts. For example, in a dataset used in §IV
+and trigger alerts [4]–[6]. For example, if a selected metric
+                                                                          from bank C, the precision and recall for identifying severe
+exceeds a given threshold (e.g., CPU utilization exceeds 90%),
+                                                                          alerts is only 0.43 and 0.68, respectively.
+an alert is generated to notify on-call engineers. Then an on-
+call engineer examines this alert. If this alert is severe, an               To show the the damage of missed severe alerts, we
+incident ticket is created to initiate an immediate process of            present a real case in Fig. 2. There was a failure and related
+deep investigation and appropriate repair [7].                            immediate P2 alert at 10:14 which indicated the monitored
+   Unfortunately, in real world, these complex service systems            transaction response time increased to 500ms (exceeding a
+generate a large number of alerts continuously, way more                  threshold specified in a P2 rule). However, the engineers are
+than what resource-constrained on-call engineers can properly             busy handling P1 alerts thus this alert was not immediately
+investigate [5], [6], [8]. For example, Fig. 1 shows that                 handled. The failure went unnoticed until customers called to
+thousands of alerts are generated per day in a large commercial           complain at 10:45, wasting 31 minutes of repair time. Upon
+bank C (China Construction Bank) [8]. Therefore, in practice,             detailed investigation, multiple metrics (such as success rate,
+manual rules are used to classify alerts into different priority          transaction volume) all experienced some anomalies during
+                                                                          busy hours, based on which engineers thought there should has
+  ∗ Dan Pei is the corresponding author.                                  been a P1 alert, but there was no installed P1 rule that captured
+         Response time increases                        Localize root    on the output severity scores, so that engineers can investigate
+         to 500ms (P2-error).
+                                              Diagnose cause: database   the arrived alerts based on the guidelines given by AlertRank.
+                                              and repair                   The major contributions of this paper are the following:
+            10:14     10:20           10:45              11:20
+                                                                         • To the best of our knowledge, this paper is the first one that
+            Alert     Alert        User complaint       Recovery
+                                                                           proposes an automatic and adaptive approach for identifying
+Fig. 2: A missing failure case due to the unsuitable rule-based            severe alerts for online service systems.
+strategy.                                                                • We design a comprehensive set of features from multiple
+
+such a complex symptom. This case strongly demonstrates that               data sources to handle complex online services. These
+multiple features are needed to determine the appropriate alert            features include textural (topic [10] and entropy [11]) and
+priorities.                                                                temporal features (frequency, seasonality [12], count, inter-
+   Therefore, there is in an urgent need to design an effective            arrival time [13]) from alerts, and univariate and multivariate
+machine learning-based algorithm that fully utilizes multiple              anomaly features from metrics [14], which are interpretable
+features to identify severe alerts accurately, which can assist            and can further help engineers diagnose incidents.
+                                                                         • Different from traditional classification models, we formu-
+on-call engineers in differentiating high-priority severe alerts
+from non-severe alerts, in order to improve engineers’ work                late the problem of identifying severe alerts as a ranking
+efficiency as well as service quality. The challenges in design-           model, which can handle class imbalance and instruct engi-
+ing such an algorithm are summarized as follows.                           neers to repair which alert first [15].
+                                                                         • We novelly proposes to use historical tickets as the testing
+• Labeling overhead. With thousands of alerts arriving every
+                                                                           labels, and propose to use clustering-based approach (with
+   day, it is tedious to manually label the severity of each alert.        only cluster-level labels) to automatically assign severity
+• Large varieties of alerts. There are many types of alerts
+                                                                           score labels for all alerts as the training labels for ranking.
+   in practice, for example, application, network, memory and            • Experiments on real-world datasets show AlertRank is effec-
+   middleware. It would be labor intensive to manually define              tive with a F1-score of 0.89 on average. Furthermore, our
+   rules for determining the priority of each kind of alerts. An           real deployment demonstrates AlertRank can significantly
+   automatic approach can be extremely helpful.                            save the manual efforts for on-call engineers.
+• Complex and dynamic online service systems. Alert priority
+   in such a complex system is influenced by various factors.                                   II. BACKGROUND
+   Besides, large-scale online services are often under constant         A. Alert Management System
+   change, e.g., configuration change, software upgrade, which
+                                                                            Fig. 3 provides a high-level summary of an IT operations
+   may add new alerts. Therefore, the approach should be
+                                                                         ecosystem consisting of service architecture, monitoring sys-
+   adaptive to stay in tune with the dynamic environment.
+                                                                         tem, and alert management system [3]. The monitoring system
+• Imbalanced data. In general, only a small portion of alerts
+                                                                         collects various data (e.g., KPIs, logs and events) continuously
+   are considered severe. For example, in our experimental
+                                                                         from service components. To ensure service availability and
+   datasets, the ratio between non-severe and severe alerts is
+                                                                         stability, service engineers manually define many rules to
+   around 50:1 (§IV-A). Learning (e.g., binary classification)
+                                                                         check monitoring data and trigger alerts [5]. With alerts
+   from imbalanced data can be another challenge.
+                                                                         received, the alert management system processes them through
+   To tackle the above challenges, we propose an automatic               some common techniques, such as alert aggregation and corre-
+and adaptive framework named AlertRank for identifying se-               lation, to filter duplicated and invalid alerts. For the remaining
+vere alerts. AlertRank includes two components, offline train-           alerts, as introduced in §I, on-call engineers usually first exam-
+ing and online ranking. In offline training, to handle complex           ine alerts with high priorities (P1). If an alert is severe and hard
+online service, AlertRank extracts a set of interpretable features       to repair in time, an incident ticket is created [7]. However,
+from historical alerts and monitoring metrics to characterize            as mentioned in §I, the rule-based severity classification may
+the severities of alerts. The resolution records in historical           fail in practice. In this paper, we tackle the critical problem
+alerts are grouped into a very small number of clusters, each            of identifying severe alerts accurately and adaptively, so as to
+of which is labeled with a severity score by engineers. Then             assist engineers in fixing true severe alerts responsively and
+each historical alert is automatically assigned a severity score         preventing potential failures.
+(§III-A2), avoiding manual labeling.
+   Instead of simply classifying whether an alert is severe or           B. Data Description
+not, AlertRank formulates the problem of identifying severe                 1) Alert: Alert data, as the main data objects in our study,
+alerts as a ranking model, which can handle class imbalance              have multi-dimensional attributes. Table I presents an example
+and is user-friendly for engineers. Then the XGBoost ranking             alert with several major attributes. “Content” specifies the
+is utilized to train a ranking model [9]. Besides, an incremental        detailed information of the alert, and “Resolution Record”
+training pipeline is leveraged to make our model adapt to                records how the alert was resolved in detail, which usually
+dynamic environment. During online ranking, when alerts                  written by on-call engineers or generated by system automat-
+arrive, AlertRank extracts the features from current data and            ically. “Resolution Record” can be used to label a severity
+apply the trained ranking model to prioritize these alerts based         score for each alert, which will be introduced in §III-A2. We
+                              Service Users
+                                                                 Monitoring System                 Alert Management System
+
+         Service Components
+                                         Front End                                                                   Valid                                     Severe
+                              Storage      Job       Resource     Data                    Alerts       Alert         Alerts                                    Alerts
+                                                                             Monitoring                                        Diagnosis
+                              Manager   Scheduler    Manager    Collection                          Processing
+                                                                                                                                                       On-call
+                                    Compute & Storage            KPIs;                                                                                 Engineers             Tickets
+                                                                 Logs;
+                                                                                          Write Alert Rules                                  Contact
+                                                                 Events …                                           Service Engineers
+
+Fig. 3: Summary of the service architecture, monitoring system, alert management system and different people involved [3].
+
+will extract alert textual and temporal features from “Content”                                                                  Feature Extraction
+                                                                                                                                                                                Records
+and “Time” attributes respectively (§III-B).                                                                                                 • Textual
+                                                                                                                 Pre-
+                                                                                              Alerts                          Templates      • Temporal                                Score
+                                                                                                              processing
+                                                                                                                                             • Others
+                                                                                                                                                                   Feature      Ranking        Offline
+                                  TABLE I: An example alert.                                                                                                       Vector        Model         Learning
+                                                                                                                Data           Crucial       • Univariate
+            Time               Severity                Type                                    KPIs           Selection         KPIs         • Multivariate
+     2019-02-20 10:04:32       P2-error              Memory                                 Periodic Update
+         AppName                Server              Close Time
+                                                                                                               Feature         Feature         Ranking        Ranking                          Online
+          E-BANK              IP(*.*.*.*)      2019-02-20 10:19:45                            Online
+                                                                                                              Extraction       Vector           Model           List                           Ranking
+                                                                                               data                                                                           Operators
+                                  Content
+         Current memory utilization is 79% (Threshold is 60%).                                                             Fig. 4: AlertRank overview.
+                            Resolution Record
+     Contact the service engineers responsible for E-BANK and get a
+      reply that there is no effect on business, then close the alert.                    are obtained by resolution records in Table I, which will be
+                                                                                          introduced in §III-A2 in detail. In the online ranking, the
+   2) Key Performance Indicator: KPIs (Metrics) are another                               features extracted from incoming alerts and corresponding
+crucial data type in service management, which are collected                              KPIs are directly fed into the trained ranking model. The
+continuously at a fixed time interval, e.g., every minute, to                             model ranks the incoming alerts based on the output severity
+measure the health status of servers (e.g., CPU utilization)                              scores, so that on-call engineers can first examine alerts with
+or business (e.g., response time) [2], [16]. KPI anomalies                                higher severity scores. The alerts whose severity scores exceed
+(e.g., sudden spike or dip) may indicate some problems about                              a specific threshold is considered severe and the threshold is
+business and servers. In addition to alert data, we also extract                          chosen based on the performance on training set. In addition,
+KPI anomaly features from important business KPIs and server                              to make our model adaptive to the dynamic IT environment,
+KPIs to characterize the overall status of the system (§III-C).                           we build an incremental training pipeline where our model is
+   3) Ticket: In general, tickets are created either from alerts                          trained with latest data periodically so that changes can be
+or from failures. When investigating an alert, if engineers find                          captured properly in time.
+it is hard to fix the alert in time, or the alert has a significant                          2) Automatic Labeling: As discussed in §I, labeling over-
+business impact, they create a ticket from this alert so as to                            head is a big challenge for our problem. In AlertRank, we
+follow up with a repair process [7], [17], [18]. On the other                             novelly utilize the historical tickets and resolution records to
+hand, failures, e.g., the case in Fig. 2, are critical in service                         obtain the labels without manual efforts.
+management, because they directly affect service stability. A                                Binary label. The problem which this paper aims to solve
+failure is usually reported by users or discovered by service                             is identifying severe alerts. Thus we need give each alert a
+engineers, instead of being reported by any alerts in advance.                            binary label (severe/non-severe) for evaluation (§IV-B). As
+Engineers will create a ticket and repair the failure quickly.                            stated in §II-B3, each alert can be labeled as severe or non-
+Often, when diagnosing a failure and localizing its root cause,                           severe according to whether it is associated with a ticket.
+engineers may find some early alerts which have been ignored                                 Continuous label. To train the ranking model, we also label
+by mistake (e.g., alert in Fig. 2). Thus, we can determine the                            each alert with a specific severity score (between 0 and 1)
+alert is severe or not by whether it is associated with a ticket.                         based on its resolution record, which is more comprehensive
+                                                                                          than simple binary label. It is because that the real severity
+                                              III. D ESIGN
+                                                                                          of each alert varies in all severe/non-severe alerts. As stated
+A. Overview                                                                               in §II-B1, resolution records are written by on-call engineers
+   1) AlertRank Overview: Fig. 4 illustrates the architecture                             or generated by system automatically. In general, there are
+of AlertRank. In the offline learning module, inspired by the                             several different types of resolution records which indicate
+idea of multi-feature fusion, we carefully extract a set of                               different severities. We adopt TF-IDF vectorization [11] and
+interpretable features from historical alerts (textural and tem-                          k-means [19] to cluster resolution records, and the value of k is
+poral features) and KPIs (univariate and multivariate anomaly                             determined by silhouette coefficient (k=7) [20]. The clustering
+features), based on domain knowledge in our context. Then                                 centroids are presented in Fig. 5 and experienced engineers
+a ranking model is constructed with the popular XGBoost                                   give a severity score for each cluster. In this way, each alert
+ranking algorithm [9]. The severity scores used for training                              can be automatically assigned a severity score based on its
+1.   None. (0; 65.1%)                                                                                    Alert Contents:
+2.   This alert is in white list. (0.1; 4.2%)                                                            A1: Memory utilization current value is 67%. It exceeds the threshold.
+3.   This alert has been recovered automatically. (0.2; 7.8%)                                            A2: TCP CRITICAL - 0.7 second response time on port 3306.
+4.   Contact the service engineers and there is no effect on business. (0.4; 10.6%)
+5.   Known reasons. This alert has been resolved. (0.6; 6.4%)
+                                                                                                         A3: The number of processes is abnormal (instance: TimeoutCtrl), current value is 0.
+6.   Contact the service engineers and there is an effect on business. Already resolved. (0.8; 3.8%)     A4: TCP CRITICAL - 0.8 second response time on port 3302.
+7.   Create a ticket. (1; 2.1%)                                                                          A5: Memory utilization current value is 73%. It exceeds the threshold.
+
+                                                                                                         Alert Templates:
+Fig. 5: The clustering centroids of dataset in bank C and the                                            T1: Memory utilization current value is *. It exceeds the threshold.
+                                                                                                         T2: TCP CRITICAL - * second response time on port *
+corresponding (severity score; percentage).                                                              T3: The number of processes is abnormal (instance: *), current value is *.
+
+                                                                                                                Fig. 6: Explanation of alert template extraction.
+resolution record, so as to save considerable manual efforts.
+Besides, during our study of the 18-month-long dataset, we                                             well with documents consisting of rich text, while our alert
+observe that the patterns of resolution records generally remain                                       text is usually very short. Thus, we adopt Biterm Topic
+unchanged unless new on-call engineers are involved.                                                   Model (BTM) [10], an algorithm designed specifically for
+B. Alert Features Extraction                                                                           short texts, which has shown better performance than LDA
+                                                                                                       in short texts. BTM explicitly models the word co-occurrence
+   1) Alert Preprocessing: Before extracting alert features, we                                        patterns (i.e., biterms), rather than documents, to enhance the
+first preprocess alert data as follows.                                                                topic learning [10]. Given a predefined number of topics,
+   Tokenization. The textual descriptions of alerts (“Content”                                         BTM discovers hidden topics and keywords corresponding
+in Table I) usually combine words and symbols (e.g., punc-                                             to each topic. The number of topics in our problem is
+tuation). Tokenization filters out these symbols and divides                                           selected based on coherence score (n topics=14), which is
+the remaining text into tokens. We further remove stop words,                                          a metric to evaluate the quality of extracted topics [24]. Fig. 7
+those highly frequent words like “to”, “are” and “is”, since                                           presents some examples of extracted topics and corresponding
+they are useless in identifying severe alerts.                                                         keywords from our experimental dataset. For example, we can
+   Alert parsing. The description of an alert is semi-structured                                       infer that T #1 and T #2 are related to oracle database and
+text generated by the monitoring system with two types of                                              syslog, respectively. BTM can output the probability that an
+information: a constant string that describes an abstract alert                                        alert belongs to each topic. Fig. 8(a) shows the relationship
+event, and parameters that record some system variables (e.g.,                                         between alert topics and severity scores, and we can observe
+IP address, KPI value, file path, instance name, etc.). A                                              that the alerts belonging to different topics indicate different
+common practice is parsing alerts which extracts the constant                                          severities. Considering that an alert may have mixture topics,
+string to form an alert template. For example, in Fig. 6, alerts                                       we utilize the output probabilities as topic features.
+A1 and A4 can fit into the template T1 and T2, respectively.
+The remaining parts are variables (the underscored text). Note                                          T#1: oracle, connection, database, space, pool, process, lock
+that it does not matter to ignore some KPI values (e.g., 67%                                            T#2: syslog, alert, error, stack, records, hardware, warning
+                                                                                                        T#3: monitor, environment, server, temporal, battery, power, voltage
+and 73%) since they are reflected in the rule-based severity
+                                                                                                        …
+(“Severity” in Table I).                                                                                T#13: unaccessible, export, response, packet, password, order, accounting
+   Parsing methods have been well studied in log data but have                                          T#14: switch, virtual, communication, connection, health, network, report
+not been applied in alerts. We adopt FT-tree [21], one of the
+state-of-the-art log parsing methods, to match each alert to                                           Fig. 7: Extracted topics by BTM and some corresponding
+a specific alert template. Based on the key observation that                                           representative keywords.
+a “correct” alert template is usually a combination of words                                              Entropy. Considering that alert is a bag of words and
+that occur frequently in alerts, FT-tree dynamically maintains                                         different words have different importance (entropy) in iden-
+a tree structure of such frequent words that implicitly defines                                        tifying severe alerts. For example, the word “timeout” is
+the set of alert templates. In addition to high accuracy, FT-tree                                      more informative than “port”. Therefore, in addition to topic
+is naturally incrementally retrainable, because this implicitly-                                       features, we also consider the entropy of each alert template.
+defined set of alert templates dynamically and incrementally                                           IDF (Inverse Document Frequency) is widely utilized in text
+evolves with the arrival of new types of alerts (e.g., due to the                                      mining to measure the importance of words, which down-
+aforementioned software upgrades) [21].                                                                grades frequent words while increasing the weights of rare
+   2) Textual Feature: After alert preprocessing, the semi-                                            words [11]. For each word, the IDF value is calculated as
+structured alerts are transformed into normalized templates.                                           IDF (w) = log NwN+1 , where N refers to the total number
+Then we extract some textual features from the alert templates.                                        of alerts and Nw is the number of alerts containing the word
+   Topic. Intuitively, each alert template can be regarded as a                                        w. Intuitively, if a word frequently appears in historical alerts,
+document describing one or more topics of IT operations. We                                            its discriminative power is much lower than the one that only
+can apply a topic model [22] to extract the hidden semantic                                            appears in a small number of alerts [1]. Based on the IDF of
+features. Many topic models have been proposed in the lit-                                             each word calculated from the P  training data, we can compute
+                                                                                                                                            IDF (w)
+erature, for example, Latent Dirichlet Allocation (LDA) [23].                                          the entropy of each alert as w #w            , where #w is the
+A conventional topic model, such as LDA, typically works                                               number of words in this alert. Fig. 8(b) shows the alerts with
+                                       (a)                                                               (b)                                                                     (c)                                                               (d)
+                                                                                1                                                                    0.4                                                                      0.3
+                  0.3
+ Severity score
+
+
+
+
+                                                             Severity score
+
+
+
+
+                                                                                                                                    Severity score
+
+
+
+
+                                                                                                                                                                                                             Severity score
+                                                                              0.8                                                                    0.3
+                                                                              0.6                                                                                                                                             0.2
+                  0.2                                                                                                                                0.2
+                                                                              0.4                                                                                                                                             0.1
+                  0.1                                                                                                                                0.1
+                                                                              0.2
+                   0                                                            0                                                                      0                                                                       0
+                                                                                        0         100           200          300                           0        0.01     0.02      0.03    0.04   0.05                          0   0.1 0.2 0.3 0.4 0.5 0.6
+                         1
+                         2
+                         3
+                         4
+                         5
+                         6
+                         7
+                         8
+                         9
+                        10
+                        11
+                        12
+                        13
+                        14
+                                     Topic                                                          Entropy                                                                 Frequency                                                          Seasonality
+                                      (e)                                                                (f)                                                                     (g)                                                               (h)
+                  0.3                                                         0.3                                                                    0.4
+                                                                                                                                                                                                                              0.3
+ Severity score
+
+
+
+
+                                                             Severity score
+
+
+
+
+                                                                                                                                    Severity score
+
+
+
+
+                                                                                                                                                                                                             Severity score
+                  0.2                                                         0.2
+                                                                                                                                                     0.2                                                                      0.2
+                  0.1                                                         0.1                                                                                                                                             0.1
+                   0                                                           0                                                                      0                                                                        0
+                        0    200      400        600   800                          0       200    400         600     800   1000                              P1                P2              P3                                 0    5       10      15    20
+                                   Alert count                                                Inter-arrival time(s)                                                  Rule-based severity                                                       Hour of day
+                                       (i)                                                               (j)                                                                     (k)
+                                                                              0.4                                                                    0.3
+                                                                                                                                                                                                                                             Severity score
+ Severity score
+
+
+
+
+                                                             Severity score
+
+
+
+
+                                                                                                                                    Severity score
+                  0.4                                                         0.3
+                  0.3                                                                                                                                0.2                                                                                     (categorical features)
+                                                                              0.2
+                  0.2                                                                                                                                0.1
+                  0.1                                                         0.1                                                                                                                                                            Severity score
+                                                                                                                                                                                                                                             (numeric features)
+                    0                                                           0                                                                     0
+                                                                                        0         0.2            0.4         0.6                           0               0.2           0.4          0.6
+                         p
+                        OS
+
+                                    t
+                                   DB
+
+                                              m
+                                             MW
+                                                       O
+
+
+
+
+                                                                                    Multivariate error of business KPIs                                    Multivariate error of server KPIs
+                              Ne
+                        Ap
+
+
+
+
+                                         Me
+
+
+
+
+                                      Type
+Fig. 8: The qualitative relationship between severity scores and some representative features. The severity scores are
+automatically obtained based on resolution records (§III-A2).
+
+high entropies are more likely to be severe.                                                                                              current alert) [13]. Intuitively, engineers need to pay more
+   3) Temporal Feature: In addition to textual features, tempo-                                                                           attention to alerts that burst within a short time window
+ral features derived from alert time should also be considered.                                                                           (Fig. 8(e)). Besides, we also consider the numbers of alerts
+   Frequency. Some alerts, such as CPU overload, occur                                                                                    with different severity levels during this time window.
+frequently, while others, such as device outages, occur rarely.                                                                              Inter-arrival time. The inter-arrival time is defined as the
+Fig. 8(c) demonstrates the relationship between frequencies                                                                               time interval between an alert and its proceeding one [13].
+and severity scores. In general, alerts with low frequencies                                                                              Clearly, if an alert suddenly breaks out after a system has
+are more likely to be severe. Thus, the frequency of each alert                                                                           been running without alerts for a long time (long inter-arrival
+can be indicative to determining whether an alert is severe.                                                                              time), it may be severe and need more attention (Fig. 8(f)).
+   Seasonality. Based on our observation, some alerts occur
+quasi-periodically. For example, running a batch task every                                                                                  4) Other Features: In addition to these carefully designed
+night may cause CPU and disk alerts. Intuitively, seasonal                                                                                features described above, we also adopt some simple features
+alerts are less informative than irregular ones. For one alert                                                                            directly from the attributes of alert data (Table I).
+a, we obtain a time series C(a) = {c1 (a), c2 (a), · · · , ch (a)},
+where ck (a) is the number of occurrences of alert a in the                                                                               • Rule-based severity. Fig. 8(g) shows the relationship be-
+k-th time bin and h is the number of time bins. Here the time                                                                               tween the real severity scores and rule-based severity levels.
+bin is set to 15 minutes. Clearly, if a is a seasonal alert, C(a)                                                                           It is intuitive that both P1 and P2 alerts tend to have higher
+is a periodic time series.                                                                                                                  severity scores, thus it is unreasonable to focus only on P1
+   In our approach, we adopt Autocorrelation Function (ACF),                                                                                alerts while ignoring P2. However, we can still utilize the
+one of the most popular time series periodicity detection                                                                                   original severity as a feature.
+techniques, to characterize the periodicity of the alert [25],                                                                            • Alert time. Clearly, the alert time has an influence on
+[26]. In detail, given a time series x with length N and                                                                                    the importance of the alert. For example, as depicted in
+different lags l, we have                                                                                                                   Fig. 8(h), alerts that occur during busy hours (9:00-11:00
+                   PN −1                                                                                                                    and 14:00-16:00) are more severe compared with those
+                          x(i)x(i + l)                                                                                                      that occur at night. Therefore, we adopt three features to
+     ACF (l) = i=0                     , l = 1, 2, · · · , N 2−1 (1)
+                            N                                                                                                               characterize the occurrence time of an alert, i.e., during busy
+It is clear that if the time series is periodic with length                                                                                 hours or not, day or night, weekday or weekend.
+T , the autocorrelation becomes high at certain lags, i.e.,                                                                               • Type. We also notice that alert types have impact on their
+T, 2T, 3T, · · · . Therefore, a larger ACF (l) implies a stronger                                                                           severity levels. Fig. 8(i) shows the average severity scores
+seasonality. We use the maximum value of ACF (l) as the                                                                                     under several different types of alerts (application, operating
+final seasonality feature. We can observe from Fig. 8(d) that                                                                               system, network, memory, middleware and others). It is
+larger seasonality value tends to have low severity score.                                                                                  evident that application alerts tend to have higher severity
+   Alert count. We define alert count as the number of alerts                                                                               scores, perhaps because these alerts are more closely related
+that occur during a time window (e.g., 30 minutes before the                                                                                to service reliability and user experience.
+                                                                                               TABLE II: Features used in AlertRank.
+                                                Output Vector
+                                                        𝑥"%'                        Feature Type      Feature Name                              #Feature
+                                                                                    Alert Textural    BTM Topics (14), Entropy (1)              15
+                                           Fully Connected Layer                    Alert Tempo-      Frequency (1), Seasonality (1),
+                                                                                                                                                7
+                                                                                    ral               Alert count (4), Inter-arrival time (1)
+                                           Fully Connected Layer
+                                                                                    Alert             Original severity (1), Alert time (3),
+                                                                                                                                                5
+                                    LSTM          LSTM           ...   LSTM         Attributes        Type (1)
+                                                                                                      Univariate anomaly (11), Multivari-
+                                       𝑥"#$%'           𝑥"#$%&                𝑥"
+                                                                                    KPI Anomaly                                                 13
+                                                                                                      ate anomaly (2)
+                                                Input Vector
+                                                                                      Feature Engineering Summary. In conclusion, Table II
+ (a) An example of business KPIs.          (b) LSTM model.
+                                                                                   summarizes a total of 40 features adopted in AlertRank.
+        Fig. 9: Illustration of KPI features extraction.                           We design these features based on careful data analysis and
+                                                                                   discussion with experienced engineers, thus these features are
+C. KPI Features Extraction
+                                                                                   associated with rich domain knowledge. If AlertRank will be
+   In addition, since KPIs can characterize the health status of                   applied in other scenarios, some new features may need to
+servers and applications [27], we incorporate KPIs to capture                      be introduced into our model, but the core idea and pipeline
+the alert severity better. Note that although business KPIs and                    of AlertRank is generic. Based on our feature engineering
+server KPIs can directly trigger alerts, these alerts alone cannot                 study, we find that the relationships between alert severity
+describe the health status of systems accurately, because they                     and various features are remarkably complex (Fig. 8). This
+are generated based on simple threshold rules. Thus, in this                       also explains why a simple rule-based strategy cannot identify
+study, we try to design a more accurate and generic method to                      severe alerts accurately. For example, the alert in Fig. 2 is
+capture the KPI anomalies. In particular, we believe attention                     classified into P2, but KPI anomaly features and alert time
+should be given to those alerts that co-occur with anomalies                       will increase the severity of this alert. The effectiveness of
+of important business KPIs or server KPIs.                                         each kind of features will be demonstrated in §IV-C2.
+   However, usually a number of KPIs are measured to monitor
+a service, and it is time consuming for engineers to check all                     D. Ranking Model
+KPIs manually. In our approach, we choose some represen-                              AlertRank proposes a machine learning framework to in-
+tative business KPIs (response time, success rate, transaction                     corporate various features based on data fusion and learn a
+volume, processing time) and server KPIs (CPU utilization,                         ranking model to identify severe alerts. We novelly formulate
+I/O wait, memory utilization, load, network packets, the num-                      this problem as a ranking model, instead of binary classifica-
+ber of process, disk I/O) which are closely associated with                        tion, due to the following reasons. First, dichotomous results
+service availability and user experience, and adopt a multi-                       given by classification (severe/non-severe) are prone to false
+KPIs anomaly detection technique to accurately measure the                         positives or false negatives. In particular, false negatives make
+overall status of business and servers. Fig. 9(a) presents an                      some potential failures undetected, leading to downgraded
+example of three important business KPIs of a service, and                         service availability. However, ranking model can prioritize
+the pink bands denote the anomalies.                                               alerts based on severity scores and guide engineers to repair
+   We utilize the state-of-the-art multi-variate time series                       which alert first, which is more user-friendly. Second, ranking
+anomaly detection algorithm based on LSTM [14], [28].                              model can deal with class imbalance effectively [15]. The
+Compared to traditional recurrent neural networks (RNNs),                          effectiveness of ranking model will be presented in §IV-C3.
+LSTM has an improved capability to maintain the memory                                To train a ranking model, as introduced in §III-A2, each alert
+of long-term dependencies, because it uses a weighted self-                        is labeled a severity score automatically based on its resolution
+loop to accumulate or forget past information conditioned on                       record. There are three common ranking approaches, namely,
+its context [14]. Thus, it can learn the relationship between                      pointwise, pairwise and listwise [30]. In our problem, the
+past and current data values, and has demonstrated remarkable                      training data naturally comes as pointwise (each alert has a
+performance in various sequential data [29]. Fig. 9(b) presents                    severity score). Besides, the other two ranking approaches
+the LSTM structure in our approach. The input vector is the                        (e.g., LambdaMART [31]) only provide the relative order of
+time window {xt−w+1 , xt−w+2 , · · · , xt }, where xi is an m-                     alerts, and cannot output a specific severity score for each alert.
+dimension vector denoting the value of each important KPI at                       Therefore, we adopt the XGBoost pointwise ranking algorithm
+time i (e.g., m=3 in Fig. 9(a)). The goal is to predict the vector                 based on regression trees [9]. XGBoost is a gradient boosting
+xt+1 and the prediction error can be used to characterize the                      tree based model that is widely used by data scientists and
+degree of anomaly. In our model, we use the overall prediction                     achieves state-of-the-art performance on many problems [9].
+error and also the error on each dimension (univariate and                            In real practice, the alert management system receives many
+multivariate) as features. In Fig. 8 (j) and (k), we plot                          streaming alerts continuously, and on-call engineers tend to
+the relationship between severity scores and the normalized                        investigate alerts in batch at a regular interval (e.g., every 15
+overall prediction errors of business KPIs and server KPIs,                        minutes). Therefore, during online testing, the trained ranking
+respectively. We can observe that higher prediction errors                         model is applied to prioritize these incoming alerts based on
+indicate higher severity scores.                                                   the output severity scores every 15-minute interval. An alert
+is considered as severe if its predicted severity score exceeds       C. Evaluation Results
+a threshold, and the threshold is properly selected based on            1) RQ1: How effective is AlertRank in identifying severe
+its best performance on training set. In general, engineers first     alerts?
+examine the alerts with higher severity scores. Furthermore,            In order to demonstrate the effectiveness of AlertRank, we
+as we mentioned in §I, in order to adapt to dynamic online            compare it with two baseline methods.
+services, the ranking model is incrementally trained with the
+                                                                      • Rule-based. As introduced in §I, in practice, alerts are
+latest training data periodically.
+                                                                        separated into several severity levels (e.g., P1-critical, P2-
+                        IV. E VALUATION                                 error and P3-warning) based on rules. Usually, engineers
+                                                                        mainly focus on P1 alerts while ignoring P2 and P3 alerts.
+  In this section, we evaluate our approach using real-world          • Bug-KNN [32]. Identifying severe bug reports is a critical
+data and aim to answer the following research questions:                issue in software engineering. Bug-KNN utilizes K-Nearest
+• RQ1: How effective is AlertRank in identifying severe                 Neighbor (KNN) to search for historical bug reports that are
+  alerts?                                                               most similar to a new bug through topic and text similarity.
+• RQ2: How much can the alert features and KPI features
+  contribute to the overall performance?                              TABLE IV: Performance comparison between AlertRank and
+• RQ3: Is the ranking model adopted in AlertRank effective?           two baseline methods.
+• RQ4: Is the incremental training pipeline useful?                     Datasets          A               B              C
+                                                                        Methods       P   R    F1    P   R    F1    P   R    F1
+A. Datasets                                                            AlertRank     0.85 0.93 0.89 0.82 0.90 0.86 0.93 0.92 0.93
+                                                                       Rule-based    0.43 0.68 0.53 0.47 0.70 0.56 0.41 0.74 0.53
+   To evaluate the performance of AlertRank, we collect three          Bug-KNN       0.72 0.76 0.74 0.79 0.62 0.70 0.80 0.53 0.64
+real-world datasets named A, B and C from a top global
+commercial bank through its alert management system. Ta-                 Table IV shows the precision (P), recall (R) and F1-score
+ble III summarizes these datasets. Each dataset has a time            (F1) comparison between AlertRank and baseline methods.
+span of six months. These alerts have been cleansed by the            Clearly, AlertRank exhibits outstanding performance on all
+alert processing module in Fig. 3 to filter out duplicate and         datasets and achieves the F1-score of 0.89 on average, higher
+invalid one. As we mentioned in §III-A2, each alert is labeled        than other baseline methods. The results indicate that tradi-
+a binary class (severe/non-severe) by tickets for evaluation and      tional rule-based strategy is not effective, because whether
+a severity score by alert resolution records for training ranking     an alert is severe is influenced by various factors and simple
+model. We observe that each dataset contains an imbalanced            rules cannot capture all these factors. Besides, due to system
+mixture of severe and non-severe alerts, with a ratio about 1 :       complexity, it is difficult to set suitable rules, and each
+50. In our experiments (RQ1-RQ3), for each dataset, we use            engineer may have his or her own preference and knowledge
+alerts occurred in the first five months as training set, and the     to set rules [5]. In terms of Bug-KNN, it determines severe
+last one month without new alerts as testing set.                     alerts based on only the textual description of alerts. Clearly,
+                                                                      AlertRank, which incorporates both alert features (textual
+       TABLE III: Details about the experimental datasets.            and temporal) and KPI features achieves better performance.
+    Datasets         Time span          #Alerts   #Severe alerts      Furthermore, KNN is a lazy learner because it does not learn
+       A       2018/01/01∼2018/06/30    374940        7012            a discriminative function from the training data but computes
+       B       2018/07/01∼2018/12/30    429768        8482            the similarity between a new alert and all historical alerts. It
+       C       2019/01/01∼2019/06/30    390437        7445            suffers from extremely high computational complexity.
+                                                                         In summary, the results show that AlertRank is effective in
+B. Metric                                                             identifying severe alerts for online service systems.
+   As stated in §III-D, the trained ranking model is applied             2) RQ2: How much can the alert features and KPI
+to rank incoming alerts based on the output severity scores           features contribute to the overall performance?
+at a regular interval (e.g., 15 minutes). For each interval, an          AlertRank incorporates two types of features: alert features
+alert is considered as severe if its severity score exceeds a         and KPI features. In this RQ, we evaluate the effectiveness of
+threshold. We properly choose the threshold that can maximize         each type and the results are presented in Table V. Our model
+the performance on training set. Therefore, precision/recall/F1-      can achieve an average F1-score of 0.89 with high precision
+score are calculated for evaluation. Precision measures the           and recall, when both types of features are used. With the alert
+percentage of identified severe alerts that are indeed severe.        features alone, the average F1-score drops from 0.89 to 0.76.
+Recall measures the percentage of severe alerts that are cor-         However, if only the KPI features are used, the average F1-
+rectly identified. F1-score is the harmonic mean of precision         score drops dramatically from 0.89 to 0.36. This indicates that
+and recall. We take the average metrics of all intervals as           our model benefits from the ensemble features extracted from
+the final metrics. Besides, in order to evaluate the ranking          multiple data sources and achieves the best overall results.
+capability of AlertRank (RQ3), we also compute another                Besides, the results also indicate that the alert features are
+metric, precision@k, i.e., the precision rate of top-k alerts [15].   more powerful than KPI features.
+     TABLE V: Effectiveness of the ensemble features.
+                                                                       We choose dataset C in this RQ, because there is a major
+  Datasets             A               B              C
+                                                                    software change on April 19, resulting in many new alerts
+  Methods          P   R    F1    P   R    F1    P   R    F1
+ AlertRank        0.85 0.93 0.89 0.82 0.90 0.86 0.93 0.92 0.93      emerging after that day. The data in the first three months
+ Alert Only       0.82 0.79 0.80 0.75 0.80 0.77 0.67 0.77 0.72      is used as the training set (2019/01/01∼2019/03/31) and the
+ KPI Only         0.42 0.40 0.41 0.32 0.39 0.35 0.36 0.31 0.33      remaining as our testing set (2019/04/01∼2019/06/30). We
+                                                                    conduct three experiments. In one experiment, the trained
+                                                                    model is applied to the testing data directly without incremen-
+   3) RQ3: Is the ranking model adopted in AlertRank
+                                                                    tal update. In the other two experiments, we update the model
+effective?
+                                                                    incrementally every day and every week, and the threshold
+   As stated in §III-D, we formulate the problem of identifying
+                                                                    is updated accordingly. Besides, XGBoost based on gradient
+severe alerts as a ranking model. In order to illustrate the
+                                                                    boosting tree can friendly support incremental training.
+effectiveness of ranking model, motivated by [15], we compare
+                                                                       Table VII presents the precision/recall/F1-score comparison
+our model with three popular classification models, i.e., SVM,
+                                                                    before and after the software change. Clearly, before April
+Random Forest (RF) [33] and XGBoost [9]. Weighted classi-
+                                                                    19, the alert patterns on the testing set are similar to the
+fication is a common approach to deal with class imbalance
+                                                                    training set. Thus, incremental update has no impact on model
+and we adopt it to assign a larger weight to severe alerts.
+                                                                    performance. However, after the software change, we can
+The classification threshold is also selected based on its best
+                                                                    observe that the model that was trained with past data does not
+performance on training set.
+                                                                    always perform well in the future. However, the incremental
+   Table VI shows the F1-score comparison and it is evident
+                                                                    training improves the F1-score significantly, from 0.68 to 0.88.
+that XGBoost ranking outperforms the classification models.
+                                                                    Moreover, we find that the daily model update delivers slightly
+It is because that weighted classification which aims to learn
+                                                                    better performance than the weekly update.
+a discriminative function from the binary label is still a little
+                                                                       In summary, incremental training is indeed essential to keep
+sensitive to class imbalance. Besides, the true severity of each
+                                                                    our models in tune with highly dynamic online systems.
+alert varies in all severe/non-severe alerts, while the binary
+label is insufficient for model learning. However, the ranking           TABLE VII: Effectiveness of incremental training.
+model which is trained with comprehensive severity scores can
+                                                                     Methods        W/o update   Weekly update  Daily update
+mitigate the problem of imbalanced severe alerts.
+                                                                      Time         P    R    F1   P   R    F1    P   R    F1
+   In order to show the ranking ability of AlertRank, we rank        ∼ Apr.19     0.82 0.87 0.84 0.83 0.87 0.85 0.85 0.89 0.87
+the probabilities returned by each classification algorithm [15].    Apr.19 ∼     0.76 0.62 0.68 0.80 0.82 0.81 0.87 0.89 0.88
+We choose the time intervals with more than two severe alerts
+in testing set and compute the precision@k. As shown in
+Fig. 10(a)-10(c), AlertRank can effectively rank the severe                        V. O PERATIONAL E XPERIENCE
+alerts and consistently achieve high precision. More impor-         A. Success Story
+tantly, we compare the precision under no false negatives as           We have successfully applied AlertRank on the alert man-
+shown in Fig 10(d). It is clear that with 100% recall, AlertRank    agement platform in a top global commercial bank. The
+achieves a much higher precision than other methods. In             deployment shows that AlertRank can identify severe alerts
+other words, with AlertRank, the number of alerts which need        more accurately than rule-based method. For example, about
+examined by engineers will be reduced by about 20%, while           the alert in Fig. 2 which is classified into P2 by mistake,
+ensuring no single severe alert is missed.                          AlertRank can accurately identify this severe alert because
+   In summary, the ranking model adopted in AlertRank is            business KPIs anomaly features and alert time (during busy
+indeed effective compared with classification models.               hour) increase the severity of this alert.
+TABLE VI: F1-score comparison between XGBoost ranking                  To demonstrate AlertRank’s operational excellence quanti-
+model and other classification methods.                             tatively, we count the number of alerts that need to be man-
+                                                                    ually examined under the rule-based strategy and AlertRank
+       Datasets     SVMc    RFc    XGBoostc    AlertRank            perspectively. For rule-based method, engineers usually only
+          A          0.75   0.79     0.80         0.89
+                                                                    examine P1 alerts and ignore others. For AlertRank, as stated
+          B          0.70   0.77     0.78         0.86
+          C          0.80   0.81     0.85         0.93              in §III-A, engineers only check the alert whose severity
+                                                                    scores are higher than the threshold which is selected based
+   4) RQ4: Is the incremental training pipeline useful?             on best performance on training set (0.86, 0.82, 0.87 for
+   An online service system in real world is under constant         dataset A, B and C, respectively). Table VIII shows the effort
+change due to new applications deployment, software upgrade,        reduction achieved by AlertRank on testing set (one month).
+or configuration change, etc. New alert types and rules are         Clearly, using traditional rule-based strategy, engineers need
+also added accordingly. To address this issue, as introduced        to investigate more alerts, and they waste much time in
+in §III-A, AlertRank incorporates an incremental training           investigating non-severe alerts (low precision) but still miss
+strategy. This RQ aims to evaluate the effectiveness of the         many severe alerts (not high recall). In comparison, AlertRank
+incremental training.                                               can significantly reduce the number of alerts which engineers
+                                                                             SVMc           RFc                         XGBoostc        AlertRank
+              1                                              1                                                  1                                                 1
+            0.8                                            0.8                                                0.8                                               0.8
+Precision
+
+
+
+
+                                               Precision
+
+
+
+
+                                                                                                  Precision
+
+
+
+
+                                                                                                                                                    Precision
+            0.6                                            0.6                                                0.6                                               0.6
+            0.4                                            0.4                                                0.4                                               0.4
+            0.2                                            0.2                                                0.2                                               0.2
+              0   A         B        C                       0     A            B       C                       0   A              B         C                    0   A      B         C
+                         Dataset                                             Dataset                                          Dataset                                     Dataset
+                  (a) Precision@1.                                 (b) Precision@2.                                 (c) Precision@3.                        (d) Precision (when recall=1).
+                                                  Fig. 10: Demonstration of the ranking ability of AlertRank.
+need to investigate, while ensuring high precision and recall.                                      prioritizes alerts based on the domain knowledge about se-
+Therefore, AlertRank can save the manual effort for on-call                                         curity (e.g., the source IP and destination IP) and the attack
+engineers significantly while retaining alert quality.                                              path, which is different from our scenario. Identifying severe
+                                                                                                    bug reports is a critical issue in software engineering. Most
+TABLE VIII: Comparison of the number of alerts that need                                            methods in this area aim to extract some textual features (e.g.,
+to be investigated (#alerts) and precision/recall (P/R).                                            frequency and emotion) from bug reports [32], [40], then apply
+                  Datasets                   A                       B              C               machine learning techniques to determine the bug severity. In
+                         #Alerts           1996                    2536           2094              our scenario, alert severity is much more complicated than
+            Rule-based
+                           P/R           0.43/0.68               0.47/0.70      0.41/0.74           bugs, because we need to consider various factors due to
+                         #Alerts           1380                    1869           1148              the complex and highly dynamic online service environments.
+            AlertRank
+                           P/R           0.85/0.93               0.82/0.90      0.93/0.92
+                                                                                                    Thus these methods do not perform well, which has been
+                                                                                                    demonstrated in §IV-C1.
+B. Efficiency
+   In order to embed our framework in the alert management                                          B. Limitation
+platform to help engineers detect severe alerts in real time, we                                       One limitation of this paper is we do not provide too much
+carefully evaluate the response time of AlertRank. Based on                                         details about parameter selection (e.g., the number of topics,
+our experiments, AlertRank can rank 100 alerts in about 2.4                                         the number of resolution record clusters, etc), because of the
+second, which is very acceptable to engineers. It is because the                                    limit of space. Research on the influence of different parame-
+same alert templates can share the textual features and some                                        ters on algorithm performance can be our future work. Besides,
+temporal features extracted in training set, which save much                                        more reasonable and generic labeling method, incorporating
+time in feature extraction when online ranking. Besides, the                                        feature selection technique and selecting the decision threshold
+ranking model can be trained offline with historical data and                                       more adaptively can also be our future work.
+then be applied to online data directly. It takes about twenty
+                                                                                                                                         VII. C ONCLUSION
+minutes to train a model with three-month data on Intel Xeon
+CPU E5-2620 machine with 10 cores.                                                                     Large-scale online service systems generate an overwhelm-
+                                                                                                    ing number of alerts every day. It is time consuming and
+                      VI. R ELATED W ORK AND L IMITATION                                            error prone for engineers to investigate each alert manually
+                                                                                                    without any guidelines. In this paper, we novelly propose
+A. Related Work
+                                                                                                    a ranking-based framework named AlertRank that identifies
+   Despite a great deal of efforts have been devoted into                                           severe alerts automatically and adaptively. One key component
+alert management, including aggregation [34], correlation [35],                                     of AlertRank is a set of powerful and interpretable features
+[36] and clustering [37], effective approaches to identifying                                       to characterize the severities of alerts. These features include
+severe alerts have remained elusive. [5] proposed a simple alert                                    textural and temporal features from alerts, and univariate and
+ranking strategy based on the linear relationships between alert                                    multivariate anomaly features from monitoring metrics. We
+thresholds. However, the assumption of a linear relationship                                        evaluate AlertRank using real-world data from a top global
+between two KPIs may not always hold in reality. [6] proposed                                       bank, and the results show that AlertRank is effective and
+to learn a rule-based strategy from historical data to distinguish                                  achieves a F1-score of 0.89 on average, and significantly saves
+real alerts from non-actionable alerts. Both of the two methods                                     efforts devoted to investigate alerts for engineers.
+only consider the KPIs alerts and revise the threshold strategy.
+However, there are various of alerts in practice, such as                                                                               ACKNOWLEDGEMENT
+network, database and logs. Besides, the severity of an alert                                         We thank Junjie Chen for his helpful discussions on this
+is influenced by various factors, but these rule-based methods                                      work. We thank Juexing Liao, Yongqian Sun and Chuanxi
+cannot capture the complex relationships of these factors.                                          Zheng for proofreading this paper. This work has been sup-
+   Identifying severe alerts is also a relevant research topic                                      ported by the Beijing National Research Center for Infor-
+in the fields of intrusion detection system (IDS) [8], [38],                                        mation Science and Technology (BNRist) key projects and
+[39] and software engineering [32], [40]. Specifically, IDS                                         National Key R&D Program of China 2019YFB1802504.
+                              R EFERENCES                                              service systems,” in Proceedings of the 41st International Conference on
+                                                                                       Software Engineering: Software Engineering in Practice, pp. 111–120,
+ [1] Q. Lin, H. Zhang, J.-G. Lou, Y. Zhang, and X. Chen, “Log clustering               IEEE Press, 2019.
+     based problem identification for online service systems,” in Proceedings     [19] J. MacQueen et al., “Some methods for classification and analysis of
+     of the 38th International Conference on Software Engineering Compan-              multivariate observations,” in Proceedings of the fifth Berkeley sympo-
+     ion, pp. 102–111, ACM, 2016.                                                      sium on mathematical statistics and probability, 1967.
+ [2] H. Xu, W. Chen, N. Zhao, Z. Li, J. Bu, Z. Li, Y. Liu, Y. Zhao, D. Pei,       [20] P. J. Rousseeuw, “Silhouettes: a graphical aid to the interpretation and
+     and et.al, “Unsupervised anomaly detection via variational auto-encoder           validation of cluster analysis,” Journal of computational and applied
+     for seasonal kpis in web applications,” in WWW, 2018.                             mathematics, vol. 20, pp. 53–65, 1987.
+ [3] V. Nair, A. Raul, S. Khanduja, V. Bahirwani, Q. Shao, S. Sellamanickam,      [21] S. Zhang, W. Meng, J. Bu, S. Yang, Y. Liu, D. Pei, J. Xu, Y. Chen,
+     S. Keerthi, S. Herbert, and S. Dhulipalla, “Learning a hierarchical               H. Dong, X. Qu, et al., “Syslog processing for switch failure diagnosis
+     monitoring system for detecting and diagnosing service issues,” in                and prediction in datacenter networks,” in 2017 IEEE/ACM 25th Inter-
+     Proceedings of the 21th ACM SIGKDD International Conference on                    national Symposium on Quality of Service (IWQoS), pp. 1–10, IEEE,
+     Knowledge Discovery and Data Mining, pp. 2029–2038, ACM, 2015.                    2017.
+ [4] J. Xu, Y. Wang, P. Chen, and P. Wang, “Lightweight and adaptive service      [22] C. C. Aggarwal and C. Zhai, Mining text data. Springer Science &
+     api performance monitoring in highly dynamic cloud environment,” in               Business Media, 2012.
+     2017 IEEE International Conference on Services Computing (SCC),
+                                                                                  [23] D. M. Blei, A. Y. Ng, and M. I. Jordan, “Latent dirichlet allocation,”
+     pp. 35–43, IEEE, 2017.
+                                                                                       Journal of machine Learning research, vol. 3, no. Jan, pp. 993–1022,
+ [5] G. Jiang, H. Chen, K. Yoshihira, and A. Saxena, “Ranking the impor-
+                                                                                       2003.
+     tance of alerts for problem determination in large computer systems,”
+                                                                                  [24] M. Röder, A. Both, and A. Hinneburg, “Exploring the space of topic
+     Cluster Computing, vol. 14, no. 3, pp. 213–227, 2011.
+                                                                                       coherence measures,” in Proceedings of the eighth ACM international
+ [6] L. Tang, T. Li, F. Pinel, L. Shwartz, and G. Grabarnik, “Optimizing
+                                                                                       conference on Web search and data mining, pp. 399–408, ACM, 2015.
+     system monitoring configurations for non-actionable alerts,” in 2012
+                                                                                  [25] M. Vlachos, P. Yu, and V. Castelli, “On periodicity detection and struc-
+     IEEE Network Operations and Management Symposium, pp. 34–42,
+                                                                                       tural periodic similarity,” in Proceedings of the 2005 SIAM International
+     IEEE, 2012.
+                                                                                       Conference on Data Mining, SDM 2005, 04 2005.
+ [7] W. Zhou, W. Xue, R. Baral, Q. Wang, C. Zeng, T. Li, J. Xu, Z. Liu,
+                                                                                  [26] N. Zhao, J. Zhu, Y. Wang, M. Ma, W. Zhang, D. Liu, M. Zhang, and
+     L. Shwartz, and G. Ya Grabarnik, “Star: A system for ticket analysis
+                                                                                       D. Pei, “Automatic and generic periodicity adaptation for kpi anomaly
+     and resolution,” in Proceedings of the 23rd ACM SIGKDD International
+                                                                                       detection,” IEEE Transactions on Network and Service Management,
+     Conference on Knowledge Discovery and Data Mining, pp. 2181–2190,
+                                                                                       2019.
+     ACM, 2017.
+                                                                                  [27] D. Liu, Y. Zhao, H. Xu, Y. Sun, D. Pei, J. Luo, X. Jing, and
+ [8] W. U. Hassan, S. Guo, D. Li, Z. Chen, K. Jee, Z. Li, and A. Bates,
+                                                                                       M. Feng, “Opprentice: Towards practical and automatic anomaly de-
+     “Nodoze: Combatting threat alert fatigue with automated provenance
+                                                                                       tection through machine learning,” in Proceedings of the 2015 Internet
+     triage.,” in NDSS, 2019.
+                                                                                       Measurement Conference, pp. 211–224, ACM, 2015.
+ [9] T. Chen and C. Guestrin, “Xgboost: A scalable tree boosting system,”
+     in Proceedings of the 22nd acm sigkdd international conference on            [28] S. Hochreiter and J. Schmidhuber, “Long short-term memory,” Neural
+     knowledge discovery and data mining, pp. 785–794, ACM, 2016.                      computation, vol. 9, no. 8, pp. 1735–1780, 1997.
+[10] X. Yan, J. Guo, Y. Lan, and X. Cheng, “A biterm topic model for short        [29] Y. LeCun, Y. Bengio, and G. Hinton, “Deep learning,” nature, vol. 521,
+     texts,” in Proceedings of the 22nd international conference on World              no. 7553, p. 436, 2015.
+     Wide Web, pp. 1445–1456, ACM, 2013.                                          [30] T.-Y. Liu et al., “Learning to rank for information retrieval,” Foundations
+[11] C. Manning, P. Raghavan, and H. Schütze, “Introduction to information            and Trends in Information Retrieval, vol. 3, no. 3, pp. 225–331, 2009.
+     retrieval,” Natural Language Engineering, vol. 16, no. 1, pp. 100–103,       [31] C. J. Burges, “From ranknet to lambdarank to lambdamart: An
+     2010.                                                                             overview,” Learning, vol. 11, no. 23-581, p. 81, 2010.
+[12] A. De Cheveigné and H. Kawahara, “Yin, a fundamental frequency              [32] T. Zhang, J. Chen, G. Yang, B. Lee, and X. Luo, “Towards more accurate
+     estimator for speech and music,” The Journal of the Acoustical Society            severity prediction and fixer recommendation of software bugs,” Journal
+     of America, vol. 111, no. 4, pp. 1917–1930, 2002.                                 of Systems and Software, vol. 117, pp. 166–184, 2016.
+[13] S. Khatuya, N. Ganguly, J. Basak, M. Bharde, and B. Mitra, “Adele:           [33] C. M. Bishop, Pattern recognition and machine learning. springer, 2006.
+     Anomaly detection from event log empiricism,” in IEEE INFOCOM                [34] D. Man, W. Yang, W. Wang, and S. Xuan, “An alert aggregation
+     2018-IEEE Conference on Computer Communications, pp. 2114–2122,                   algorithm based on iterative self-organization,” Procedia Engineering,
+     IEEE, 2018.                                                                       vol. 29, pp. 3033–3038, 2012.
+[14] K. Hundman, V. Constantinou, C. Laporte, I. Colwell, and T. Soder-           [35] S. Salah, G. Maciá-Fernández, and J. E. Dı́Az-Verdejo, “A model-based
+     strom, “Detecting spacecraft anomalies using lstms and nonparametric              survey of alert correlation techniques,” Computer Networks, vol. 57,
+     dynamic thresholding,” in Proceedings of the 24th ACM SIGKDD                      no. 5, pp. 1289–1317, 2013.
+     International Conference on Knowledge Discovery & Data Mining,               [36] S. A. Mirheidari, S. Arshad, and R. Jalili, “Alert correlation algorithms:
+     pp. 387–395, ACM, 2018.                                                           A survey and taxonomy,” in Cyberspace Safety and Security, pp. 183–
+[15] Q. Lin, K. Hsieh, Y. Dang, H. Zhang, K. Sui, Y. Xu, J.-G. Lou, C. Li,             197, Springer, 2013.
+     Y. Wu, R. Yao, et al., “Predicting node failure in cloud service systems,”   [37] D. Lin, R. Raghu, V. Ramamurthy, J. Yu, R. Radhakrishnan, and J. Fer-
+     in Proceedings of the 2018 26th ACM Joint Meeting on European                     nandez, “Unveiling clusters of events for alert and incident management
+     Software Engineering Conference and Symposium on the Foundations                  in large-scale enterprise it,” in Proceedings of the 20th ACM SIGKDD
+     of Software Engineering, pp. 480–490, ACM, 2018.                                  international conference on Knowledge discovery and data mining,
+[16] N. Zhao, J. Zhu, R. Liu, D. Liu, M. Zhang, and D. Pei, “Label-less: A             pp. 1630–1639, ACM, 2014.
+     semi-automatic labelling tool for kpi anomalies,” in IEEE INFOCOM            [38] K. Alsubhi, E. Al-Shaer, and R. Boutaba, “Alert prioritization in intru-
+     2019-IEEE Conference on Computer Communications, pp. 1882–1890,                   sion detection systems,” in NOMS 2008-2008 IEEE Network Operations
+     IEEE, 2019.                                                                       and Management Symposium, pp. 33–40, IEEE, 2008.
+[17] J. Chen, X. He, Q. Lin, Y. Xu, H. Zhang, D. Hao, F. Gao, Z. Xu, Y. Dang,     [39] Y. Lin, Z. Chen, C. Cao, L.-A. Tang, K. Zhang, W. Cheng, and Z. Li,
+     and D. Zhang, “An empirical investigation of incident triage for online           “Collaborative alert ranking for anomaly detection,” in Proceedings of
+[18] J. Chen, X. He, Q. Lin, H. Zhang, D. Hao, F. Gao, Z. Xu, D. Yingnong,             the 27th ACM International Conference on Information and Knowledge
+     and D. Zhang, “Continuous incident triage for large-scale online service          Management, pp. 1987–1995, ACM, 2018.
+     systems,” in 2019 34st IEEE/ACM International Conference on Auto-            [40] Q. Umer, H. Liu, and Y. Sultan, “Emotion based automated priority
+     mated Software Engineering (ASE), p. to appear, IEEE, 2019.                       prediction for bug reports,” IEEE Access, vol. 6, pp. 35743–35752, 2018.
+

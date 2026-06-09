@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Batman: Batch Job Run Time Prediction for Auto-Scaling in the Cloud（AAAI 2020 Poster）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>Batman: Batch Job Run Time Prediction for Auto-Scaling in the Cloud（AAAI 2020 Poster）</h1>
+
+<blockquote>作者：Minghua Ma、Christopher Zheng、Junjie Chen、Yilin Li、Xiao Peng、Gang Wang、Yong Wu、Fang Zhou、Wenchi Zhang、Kaixin Sui、Dan Pei</blockquote>
+<blockquote>机构：清华大学；McGill University；天津大学；中国光大银行；BizSeer；BNRist</blockquote>
+<blockquote>发表年份：2020</blockquote>
+<blockquote>会议/期刊：AAAI 2020 Poster</blockquote>
+<blockquote>关联 PDF：同目录下 <code>aaai20_Poster.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Batch Job Run Time Prediction for Auto-Scaling in the Cloud（Batman 框架）</td></tr>
+<tr><td>作者</td><td>Minghua Ma、Christopher Zheng、Junjie Chen、Yilin Li、Xiao Peng、Gang Wang、Yong Wu、Fang Zhou、Wenchi Zhang、Kaixin Sui、Dan Pei</td></tr>
+<tr><td>机构</td><td>清华大学；McGill University；天津大学；中国光大银行；BizSeer；BNRist</td></tr>
+<tr><td>发表年份</td><td>2020</td></tr>
+<tr><td>会议/期刊</td><td>AAAI 2020 Poster</td></tr>
+<tr><td>分类</td><td>云计算 / 批处理作业 / 运行时间预测 / 资源自动伸缩</td></tr>
+<tr><td>核心问题</td><td>银行私有云中数千个批处理作业运行时间受工作负载与日期影响且人工伸缩低效；固定截止时间驱动调度不可行</td></tr>
+<tr><td>主要贡献</td><td>(1) 基于三年银行日志的运行时间特征刻画；(2) 关键路径（critical path）汇总每日任务依赖；(3) CNN+LSTM 离线+在线预测模型；(4) 触发式自动扩缩容策略</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>随着云计算的快速发展，金融、互联网等行业越来越多地把批处理作业（batch job）部署到云端。批处理作业的特点是"长跑且周期性"：例如大数分析、ETL 任务通常每天或数小时执行一次，运行时长从分钟到数小时不等。为了提升资源利用率，企业普遍采用批处理作业 + 在线服务共置（co-location）模式，让两类负载共享计算资源。</p>
+
+<p>这种模式带来新的挑战：批处理作业运行时间受多种因素影响，包括（1）批处理作业自身的工作负载；（2）作业内任务的复杂依赖关系与编排变化；（3）在线服务优先级抢占 CPU/内存；（4）日期/节假日带来的流量波动。在中国某顶级银行 IT 系统的私有云中，每天有数千个批处理作业并行运行；只要任一作业超出运维人员的"运行时长心理阈值（run time borderline）"，就需要人工加资源、缩范围、重跑剩余部分。这种人工操作既费时又易出错，无法应对上万级作业规模。</p>
+
+<p>此前业界研究多采用"运行时间截止（deadline）驱动"的调度策略，由操作员为每个作业指定 deadline，并据此预分配资源。然而在大型云平台上，每个作业都需要单独的 deadline 与资源规划，并不现实。本文的目标是为每一个批处理作业自动学习"运行时长边界 B"，并在线预测 T，若 T &gt; B 则触发自动扩缩容。</p>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<ul>
+<li><b>离线 borderline 难以学习</b>：单个作业运行时间随工作负载、日期、依赖关系动态变化，固定 deadline 失效。</li>
+<li><b>在线预测难以及时准确</b>：批处理与在线服务共置时，在线服务会抢占资源，造成作业运行时长抖动。</li>
+<li><b>人工扩缩容效率低</b>：成千上万作业每出现一个 borderline 越界就需要人为干预，运维成本极高。</li>
+<li><b>任务级依赖复杂</b>：一个批处理作业由若干任务组成，任务之间存在依赖、并行、周期性执行，关系复杂。</li>
+<li><b>资源最小化与按时完成矛盾</b>：扩缩容策略需在"最少资源"与"按时完成"之间取得平衡。</li>
+<li><b>缺乏大规模真实数据验证</b>：需要一个能在中国大型银行私有云真实日志上验证的端到端框架。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>系统总览</b>：Batman 框架由"主节点 + 工作节点"构成。一个 Node 是一台机器或虚拟机；一个 Pod 是由一个或多个紧耦合容器组成的最小部署单位。批处理作业运行在工作节点的 Pod 中。框架分两条路径：（1）离线预测——基于历史运行时间与关键路径，预测运行时间边界 B；（2）在线预测——在作业运行中按周期匹配关键路径并读取系统指标，预测完成时间 T；若 T−B &gt; γ，则触发扩缩容。</p>
+
+<p><b>关键概念</b>：</p>
+
+<ul>
+<li><b>Batch Job（批处理作业）</b>：周期性执行的长时任务（如每日 ETL、报表）。</li>
+<li><b>Pod / Node</b>：Kubernetes 风格的部署单元。</li>
+<li><b>Critical Path（关键路径）</b>：一个作业中所有任务依赖关系中累计耗时最长的链路，决定作业整体运行时长。</li>
+<li><b>Run Time Borderline B</b>：作业运行时间边界，离线预测的目标。</li>
+<li><b>Online Run Time T</b>：作业在跑中预测的总完成时间。</li>
+<li><b>Coefficient of Variation (CoV)</b>：标准差 / 均值，用于衡量数据集波动性。</li>
+<li><b>LSTM (Long Short-Term Memory)</b>：长短期记忆网络。</li>
+<li><b>CNN (Convolutional Neural Network)</b>：卷积神经网络。</li>
+<li><b>Master Node / Worker Nodes</b>：Batman 框架的主从节点。</li>
+</ul>
+
+<p><b>数学原理</b>：</p>
+
+<ul>
+<li><b>关键路径的累计时长</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>B ≈ ∑_{t ∈ critical path} duration(t)</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>触发自动扩缩容条件</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>Scale up if T − B &gt; γ</p>
+<br>\[\]<br>
+
+<p>其中 γ 是预设阈值。</p>
+
+<ul>
+<li><b>在线预测的输入特征</b>：当前作业配置（节点数、Pod 数）+ 系统指标（CPU、内存、网络）+ 关键路径上每个任务的运行时长 + 日期/周/月/节假日信息。</li>
+<li><b>CNN-LSTM 联合模型</b>：CNN 用于在常数时间内抽取输入特征；LSTM 用于序列预测（在线运行时间）。</li>
+<li><b>离线预测损失（MSE 形式）</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>ℒ = (1/N) · ∑_{i=1}^{N} (log B_i^{pred} − log B_i^{true})²</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>CoV 分布</b>：CoV = σ / μ，用于对数据集按波动性排序，验证预测模型在不同难度数据集上的表现。</li>
+</ul>
+
+<p><b>与现有技术的差异</b>：与 Jockey 等 deadline-driven 调度相比，Batman 不依赖人工指定 deadline，而是学习 borderline；与基于简单统计的预测相比，CNN+LSTM 联合模型可捕获非线性特征与序列依赖；与 ensemble 机器学习模型相比，Batman 的输入包含细粒度任务级时间与系统指标。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：3 年银行批处理作业历史运行时间、当前作业配置、系统指标、关键路径信息。</li>
+<li>输出：离线 borderline B、在线预测完成时间 T、是否触发扩缩容。</li>
+</ul>
+
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>Critical Path Summary</b>：从历史任务依赖图中抽取关键路径，并按周期归类（按天、周、月、节假日）。</li>
+<li><b>Offline Predictor</b>：基于历史关键路径 + 运行时长，使用 LSTM 预测 B。</li>
+<li><b>Online Predictor</b>：基于当前作业配置、系统指标、关键路径任务实时运行时长，使用 CNN+LSTM 在线预测 T。</li>
+<li><b>Auto-Scaling Module</b>：比较 T 与 B，若 T−B &gt; γ 则触发 scale up（增加 Pod）或 scale out（增加 Node）。</li>
+</ul>
+
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+def critical_path_summary(task_graph, periods):
+    cp = longest_path(task_graph)
+    return bucket_by_period(cp, periods)
+
+def offline_predict(history, cp_summary):
+    features = encode_history_with_cp(history, cp_summary)
+    return lstm_model.predict(features)
+
+def online_predict(config, sys_metrics, cp_runtime):
+    seq = build_sequence(config, sys_metrics, cp_runtime)
+    feat = cnn_layers(seq)
+    return lstm_model.step(feat)
+
+def auto_scaling(B, T, gamma):
+    if T - B > gamma:
+        scale_up_pods_or_nodes()
+    return T, B
+
+# 离线训练
+for epoch in range(epochs):
+    for job_history in dataset:
+        cp = critical_path_summary(job_history.tasks, periods)
+        B_pred = offline_predict(job_history, cp)
+        loss += (log(B_pred) - log(job_history.actual)) ** 2
+    lstm_model.update(loss / len(dataset))
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四。</li>
+</ol>
+
+<ol>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>关键路径抽取：$O(|V| + |E|)$，$V/E$ 为任务节点/边；</li>
+<li>LSTM 训练：$O(N \cdot d)$，$d$ 为隐藏状态维度；</li>
+<li>在线推理：单次毫秒级。</li>
+</ul>
+
+<ol>
+<li><b>训练与推理</b>：</li>
+</ol>
+<ul>
+<li>训练：CNN+LSTM 在三年银行作业日志上离线训练；</li>
+<li>推理：在线按周期匹配关键路径并调用 CNN+LSTM 推理。</li>
+</ul>
+
+<ol>
+<li><b>示例</b>：某银行每日 23:00 启动"账户结算作业"，包含 CheckData → Aggregate → Report 三个任务，CheckData 与 Aggregate 构成关键路径。LSTM 学习到 borderline B = 45min；运行中 CNN+LSTM 预测 T = 52min，T−B = 7min &gt; γ，则触发扩容 2 个 Pod，缩短到 46min 跑完，避免超时。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[历史作业运行时间] --> B[关键路径汇总]
+    B --> C[离线 LSTM 预测 B]
+    D[当前作业配置] --> E[系统指标 + 关键路径匹配]
+    E --> F[在线 CNN-LSTM 预测 T]
+    C --> G[比较 T - B > γ?]
+    F --> G
+    G -- 是 --> H[Scale up Pods / Scale out Nodes]
+    G -- 否 --> I[保持当前资源配置]
+    H --> J[作业按时完成]
+    I --> J
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[采集 3 年作业日志] --> S2[抽取关键路径]
+    S2 --> S3[关键路径按周期归类]
+    S3 --> S4[离线训练 LSTM -> B]
+    S5[新作业启动] --> S6[匹配关键路径]
+    S6 --> S7[收集配置 + 系统指标]
+    S7 --> S8[CNN 抽取特征]
+    S8 --> S9[LSTM 序列预测 T]
+    S4 --> S10{比较 T 与 B}
+    S9 --> S10
+    S10 -- T - B > gamma --> S11[触发自动扩缩容]
+    S10 -- 否则 --> S12[保持当前资源]
+    S11 --> S13[作业按时完成]
+    S12 --> S13
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ 基于关键路径的运行时长建模</b>：将作业拆解为关键路径，按周期归类后再用 LSTM 预测 borderline。</li>
+<li><b>+ CNN+LSTM 联合在线预测</b>：用 CNN 抽取配置/指标特征，用 LSTM 做序列预测，兼顾非线性与时序依赖。</li>
+<li><b>+ 离线 borderline + 在线 trigger 双轨设计</b>：在保留离线稳定性的同时支持在线实时响应。</li>
+<li><b>+ 真实大规模数据集验证</b>：在中国某顶级银行 3 年私有云日志上训练与评估。</li>
+<li><b>+ 自动扩缩容闭环</b>：T−B &gt; γ 时主动扩 Pod 或 Node，资源最小化与按时完成并重。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>：8 组（标记为 A-H）按 CoV 0.07、0.13、0.29、0.44、0.81、0.98、1.43、3.93 排序，覆盖从稳定到剧烈波动。</li>
+<li><b>Baseline</b>：Kernel Regression (KR)、Kernel Ridge Regression (KRR)、Epsilon-SVR、Linear Regression (LR)、Ensemble (KRR+SVR+LR)。</li>
+<li><b>主要指标</b>：平均 MSE（log 空间）。</li>
+<li><b>关键结果数字</b>：</li>
+<li>在所有 8 个数据集上，Batman 的 MSE 均低于 5 种基线（Fig. 2）；</li>
+<li>离线预测 1 小时 horizon 时，Batman 误差稳定在最低水平；</li>
+<li>CoV 越大预测越难，但 Batman 仍能给出最低 MSE。</li>
+<li><b>消融实验</b>：未给出详细消融；论文以"MSE on 8 datasets"形式证明优势。</li>
+<li><b>效率分析</b>：在线预测每条作业毫秒级；离线训练 LSTM 数小时（具体未在海报中披露）。</li>
+<li><b>可视化</b>：Fig. 2 给出 8 个数据集上不同算法的 MSE 柱状图。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>金融银行批处理</b>：每日账户结算、报表生成、风险对账。</li>
+<li><b>大数据 ETL</b>：周期性数据搬运、清洗、聚合。</li>
+<li><b>运营商夜间作业</b>：用户账单、话单汇总。</li>
+<li><b>互联网公司夜间离线计算</b>：日志聚合、用户画像更新、推荐模型训练。</li>
+<li><b>政府/企业数据上报</b>：定时数据导出、跨系统同步。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>bujiahao</code>（KPI 异常检测 ADS）</li>
+<li><code>CoFlux_camera-ready1</code>（KPI 波动相关性）</li>
+<li><code>camera_ready</code>（多维根因 Squeeze）</li>
+<li><code>icccn2017-pch</code>（WiFi 干扰量化）</li>
+<li><code>ICCCN2020-YaoWang</code>（KPI 异常检测 iRRCF-Active）</li>
+<li><code>ICSE-SEET-36</code>（持续评估与反馈）</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>Batch Job</b>：周期性执行的批处理作业。</li>
+<li><b>Run Time Borderline (B)</b>：运行时长边界。</li>
+<li><b>Online Run Time (T)</b>：在线预测完成时间。</li>
+<li><b>Critical Path</b>：关键路径，最长累计任务链路。</li>
+<li><b>CoV (Coefficient of Variation)</b>：波动系数 σ/μ。</li>
+<li><b>Pod / Node</b>：Kubernetes 部署单位。</li>
+<li><b>LSTM</b>：长短期记忆网络。</li>
+<li><b>CNN</b>：卷积神经网络。</li>
+<li><b>Co-location</b>：批处理与在线服务共置。</li>
+<li><b>Scale up / Scale out</b>：纵向扩容/横向扩容。</li>
+<li><b>KR / KRR / SVR / LR</b>：核回归、核岭回归、ε-SVR、线性回归。</li>
+<li><b>Ensemble</b>：KRR+SVR+LR 的集成模型。</li>
+<li><b>BNRist</b>：北京国家信息科学与技术研究中心。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: Jockey（Ferguson et al., EuroSys 2012）——保证数据并行集群作业延迟。</li>
+<li>Paper: EGADS（Laptev et al., KDD 2015）——通用时序异常检测框架。</li>
+<li>Paper: Opprentice（Liu et al., IMC 2015）——基于监督学习的异常检测。</li>
+<li>Paper: HotSpot（Sun et al., IEEE Access 2018）——多维 KPI 异常定位。</li>
+<li>工具：Kubernetes、YARN、Mesos、Spark、TensorFlow。</li>
+<li>相关论文：<code>bujiahao</code>、<code>CoFlux_camera-ready1</code>、<code>camera_ready</code>、<code>icccn2017-pch</code>。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

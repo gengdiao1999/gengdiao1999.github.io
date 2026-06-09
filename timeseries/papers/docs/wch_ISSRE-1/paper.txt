@@ -1,0 +1,736 @@
+              Identifying Root-Cause Metrics for
+         Incident Diagnosis in Online Service Systems
+       Canhua Wu†¶ , Nengwen Zhao†¶ , Lixin Wang‡ , Xiaoqin Yang‡ , Shining Li‡ , Ming Zhang‡ , Xing Jin‡ ,
+                    Xidao Wen†¶ , Xiaohui Nie†¶ , Wenchi Zhang§ , Kaixin Sui§ , Dan Pei∗†¶
+                                           † Tsinghua University ‡ China Construction Bank § BizSeer
+                       ¶ Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+
+   Abstract—Incidents in online service systems could incur poor        example, if the response time of a service increases dramati-
+user experience and tremendous economic loss. To reduce the             cally, engineers would check the metrics of the infrastructure
+influence of incidents and guarantee service reliability, it is         layer (e.g., network, server, and database) associated with the
+critical to identify root-cause metrics for engineers with clues to
+assist incident diagnosis. However, it is a challenging task due to     service. If we found that the CPU usage of a server is high,
+the complicated dependencies and huge volume of various metrics         it indicates that the high latency may be incurred by server
+in large-scale systems. Existing approaches are based on either         overload, and the incident could be mitigated by killing the
+anomaly detection or correlation analysis, performing not well in       high-load session or restarting the server. According to our
+terms of accuracy or efficiency. To better understand the problem       observations, however, hundreds to thousands of metrics need
+of root-cause metric identification, we conduct a preliminary
+study based on real-world data analysis and interactions with           to be inspected for one incident, and there could be tens of
+engineers. The key observation is that root-cause metrics should        incidents one day in large-scale service systems. Thus, it is
+satisfy two requirements. One is that the metric is expected to         time-consuming and error-prone for engineers to manually
+behave abnormally during the incident; the other is that the            check so many potentially relevant metrics to locate the root
+anomaly pattern should meet physical meaning and engineers’             cause. Therefore, an automated root-cause metric identification
+demand. Motivated by the findings obtained from the study, we
+propose an effective approach named PatternMatcher to identi-           approach is highly desired.
+fying root-cause metrics accurately. Specifically, PatternMatcher          In the literature, many efforts have been devoted to auto-
+contains three steps, where coarse-grained anomaly detection            matically identifying root-cause metrics [4], [5], [6], [7], but
+aiming to filter out normal metrics, anomaly pattern classification     they still suffer from various limitations in practice. First, the
+aiming to filter out unimportant anomaly patterns, and root-            majority of the approaches use statistical anomaly detection
+cause metric ranking. An extensive study on four real-world
+datasets including 113 incident cases from a large commercial           methods to identify suspicious root-cause metrics such as KDE
+bank demonstrates that PatternMatcher outperforms all baseline          (Kernel Density Estimation) in FluxRank [4] and -statistic in
+approaches, achieving top-3 average accuracy of 0.91. Moreover,         -diagnosis [5]. However, these anomaly detection methods do
+we have deployed PatternMatcher in practice and shared some             not perform well in practice. Taking KDE for example, it is
+successful cases from real deployment.                                  challenging for engineers to select appropriate kernel functions
+   Index Terms—Root-cause metric, incident diagnosis, anomaly
+pattern classification                                                  and bandwidths which are crucial for the overall accuracy.
+                                                                        Besides, it is unreasonable to estimate a distribution given
+                         I. I NTRODUCTION                               limited data points. Second, all approaches ignore the physical
+   Recently, online service systems have become increasingly            meaning of metrics and anomaly patterns. For example, a
+popular in our daily life, such as search engines, online               sudden decrease of CPU usage may be wrongly identified
+shopping, and social networks. To ensure service quality and            as a root-cause metric using existing works, while the CPU
+user experience, various control measurements have been em-             decrease pattern means more CPU resources are released,
+ployed to guarantee that services are running normally [1], [2].        which is a good phenomenon and cannot incur incidents.
+Nonetheless, incidents (or unplanned interruptions) are still           Besides, different anomaly patterns may indicate different
+inevitable in practice due to the complexity and the large scale        severity levels in diagnosis (§II-B), which should be consid-
+of service systems [2]. These incidents might incur tremendous          ered in ranking root-cause metrics. Third, some approaches
+economic loss and user dissatisfaction. For example, a recent           based on correlation analysis rely on long-term historical
+survey [3] reveals that the average cost of server downtime             data [6], leading to efficiency and resource bottlenecks faced
+per hour is between $301,000 and $400,000. Therefore, it is             with thousands of candidate metrics in practice. Thus it is
+critical to accurately locate the root cause after an incident          imperative to develop an effective and practical approach to
+occurs to restore the service as soon as possible.                      identifying root-cause metrics.
+   In general, once an incident occurs, engineers tend to collect          To better understand the problem of identifying root-cause
+all related metrics and investigate their behaviors, aiming to          metrics in practice, we conducted a preliminary study based on
+find out the root cause or some clues for further diagnosis. For        large-scale real-world data and interviews with engineers. We
+                                                                        obtain three key findings through the study. First, identifying
+  ∗ Dan Pei is the corresponding author.                                root-cause metrics is indeed helpful for engineers to conduct
+incident diagnosis, while the current practice in the real world                         Incident
+                                                                                                           Restart          Restart Nginx             Expansion and restart
+                                                                                                           database                                   database server
+is far from satisfactory (§II-B1). Second, anomaly patterns
+should be incorporated in analyzing root-cause metrics and
+can provide more comprehensive information for engineers to                               14:45            15:00          15:20                          15:55   Time
+                                                                                                          Wrong mitigation actions                      Recovery
+enhance the interpretability and performance by filtering out
+                                                                                   (a) An incident case with long TTM due to inaccurate root
+abnormal but unconcerned patterns (§II-B2). Third, diverse                         cause analysis
+anomaly patterns exist in the real world, which may represent
+                                                                                                                          system.load.norm
+different severity levels and explanatory power to root cause,                    1.00
+                                                                                  0.75
+which should be considered in incident diagnosis (§II-B3).
+
+
+
+
+                                                                          Value
+                                                                                  0.50
+                                                                                  0.25
+   Inspired by the insights learned from the study and to over-                   0.00
+                                                                                         00:00    01:00   02:00   03:00    04:00      05:00   06:00    07:00   08:00   09:00
+come the aforementioned limitations, we propose a novel root-                                                                      Time
+                                                                                                                          system.mem.free
+cause metric identification approach named PatternMatcher.
+                                                                                10000
+PatternMatcher contains three components: coarse-grained
+
+
+
+
+                                                                        Value
+                                                                                5000
+anomaly detection, anomaly pattern classification, and root-
+                                                                                    0
+cause metric ranking. More specifically, PatternMatcher first                            00:00    01:00   02:00   03:00    04:00      05:00
+                                                                                                                                   Time
+                                                                                                                                              06:00    07:00   08:00   09:00
+
+conducts a two-sample test to filter out normal metrics to                  (b) A case to illustrate the importance of anomaly pattern
+reduce search space. This is because root-cause metrics should                                   Fig. 1: Real-world case analysis
+behave abnormally when an incident occurs. After identifying
+anomalies, PatternMatcher draws support from 1-D CNN                 core component in PatternMatcher is an effective anomaly
+(One-Dimensional Convolutional Neural Network) [8] and               pattern classification based on 1-D CNN [8].
+classifies abnormal segments into different patterns, each of      • Extensive experiments based on various real incidents
+which indicates a different physical meaning. Besides, pat-          demonstrate the effectiveness of PatternMatcher, achiev-
+tern classification could further filter out some false positive     ing Avg@3 accuracy of 0.91 on four datasets on av-
+patterns that engineers are not concerned about to improve           erage and outperforming baseline approaches. Besides,
+the accuracy. Finally, PatternMatcher sorts candidate metrics        PatternMatcher has been deployed in practice.
+based on our designed ranking strategy, considering both                 II. M OTIVATION AND P ROBLEM F ORMULATION
+anomaly scores in the first step and pattern weights in the
+second step. In this way, engineers could investigate the root     A. Motivation Case
+cause according to our recommended ranking list.                      Identifying root-cause metrics for incident diagnosis is
+   To illustrate the effectiveness of PatternMatcher, we con-      critical for online service systems, to guarantee short TTM
+ducted an extensive experimental study on four datasets            (Time to Mitigate) and service reliability. To illustrate the
+containing diverse incidents (113 cases in total) from a           importance of accurate root cause analysis, we present a real-
+large commercial bank which supports hundreds of millions          world incident case in Fig. 1(a). This incident was noticed
+of users and hosts hundreds of service systems. We com-            at 14:45 during busy hours. After preliminary diagnosis,
+pare PatternMatcher with several baseline approaches, i.e.,        engineers restarted the database and Nginx at 15:00 and 15:20,
+FluxRank [4], -diagnosis [5], CETS [6] and MicroCause [7].        respectively, but the incident was not mitigated successfully.
+The Avg@3 accuracy of PatternMatcher could achieve 0.91            Finally, engineers located that the root cause was the capacity
+on average on four datasets. In comparison, four baseline          problem of the database server leading to system overload. The
+approaches could only achieve 0.70, 0.44, 0.66 and 0.40.           incident was solved at 15:55 by expanding the capacity and
+The contributions of two main components of PatternMatcher         restarting the server. Overall, the total TTM is 70 minutes,
+(anomaly pattern classification and ranking) are also con-         during which the service quality and user experience were
+firmed. In terms of time efficiency, PatternMatcher could          severely damaged. If engineers could notice the abnormal
+provide ranking results within dozens of seconds faced with        behaviors of related metrics (e.g., CPU usage) of the database
+thousands of candidate metrics, which is satisfactory for engi-    server, the incident could be mitigated much earlier. This
+neers in practice. More importantly, PatternMatcher has been       case vividly demonstrates that identifying root-cause metrics
+deployed in a large commercial bank and engineers appreciate       is valuable for incident diagnosis.
+its value in assisting incident diagnosis. To show the practical      In addition to identifying the abnormal metrics, the spe-
+usage of PatternMatcher, we introduce the deployment archi-        cific anomaly pattern is also essential for incident diagno-
+tecture and some successful cases collected from practice.         sis. Fig. 1(b) presents an intuitive example to illustrate the
+                                                                   significance of anomaly patterns when analyzing the root
+   To summarize, this work has the following contributions:
+                                                                   cause. We observe that both two metrics (system.load.norm
+• We conducted the first preliminary study to investigate the      and system.mem.free) behave abnormally during the incident
+  problem of identifying root-cause metrics and the necessity      time (pink bands). However, after further investigating the
+  of considering anomaly patterns.                                 anomaly patterns, we noticed that the system.mem.free could
+• We propose a novel approach named PatternMatcher to              be excluded because the increase pattern of system.mem.free
+  identifying root-cause metrics for incident diagnosis. The       is often a positive phenomenon and is unlikely to be the root
+cause. If engineers ignore it, they may take incorrect mitigation    incurring long TTM. Existing time series anomaly detection
+actions (e.g., expanding memory), resulting in a longer TTM.         works identify statistical anomalies but fail to consider the
+  Through actual case analysis, we find that identifying the         physical meaning of the metrics and corresponding anomalies.
+root-cause metrics is vital for incident diagnosis to save TTM.      For example, the decrease in CPU usage and the increase
+In addition, we should pay extra attention to the specific           in transaction volume are statistical anomalies, but they are
+abnormal behavior of different metrics to enhance the accuracy       positive phenomenons and cannot be root-cause metrics. Such
+and interpretability of root cause analysis.                         abnormal but positive patterns should be further filtered to
+                                                                     improve performance. As a result, anomaly patterns should
+B. Preliminary Study
+                                                                     be well incorporated when identifying root-cause metrics to
+    To better understand the problem of identifying root-cause       enhance accuracy and interpretability.
+metrics in practice, we conducted a preliminary study based             3) Typical Anomaly Patterns: To answer this question, we
+on real-world data analysis and interviews with engineers.           analyzed numerous metrics from the real world. Through our
+Specifically, we collected historical incidents and metrics of 14    analysis and discussions with engineers, we summarized 13
+online service systems from a large commercial bank. The total       typical anomaly patterns, displayed in Fig. 2. We observe that
+size of various metric data exceeds 50GB, and the total number       anomaly patterns are indeed diverse in practice, and a metric
+of metrics is over 260K, including application (e.g., response       could exhibit more than one anomaly pattern. Besides, we
+time and success rate), storage (e.g., average write/read time),     further analyzed the physical meanings of different anomaly
+network (e.g., average round-trip time) and so on. To our best       patterns. As shown in Table I, we present detailed explanations
+knowledge, this is the first study that focuses on root-cause        of these anomaly patterns, including corresponding example
+metric identification and anomaly patterns. In this study, we        metrics and problem scenarios. It is clear that different patterns
+aim to answer the following three questions:                         may represent different problems. For example, the “steady in-
+    • How about the current practice of identifying root-cause       crease” of memory usage may indicate a deteriorating capacity
+      metrics?                                                       issue, and the “single spike” of response time may indicate
+    • Are anomaly patterns necessary for identifying root-cause      that the system is jammed briefly but then recovered quickly.
+      metrics?                                                       These patterns can be divided into two categories based on
+    • What types of anomaly patterns exist in practice?              whether the metric resumes to a normal state in the end (Type-
+    1) Current Practice: We interviewed dozens of engineers          1 and Type-2). Interestingly, we observe that different anomaly
+from different teams in a large commercial bank. These               patterns may represent different severity levels and explanatory
+engineers with rich experience frequently diagnose incidents         power to root cause. Intuitively, Type-1 patterns are much
+in their daily work via inspecting various monitoring metrics.       more severe than Type-2 ones because the former means that
+Thus the interview results are quite convincing. In current          the anomaly is still continuing, while the latter is a transient
+practice, we find that engineers tend to adopt some monitoring       anomaly and recovers quickly.
+and visualization tools (e.g., Grafana [9] and Kibana [10]) to          4) Summary: Through this preliminary study, we obtain the
+inspect the behavior of related metrics. In practice, the number     following key findings that largely motivate our work.
+of candidate metrics is way larger than that of what engineers       • Identifying root-cause metrics is critical for troubleshooting,
+can properly investigate. To address this issue, engineers draw        while the current practice in the real world is unsatisfactory.
+support from some simple yet efficient anomaly detection             • Incorporating anomaly patterns is indeed helpful for iden-
+methods (e.g., 3-σ) to filter out some normal metrics which are        tifying root-cause metrics, to further enhance the accuracy
+unlikely to have correlations with the incident. Nevertheless,         and interpretability.
+it is still far from satisfactory due to the natural limitation of   • There exist diverse anomaly patterns with different physical
+anomaly detection methods, and the number of abnormal met-             meanings and different explanatory power to root causes,
+rics requiring manual examination is still large after the rough       which should also be noticed.
+filtering process. Consequently, it is imperative to develop an
+automated, accurate, and efficient approach to identifying root-
+                                                                     C. Problem Formulation
+cause metrics for incident diagnosis.
+    2) The Necessity of Anomaly Pattern: According to the               In this paper, we aim to propose an effective and ef-
+feedback of engineers, they confirmed the significance of            ficient approach to identifying root-cause metrics to assist
+anomaly patterns in the task of identifying root-cause metrics       incident diagnosis. Specifically, when an incident (e.g., success
+(and some other tasks in service reliability management).            rate decreases dramatically) occurs, all related metrics are
+The reasons can be summarized as follows. First, providing           collected, such as the infrastructure components supporting
+specific anomaly patterns could assist engineers to obtain more      the service, including database, server, hardware and so on.
+comprehensive information. For example, an abrupt anomaly            Then, we expect to rapidly identify root-cause metrics from
+(e.g., spike) indicates a sudden incident, while a trending          numerous candidate metrics and provide a ranking list to
+anomaly (e.g., steady increase) indicates a slowly deteriorating     engineers, to guide further troubleshooting. Importantly, the
+incident. Second, some anomaly patterns are not concerned            root-cause metrics need to meet two requirements. One is that
+by engineers, which could bring some inaccurate results and          the metrics should behave abnormally during the occurrence
+    Type-1
+    patterns
+
+
+
+
+    Type-2
+    patterns
+
+
+
+                          Fig. 2: Typical anomaly patterns summarized from large-scale real-world data
+   TABLE I: Detailed explanations of anomaly patterns, including corresponding example metrics and problem scenarios
+   Type         Anomaly patterns           Example metrics                               Examples of problem scenarios
+                                           system.cpu.pct usage; system.mem.bu-          A sudden high-load task occupies many resources;
+                Sudden increase
+                                           ffered; system.net.packets in.error           Cyclic calls due to configuration errors or bugs
+                                           system.net.packets in.count; weblogi-         Network disconnection; Request
+                Sudden decrease
+                                           c.webapp.sessions; app.response.rate          obstruction; Power outage
+   Type-1:                                 system.mem.pct usage;                         A sudden high-load task lasts for a while;
+                Level shift up
+   Still in                                system.io.w await                             Bursted user request
+   abnormal                                system.cpu.idle; system.mem.free;             Increase in bad blocks on disk;
+   state        Level shift down
+                                           app.success.rate                              Power outage; Server down
+                Steady increase            system.disk.used; oracle.tablespace.used      Memory leak caused by buggy code;
+                Steady decrease            system.mem.free; oracle.tablespace.free       Insufficient resources
+                Single spike               oracle.lock.wait; system.disk.await           Transient network jitter; A temporary high-load task
+                Single dip                 system.net.bytes rcvd; app.success.rate       Network/system stuck and recovery
+                Transient level shift up   oracle.read.sequential; oracle.lock.wait      A high-load task takes up resources for a while and
+                Transient level shift                                                    has been released;
+                                           system.cpu.idle;system.mem.free
+   Type-2:      down                                                                     A faulty disk has been replaced
+   Recover      Multiple spikes            system.io.await; app.response.time            Continuously unstable system;
+   to normal    Multiple dips              system.net.bytes sent; app.success.rate       Network fluctuations
+   state                                   system.mem.used;app.response.rate;            Server restarts continuously;
+                Fluctuations
+                                           system.cpu.pct usage                          Continuously unstable system
+
+of this incident, and the other is that its anomaly pattern should                                          Labeled         Label
+                                                                                                                                           Engineers
+                                                                                            Topology        data
+satisfy the physical meaning and engineers’ demand.
+                                                                                                                       Training
+                        III. A PPROACH                                                                    Abnormal
+                                                                                                          metrics
+   Motivated by the insights learned from the preliminary
+study, we propose an effective approach to identifying root-             Incident    Candidate   Coarse-grained   Pattern        Ranking     Root-cause Engineers
+                                                                                     metrics     anomaly          classification             metrics
+cause metrics named PatternMatcher. As presented in Fig. 3,                                      detection
+PatternMatcher contains three components: coarse-grained
+                                                                                          Fig. 3: Overview of PatternMatcher
+anomaly detection, anomaly pattern classification, and root-
+cause metric ranking. Specifically, when an incident occurs in          the above two steps into consideration, so that engineers could
+the online service system, PatternMatcher would be triggered,           check suspicious metrics according to the ranking list. In the
+and related metrics to this incident would be collected based           following, we will present three main modules in detail.
+on system topology. First, PatternMatcher utilizes two-sample
+hypothesis test as the coarse-grained anomaly detection algo-           A. Coarse-grained Anomaly Detection
+rithm because of its high efficiency and accuracy. It can filter           As introduced in §II-C, one requirement of root-cause met-
+out the metrics performing normally during the occurrence of            rics is that they should behave abnormally when an incident
+this incident so that the search space could be significantly           occurs. In the literature, several approaches have been pro-
+reduced. Afterwards, we propose a novel anomaly pattern                 posed to identifying root-cause metrics via anomaly detection.
+classification approach based on 1-D CNN [8], to further                For example, FluxRank [4] adopts Kernel Density Estimation
+analyze the specific anomaly patterns of abnormal metrics.              (KDE) to detect the change of metric distribution using the
+The goal is to filter out abnormal metrics whose anomaly                local data before the incident occurs. However, KDE suffers
+patterns are not concerned by engineers, so as to improve               from several limitations in practice. First, the selection of
+the accuracy and provide more comprehensive information to              kernel functions (e.g., RBF and Gaussian) and the bandwidth
+engineers. Finally, we design a ranking strategy taking both            strongly affect the accuracy [11]. Besides, it is difficult for
+KDE to accurately estimate the distribution given limited data
+points. Second, it is difficult to select an appropriate threshold
+to determine whether the metric behaves abnormally because
+the anomaly scores provided by KDE have no range limit.
+   To overcome the drawbacks of KDE, inspired by existing
+works [5], [6], we leverage two-sample hypothesis test as our
+coarse-grained anomaly detection algorithm, mainly due to its
+efficiency and effectiveness given numerous candidate metrics
+and short-term historical data. Besides, it is relatively simple
+to choose an appropriate threshold based on the output of                 (a) Single data annotation                  (b) Batch data confirmation
+p-value. In detail, given the occurrence time of an incident
+t and a metric m, we mainly focus on whether the metric                                   Fig. 4: Interface of labeling tool
+is abnormal before time t. We compare the data between
+m[t − l1 : t] (testing window SA ) and m[t − l1 − l2 : t − l1 ]                        Reverse                Shift                 Add noise
+(normal window SN ) using KS-test (Kolmogorov-Smirnov
+test [12]). Considering the fact that using too many data points       Single spike              Single dip            Single dip               Single dip
+for anomaly detection could result in system overhead in real
+                                                                                      Fig. 5: Illustration of data augmentation
+deployment and few data points may undermine the accuracy,
+we set l1 and l2 to 10 and 30 data points based on the               to reduce labeling efforts. Specifically, we first label 100 seg-
+interactions with engineers. The hypothesis of the two-sample        ments manually using our developed labeling tool (Fig. 4(a))
+test can be formulated as follows:                                   and then construct a simple model M for a rough pre-
+                                                                     classification based on KNN [13] with DTW (Dynamic Time
+                       (
+                          H0 : SA = SN
+                                                               (1)   Warping) distance [14]. Next, we use model M to classify
+                          H1 : SA 6= SN                              the remaining samples. If the results of top-k (k equals 3) are
+   The two-sample test would output a p-value (P), indicating        consistent, we tend to believe that the classification results are
+the confidence level. Given a threshold α (set to 0.05 in our        reliable. Otherwise, this segment is hard to be distinguished by
+experiments), if P < α, we would reject H0 and conclude              the algorithm and should be labeled manually with the labeling
+SA and SN from different distributions. That is, this metric is      tool. For the segments which have been well classified by M,
+abnormal and may be related to the incident. Otherwise, we           we develop a user interface (UI) for engineers to conveniently
+will accept H0 , indicating the metric is normal and we can          confirm the labels, as shown in Fig. 4(b). Finally, we need to
+remove it from our candidate in the next steps.                      label only less than 10% of the overall datasets (costing about
+                                                                     15 minutes), markedly reducing manual efforts.
+B. Anomaly Pattern Classification                                       3) Data Augmentation: Although we have obtained suf-
+   As presented in §II, anomaly patterns should be well              ficient training data through the above step, the number of
+considered to enhance accuracy and interpretability. Therefore,      different patterns is imbalanced in our dataset. For example,
+after identifying abnormal metrics, we need to further figure        the percentage of single spike is 11.35% (218 samples), while
+out the specific anomaly patterns of this metric, aiming to filter   the percentage of steady increase is only 3.70% (71 samples),
+out the patterns that engineers do not care about. As shown          which could degrade the performance and robustness of the
+in Fig. 2, we summarized 13 typical anomaly patterns via             classifier. To address this problem, we leverage the technique
+carefully analyzing large-scale real-world metrics. The goal         of data augmentation [15] in PatternMatcher, which has been
+of this step is to classify the anomalies into correct patterns.     widely applied in the field of computer vision.
+   1) Data Collection: The first step to solve the multi-class          As shown in Fig. 5, we adopt three strategies to enrich our
+classification problem is to collect data with high-quality labels   datasets. 1) Reverse. Two types of reverse can be applied in
+to train the model. As stated in §III-A, if the testing window       PatternMatcher, up to down (e.g., single spike to single dip)
+SA performs abnormally, we will focus on the anomaly pattern         and left to right (e.g., level shift up to level shift down). 2)
+of m[t − w : t] (SP ) and w is set to 30 data points. The length     Shift. We can shift the segment by using a small step, which
+of the window is larger than SA with length l1 because we            does not change its anomaly pattern. For example, a single
+need to combine contextual information to identify anomaly           spike pattern can be shifted to a new single spike where the
+patterns more precisely. Based on historical incidents and           positions of spikes are different. 3) Adding Gaussian noises.
+related metrics, we collected 1921 abnormal segments as our          We randomly add Gaussian noises following the distribution
+datasets. We split the training set (used to train the model),       of N ∼ (0, 0.05) to the raw data. Through the above three
+validation set (used to tune the hyperparameters), and testing       methods, we obtain a high-quality training set, and then use
+set (used for evaluation) with the ratio of 6:2:2.                   it to train the classification model. The necessity of data
+   2) Labeling with Active Learning: Manually labeling thou-         augmentation will be demonstrated in §IV-E.
+sands of segments is a labor-intensive and tedious task. To             4) Classifier: Time series classification has been exten-
+address the challenge, we draw support from active learning          sively investigated in the literature [16]. Existing works can
+ Input: abnormal        1-D convolution   Fully connected     Output:      so that engineers could investigate suspicious components
+ segment                                                    pattern type   according to our recommended results.
+             Normali-
+             zation                                            Single
+                                                                              As for the coarse-grained anomaly detection, it is intuitive
+                                                               spike       that we should pay more attention to more abnormal metrics
+                                                                           with larger anomaly scores (p-value). For the second step of
+       Fig. 6: Detailed network structure of our classifier                pattern classification, as presented in §II-B3, different patterns
+                                                                           exhibit different physical meanings with different severity
+be divided into two categories: traditional machine learning               levels. For example, the level shift up is much more severe than
+based methods (e.g., KNN [17], Random Forest [18]) and                     a single spike since the former is still in an abnormal state,
+deep learning based methods (e.g., CNN [19]). Based on our                 and the latter has already recovered to normal. Therefore, the
+observation, feature-based traditional methods suffer from a               ranking strategy should take both the anomaly scores in the
+significant challenge, i.e., requiring powerful features to train          first step and severity levels of different patterns in the second
+the classification model. The features of time series, however,            step into consideration.
+are diverse (e.g., mean, standard deviation and trend), and                   Specifically, we first acquire a basic anomaly score based
+it is a daunting task to extract and select useful features.               on the p-value (P ) for each metric, which is computed by
+KNN (distance-based method) is a lazy-learning method and                  − log max(P, 0.0001). The goal of using max function is to
+suffers from extremely high time complexity. In comparison,                constrain the scale of anomaly score. The threshold 0.0001
+deep learning based methods have the ability to learn features             means we have 99.99% confidence being right. Then, we set
+automatically. Specifically, we leverage the popular model 1-              weights for different anomaly patterns according to domain
+D CNN to extract features from time series and MLP (Multi-                 knowledge or engineers’ demand. For example, we could
+Layer Perceptron) as classifier [20]. The major strength of                assign Type-1 patterns in Table I with larger weights than those
+1-D CNN is it performs well on time series data without                    of Type-2 ones. In our experiements (§IV), we set the weights
+any pre-determined transformation such as fast Fourier trans-              of Type-1 and Type-2 patterns to 0.8 and 0.2, respectively. We
+form (FFT) and discrete wavelet transform (DWT), hand-                     could obtain a promising result even though using such simple
+crafted feature extraction and selection [21]. Besides, the                weights, and engineers can set weights more carefully based
+architecture of 1-D CNN is compact compared with complex                   on real demand in practice. Finally, the root-cause score of
+deep networks (e.g., VGGNet [22]), making it efficient under               each metric is computed as the following:
+massive data. The detailed network structure of our classifier
+is displayed in Fig. 6. For the input of abnormal segment, we                       rank score = (− log max(P, 0.0001)) ∗ pw             (2)
+first adopt Min-max normalization to normalize its value to                where pw is the weight of the corresponding anomaly pattern
+the range of [0,1], to eliminate the effect of amplitude and               of this metric. Based on the output ranking list, the incident
+focus on the segment shape. The network is composed of                     could be assigned to corresponding teams for further diagnosis.
+three 1-D convolution layers (kernel size of all three layers
+is 5, output channel sizes are set to 64, 128, and 256) and two                                   IV. E VALUATION
+fully connected layers (output sizes are set to 64 and 13). The              We conducted an extensive experimental study based
+final output is computed by LogSoftmax. The loss function                  on real-world data to demonstrate the effectiveness of
+and optimizer are cross-entropy and Adam, respectively. The                PatternMatcher, aiming to answer the following research
+effectiveness of our classification model will be illustrated in           questions (RQs):
+§IV-E by compared with traditional approaches.                             • RQ1: How does PatternMatcher perform in identifying root-
+   During incident diagnosis, if anomalies are detected in the               cause metrics?
+testing window SA (m[t − l1 : t]) of a metric, PatternMatcher              • RQ2: Do main components in PatternMatcher contribute to
+would classify the segment SP (m[t − w : t]) to identify                     the overall performance?
+its pattern. If engineers are not concerned about its pattern,             • RQ3: How efficient is PatternMatcher?
+this metric would be excluded. Otherwise, this metric would                • RQ4: How effective is our anomaly pattern classifier?
+be included in the final ranking. Engineers’ preferences for
+patterns can be configured in advance. In our experiments                  A. Dataset and Measurement
+(§IV-B), we only configure some basic settings based on prior                 1) Dataset: To evaluate the performance of identifying
+knowledge (e.g., filtering out all increase patterns of CPU                root-cause metrics (RQ1, RQ2 and RQ3), we collected four
+usage and all decrease patterns of free memory space). In                  datasets (113 incident cases in total) from different systems in
+practical usage, engineers could add new settings based on                 a large commercial bank which supports hundreds of millions
+their real demand to further improve the performance.                      of users and contains hundreds of service systems. Table II
+                                                                           presents the details of the datasets used in our experimental
+C. Root-cause Metric Ranking                                               study. All metrics are sampled every minute. Dataset A and
+  Through the above two steps, we have filtered out the nor-               B are collected from two business systems, and the incidents
+mal metrics and abnormal metrics with unconcerned anomaly                  are closely related to key business metrics (e.g., response time
+patterns. Then, we provide a root-cause metric ranking list                and success rate). Dataset C and D come from the database
+                                          TABLE II: Details of our experimental datasets
+    Dataset   Incident                Example candidate metrics                                                  #Metrics   #Cases
+              Application incident    Database-related (oracle.session.active.total, oracle.lock.wait);
+      A       (low success rate,      middleware-related (weblogic.thread.pending, weblogic.webapp.sessions);     5213        16
+              high response time,     network-related (system.net.bytes sent, system.net.packets in.count);
+              low transaction volume) server-related (system.cpu.pct usage, system.io.await, system.mem.used);
+                                      storage-related (san.read.time)
+              Application incident    Network-related (system.net.bytes sent, system.net.packets in.count);
+      B                                                                                                           3229        19
+              ( high response time,   resource-related (system.cpu.pct usage, system.mem.used);
+              high #user failures)    middleware-related (weblogic.thread.pending, weblogic.webapp.sessions)
+              Database incident       CPU-related (system.cpu.pct usage, system.cpu.iowait);
+      C                                                                                                            265        45
+              (high #active sessions, read/write-related (oracle.read.sequential, oracle.log.write.parallel);
+              high CPU usage)         lock-related (oracle.lock.wait)
+              Storage incident        I/O-related (san.write.pending, san.io.size;
+      D                                                                                                           1060        33
+              (high response time,    database-related (oracle.read.sequential, oracle.log.write.parallel);
+              disk failure)           disk-related (san.disk.used, san.disk.free)
+
+and storage teams, which are responsible for all database and           root-cause metrics. It ranks root-cause metrics combining
+storage systems in the bank, respectively. The incidents of C           random walk visit times and anomaly scores.
+and D may not directly destroy service quality, but engineers           Table III shows the results of PatternMatcher and com-
+are very concerned about the anomalies of the key metrics            pared approaches. From this table, we find PatternMatcher
+(e.g., #active sessions in database and IOPS in storage). All        outperforms all four baselines in terms of all measurements.
+of these incidents are collected from historical incident tickets    The Avg@3 of PatternMatcher achieves 0.96, 0.98, 0.88
+and critical alerts. The root-cause metrics of each incident are     and 0.80 on four datasets. The promising performance of
+obtained from historical troubleshooting records, which have         PatternMatcher means that engineers could identify root-cause
+been confirmed by experienced engineers.                             metrics more accurately and assist incident diagnosis rapidly
+   2) Measurement: Following existing work [7], [23], we             under the help of PatternMatcher. In particular, an interesting
+adopt AC@k (top-k accuracy) and Avg@k (top-k average                 observation is that PatternMatcher performs better on appli-
+accuracy) as measurements. AC@k means the percentage of              cation incidents (A and B). This is because candidate metrics
+true root-cause metrics in the top-k result (k = {1, 3}). A          of application incidents come from different infrastructure
+higher value of AC@k, especially when the value of k is              components and the root-cause metrics are relatively easy
+small, indicates that the approach could identify root-cause         to identify. In contrast, candidate metrics in C and D are
+metrics more accurately. Avg@k
+                             Pk is the average performance           closely related to database and storage, and there are many
+of AC@k, computing by k1 i=1 AC@i. As for the evaluation             abnormal metrics, incurring challenges for identifying root-
+of anomaly pattern classification (RQ4), we adopt the widely-        cause metrics. Thus, the results demonstrate PatternMatcher
+used classification metrics, i.e., precision, recall, and F1-        could be well applied to application incidents triage.
+score [24]. Considering multi-classification in our problem, we         We further analyzed the reasons why these baselines per-
+use the macro average to calculate these measurements [25].          form poorly. About FluxRank and -diagnosis, one common
+                                                                     reason is the natural limitation of their anomaly detection
+B. RQ1: Overall Performance of PatternMatcher                        algorithms. Specifically, the selection of kernel functions and
+                                                                     bandwidths has a significant effect on the performance of
+   To answer this RQ, we compare PatternMatcher with sev-            KDE used in FluxRank [11], and it is time-consuming and
+eral existing approaches to demonstrate its effectiveness of         challenging for engineers to choose optimal parameters manu-
+root-cause metric identification.                                    ally. -statistics adopted in -diagnosis is designed specifically
+• FluxRank [4] uses KDE to detect abnormal metrics and               for long-tail latency problem, which is inappropriate in our
+  ranks root-cause metrics by their anomaly scores. The kernel       scenario. Besides, -statistics relies on relative long-term data,
+  function used in experiments is Gaussian.                          which is impractical in the real world due to high I/O overhead
+• -diagnosis [5] adopts -statistical test based on energy          under numerous. In terms of CETS, it relies on sufficient
+  distance to identify abnormal metrics. Due to the lack of          historical incident cases to analyze the correlation between an
+  ranking component in [5], we rank all abnormal metrics             incident and all metrics. Besides, it is more accurate to identify
+  using p-value in our experiments.                                  root-cause metrics based on the current system behavior rather
+• Correlating Events with Time Series (CETS) [6] utilizes            than static correlation score obtained from historical data.
+  nearest neighbor statistic to calculate the correlation between    About MicroCause, it localizes root-cause metrics based on
+  an incident and candidate metrics. The root-cause metrics          causality analysis with PC algorithm using long-term historical
+  are sorted based on the correlation scores.                        data. Besides, PC works as a black-box, and the output causal
+• MicroCause [7] uses PC algorithm [7] to construct a causal         graph is hard to understand and evaluate [26]. More impor-
+  graph on metrics, and conducts random walk to identify the         tantly, a major drawback in these baselines is that they ignore
+                          TABLE III: Comparison between PatternMatcher and baseline approaches
+       Dataset             A                       B                       C                         D                 Average
+      Approach      AC@1 AC@3 Avg@3         AC@1 AC@3 Avg@3         AC@1 AC@3 Avg@3           AC@1 AC@3 Avg@3          Avg@3
+   PatternMatcher   0.88 1.00  0.96         0.95 1.00  0.98         0.82 0.93  0.88           0.76 0.82  0.80           0.91
+      FluxRank      0.69 0.81  0.75         0.63 0.74  0.68         0.64 0.76  0.69           0.64 0.73  0.69           0.70
+     -diagnosis    0.44 0.62  0.52         0.37 0.47  0.44         0.37 0.47  0.41           0.33 0.45  0.40           0.44
+        CETS        0.62 0.75  0.67         0.58 0.79  0.67         0.62 0.71  0.66           0.58 0.70  0.64           0.66
+    MicroCause      0.44 0.62  0.54         0.26 0.37  0.32         0.27 0.42  0.37           0.30 0.39  0.35           0.40
+      W/o APC       0.69 0.75  0.73         0.68 0.74  0.72         0.60 0.73  0.67           0.61 0.70  0.66           0.70
+    Raw ranking     0.81 0.94  0.88         0.90 0.95  0.93         0.76 0.91  0.84           0.70 0.79  0.75           0.85
+
+the physical meanings of metrics and anomaly behaviors,          TABLE IV: Time cost (seconds) comparison between
+leading to some false positives. As demonstrated in §II-B,       PatternMatcher and baseline approaches
+despite the fact that some metrics perform abnormally before             Dataset            A         B         C        D
+the incident occurs, the anomaly patterns are unimportant           #Candidate metrics     5213     3229       265      1060
+and could be neglected (for example, the decrease in CPU             PatternMatcher        21.58    13.12      1.45     4.18
+usage), and different anomaly patterns tend to show different           FluxRank           15.63     9.31      1.21     2.95
+explanatory power to root causes. Therefore, anomaly patterns          -diagnosis         14.38     9.08      1.09     2.65
+should be incorporated in identifying root causes, which is               CETS            124.85    87.86      6.93     19.89
+the core reason why PatternMatcher outperforms baseline                MicroCause          18.94    11.78      1.38     3.77
+approaches.
+                                                                 Mitigate). If engineers need to wait for a long time to
+   Overall, PatternMatcher is able to identify root-cause met-
+                                                                 obtain the results, the service quality would be damaged. The
+rics more accurately compared with four baseline approaches,
+                                                                 time cost comparison on each dataset of PatternMatcher and
+providing clues for engineers in incident diagnosis.
+                                                                 baseline approaches are presented in Table IV. Clearly, given
+C. RQ2: Contributions of Main Components                         thousands of candidate metrics, PatternMatcher could identify
+   To investigate the contributions of two main components       root-cause metrics rapidly, less than 22 seconds on all datasets.
+(i.e., anomaly pattern classification and root-cause metric      Considering that PatternMatcher contains an anomaly pattern
+ranking) to the overall performance of PatternMatcher, we        classifier, the overall running time is a little slower than
+construct two variants of PatternMatcher accordingly:            FluxRank, -diagnosis and MicorCause. CETS suffers high
+                                                                 time complexity since it relies on massive historical data and
+• W/o APC. We directly use two-sample test in §III-A to
+                                                                 adopts time-intensive algorithms (KNN and DTW). Overall,
+   detect abnormal metrics and provide a ranking list based
+                                                                 PatternMatcher has satisfactory running time when dealing
+   on p-value, without anomaly patterns classification (APC).
+                                                                 with thousands of metrics, indicating that PatternMatcher is
+• Raw ranking. We replace our designed ranking strategy
+                                                                 indeed practical in the real world.
+   (§III-C) with raw ranking method using p-value, and other
+   components remain unchanged, to illustrate the severity       E. RQ4: Performance of Our Anomaly Pattern Classification
+   levels of different patterns.
+                                                                    As demonstrated in §II-B and §IV-C, anomaly pattern
+   The comparison results are presented in Table III. We find    classification is a crucial module and contributes much to
+that the two variants of PatternMatcher indeed perform worse     PatternMatcher. To show the superiority of our algorithm
+than PatternMatcher in terms of all the measurements in          based on 1-D CNN, we compare it with the following four
+general. In particular, the average Avg@3 drops from 0.91        baseline approaches, and the evaluation datasets have been
+to 0.70 and 0.85 after removing anomaly pattern classifica-      introduced in §III-B1.
+tion and adopting a raw ranking method without considering
+                                                                 • KNN [13]. We apply both Euclidean distance (ED) and Dy-
+anomaly patterns. The results demonstrate the contributions of
+two main components to the overall performance. Specifically,      namic Time Warping (DTW) [14] as distance measurement
+incorporating anomaly pattern classification and considering       to the KNN model, and the value of k is set to 5. The final
+physical meaning could filter out some abnormal but uncon-         results are given by majority voting of top-k.
+                                                                 • Random Forest (RF) [18]. We design some hand-crafted
+cerned patterns (e.g., the decrease of CPU usage) to enhance
+the accuracy and interpretability. Besides, different anomaly      features inspired by tsfresh [27], which is an open-source
+patterns may indicate different severity levels and show dif-      for time series feature extraction. Equipping with feature se-
+ferent explanatory power to root causes (§II-B), which should      lection, we finally adopt 32 features in total. These features
+be paid extra attention in the ranking component.                  are fed into RF model to construct a classification model.
+                                                                 • Multi-Layer Perceptron (MLP) [20]. Similar to RF, we
+D. RQ3: Time Efficiency                                            replace the classification model with MLP.
+  Intuitively, the task of identifying root-cause metrics re-       Table V shows the comparison results. Obviously, 1-D CNN
+quires high time efficiency to ensure short TTM (Time to         model outperforms the four compared models in terms of all
+TABLE V: Precision (P), recall (R) and F1-score (F1) com-                                                                               Engineers
+                                                                                       Incident
+parison of anomaly pattern classification between 1-D CNN                                                                              Root-cause
+and baseline approaches                                                                               Trigger
+                                                                                                                                       metric ranking
+                                                                                                            Front-end web service
+                                 With DA                   Without DA
+        Approach
+                         P          R        F1        P       R       F1                                          Results
+                                                                                       Call
+   1-D CNN              0.98      0.98      0.98      0.94    0.93    0.93                                         Query
+   KNN (ED)             0.83      0.84      0.83      0.79    0.81    0.78                                                                     CMDB
+                                                                                      PatternMatcher
+                                                                                                             Related metric names              (neo4j)
+  KNN (DTW)             0.94      0.90      0.91      0.91    0.88    0.89          Query     Data                                      Computation
+      RF                0.94      0.92      0.93      0.92    0.91    0.91
+     MLP                0.92      0.91      0.92      0.90    0.89    0.89                           Data                  Metrics             Data
+                                                                                                                                               collector
+                       1-D CNN             KNN(DTW)           MLP                      InfluxDB                                      Monitor
+                       KNN(ED)             RF
+                                                                                  Fig. 8: Deployment architecture of PatternMatcher
+        1.0
+        0.8
+Avg@3
+
+
+
+
+                                                                             distributed event streaming platform) [28], and a script con-
+        0.6
+        0.4                                                                  sumes data from Kafka and writes to InfluxDB (a time-series
+        0.2                                                                  database) [29] periodically. The computation component is
+        0.0                                                                  supported by Apache Flink [30], which can process data with
+                   A                B              C                D
+                                        Dataset                              high performance and low latency in a distributed way. In prac-
+Fig. 7: Performance of PatternMatcher with different anomaly                 tical usage, when an incident occurs, engineers would start to
+pattern classifers                                                           run PatternMatcher from the interface. PatternMatcher queries
+                                                                             related metric names from CMDB (Configuration Manage-
+the measurements, achieving the F1-score of 0.98. The F1-
+                                                                             ment Database), which stores complex system dependencies
+score of KNN with DTW distance without manual feature
+                                                                             using Neo4j [31]. Then, PatternMatcher reads corresponding
+extraction is acceptable. However, KNN as a lazy learning
+                                                                             metric data from InfluxDB and conducts the computation
+method, suffers from high time cost for online deployment.
+                                                                             task. Finally, engineers could obtain a report generated by
+About feature-based approaches (RF and MLP), it is labor-
+                                                                             PatternMatcher from the front-end interface.
+intensive to extract and select powerful features to characterize
+anomaly patterns manually. In contrast, 1-D CNN has the                      B. Success Story
+ability to automatically learn useful features without manual                   Based on the real feedback, PatternMatcher has success-
+efforts. In summary, taking both classification performance and              fully assisted engineers in incident diagnosis. Engineers could
+practical usage into consideration, our approach based on 1-D                investigate suspicious components based on the results given
+CNN is indeed effective. As stated in §III-B3, we leverage data              by PatternMatcher, so that the incident could be assigned to
+augmentation (DA) to overcome the data imbalance problem                     responsible teams correctly for further troubleshooting. In the
+and enhance model robustness. To prove its contribution, we                  following, we present two successful cases in practice.
+compare the performance of classification models with DA and                    1) Case I (Diagnose Database Incident): The database
+without DA. As shown in Table V, data augmentation indeed                    incident was identified by the increase in #active sessions,
+brings an improvement on performance. The F1-score of 1-D                    a key metric of Oracle database. The root cause is a burst
+CNN would drop from 0.98 to 0.93 without DA, and so are                      of write operations. With traditional manual troubleshoot-
+other classification methods.                                                ing, engineers need to manually inspect 265 metrics related
+   Besides, we further analyze the impact of different classifi-             to database, which is extremely time-consuming. However,
+cation methods on the overall performance of PatternMatcher.                 PatternMatcher could automatically check these metrics and
+Fig. 7 presents the Avg@3 on four datasets under different                   three write-related metrics (log file parallel write, log file
+classifiers. Obviously, PatternMatcher using 1-D CNN method                  sync, db file parallel write) are ranked in the top-5 results
+could identify root-cause metrics more accurately than com-                  accurately. We also analyzed the results of FluxRank, which
+pared approaches. Thus, the superiority of the classification                incorrectly ranks CPU usage and read-related metrics (e.g., db
+model could directly affect the performance of identifying                   file sequential read) in the top. In comparison, PatternMatcher
+root-cause metrics.                                                          could filter out such false positives via a more effective coarse-
+                                                                             grained anomaly detection and anomaly pattern classification,
+                               V. D ISCUSSION
+                                                                             because the decrease in CPU usage and read-related metrics
+A. Deployment                                                                are positive phenomenons and cannot be the root causes. As a
+   We have successfully deployed PatternMatcher in a top                     result, PatternMatcher could provide accurate clues for further
+commercial bank in the country. Fig. 8 shows the deploy-                     diagnosis and avoid wrong mitigation actions.
+ment architecture of PatternMatcher, including data collec-                     2) Case II (Diagnose Application Incident): Engineers
+tor, computation and front-end web service. Data collector                   detected the incident via the sharp increase in the number
+aims to collect and store all metrics in the online service                  of failed transactions of a service. PatternMatcher rapidly
+system. The monitors produce data to Kafka (an open-source                   checked thousands of infrastructure metrics supporting the
+service and generated a report within 1 minute. CPU usage,          the root cause based on the graph and random walk. The graph
+memory usage, and heap space are top-3 root-cause metrics.          characterizing the causality and call relationship between
+CPU usage shows the pattern of multiple spikes, and memory          different data sources or components could be constructed by
+usage and heap space are steadily increasing. Through this          automated algorithms (e.g., PC [36]) or manual configuration
+report, engineers infer that this incident may be induced by        (e.g., G-RCA [37]). Log-based localization aims to draw key
+frequent fullGC operations, which is a CPU-intensive task and       clues from a large number of logs for incident diagnosis [38],
+occupies too much heap space. Inspired by the clue, engineers       [39], [40], [41], [42], but these approaches are not suitable for
+further investigated the dump files and related logs, and finally   our scenarios and numerous logs incur high time complexity.
+confirmed this incident was caused by a piece of buggy code.        The goal of our work is to utilize metric data to identify clues
+                                                                    for incident diagnosis. Incorporating various data sources (e.g.,
+C. Lessons Learned                                                  topology and logs) to localize root causes more accurately can
+   Root-cause metric is not equal to the final root cause. The      be our future work.
+goal of identifying root-cause metrics is to provide some clues
+and directions for further diagnosis. However, localizing the       B. Time Series Anomaly Detection
+final root causes (e.g., buggy code, error configurations, and         Time series anomaly detection has been extensively studied
+hardware fault) needs to integrate multiple data sources (e.g.,     in the literature [43], [44], [45], [46], [47]. For example,
+logs and traces), which can be our future work.                     Donut [48] applies Variational Auto-Encoder (VAE) to detect
+   PatternMatcher could also be applied in other tasks. In ad-      anomalies on seasonal metrics. Ren et al. [49] proposed an
+dition to identifying root-cause metrics, PatternMatcher could      anomaly detection approach based on Spectral Residual and
+be triggered at any time based on engineers’ demand to inspect      CNN. However, the existing streaming algorithms require
+the behaviors of numerous metrics rapidly and accurately. For       long-term training data and high training cost, which cannot
+example, engineers could leverage PatternMatcher for regular        be applied to our scenario under numerous candidate met-
+system inspection to identify some risky anomaly patterns           rics. Besides, all existing works aiming to detect statistical
+(e.g., steady increase in memory usage), so that engineers          anomalies fail to consider the anomaly patterns and hidden
+could take some proactive actions to prevent service outages.       physical meanings, leading to poor interpretability and some
+                                                                    false positives. To our best knowledge, we are the first to focus
+D. Limitation                                                       on anomaly patterns in the problem of root-cause metric identi-
+   One limitation of our work is the lack of detailed analysis      fication and propose an effective anomaly pattern classification
+of parameters (l1 , l2 and w in §III) and anomaly pattern           approach, to enhance the performance and interpretability.
+configurations (pw in §III-C) due to the space limit. In our
+experiments, we select the parameters based on the domain                                 VII. C ONCLUSION
+experience from engineers considering both accuracy and                Identifying root-cause metrics accurately could provide
+efficiency, and config pattern weights are based on some prior      clues for engineers to diagnose incidents. To better under-
+knowledge. In practical usage, engineers could tune these           stand the problem, we conduct the first preliminary study to
+parameters and config weights according to their preferences.       investigate the performance of current practice and character-
+In the future, we will further analyze the impact of different      istics of root-cause metrics. Inspired by the findings obtained
+parameters and configurations on the performance.                   from the study, we propose an effective approach named
+                                                                    PatternMatcher, which contains three components, coarse-
+                    VI. R ELATED W ORK                              grained anomaly detection, anomaly pattern classification,
+A. Root Cause Analysis                                              and root-cause metric ranking. An extensive experimental
+   In the literature, some approaches have been proposed for        study based on real-world data containing diverse incidents
+identifying root-cause metrics. FluxRank [4] utilizes KDE to        demonstrates the effectiveness of PatternMatcher and the
+detect abnormal metrics and ranks root-cause metrics based          Avg@3 accuracy on four datasets could achieve 0.91 on
+on anomaly scores. -diagnosis [5] adopts -statistical test to     average, outperforming all baseline approaches. Furthermore,
+identify suspicious metrics to reduce search space. Luo et          PatternMatcher has been deployed in a large commercial bank
+al. [6] proposed to analyze the correlation between incidents       and we share two successful cases to show the practical usage.
+and metrics using KNN-based statistical test. However, these                          ACKNOWLEDGMENT
+works perform poorly in the real world due to the natu-
+                                                                      We thank Xuanrun Wang and Bo Cheng for developing
+ral limitation of their algorithms and ignoring the physical
+                                                                    the labeling tool. This work is supported by the National
+meanings of metrics and corresponding anomaly patterns. The
+                                                                    Key Research and Development Program of China (Grant
+effectiveness of PatternMatcher compared with existing works
+                                                                    No.2019YFE0105500), the State Key Program of National
+has been demonstrated in §IV-B.
+                                                                    Natural Science of China under Grant 62072264, and the
+   Besides, tremendous efforts have been devoted to root cause
+                                                                    Beijing National Research Center for Information Science and
+analysis using other technical routes, including graph-based
+                                                                    Technology (BNRist) key projects.
+approaches, log-based approaches and so on. Graph-based
+approaches [7], [32], [33], [34], [35] mainly aim to localize
+                              R EFERENCES                                        [23] P. Wang, J. Xu, M. Ma, W. Lin, D. Pan, Y. Wang, and P. Chen,
+                                                                                      “Cloudranger: Root cause identification for cloud native systems,” in
+ [1] J. Jiang, W. Lu, J. Chen, Q. Lin, P. Zhao, Y. Kang, H. Zhang, Y. Xiong,          2018 18th IEEE/ACM International Symposium on Cluster, Cloud and
+     F. Gao, Z. Xu, Y. Dang, and D. Zhang, “How to mitigate the incident?             Grid Computing (CCGRID). IEEE, 2018, pp. 492–502.
+     an effective troubleshooting guide recommendation technique for online      [24] K. P. Murphy, Machine learning: a probabilistic perspective. MIT
+     service systems,” in Proceedings of the 28th ACM Joint Meeting on                press, 2012.
+     European Software Engineering Conference and Symposium on the               [25] M. Cissé, M. Al-Shedivat, and S. Bengio, “Adios: Architectures deep
+     Foundations of Software Engineering. Virtual Event USA: ACM, Nov.                in output space,” in International Conference on Machine Learning.
+     2020, pp. 1410–1420.                                                             PMLR, 2016, pp. 2770–2779.
+ [2] Z. Chen, Y. Kang, L. Li, X. Zhang, H. Zhang, H. Xu, Y. Zhou, L. Yang,       [26] P. Spirtes, C. N. Glymour, R. Scheines, and D. Heckerman, Causation,
+     J. Sun, Z. Xu et al., “Towards intelligent incident management: why              prediction, and search. MIT press, 2000.
+     we need it and how we make it,” in Proceedings of the 28th ACM Joint        [27] https://tsfresh.readthedocs.io/en/latest/#, tsfresh, [Online; accessed 21-
+     Meeting on European Software Engineering Conference and Symposium                Apr-2021].
+     on the Foundations of Software Engineering, 2020, pp. 1487–1497.            [28] https://kafka.apache.org/, Kafka, [Online; accessed 21-Apr-2021].
+ [3] https://www.statista.com/statistics/753938/                                 [29] https://www.influxdata.com/, InfluxDB, [Online; accessed 21-Apr-2021].
+     worldwide-enterprise-server-hourly-downtime-cost/, Average cost             [30] https://flink.apache.org/, Flink, Scalable Stream and Batch Data Process-
+     per hour of enterprise server downtime worldwide in 2019, [Online;               ing, [Online; accessed 04-May-2021].
+     accessed 04-May-2021].                                                      [31] https://neo4j.com/, neo4j, [Online; accessed 21-Apr-2021].
+ [4] P. Liu, Y. Chen, X. Nie, J. Zhu, S. Zhang, K. Sui, M. Zhang, and D. Pei,    [32] M. Kim, R. Sumbaly, and S. Shah, “Root cause detection in a service-
+     “Fluxrank: A widely-deployable framework to automatically localizing             oriented architecture,” ACM SIGMETRICS Performance Evaluation Re-
+     root cause machines for software service failure mitigation,” in 2019            view, vol. 41, no. 1, pp. 93–104, 2013.
+     IEEE 30th International Symposium on Software Reliability Engineering       [33] J. Weng, J. H. Wang, J. Yang, and Y. Yang, “Root cause analysis of
+     (ISSRE). IEEE, 2019, pp. 35–46.                                                  anomalies of multitier services in public clouds,” IEEE/ACM Transac-
+ [5] H. Shan, Y. Chen, H. Liu, Y. Zhang, X. Xiao, X. He, M. Li, and W. Ding,          tions on Networking, vol. 26, no. 4, pp. 1646–1659, 2018.
+     “?-diagnosis: Unsupervised and real-time diagnosis of small-window          [34] X. Zhou, X. Peng, T. Xie, J. Sun, C. Ji, and et al., “Latent error prediction
+     long-tail latency in large-scale microservice platforms,” in The World           and fault localization for microservice applications by learning from
+     Wide Web Conference, 2019, pp. 3215–3222.                                        system trace logs,” in ESEC/FSE. ACM, 2019, pp. 683–694.
+ [6] C. Luo, J.-G. Lou, Q. Lin, Q. Fu, R. Ding, D. Zhang, and Z. Wang,           [35] D. Liu, C. He, X. Peng, F. Lin, C. Zhang, S. Gong, Z. Li, J. Ou,
+     “Correlating events with time series for incident diagnosis,” in Proceed-        and Z. Wu, “Microhecl: High-efficient root cause localization in large-
+     ings of the 20th ACM SIGKDD international conference on Knowledge                scale microservice systems,” in 2021 IEEE/ACM 43rd International
+     discovery and data mining, 2014, pp. 1583–1592.                                  Conference on Software Engineering: Software Engineering in Practice
+ [7] Y. Meng, S. Zhang, Y. Sun, R. Zhang, Z. Hu, Y. Zhang, C. Jia, Z. Wang,           (ICSE-SEIP). IEEE, 2021, pp. 338–347.
+     and D. Pei, “Localizing failure root causes in a microservice through       [36] J. Runge, P. Nowack, M. Kretschmer, S. Flaxman, and D. Sejdinovic,
+     causality inference,” in 2020 IEEE/ACM 28th International Symposium              “Detecting and quantifying causal associations in large nonlinear time
+     on Quality of Service (IWQoS). IEEE, 2020, pp. 1–10.                             series datasets,” Science Advances, vol. 5, no. 11, p. eaau4996, 2019.
+ [8] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “Imagenet classification     [37] H. Yan, L. Breslau, Z. Ge, D. Massey, D. Pei, and J. Yates, “G-rca:
+     with deep convolutional neural networks,” Advances in neural informa-            a generic root cause analysis platform for service quality management
+     tion processing systems, vol. 25, pp. 1097–1105, 2012.                           in large ip networks,” IEEE/ACM Transactions on Networking, vol. 20,
+ [9] https://grafana.com/, Grafana, [Online; accessed 04-May-2021].                   no. 6, pp. 1734–1747, 2012.
+[10] https://www.elastic.co/kibana, Kibana, [Online; accessed 04-May-2021].      [38] S. He, Q. Lin, J.-G. Lou, H. Zhang, M. R. Lyu, and D. Zhang,
+[11] A. Qahtan, S. Wang, and X. Zhang, “Kde-track: An efficient dynamic               “Identifying impactful service system problems via log analysis,” in
+     density estimator for data streams,” IEEE Transactions on Knowledge              Proceedings of the 2018 26th ACM Joint Meeting on European Software
+     and Data Engineering, vol. 29, no. 3, pp. 642–655, 2016.                         Engineering Conference and Symposium on the Foundations of Software
+[12] F. J. Massey Jr, “The kolmogorov-smirnov test for goodness of fit,”              Engineering, 2018, pp. 60–70.
+     Journal of the American statistical Association, vol. 46, no. 253, pp.      [39] Q. Lin, H. Zhang, J.-G. Lou, Y. Zhang, and X. Chen, “Log cluster-
+     68–78, 1951.                                                                     ing based problem identification for online service systems,” in 2016
+[13] S. A. Dudani, “The distance-weighted k-nearest-neighbor rule,” IEEE              IEEE/ACM 38th International Conference on Software Engineering
+     Transactions on Systems, Man, and Cybernetics, no. 4, pp. 325–327,               Companion (ICSE-C). IEEE, 2016, pp. 102–111.
+     1976.                                                                       [40] M. Du, F. Li, G. Zheng, and V. Srikumar, “Deeplog: Anomaly detection
+[14] D. J. Berndt and J. Clifford, “Using dynamic time warping to find                and diagnosis from system logs through deep learning,” in Proceedings
+     patterns in time series.” in KDD workshop, vol. 10, no. 16. Seattle,             of the 2017 ACM SIGSAC Conference on Computer and Communica-
+     WA, USA:, 1994, pp. 359–370.                                                     tions Security, 2017, pp. 1285–1298.
+[15] C. Shorten and T. M. Khoshgoftaar, “A survey on image data augmen-          [41] B. C. Tak, S. Tao, L. Yang, C. Zhu, and Y. Ruan, “Logan: Problem
+     tation for deep learning,” Journal of Big Data, vol. 6, no. 1, pp. 1–48,         diagnosis in the cloud using log-based reference models,” in 2016 IEEE
+     2019.                                                                            International Conference on Cloud Engineering (IC2E). IEEE, 2016,
+[16] H. I. Fawaz, G. Forestier, J. Weber, L. Idoumghar, and P.-A. Muller,             pp. 62–67.
+     “Deep learning for time series classification: a review,” Data Mining       [42] S. He, P. He, Z. Chen, T. Yang, Y. Su, and M. R. Lyu, “A survey
+     and Knowledge Discovery, vol. 33, no. 4, pp. 917–963, 2019.                      on automated log analysis for reliability engineering,” arXiv preprint
+[17] Y.-H. Lee, C.-P. Wei, T.-H. Cheng, and C.-T. Yang, “Nearest-neighbor-            arXiv:2009.07237, 2020.
+     based approach to time-series classification,” Decision Support Systems,    [43] N. Laptev, S. Amizadeh, and I. Flint, “Generic and scalable framework
+     vol. 53, no. 1, pp. 207–217, 2012.                                               for automated time-series anomaly detection,” in Proceedings of the 21th
+[18] M. Belgiu and L. Drăguţ, “Random forest in remote sensing: A review            ACM SIGKDD international conference on knowledge discovery and
+     of applications and future directions,” ISPRS journal of photogrammetry          data mining, 2015, pp. 1939–1947.
+     and remote sensing, vol. 114, pp. 24–31, 2016.                              [44] P. Malhotra, L. Vig, G. Shroff, and P. Agarwal, “Long short term
+[19] B. Zhao, H. Lu, S. Chen, J. Liu, and D. Wu, “Convolutional neural                memory networks for anomaly detection in time series,” in Proceedings,
+     networks for time series classification,” Journal of Systems Engineering         vol. 89. Presses universitaires de Louvain, 2015, pp. 89–94.
+     and Electronics, vol. 28, no. 1, pp. 162–169, 2017.                         [45] M. Munir, S. A. Siddiqui, A. Dengel, and S. Ahmed, “Deepant: A deep
+[20] I. Goodfellow, Y. Bengio, A. Courville, and Y. Bengio, Deep learning.            learning approach for unsupervised anomaly detection in time series,”
+     MIT press Cambridge, 2016, vol. 1, no. 2.                                        IEEE Access, vol. 7, pp. 1991–2005, 2018.
+[21] L. Eren, T. Ince, and S. Kiranyaz, “A generic intelligent bearing fault     [46] X. Zhang, J. Kim, Q. Lin, K. Lim, S. O. Kanaujia, Y. Xu, K. Jamieson,
+     diagnosis system using compact adaptive 1d cnn classifier,” Journal of           A. Albarghouthi, S. Qin, M. J. Freedman et al., “Cross-dataset time
+     Signal Processing Systems, vol. 91, no. 2, pp. 179–189, 2019.                    series anomaly detection for cloud systems,” in 2019 {USENIX} Annual
+[22] K. Simonyan and A. Zisserman, “Very deep convolutional networks for              Technical Conference ({USENIX}{ATC} 19), 2019, pp. 1063–1076.
+     large-scale image recognition,” arXiv preprint arXiv:1409.1556, 2014.       [47] M. Braei and S. Wagner, “Anomaly detection in univariate time-series: A
+                                                                                      survey on the state-of-the-art,” arXiv preprint arXiv:2004.00433, 2020.
+[48] H. Xu, W. Chen, N. Zhao, Z. Li, J. Bu, Z. Li, Y. Liu, Y. Zhao, D. Pei,   J. Tong, and Q. Zhang, “Time-series anomaly detection service at
+     Y. Feng et al., “Unsupervised anomaly detection via variational auto-    microsoft,” in Proceedings of the 25th ACM SIGKDD International
+     encoder for seasonal kpis in web applications,” in Proceedings of the    Conference on Knowledge Discovery & Data Mining, 2019, pp. 3009–
+     2018 World Wide Web Conference, 2018, pp. 187–196.                       3017.
+[49] H. Ren, B. Xu, Y. Wang, C. Yi, C. Huang, X. Kou, T. Xing, M. Yang,
+

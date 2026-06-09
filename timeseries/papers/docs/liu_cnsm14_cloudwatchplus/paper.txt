@@ -1,0 +1,777 @@
+       Application-Aware Latency Monitoring for Cloud
+                   Tenants via CloudWatch+
+
+                                               Dapeng Liu, Dan Pei ∗ , Youjian Zhao
+                                 Tsinghua National Laboratory for Information Science and Technology
+                      Department of Computer Science and Technology, Tsinghua University, Beijing 100084, China
+                                   Email:{liudp10@mails., peidan@, zhaoyoujian@}tsinghua.edu.cn
+
+       Abstract—A tenant hosted by a cloud platform typically runs          of the total requests [10], thus their latency anomalies (if any)
+   a lot of applications, each of which not only has its own service        cannot result in an obvious symptom of the overall latency
+   capacity but also differs in revenue or business importance. Thus        (both average and 90th percentile). Although the maximum
+   we argue that it is crucial for a cloud platform to provide fine-        can reveal any latency anomaly, it is commonly believed to
+   grained and application-aware performance monitoring for each            be too noisy and triggers a large number of false positives,
+   tenant, rather than current monitors that can only handle overall
+   metrics. In this paper, we propose CloudWatch+, a tool that
+                                                                            thus is rarely used in practice. As a result, tenants cannot
+   focuses on detecting the latency of web-based applications. A            be informed for the performance degradation of one or more
+   cloud platform equipping with CloudWatch+ can automatically              specific important applications.
+   learn and distinguish web-based applications it is hosting, and              While overall performance metrics is coarse-grained, mon-
+   detect latency anomalies for each application based on its               itoring and alarming on each individual URL (raw data in
+   own status. Our evaluation using the real data from a cloud              typical web access logs) is also ineffective. This is because an
+   platform with over 200 tenants demonstrates that the detection           application may produce a huge number of unique URLs, and
+   results of CloudWatch+ are more detailed than those of Amazon            a failure happens on an application, the alarms on individual
+   CloudWatch, which misses most alarms while some tenants’                 URLs would be overwhelming. For example, in one-day data
+   specific applications experience bad performance. Meanwhile,             set (after sampling by 1/60), there are still more than 70,000
+   CloudWatch+ is also realtime and light-weight.
+                                                                            suspicious records with different URLs when the latency
+                         I. I NTRODUCTION                                   threshold is set as 1.5 seconds. It’s an intractable task for
+       Cloud computing platforms (e.g., Amazon AWS and Win-                 tenants to manually figure out which applications are suffering
+   dows Azure) are critical components of the current Internet.             serious performance problems from these URLs.
+   These platforms offer attractive properties, such as elastic                 To address the above dilemma, we propose an application-
+   scaling, integrated management and global accessibility. As              aware web latency monitor for cloud tenants. Its granularity is
+   such, more and more Internet services are deployed on cloud              fine enough for tenants to identify the poor applications. We
+   platforms. For example, Netflix builds its entire online video           name our tool as CloudWatch+, and it can be considered as
+   streaming service on top of Amazon AWS.                                  an application-aware version of Amazon CloudWatch.
+       As with any Internet applications, web applications are                  The architecture of CloudWatch+ is shown in Fig. 1. The
+   sensitive to various performance metrics, one of which is                input data is web access logs, recording the timestamp, URL,
+   response latency. For example, 1 second increasing of latency            response latency, etc., for every visit. The data is then handled
+   can lead to 11% page views dropping and 7% customer                      by two main components of CloudWatch+ in sequence: (1)
+   conversations lost according to [1]. Therefore, latency monitors         uCluster is a module that automatically classify a large number
+   are considered to be indispensable components of the cloud               of web access records into different applications based on
+   platforms hosting web applications. There have been a suite of           URL clustering. Its high level idea is exploiting the URL
+   tools provided within a cloud, such as Amazon CloudWatch [2]             pattern for each application, e.g., common fields of URLs.
+   and Windows Azure Metrics [3]. Besides, many solutions                   (2) Anomaly detector calculate the latency and workload of
+   from SaaS-based third parties are available as well, such                every time slot for each application. In this paper The latency
+   as RightScale [4] and New Relic [5]. Beyond monitoring,                  is measured with the 90th percentile, which is a common
+   Amazon CloudWatch is able to automatically trigger auto-                 measurement of performance; the workload is measured with
+   scaling (provisioning more cloud instances) when performance             query per seconds (QPS). The anomaly detector determines
+   degradation has been found.                                              anomalies by comparing the latency of each application to a
+       Despite the efforts of these commercial monitors, the met-           threshold. Beyond that, it can also estimates the capacity of
+   rics they gathered are all aggregated at either an instance level        applications. Based on this information, it can infer whether
+   or a tenant level (e.g., Amazon CloudWatch), and measured                a latency anomaly is caused by overload or not, a rather
+   with minimum, average, and maximum [6], [7], [8], [9]. .                 important suggestion for tenants to make accurate decisions
+   This fundamentally limits the effectiveness of the web latency           of whether to scale up (e.g., purchasing more instances from
+   monitoring for tenants, because (1) the applications of a tenant         the cloud).
+   could differ in their importance, e.g., VIP users’ applications              CloudWatch+ has the following advantages:
+   and revenue related applications are more cared by tenants;
+   (2) a single application might contribute to only a small part              •    URL based web application identification and no pri-
+                                                                                    or knowledge. CloudWatch+ exploits URLs, common
+     ∗ Dan Pei is the corresponding author.                                         identities of web access, to distinguish applications.
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP              73                                                     CNSM Full Paper
+                                                                  Different
+                                                               Web applications
+                                                                                                                      42K QPS during peak-hour around 22:00 (as shown in Fig. 2).
+                                                                                                                      As some tenants only receive a small amount of workloads,
+                            Timestamp                         ...                                      Latency        we focus on the top 64 most visited tenants in the rest of
+                                                                                                       Alarms
+                              URL                  uCluster   ...                 Anomaly                             the paper. These tenants provide services such as online social
+                                                                                  Detector
+                             Latency                                                                                  network, news portals, picture sharing, video sharing, music
+                                                                                                   Overload?
+                                  ...                         ...                                                     streaming, document sharing.
+          Web access logs                                                                                                  Our data set is collected at the load balancers of the cloud,
+                                                           CloudWatch+                                                with a sampling rate of 1/601 . In total, we obtained 12.5G
+                                          Fig. 1: Architecture of CloudWatch+.                                        worth of data with 33 million records. In each record, there
+                                                                                                                      are multiple fields, three of which are used by CloudWatch+,
+                                                                                                                      i.e., {Request-Timestamp, URL, Latency}. The latency refers
+                                                                                                                      to the time between when a request is forward to a server by
+            Moreover, it does not know in advance what ap-                                                            a load balancer and its response returns back. This measure-
+            plications are run by tenants, nor does it know the                                                       ment is adopted similarly by commercial Cloud performance
+            URLs pattern (i.e., which fields of a URL represent                                                       monitoring tools, such as Amazon CloudWatch [2], but they
+            applications and which ones represent parameters).                                                        aggregate the latency at an instance level or a tenant level. Our
+            CloudWatch+ simply monitors web access logs and                                                           goal in this section is to investigate whether and how we can
+            automatically learns the information.                                                                     monitor the latency at a fine granularity.
+       • Online and Realtime. Since the anomalies of appli-                                                           A. A Motivating Example
+            cation latency can severely cause damages to users’
+            experience, CloudWatch+ is designed to be online
+
+
+
+                                                                                                                         Response latency (sencond)
+                                                                                                                                                      1000
+                                                                                                                                                                 Maximum
+            and realtime. Thus, tenants can be warned as soon
+                                                                                                                                                       100
+            as possible, and then take actions to stop further loss.
+                                                                                                                                                        10
+       • Light-weight. CloudWatch+ is also light-weight in
+            space and CPU complexity so that it can be easily                                                                                            1
+                                                                                                                                                                                   90th percentile
+            deployed as an online tool in the cloud, that hosts a                                                                                      0.1
+            potentially large number of tenants and applications.                                                                                     0.01                         Average
+
+       We evaluate CloudWatch+ using the real data from a cloud                                                                                              0   2   4     6   8      10     12   14    16   18   20   22
+   platform hosting over 200 tenants. The results show that,                                                                                                                       Time of day (hour)
+   CloudWatch+ is able to identify the anomalies of each appli-
+   cation separately, while almost all these anomalies are missed                                                     Fig. 3: The maximum, 90th percentile, and average of latency
+   by Amazon CloudWatch. In addition, the storage and CPU                                                             during a day.
+   overhead are very low even when monitoring and detecting a
+   large amount of access records.
+       The remainder of the paper is organized as follows. We                                                             Within the data set, a particular tenant (an online social
+   present the observations and intuitions from the analysis of                                                       network service) received a lot of user complaints about the
+   real data in Section II. The design of the online URL clus-                                                        long latency for several applications from 23:30 to 00:30.
+   tering algorithm and the corresponding results are described                                                       We measure the overall metrics of latency for this tenant,
+   in Section III and Section IV respectively. We introduce our                                                       like existing monitors. Fig. 3 plots the three metrics derived
+   anomaly detection method based on uCluster in Section V, and                                                       from the data set. We can see that the average and 90t h
+   evaluate CloudWatch+ in Section VI. We discuss related work                                                        percentile of latency are always under 0.25s, representing a
+   in Section VII before concluding this paper in Section VIII.                                                       good performance. On the other hand, the maximum fluctuates
+                                                                                                                      significantly all the time, thus is seldom used for raising per-
+                                        II.   DATA S ET AND O FFLINE A NALYSIS                                        formance alarms. The result shows that these overall metrics
+                                                                                                                      are all infeasible to capture the real user perceived problems,
+                             50                                                                                       and proves that the coarse-grained monitoring is ineffective.
+     Request rate (K QPS)
+
+
+
+
+                                                                                                                          Motivating by the above example, we intend to design
+                             40
+                                                                                                                      an application-aware latency monitoring method for web ap-
+                             30                                                                                       plications in this paper. The high level idea is intuitive,
+                             20                                                                                       that is distinguishing web applications, then measuring and
+                             10
+                                                                                                                      detecting their latency separately. In order to identifying web
+                                                                                                                      applications generally, we exploit a very common field in web
+                              0
+                                  0       2   4   6    8      10    12      14    16   18    20   22
+                                                                                                                      access logs, i.e., URL.
+                                                           Time of day (hour)                                         B. Observations from the data set
+                            Fig. 2: Overall request rate at the cloud data center.                                        We now present some observations from offline analysis of
+                                                                                                                      the data set. These observations both highlight the challenges
+                                                                                                                      and offer the intuitions of designing such a method.
+                                                                                                                          Observation 1: Most tenants have a large number of
+       To gain more insights into the web access in a real cloud,
+                                                                                                                      unique URLs. Fig. 4 shows the number of unique URLs
+   before developing our methods, we first introduce the one day
+   worth of web access log obtained from one cloud provider. It                                                         1 Unless otherwise noted, the workload in this paper refers to the one in the
+   serves more than 200 tenants, and the overall workload reaches                                                     sampled data set.
+
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                                                        74                                                                                               CNSM Full Paper
+               1e+07
+                                                           # of requsts
+               1e+06
+                                                           # of unique URLs
+               1e+05                                                                                    60
+      Number
+
+
+
+
+               1e+04                                                                                    50
+
+               1e+03                                                                                    40
+
+
+
+
+                                                                                             #Tenants
+               1e+02
+                                                                                                        30
+               1e+01
+                       0   10    20         30        40         50       60                            20
+                                                                                                                                                                          99% URL coverage
+                                       Tenant index                                                                                                                       95% URL coverage
+                                                                                                        10
+                                                                                                                                                                          90% URL coverage
+
+   Fig. 4: Then number of requests and unique URLs per tenant.                                           0
+                                                                                                             1   2       3       4       5         6         7       8        9        10    11
+                                                                                                                                             Fields number
+
+
+                   1
+
+                0.99                                                                        (a) The number of tenants whose 99%, 95%, and 90% URLs are no more than
+                                                                                            X fields.
+      CDF
+
+
+
+
+                0.97
+
+                0.96
+                                                                                                        60
+                0.95
+                       1    10        100        1000           10000         100000                    50
+                                  Number of requests
+                                                                                                        40
+
+
+
+
+                                                                                             #Tenants
+       Fig. 5: The CDF of the request number of each URL.                                               30
+
+                                                                                                        20
+                                                                                                                                                                     99% requests coverage
+                                                                                                                                                                     95% requests coverage
+                                                                                                        10
+                                                                                                                                                                     90% requests coverage
+
+   generated by each tenant, as well as the number of requests                                           0
+                                                                                                             1       2       3       4             5             6       7         8         9
+   received by each tenant. The tenants are ordered along X                                                                                  Fields number
+   axis by the number of unique URLs in descending order. As
+   shown in Fig. 4, the number of unique URLs owned by each
+   tenant ranges from tens to millions, and the number of requests                          (b) The number of tenants whose 99%, 95%, and 90% requests hits the URLs
+   per tenant ranges from hundreds to millions (after sampling).                            that are no more than X fields.
+   We also notice that for many tenants (e.g. the first tenant),
+   the numbers of its unique URLs and requests are both huge.                                           Fig. 6: The distribution of the number of URL fields.
+   This is because the URLs contain some conversation-specific
+   parameters such as date time and transaction ID, thus every
+   request will generate a different URL even if they visit the
+   same application.                                                                        with it, yet eliminating them is intractable due to the URL
+       Observation 2: Most URLs are visited only once during a                              rewriting technology[11]. Specifically, the parameters can exist
+   day. Fig. 5 shows the CDF of the request number of each URL.                             not only in the last field after “?” as standard URLs appear,
+   It shows that 97.7% of URLs are visited only once during that                            but also anywhere of URLs. For example, “/news/0001” is
+   day. Only 0.007% URLs received requests more than 1000,                                  rewritten from “/news?id=0001”. Second, as Observation 1
+   such as the home pages or static images.                                                 shows, a large number of user requests visit unique URLs (e.g.,
+       Observation 3: Most URLs have only a few fields. As                                  same application, but with different parameters). This renders
+   illustrated in Fig. 6(a) , for all the 64 tenants, 99% of their                          manually analyzing and identifying applications impractical
+   URLs are up to 11 fields, and for 61 of them, 99% of                                     and raises a requirement of an automatical URL clustering
+   their URLs are at most 7 fields. By further investigating,                               method for application identification.
+   we find that the tenants with URLs of a few fields mostly                                    Based on the data analysis, we leverage the following intu-
+   provide simple index pages (e.g., /news/20130102.html) or                                itions to track the above challenges and design CloudWatch+.
+   static content caching (e.g., /banner/top.gif). Similarly, requests                          Intuition 1: A URL pattern with a parameter field can
+   are more likely to hit the URLs with less fields. As shown in                            generate more different URLs. Each URL pattern can generate
+   Fig. 6(b), for all the 64 tenants, 99% of their requests hit the                         a different number of specific URLs sharing several common
+   URLs with no more than 9 fields, and for 57 of them, URLs                                fields. Particularly, the URL pattern with a parameter field
+   with less than 7 fields absorb 99% requests. This observation                            can result in much more unique URLs than the one without
+   also suggests that the number of common fields shared by                                 parameter field. For example, “/news/parameters” pattern can
+   different URLs is even less.                                                             have many specific and unique URLs such as “/news/0001”,
+                                                                                            “/news/0002”,..., “/news/9999”. On the other hand, another
+   C. Challenges and Intuitions                                                             URL pattern “/user/application” can only have a handful of
+       To detect the latency anomaly at web application gran-                               unique URLs such as “/user/blog” and “/user/info”. Further-
+   ularity, we first identify applications via URLs. However,                               more, the number of requests hitting URLs with parameters
+   this is challenging due to the following two aspects. First,                             are much less because the requests are dispersed by different
+   the URLs of the same application always carry parameters                                 parameter values.
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                              75                                                                                    CNSM Full Paper
+       Intuition 2: URL pattern of the same application is                     This yields the ability to handle the parameters in the middle
+   hierarchical by nature. Although URLs can be encoded very                   part of a URL.
+   flexibly in reality, the practical URL patterns are hierarchical.
+   This is because web servers typically organize files (for static            C. uCluster Algorithm
+   content) and codes (for dynamic scripts) in a hierarchical                      To overcome the aforementioned challenges, we design
+   folder structure. This implies that the clusters of URLs are                uCluster, a URL clustering algorithm. By leveraging our
+   hierarchical and a cluster can be represented by the common                 observations and intuitions, uCluster differs URL clustering
+   fields of the URLs belong to it.                                            problem from general cases. It aims at clustering URLs based
+                                                                               on their structural similarity and eliminating parameters of
+          III. O NLINE URL C LUSTERING A LGORITHM                              applications. Our design of uCluster possesses the following
+       In this section, we first introduce the limitations of some             advantages: (1) low complexity O(n); (2) intuitive arguments
+   existing clustering methods. Afterwards we formalize our                    of clustering, which can be derived from analyzing data itself;
+   problem and describe our clustering algorithm.                              (3) the online manner without assuming complete data.
+                                                                                   Firstly, We introduce two concepts, virtual clusters and
+   A. Limitations of Existing Clustering Methods                               final clusters, to aid in eliminating parameters in URLs and
+       There are many clustering technologies used for partition-              achieving the ability of online process. Virtual clusters are
+   ing a data set, such as classical k-means and hierarchical                  the intermediate clusters generated according to the distance
+   clustering. However, it is still faced with many challenges                 between URLs, and they are the candidates into which a
+   to apply them in online monitoring for URL clustering: (1)                  URL would be finally grouped. Final clusters are the resultant
+   Their high complexity is unacceptable for online monitoring                 clusters, and also represent the applications we identified. They
+   a huge quantities of data, e.g., k-means is NP-hard [12] and                are converted from virtual clusters based on the number of sub-
+   hierarchical clustering is O(n3 ) and O(n2 ) for special cas-               clusters (as we describe later).
+   es [13]. (2) The clustering terminal conditions have significant                A virtual cluster is denoted by V, and the set of common
+   impacts on the clustering results, yet it is difficult to manually          fields sharedPby the URLs in V is denoted as F (V), where
+   determine those values intuitively (e.g., k value in k-means).              F (V) = { ∩F (u)|u ∈ V}. All the virtual clusters are
+   (3) Assumption of a complete data is inflexible when the                    hierarchically structured as a tree, and the level (or depth) of
+   handling incremental data, such as dealing with the change                  V is denoted as l(V). The nature of each V is |F (V)| ⩾ l(V),
+   of URL patterns caused by the service updates.                              which means that the number of the common fields shared in
+   B. Problem Formalization                                                    V must be no less than the level of V. This nature can also be
+        For convenience of later discussions, we first review some             interpreted as ∀u1 , u2 ∈ V : D(u1 , u2 ) ⩽ 1/l(V), that is as V
+   basic concepts used in clustering.                                          goes deeper in the tree, the distance between the URLs in V
+                                                                               should be shorter. As Observation 3 shows, the fields number
+        • x, an element of the data set, and is denoted by a                   of most URLs are always only a few, indicating the maximum
+             vector: x = {v1 , v2 ...vn }.                                     level of the tree, denoted as L, is small.
+        • D(x, y), the distance function between two elements                      The linkage criteria between V1 and V2 is defined as:
+             x and y (e.g., Euclidean distance and Hamming dis-
+             tance).                                                                                                      1
+        • LC(X , Y), the linkage criteria specifying the dis-                                 LC(V1 , V2 ) =              T                         (2)
+                                                                                                               |F (V1 )       F (V2 )|
+             tance between clusters X and Y (e.g., single-linkage
+             min{D(x, y)|x ∈ X , y ∈ Y} and complete-linkage                       And the conditions when V1 and V2 can be merged are that
+             max{D(x, y)|x ∈ X , y ∈ Y}).                                      (1) V1 and V2 have the same direct ancestor and they are at the
+                                                                               same level, l(V1 ) = l(V2 ) = l (to guarantee the hierarchical
+        Hence, all the elements are sequentially merged into clus-
+                                                                               structure); (2) the new merged cluster should also satisfy the
+   ters according to the distance functions and strategies used in
+                                                                               nature of virtual cluster, that is LC(V1 , V2 ) ⩽ 1l .
+   different methods.
+                                                                                   When a pair of virtual clusters, V1 and V2 , have been
+        Now we formalize the URL clustering problem. Each URL
+                                                                               mergedTinto a new virtual cluster Vnew , we have F (Vnew ) =
+   u has a set of fields split by a delimiter (“/” most frequently
+                                                                               F (V1 ) F (V2 ). Vnew is still at the same level as V1 and V2 .
+   used). Particularly, if there is a “?” appearing in the last field,
+                                                                                   Fig. 7(a) gives an example of how virtual clusters are
+   we remove the part after the “?”, aiming at preliminarily
+                                                                               constructed and merged (final clusters in Fig. 7(a) will be
+   filtering out the conspicuous parameters of standard URLs.
+                                                                               introduced later): (1) When a URL “/a/b/c” arrives, it makes
+   Then the fields of u is denoted by F (u) = {f1 , f2 , ..., fi };
+                                                                               three virtual clusters on each level, as it has three fields.
+   each field f is indexed based on its position in u. For example:
+                                                                               These virtual clusters are all initially represented by F (/a/b/c);
+   F (forum/userInfo?12416) = {forum,userInfo?}.
+                                                                               (2) Similarly, a URL “/x/y/e” constructs three virtual clusters
+        The distance between URLs can be measured with the
+                                                                               in the same way, but merging conditions are not hold here
+   number of common fields. Therefore, the distance function D
+                                                                               and no clusters are further merged; (3) After “/a/e” arrives
+   is defined as follows:
+                                                                               and construct two virtual clusters, V1 and V2 (in the circle)
+                   (                                 T                         satisfy merging conditions, where F (V1 ) = F (/a/b/c) and
+                           ∞             , if F (u1 ) F (u2 ) = ∅              F (V2 ) = F (/a/e). Specifically, V1 and V2 belong to the same
+   D(u1 , u2 ) =               1                                    (1)        direct ancestor (root), l(V1 ) = l(V2 ) = 1, and LC(V1 , V2 ) =
+                       |F (u1 ) F (u2 )| , otherwise
+                               T
+                                                                                       1
+                                                                               |F (V1 ) F (V2 )| ⩽ 1. (4) So that V1 and V2 are merged into
+                                                                                       T
+
+      This indicates that the more common fields a pair of URLs                Vnew , and F (Vnew ) = F (/a). Corresponding children clusters
+   have, the closer they are to each other. Note that whether the              change their hierarchical relations from original ones to the
+   common fields are consecutive is not critical in the definition.            new cluster.
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                 76                                                             CNSM Full Paper
+                                                                                                                       cluster, i.e., “//100”, which turns out to be a parameter field,
+                                                             virtual cluster               Final cluster               instead of an application field. We solve this problems based
+        /a/b/c           /x/y/2                   /a/e                                                                 on the observation that the number of unique URLs matching
+                                                                               merge                                   a real application cluster (e.g., “/news/*”) is much larger than
+                 Root              Root                         Root                           Root
+                                                                                                                       those match a related false cluster (e.g., “//100”). Therefore,
+                                                      V1    V2                        Vnew
+    level-1   /a/b/c        /a/b/c       /x/y/2      /a/b/c /a/e        /x/y/2            /a                /x/y/2     when choosing clusters for merging, we do it in descending
+                                                                                                                       order of the number of the unique URLs contained by each
+    level-2   /a/b/c        /a/b/c       /x/y/2      /a/b/c     /a/e    /x/y/2        /a/b/c    /a/e        /x/y/2     virtual cluster. This trick would distribute most URLs to the
+                                                                                                                       real application clusters. As a result, wrong clusters are always
+    level-3   /a/b/c        /a/b/c       /x/y/2      /a/b/c             /x/y/2        /a/b/c                /x/y/2     ignored when a multiple clusters can be merged. Only a few
+                                                                                                                       incorrect merging in the initial phase have trivial influence on
+                  (1)                  (2)                        (3)                              (4)                 the accuracy when dealing with a huge volume of data.
+                                                                                                                           Finally, we propose Algorithm 1 based on uCluster. It’s
+                            (a) Example of virtual clusters merging.                                                   easy to see that its complexity is O(N  L  n), where L and N
+                                                                                                                       are both small constants, so that the complexity is just O(n).
+                                                             virtual cluster               Final cluster
+                        /x/101                                                                                         Algorithm 1 uCluster (URL u, L, N )
+                                                            final clusters merge                                        1: current = root
+                                       Root                                                    Root
+                                                                  N =100                                                2: for d = 1 to min(L, |F (u)|) do
+                                                       V1                                                    V1
+    level-1                /a                        /x                               /a                    /x          3:   merge f lag == f alse
+                                                                                                                        4:   if current is not F IN AL CLU ST ER then
+    level-2       /a/b          /a/c         /x/1 /x/2   ... /x/101            /a/b         /a/c                        5:      for each CLU T ST ER c in current DESC do
+                                                                                                                        6:         if |F (c) F (u)| ≥ d then
+    level-3   /a/b/d      /a/b/e        /a/b/f                           /a/b/d       /a/b/e       /a/b/f               7:            current = c
+                                                                                                                        8:            merge f lag T= true
+                                        (1)                                                         (2)                 9:            F (c) = F (c) F (u), break
+                                                                                                                       10:         end if
+                                (b) Example of final clusters merging.                                                 11:      end for
+                                                                                                                       12:      if merge f lag == F ALSE then
+    Fig. 7: The work flows of virtual clusters and final clusters.                                                     13:         if |F (current)| == N then
+                                                                                                                       14:            set current F IN AL CLU ST ER, break
+                                                                                                                       15:         else
+                                                                                                                       16:            V IRT U AL CLU ST ER v = F (u)
+       Through this merging strategy, we can obtain all the virtual                                                    17:            current.add virtual cluster(v)
+   clusters, and now we need to determine which of them are                                                            18:            current = v
+   the final clusters, i.e., applications we identified (We will use                                                   19:            if d == min(L, |F (u)|) then
+   cluster and application interchangeably). Note that the final                                                       20:               set current F IN AL CLU ST ER
+   clusters are generated in parallel with virtual cluster merging.                                                    21:            end if
+   The conditions for final clusters are two aspects. First, all the                                                   22:         end if
+   leaf nodes are labeled as final clusters, as shown in Fig. 7(a)                                                     23:      end if
+   and Fig. 7(b). Second, according to the intuition 1, the numbers                                                    24:   end if
+   of unique URLs produced by the URL patterns with and                                                                25: end for
+   without parameters are different. Therefore, we set a boundary
+   threshold, denoted as N , to determine the fields of parameters.
+   In particular, if a virtual cluster V has more than N sub-                                                          IV.   A RGUMENTS S ELECTION AND C LUSTERING R ESULTS
+   clusters (i.e., children clusters), including both virtual and final                                                    In this section, we show that the two arguments of the
+   clusters, we deem that these sub-clusters are generated by URL                                                      uCluster algorithm, N and L, are quite convenient to select
+   parameters, and should be eliminated. Thus V itself turns into                                                      based on the characteristics of data. Our arguments selection
+   a new final cluster. An example of final clusters merging is                                                        methodology uses, but is not restricted to, the data set we
+   shown in Fig. 7(b). After the arrival of “/x/101”, the sub-                                                         collected.
+   clusters number of V1 increases to 101, and exceeds the given                                                           First of all, the argument N has a simple and practical
+   threshold N = 100. As a result, the sub-clusters of V1 are                                                          implication, that is the maximum number of the applications
+   removed, and V1 becomes a new final cluster. We can see that                                                        contained in each application directory. Therefore, it can be
+   this heuristic merging strategy can find out the fields derived                                                     easily estimated by tenants. One alternative way is counting
+   from URL parameters without assumptions of their positions.                                                         the the maximum number of the accessible files included by
+       In general, clustering methods always face multiple clusters                                                    each application directory. This differs with those unintuitive
+   that have the same optimal distance, leading to different clus-                                                     arguments used by other clustering methods, such as the k
+   tering results, uCluster is no exception. Worse still , this can                                                    value in k-means algorithms.
+   generate false clusters in the scenario of online URL clustering,                                                       The administrator from one of the tenants suggest that
+   as the results depend on the arrival sequence of URLs. For                                                          N = 100 is large enough , and our evaluation proves it works
+   example, if the first two emerging URLs are “/news/100” and                                                         well in our data set. Our evaluation methodology is based on
+   “/image/100”, they will be merged and generate a false virtual                                                      the observation 1, i.e., the number of clusters generated by
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                                                         77                                                     CNSM Full Paper
+   parameter pattern is large, in the meantime, the average hits                                                               200
+                                                                                                                                         T1       T6
+   number of them is small since the requests are dispersed by                                                                 180       T2       T7
+   the parameters of a wide value range. We run uCluster on                                                                              T3       T8
+                                                                                                                               160
+                                                                                                                                         T4       T9
+   64 tenants without the constraint of N to get all the number                                                                140       T5       T10
+
+
+
+
+                                                                                                          Number of clusters
+   of sub-clusters, as well as their average hits. Due to the page                                                             120
+   limitation, we only show two typical tenants here. As shown in
+                                                                                                                               100
+   Fig. 8, X axis is the cluster index and Y axis represents both the
+                                                                                                                                80
+   number of sub-clusters and average hits in log scale. Fig. 8(a)
+                                                                                                                                60
+   (tenant 1) indicates that, for the clusters with a huge number
+   of sub-clusters, the average of hits on these sub-clusters falls                                                             40
+
+   below 10. Therefore, they are more likely to be parameter                                                                    20
+
+   patterns, as implied by intuition 1. We can see that if we draw                                                               0
+                                                                                                                                     1        2         3          4          5       6      7
+   a horizontal line at Y equals 100 (i.e., N = 100), most of
+                                                                                                                                                            Maximum level L
+   the parameter patterns would be merged, and other application
+   pattern would remain. In addition, Fig. 8(b) illustrates that                                          Fig. 9: The clustering results of top 10 most visited tenants.
+   tenant 2 does not have any obvious parameter pattern and                                               L values from 1 to 7 under the condition of N = 100.
+   N = 100 also works well with this situation, as it treat all
+   these sub-clusters as applications.
+                                1e+06                                                                     methods.
+                                                       Number of sub-clusters
+                                1e+05                  Average hits per sub-cluster
+              Number(Average hits)
+
+
+
+
+                                1e+04
+                                                                                                          A. Limitations of Monitoring Overall Metrics
+                                                                                                              In this paper, we focus on the 90th percentile of latency
+                                1e+03
+                                                                                                          (latency90 for short), a common measurement for performance.
+                                1e+02                                                                     When monitoring overall latency90 for a tenant, alarms are
+                                1e+01                                                                     triggered if more than 10% of the tenant’s volume are served
+                                1e+00
+                                                                                                          in more than a threshold of time. Under this situation, if
+                                        0        20       40         60            80     100
+                                                              Cluster index
+                                                                                                          an application tries to raise alarms in the face of overall
+                                                       (a) Tenant 1.
+                                                                                                          latency90 , while other applications remain normal2 , the anoma-
+                                                                                                          lous volume of the application needs to exceed 10% of the
+                                1e+05
+                                                       Number of sub-clusters                             tenant’s volume, which is always larger than its own 10%
+                                1e+04
+                                                       Average hits per sub-cluster                       volume. This actually degrades the threshold of 90th percentile
+              Number(Average hits)
+
+
+
+
+                                                                                                          for the application, and even makes it impossible for some
+                                1e+03
+                                                                                                          applications to be detected by itself as their volume accounts
+                                1e+02                                                                     for less than 10% of total volume. The degraded percentile
+                                1e+01
+                                                                                                          threshold of application α is denoted as Pα , and suppose
+                                                                                                          the volumes of α and the tenant hosting it are Vα and Vt
+                                1e+00
+                                        0   10    20     30    40    50       60    70   80     90
+                                                                                                          respectively, then Pα can be calculated as:
+                                                              Cluster index
+
+                                                       (b) Tenant 2.                                                                     (
+                                                                                                                                                   −∞             , if Vα /Vt < 10%
+                                                                                                                                 Pα =                                                        (3)
+   Fig. 8: The relationship between sub-clusters number and                                                                                   100% − V10%
+                                                                                                                                                      α /Vt
+                                                                                                                                                                  , otherwise
+   average hits per sub-cluster without constraint of N (L=5).
+                                                                                                          Vα /Vt is the volume proportion of α in its tenant. Fig. 10
+                                                                                                          shows the volume proportion of the top 10 most visited appli-
+       As for the argument L, it can be derived from data analysis.                                       cations of the top 10 tenants. Fig. 10(a) shows that there are
+   We run uCluster with N = 100 and list the results of top 10                                            4 tenants with the applications receiving more than 20% (up
+   most visited tenants. As Fig. 9 shows, uCluster groups massive                                         to 47%) of their total requests, and Fig. 10(b) shows another
+   unique URLs (from 1.6×105 to 6×106 ) of the 10 tenants into                                            6 tenants whose applications all account for less than 20%
+   tens to hundreds of clusters. The number of clusters increases                                         of their volume. As a result, even for application 1 of tenant
+   as L first, and then remains stable after L exceeds 5. This                                            2 in Fig. 10(a), that contributes to the most proportion 47%),
+   also proves the observation 3, i.e., most URLs have only a few                                         its degraded percentile equals to 78%, implying the application
+   fields. In fact, the number of clusters also represents clustering                                     needs 22% anomalous volume to catch the attention of detector
+   granularity. So L = 5 is proper for our data set, as a larger L                                        on overall latency90 . Worse still, for most applications of these
+   would not improve granularity further.                                                                 10 tenants, their proportions are all less than 10%, so than they
+       An automatic program based on the above selection                                                  cannot be detected in the face of overall latency90 .
+   methodology is relatively easy to implement. In the interest
+   of space, we leave the detailed discussion on these topics as                                          B. Latency Detection on Applications
+   our future work.                                                                                          Benefit from uCluster, web applications are separated and
+                                                                                                          the latency90 can be measured for each application. This
+             V. L ATENCY A NOMALY D ETECTION
+      We first introduce the limitations of detection based on                                               2 For simplicity, we only discuss the situation when only a single application
+   overall metrics of latency. Then we describe our detection                                             is anomalous. This provides the worst case for monitoring on overall latency.
+
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                                            78                                                                           CNSM Full Paper
+                                                                                                                                                  QPS>CLB
+                                                                                                              anomaly slot
+                                                                                                     QPS                      CLB=max{QPS}
+                 60 %                                                                                                                                             Time
+                                                                         T1           T3
+                 50 %                                                    T2           T9
+                                                                                                     slots
+                 40 %                                                                                         anomaly             perfect           overloaded
+    Volume (%)
+
+
+
+
+                                                                                                              window              window              window
+                 30 %
+
+                 20 %
+                                                                                                     Fig. 11: Detecting latency anomaly and deciding whether
+                                                                                                     overload happens. CLB is short for capacity lower bound.
+                 10 %
+
+                  0%
+                        1   2   3      4       5       6        7             8   9        10
+                                    Top 10 most visited applications
+                                                                                                     second, or QPS) of each application are calculated for every
+                                                                                                     slot (10s is used in this paper). By setting a threshold of latency
+                                                                                                     (as Amazon CloudWatch does), a slot is called anomaly slot if
+   (a) The tenants with applications accounting for more than 20% of the total
+   volume of the corresponding tenant.
+                                                                                                     its latency90 exceeds the threshold. To avoid transient anoma-
+                                                                                                     lies trigger alarms more than frequently, we introduce window,
+                                                                                                     formed by W consecutive slots (in Fig. 11, W = 5). If there
+                                                                                                     are n anomaly slots in a window, we call the window anomaly
+                 60 %                                                                                window, and an alarm is eventually raised. The parameters n
+                 50 %
+                                                                    T4
+                                                                    T5
+                                                                                  T7
+                                                                                  T8
+                                                                                                     and W decide the sensitiveness of detection. Meanwhile, we
+                                                                    T6            T10                maintain and update the capacity lower bound (CLB) for each
+                 40 %
+    Volume (%)
+
+
+
+
+                                                                                                     application. CLB records the largest average QPS of perfect
+                 30 %                                                                                window, that is the window without any anomaly slot. CLB
+                 20 %                                                                                conservatively estimates the capacity of an application so far.
+                                                                                                     An anomaly window is called overloaded window if its average
+                 10 %
+                                                                                                     QPS exceeds CLB. Then we can calculate the percentage of
+                  0%                                                                                 the overloaded windows within an anomaly period, defined
+                        1   2   3      4       5       6        7             8   9        10
+                                    Top 10 most visited applications
+                                                                                                     as overload ratio. It gives the possibility of that an anomaly
+                                                                                                     period is caused by overload.
+                                                                                                                           VI. E VALUATION
+   (b) The tenants without applications accounting for more than 20% of the total
+   volume of the corresponding tenant.                                                                   In this section, we evaluate CloudWatch+ using the one-
+                                                                                                     day data set from a real cloud. The data set has been described
+   Fig. 10: The volume distribution of the top 10 most visited ap-                                   in Section II. The prototype of CloudWatch+ is implemented
+   plications of the top 10 tenants. The applications are identified                                 with 2700 C++ lines.
+   by uCluster with N = 100 and L = 5.                                                                   We begin by comparing the detection result of Cloud-
+                                                                                                     Watch+ (CW+) to that of Amazon CloudWatch (ACW), which
+                                                                                                     provides only tenants level monitoring. Both methods use 1.5s
+                                                                                                     as the latency threshold, and are compared under different
+                                                                                                     n/W . In addition, CloudWatch+ is running with N = 100
+   fundamental improvement gains the ability of application-                                         and L = 7 according to the Section IV. The results are shown
+   aware latency anomaly detection for cloud tenants. Meanwhile,                                     in Fig.12. According to the detection result of ACW, all the 64
+   as each virtual cluster can maintain the metrics aggregated                                       tenants seem in good performance except only a few transient
+   from all its sub-clusters, CloudWatch+ can conduct flexible                                       anomalies.
+   anomaly detection at different granularity of applications, or                                        After further investigating the anomalous periods identified
+   even detect the overall metrics (i.e., using the data of root                                     by ACW (as listed in Table. I), we find out that they belong to
+   clusters).                                                                                        four tenants. Moreover, each of these anomalies is caused by
+       Beyond the improvement of granularity, we also want                                           only one application. These anomalous applications all account
+   to answer this question: “Is a latency anomaly caused by                                          for a considerably large part of their tenants’ volume, ranging
+   overload?”. This is an important problem for cloud tenants,                                       from 24.2% to 99.7%. This is also the reason why ACW can
+   as they need to decide wether their capacity is inadequate                                        detect them using overall latency90 . Another explanation of
+   and more instances are required. However, a latency anomaly                                       that is the degraded percentiles of these applications are close
+   might be caused by many factors, such as software bugs                                            or even equal to the original 90th . The above result proves that
+   and hardware failure. We resolve this problem by keeping                                          monitoring on overall metrics can only detect the anomaly of
+   a track of the workload that has been well served by each                                         volume-dominate applications, yet most other applications are
+   application of tenants, aiming at estimating the capacity of                                      invisible for it.
+   different applications. So that when an anomaly happens to                                            On the contrary, Fig.12 shows that CW+ is able to detect
+   a certain application, we can determine overload by simply                                        at an application granularity. Specifically, as the sensitiveness
+   checking wether the current workload exceeds the historical                                       threshold n/W increases, less severe anomalies are ignored
+   capacity.                                                                                         and the the number of alarms (anomaly periods) are reduced
+       The details of our anomaly detection are shown in Fig. 11.                                    from 472 in Fig.12(a) to 123 in Fig.12(c). Here, n/W can be
+   Firstly, the latency90 and workload (measured by query per                                        set by tenants according to their requirements.
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                                       79                                                      CNSM Full Paper
+                                  Detected by ACW       Detected by CW+                                          Detected by ACW         Detected by CW+                                            Detected by ACW              Detected by CW+
+                 2000                                                                           2000                                                                               2000
+    Application index
+
+
+
+
+                                                                                   Application index
+
+
+
+
+                                                                                                                                                                      Application index
+                 1500                                                                           1500                                                                               1500
+
+
+                 1000                                                                           1000                                                                               1000                                           group-1
+
+
+                        500                                                                            500                                                                                500
+                                                                                                                                                                                                                                                   group-2
+
+                          0                                                                              0                                                                                  0
+                              0   2    4    6   8 10 12 14 16 18 20       22   0                             0   2    4   6    8 10 12 14 16 18 20           22   0                             0   2        4   6    8 10 12 14 16 18 20             22     0
+                                                 Time of day (hour)                                                             Time of day (hour)                                                                     Time of day (hour)
+
+                                           (a) n/W = 3/10.                                                                (b) n/W = 4/10.                                                                        (c) n/W = 5/10.
+
+   Fig. 12: The latency90 anomalies of one-day period identified by Amazon CloudWatch (ACW) and CloudWatch+ (CW+)
+   respectively, based on 1.5s as threshold. Y axis represents the index of 2100 applications of top 64 tenants. Each anomaly
+   point indicates an anomaly window of 100s duration. Note that since ACW cannot distinguish applications, i.e., its alarms are
+   at tenant level, the anomaly of ACW will cover all the tenant’ applications along Y-axis. (Best viewed in color.)
+
+
+
+                Tenant                # APP         #Anomalous       Anomalous APP                               Degraded                        11000
+                                                                                                                                                 10000
+                  ID                                   APP             volume(%)                                 percentile
+                                                                                                                                                  9000
+                  11                       57           1                65.8%                                     85th                           8000
+
+
+
+
+                                                                                                                                        Number
+                  15                       14           1                24.2%                                     59th                           7000
+                                                                                                                                                  6000
+                  17                        2           1                99.7%                                     90th                           5000
+                  28                        3           1                96.6%                                     90th                           4000
+                                                                                                                                                  3000
+                                                                                                                                                  2000
+   TABLE I: The information of 4 anomaly periods detected by                                                                                             0   2    4     6                       8       10       12    14   16      18      20      22
+
+   ACW with n/W = 3/10. APP is short for applications.                                                                                                                                               Time of day (hour)
+
+
+                                                                                                                                        Fig. 13: The number of clusters, including both virtual and
+                                                                                                                                        final clusters, during the processing of one-day data.
+
+
+
+                                                                                                                                                             VII. R ELATED W ORK
+       Determining false positive rate is challenging, as investi-                                                                          There are many previous literatures focusing on the perfor-
+   gating all the anomalies would take a huge amount of effort.                                                                         mance management of cloud platform. One main thread comes
+   Instead, we study two notable groups of anomalies detected                                                                           from the solutions of commercial cloud providers , such as
+   by CW+, and shows that they are reasonable. As shown in                                                                              AWS CloudWatch [2], Windows Azure Metrics [3], as well
+   Fig.12(c), applications of group-1 is a upload module of a                                                                           as SaaS-based third parties, such as RightScale Monitor [4]
+   file sharing service (tenant 1), and the anomaly is caused by                                                                        and New Relic [5]. They provide monitoring metrics in a wide
+   the saturated bandwidth during three peak periods of a day;                                                                          range, including both physical and service status. However, all
+   group-2 is a signing up application of an online social network                                                                      of them are at the tenant or instance granularity, thus inefficient
+   (tenant 2), and a large number of users’ visiting causes their                                                                       to detect the anomalies of a tenant’s specific applications as we
+   database overloaded.                                                                                                                 previously introduced. Besides, some performance monitoring
+       We also list the anomaly periods with overload ratio ≥ 50%                                                                       methods are built on traditional platforms. For example, [14] is
+   for tenant 1 and 2. As shown in Table II, the longest anomaly                                                                        based on HP Mercury Diagnostics [15], trying to correlate the
+   period comes from tenant 2 and lasts for 6100s, corresponding                                                                        hardware metrics of a single server (e.g., CPU utilization and
+   to group-1 in Fig.12(c). Worse still, the overload ratio of that                                                                     network bandwidth) and application performance; [16], [17]
+   period is 73.61%, a rather high value that indicates the capacity                                                                    are both based on coarse grained and pre-defined applications
+   of tenant 2 is not enough for this application. As for tenant                                                                        of web service (e.g., css, js, php), while CloudWatch+ does
+   1, its two applications are overloaded at nigh, especially the                                                                       not assume any prior knowledge about the applications and
+   overload ratio of “/sign/add?” reaches 100%. The result has                                                                          automatically clusters the URLs into applications.
+   been confirmed by the tenant, saying that this application                                                                               Besides, several anomaly (or change) detection method-
+   always suffers from flash crowd at midnight, as there are                                                                            s [18], [19], [20], [21] have been proposed and applied in
+   incentives for users who sigh up first of a day.                                                                                     different fields. In this paper, rather designing a complicated
+       As for the overhead of CloudWatch+, the storage con-                                                                             detection methods itself, we focus on improving the granularity
+   sumption of the major data structure can be measured by the                                                                          of detection. Therefore, our work is complementary to these
+   number of both virtual and final clusters. As shown in Fig. 13,                                                                      methods, and they can be applied upon CloudWatch+.
+   when processing all the over 200 tenants together, the number
+   of clusters increases to around 10,000, which is trivial for                                                                                             VIII. C ONCLUSION
+   commercial servers. In addition, it takes CloudWatch+ merely                                                                             In this paper, we propose CloudWatch+, an application-
+   875s to process all the one-day data, including both clustering                                                                      aware latency monitoring tool for web applications. A cloud
+   and detecting. This effectiveness can lead to a realtime ability.                                                                    platform can use CloudWatch+ to automatically learn web
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                                                                          80                                                                                                    CNSM Full Paper
+                  Tenant                                                                                     Avg        CLB      Avg     MAX       Overload
+                                        Application                             Interval
+                    ID                                                                                    latency90     QPS      QPS     QPS         ratio
+                     1               /sign/add?                      00:01:22-00:02:52 (100s)                2.73       2.43     3.50    5.30      100.00%
+                     1       /pad/commit/message/get all?           21:48:22-21:49:52(100.00s)               1.26       0.71     0.69    1.20       50.00%
+                     2                /i/submit                     08:49:42-10:31:12 (6100s)                3.21       0.13     0.21    1.40       73.61%
+                     2                /submit?                       09:06:22-09:07:52 (100s)               13.49       0.45     0.41    0.70       50.00%
+                     2                /submit?                       09:09:42-09:11:12 (100s)               15.22       0.45     0.57    1.10       70.00%
+                     2                /submit?                       09:23:02-09:24:32 (100s)               23.41       0.45     0.56    0.90       90.00%
+                     2                /i/submit                      14:11:22-14:14:32 (200s)                4.10       0.13     0.18    0.50       50.00%
+                     2                /i/submit                      16:34:42-16:36:12 (100s)                1.96       0.13     0.25    1.10       60.00%
+
+   TABLE II: Anomaly periods with overload ratio≥ 50% for tenant 1 and 2 (n/W = 5/10). Each record includes the tenant ID,
+   name of anomalous application, anomaly interval time, the average latency90 of the interval, the average and maximum QSP of
+   the interval, as well as CLB and overload ratio.
+
+
+
+   applications it hosts, and detect latency anomalies at the                                 [7]   V. Cardellini, E. Casalicchio, and M. Colajanni. A performance study
+   granularity of application. The benefits of CloudWatch+ to                                       of distributed architectures for the quality of web services. In System
+   a cloud and its tenants are two-fold. First, the business-                                       Sciences, 2001. Proceedings of the 34th Annual Hawaii International
+                                                                                                    Conference on, pages 10 pp.–, 2001.
+   critical applications of a tenant, regardless of their volume,
+                                                                                              [8]   Mauro Andreolini, Michele Colajanni, Riccardo Lancellotti, and
+   can be monitored based on their own metrics (e.g., the 90th                                      Francesca Mazzoni. Fine grain performance evaluation of e-commerce
+   percentile of latency). Such service is not currently available                                  sites. SIGMETRICS Perform. Eval. Rev., 32(3):14–23, December 2004.
+   in performance monitoring services provided by commercial                                  [9]   Kaiqi Xiong and H. Perros. Service performance and analysis in cloud
+   clouds. Second, tenants can figure out whether the current                                       computing. In Services - I, 2009 World Conference on, pages 693–700,
+   anomalies are due to overload (as suggested by CloudWatch+).                                     2009.
+   Then they can take right actions to stop further loss, such                               [10]   Supranamaya Ranjan, Ram Swaminathan, Mustafa Uysal, Antonio
+   as purchasing more instance to increase capacity or optimize                                     Nucci, and Edward Knightly. Ddos-shield: Ddos-resilient scheduling
+                                                                                                    to counter application layer attacks. IEEE/ACM Transactions on
+   applications to reduce their consumptions.                                                       Networking (TON), 17(1):26–39, 2009.
+       Our evaluation using real data from a cloud shows that                                [11]   Rewrite engine.       http://httpd.apache.org/docs/2.0/misc/rewriteguide.
+   CloudWatch+ is both online and light-weight, and the detection                                   html.
+   results are much more detailed than those provided by AWS                                 [12]   Meena Mahajan, Prajakta Nimbhorkar, and Kasturi Varadarajan. The
+   CloudWatch.                                                                                      planar k-means problem is np-hard. In WALCOM: Algorithms and
+                                                                                                    Computation, pages 274–285. Springer, 2009.
+                                                                                             [13]   Fionn Murtagh. A survey of recent advances in hierarchical clustering
+                       ACKNOWLEDGEMENT                                                              algorithms. The Computer Journal, 26(4):354–359, 1983.
+      Research is supported by the National Natural Science                                  [14]   L. Cherkasova, K. Ozonat, Ningfang Mi, J. Symons, and E. Smirni.
+   Foundation of China (NSFC) under Grant No. 61472214, the                                         Anomaly? application change? or workload change? towards automated
+   National Key Basic Research Program of China (973 program)                                       detection of application performance anomaly and change. In Depend-
+   under Grant No. 2013CB329105, the State Key Program                                              able Systems and Networks With FTCS and DCC, 2008. DSN 2008.
+   of National Science of China under Grant No. 61233007,                                           IEEE International Conference on, pages 452–461, 2008.
+   the National Natural Science Foundation of China (NSFC)                                   [15]   Mercury diagnostics.               https://www.mercury.com/us/products/
+                                                                                                    diagnostics/.
+   under Grant No. 61472210, the National High Technology
+                                                                                             [16]   Supranamaya Ranjan, Ram Swaminathan, Mustafa Uysal, Antonio
+   Development Program of China (863 program) under Grant                                           Nucci, and Edward Knightly. Ddos-shield: Ddos-resilient scheduling to
+   No. 2013AA013302.                                                                                counter application layer attacks. IEEE/ACM Trans. Netw., 17(1):26–39,
+      We are grateful for the anonymous reviewers’ thorough                                         February 2009.
+   comments as well as the timely assistances provided by co-                                [17]   N. Poggi, D. Carrera, R. Gavalda, J. Torres, and E. Ayguade. Charac-
+   chairs during our submission.                                                                    terization of workload and resource consumption for an online travel
+                                                                                                    and booking site. In Workload Characterization (IISWC), 2010 IEEE
+                                                                                                    International Symposium on, pages 1–10, 2010.
+                                  R EFERENCES                                                [18]   George EP Box, Gwilym M Jenkins, and Gregory C Reinsel. Time
+    [1]   Simic Bojan. The performance of web applications. Technical report,                       series analysis: forecasting and control. John Wiley & Sons, 2013.
+          2008.                                                                              [19]   Yingying Chen, Ratul Mahajan, Baskar Sridharan, and Zhi-Li Zhang.
+    [2]   Amazon cloudwatch. http://aws.amazon.com/cloudwatch.                                      A provider-side view of web search response time. In Proceedings of
+                                                                                                    the ACM SIGCOMM 2013 conference on SIGCOMM, pages 243–254.
+    [3]   Windows azure monitor metrics. http://www.windowsazure.com/en-us/
+                                                                                                    ACM, 2013.
+          manage/services/web-sites/how-to-monitor-websites.
+                                                                                             [20]   He Yan, Ashley Flavel, Zihui Ge, Alexandre Gerber, Daniel Massey,
+    [4]   Rightscale monitorsystem. http://support.rightscale.com/12-Guides/                        Christos Papadopoulos, Hiren Shah, and Jennifer Yates. Argus: End-to-
+          RightScale 101/08-Management Tools/Monitoring System.                                     end service anomaly detection and localization from an isp’s point of
+    [5]   New relic monitor metrics. https://newrelic.com/docs/instrumentation/                     view. In INFOCOM, 2012 Proceedings IEEE, pages 2756–2760. IEEE,
+          metric-types.                                                                             2012.
+    [6]   Mohammad Hajjat, David Maltz, Sanjay Rao, Kunwadee Sripanid-                       [21]   Suk-Bok Lee, Dan Pei, M Hajiaghayi, Ioannis Pefkianakis, Songwu Lu,
+          kulchai, et al. Dealer: application-aware request splitting for interactive               He Yan, Zihui Ge, Jennifer Yates, and Mario Kosseifi. Threshold com-
+          cloud applications. In Proceedings of the 8th international conference                    pression for 3g scalable monitoring. In INFOCOM, 2012 Proceedings
+          on Emerging networking experiments and technologies, pages 157–168.                       IEEE, pages 1350–1358. IEEE, 2012.
+          ACM, 2012.
+
+
+ISBN 978-3-901882-67-8, 10th CNSM and Workshop ©2014 IFIP                               81                                                                CNSM Full Paper
+

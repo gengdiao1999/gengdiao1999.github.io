@@ -1,0 +1,451 @@
+                               LogAnomaly: Unsupervised Detection of
+                      Sequential and Quantitative Anomalies in Unstructured Logs
+              Weibin Meng1,5 , Ying Liu1,5 , Yichen Zhu2 , Shenglin Zhang3∗ , Dan Pei1,5 ,
+       Yuqing Liu3 , Yihao Chen1,5 , Ruizhi Zhang4 , Shimin Tao4 , Pei Sun4 and Rong Zhou4
+                                            1
+                                              Tsinghua University
+                                           2
+                                             University of Toronto
+                                              3
+                                                Nankai University
+                                                   4
+                                                     Huawei
+            5
+              Beijing National Research Center for Information Science and Technology (BNRist)
+               mwb16@mails.tsinghua.edu.cn, liuying@cernet.edu.cn, k.zhu@mail.utoronto.ca
+                  zhangsl@nankai.edu.cn, peidan@tsinghua.edu.cn, lyq@mail.nankai.edu.cn
+    chenyiha17@mails.tsinghua.edu.cn, {zhangruizhi, taoshimin, sunpei.sun, joe.zhourong}@huawei.com
+
+                               Abstract                            L1. 1537885119 IFNET/2/linkDown_active(l):CID=0x807a0405, alarmID=0x0852003; The
+                                                                   interface status changes.
+                                                                   L2. 1537885119 LACP/4/LACP_STATE_DOWN(l): CID=0x804804, PortName=40GE1/0/3;
+          Recording runtime status via logs is common for al-      The LACP state is down. Reason = The interface went down physically.
+          most computer system, and detecting anomalies in         L3. 1537885130 DEVM/3/LocalFaultAlarm_clear(l): CID=0x852003, clearType=
+          logs is crucial for timely identifying malfunctions      service_resume, The local fault alarm has resumed.
+                                                                   L4. 1537885135 IFNET/2/linkDown_clear(l): CID=0x807a0405, alarmID=0x0852003; The
+          of systems. However, manually detecting anoma-           interface status changes. Physical link is up, mainName=Eth-Trunk104.
+          lies for logs is time-consuming, error-prone, and in-
+                                                                   L5. 1539139152 IFNET/2/linkDown_active(l):CID=0x807a0406, alarmID=0x0852007; The
+          feasible. Existing automatic log anomaly detection       interface status changes.
+          approaches, using indexes rather than semantics of       L6. 1539138152 LACP/4/LACP_STATE_DOWN(l): CID=0x804807, PortName=40GE1/0/3;
+                                                                   The LACP state is down. Reason = No LCAPDUs were received.
+          log templates, tend to cause false alarms. In this       L7. 1539138164 DEVM/3/LocalFaultAlarm_clear(l): CID=0x852004, clearType=
+          work, we propose LogAnomaly, a framework to              service_resume, The local fault alarm has resumed.
+                                                                   L8. 1539138164 IFNET/2/linkDown_clear(l): CID=0x807a0406, alarmID=0x0852007; The
+          model a log stream as a natural language sequence.       interface status changes. Physical link is up, mainName=Eth-Trunk104.
+          Empowered by template2vec, a novel, simple yet
+          effective method to extract the semantic informa-                 Figure 1: Switch logs of two normal link flappings
+          tion hidden in log templates, LogAnomaly can de-
+          tect both sequential and quantitive log anomalies          A large-scale service and its underlying machines are
+          simultaneously, which has not been done by any          often implemented/maintained by hundreds of develop-
+          previous work. Moreover, LogAnomaly can avoid           ers/operators. Usually a developer/operator has incomplete
+          the false alarms caused by the newly appearing log      information of the overall system, and tend to determine
+          templates between periodic model retrainings. Our       anomalous logs from a local perspective and thus is error-
+          evaluation on two public production log datasets        prone. In addition, manual detection of anomalous logs is
+          show that LogAnomaly outperforms existing log-          becoming infeasible due to the explosion of logs. Keywords
+          based anomaly detection methods.                        (e.g., “fail”) matching and regular expressions, detecting sin-
+                                                                  gle anomalous logs based on explicit keywords or structural
+1        Introduction                                             features, prevent a large portion of log anomalies from be-
+                                                                  ing detected. These anomalies can only be inferred based
+Today’s large-scale services are becoming increasingly more       on their log sequences which contains multiple logs violat-
+agile and complicated. A single service anomaly can impact        ing regular rules. For example, the first four logs in Figure 1
+million of users’ experience [Bu et al., 2018; Zhang et al.,      show two normal link flaps. If we apply keyword matching
+2015; Ma et al., 2018]. Accurate and timely anomaly de-           to detect log anomalies, both L1 and L2 , which contain the
+tection can help operators quickly mitigate losses [Zhang et      keyword “down”, will trigger false alarms. However, it is
+al., 2018b], which is crucial for these services. Large-scale     actually a normal event because the switch automatically re-
+services usually generate logs, which describe a vast range       covers quickly as demonstrated in L4 . Consequently, an auto-
+of events observed by them, to record system states at run-       matic anomaly detection method according to log sequences
+time. Logs are one of the most valuable data sources for          is needed.
+anomaly detection [Satpathi et al., 2018; Lin et al., 2016;
+                                                                     Generally, there are two categories of log sequence anoma-
+Du et al., 2017; Khatuya et al., 2018; Nandi et al., 2016;
+                                                                  lies: sequential and quantitative anomalies. Programs are
+He et al., 2018; Meng et al., 2018; Zhang et al., 2018a].
+                                                                  typically executed according to fixed flows, and logs are a
+     ∗
+         Shenglin Zhang is the corresponding author.              sequence of events produced by these executions. We say a
+sequential anomaly occurs if a log sequence deviates from
+normal patterns of program flows. Meanwhile, program ex-
+ecution has some constant linear relationships, which can be
+captured by the quantitative relationships of logs, should al-
+ways hold true under different workloads. We say a quantita-
+tive anomaly occurs if these relationships are broken for a col-
+lection of logs. Existing automatic anomalous log sequence
+detection approaches can be broadly classified into two cate-
+gories: log message counter based approaches (e.g., PCA [Xu
+et al., 2009], Invariant Mining [Lou et al., 2010], LogClus-
+tering [Lin et al., 2016]) to capture quantitative anomalies,
+and deep learning based approaches (e.g., DeepLog [Du et
+al., 2017]) to learn sequential patterns from log sequences.                         Figure 2: Logs and templates
+These mechods all take log template indexes as input, which
+can often induce false alarms. For example, as shown in Fig-           3. We propose LogAnomaly, an end-to-end framework us-
+ure 1, words with underlines are variables, and the remaining             ing LSTM network to automatically detect sequential
+parts are templates, each of which is usually indexed by a                and quantitative anomalies simultaneously.
+numerical identifier. Suppose that the above methods have
+                                                                     We evaluate LogAnomaly on two benchmark datasets in
+been trained based on the normal log sequence, i.e., L1 to
+                                                                   log analysis scenarios, the HDFS dataset [Xu et al., 2009]
+L4 . When a system generates L6 (the templates of L2 and L6
+                                                                   and the BGL dataset [Oliner and Stearley, 2007]. Our re-
+are very similar but different, and L1 /L3 /L4 has the same
+                                                                   sults show that LogAnomaly outperforms state-of-the-art log-
+template with L5 /L7 /L8 ), the above methods will mistak-
+                                                                   based anomaly detection methods.
+enly think that the log sequence of L5 to L8 is anomalous,
+based on the observation that L2 and L6 have different tem-
+plate indexes. Above all, the anomalous log sequence detec-        2     Background
+tion problem faces the following three challenges.                 Large-scale systems usually record system runtime states us-
+  1. Valuable information could be lost if only log template       ing logs, generated using the “print” function with a string
+      indexes are used, because they cannot reveal the seman-      template (normal text in Figure 1) and detailed information
+      tic relations of logs. For example, some templates are       as parameters (the underscored text in Figure 1). Typically,
+      similar in semantics but different in template indexed,      these logs have to be properly parsed before they can be effec-
+      and ignoring this similarity can induce false alarms.        tively used for anomaly detection [He et al., 2016]. A com-
+                                                                   mon approach to parse logs is to mine and extract templates
+  2. Services can generate new log templates between two
+                                                                   from historical logs and then match logs to templates [Zhang
+      adjacent periodic re-trainings, and existing approaches
+                                                                   et al., 2017; Messaoudi et al., 2018]. As shown in Figure 2,
+      cannot address this problem. For instance, manual feed-
+                                                                   logs L3 and L6 are similar and their templates are both T3 ,
+      back on large number of new log templates (as is done
+                                                                   i.e., “Interf ace ∗, changed state to up”, which sketches
+      by [Du et al., 2017]) is infeasible in practice.
+                                                                   out the event that L3 and L6 represent. The remaining parts
+  3. Existing methods cannot detect sequential and quantita-       of logs L3 and L6 (i.e., “ae1” and “ae3”, respectively) are the
+      tive anomalies simultaneously.                               runtime parameters. Log parsing is beyond the scope of this
+   We propose LogAnomaly, a unified data-driven deep-              paper, thus in Section 3.4, we simply adopt FT-Tree [Zhang et
+learning framework for anomaly detection on unstructured           al., 2017], which is one of the state-of-art log parsing meth-
+log streams. The core idea of LogAnomaly is that most              ods, achieveing high accuracy in template extraction and be-
+system logs are semi-structured texts “print”-ed by certain        ing incrementally retrainable when new types of logs emerge.
+procedures of systems, and the intuitions and methods in              There are two dimensions to classify existing log anomaly
+natural language processing can be applied or improved for         detection approaches: 1) detecting sequential anomalies or
+log anomaly detection. LogAnomaly tackles the above chal-          quantitative anomalies; 2) supervised or unsupervised. For
+lenges as follows.                                                 those approaches designed to detect quantitative anomalies,
+                                                                   a time or session window is defined, and then the count of
+ 1. Inspired by word embedding, we design a simple yet ef-         each template index (regardless of sequence) within the win-
+    fective template representation method, template2Vec,          dow is used as the basis for anomaly detection. Supervised
+    to accurately extract the semantic and syntax informa-         approaches can be used to detect anomalies using various al-
+    tion from log templates. Clearly, template2Vec captures        gorithms: logistic regression and decision tree (in [He et al.,
+    not only word context, but also semantic information in-       2016]) and SVM (in [Liang et al., 2007]). Among unsuper-
+    cluding synonyms and antonyms (in our scenario, logs           vised approaches that detect quantitative anomalies, [Xu et
+    with antonyms usually indicate different events). To the       al., 2009] uses PCA; [Lin et al., 2016] (LogCluster) uses clus-
+    best of our knowledge, this is the first anomaly detection     tering; [Lou et al., 2010] (Invariants Mining) detects whether
+    framework considering semantic information of logs.            some mined invariants (e.g., count(T1 ) = count(T3 ) for Fig-
+ 2. We design a mechanism to merge new templates without           ure 2) hold true within the window.
+    operators’ feedback between two adjacent trainings.               [Zhang et al., 2016] and DeepLog [Du et al., 2017] are
+                                                           𝐯(#$) 𝐯(#$%&)…𝐯(#$%*+&)                         Syns&Ants                                Word vectors
+    Historical Match Template                   Template
+      logs           sequence                                                                        Synonyms         Antonyms     (2)     Interface [x1,…,xn]
+                                                 Vector          LSTM
+                                                                                                                                                    …           …
+                                     Vector     Sequence
+                                                                     Attention               Interface Vlan-interface down up              changed [x1,…,xn]
+                                                                                                 …          …          …     …
+                      Synonyms&     sequence                                     𝐯(#$%*)
+Extract                                          Count
+                       Antonyms                  Vector          LSTM                                      Templates         (1)         (3)    Template vectors
+                            template2Vec                    𝐂) 𝐂),- … 𝐂),./-                                                                            [x1,…,xn]   Match to
+                                                                                            T1 Interface * changed state to up     (3)         V1                   an existing
+                       Word       Template                                                   …                  …                              …           …
+                                                                                                                                                                    template
+    Templates
+                     Vectors       Vectors                     Model                       Tn+1 Interface * changed state to up            Vn+1 [x1,…,xn]           vector
+          template2Vec   template2Vec Classification
+                                                                    Offline learning
+                                                                                                          Figure 4: Examples of template2Vec.
+                                                                    Online detection
+    Temporary         Temporary      Existing
+    Templates          Vectors       Vectors
+                                                                                           distributedly represents templates. It effectively converts the
+          Update
+                                                                                           words in templates into word embedding vectors and calcu-
+    Realtime          Template       Vector                  Similarity
+      logs   Match    sequence      sequence                comparison
+                                                                                 Output    lates template vectors by combining word vectors. This way,
+                                                                                           a log sequence is converted to a template vector sequence. In
+                   Figure 3: The framework of LogAnomaly                                   the end, we extract the sequential and quantitative features
+                                                                                           from this log sequence with an LSTM model. The offline
+designed to detect sequential anomalies in an unsupervised                                 training is conducted periodically, e.g., weekly, so that the
+manner. They utilize LSTM to predict the next logs likely                                  newly appeared log templates can be periodically incorpo-
+to appear after seeing logs, and an anomaly is declared if the                             rated into the newly learned offline model.
+actual log is unexpected according to the prediction.                                         In the online detection component, we first determine, for
+   Because anomaly labels are often unavailable in prac-                                   a realtime log, whether it can be matched to an existing tem-
+tice, thus unsupervised methods are much more practi-                                      plate. If yes, we then convert it to a template vector. Other-
+cal in real-world service systems. As mentioned in Sec-                                    wise, we will “approximate” the“temporary” template vector
+tion 1, existing unsupervised approaches suffer from some                                  to an existing one based on the similarity of template vectors.
+common drawbacks. First, they detect anomalies based                                       Consequently, each realtime log is matched to a template vec-
+on the log template indexes (i.e., using 3 to represent T3                                 tor, and realtime logs are converted to (template) vector se-
+“Interf ace ∗, changed state to up”), which does not uti-                                  quences. Based on the trained LSTM model in the offline
+lize the semantic information in the logs. Second, they are                                learning component, LogAnomaly determines whether a log
+designed to capture either the sequential or quantitative pat-                             sequence is anomalous.
+terns of logs, but not both.
+                                                                                           3.2       Template2Vec
+3      Design of LogAnomaly                                                                Word2Vec is a popular distributed representation method for
+                                                                                           words. It creates vectors that are distributed representations
+3.1       Overview                                                                         of word features, such as the context of individual words.
+The objective of LogAnomaly is to, in an unsupervised way,                                 However, it does not capture the semantic information of
+automatically and accurately detect both sequential and quan-                              words such as synonym and antonym. The words that have
+titative log anomalies in real time.                                                       similar or the same context in two log templates, in many
+   After extensive investigations into real-world logs, we have                            cases, can be antonyms, which makes the two templates very
+the following two observations: (1) A log template, which                                  different. For example, the word “down” in template T1
+is predefined using the “print” function by developers, typi-                              and the word “up” in template T3 in Figure 2, which are
+cally characterizes the event that occurs in the system, with                              antonyms, have the same context. Obviously, these two tem-
+its text representing the semantic information of the event.                               plates express the opposite meaning, and they should have
+(2) Program execution flows in a service system usually have                               very different template vectors. Therefore, we try to capture
+some patterns. Therefore, logs, which are generated by                                     the semantic information when constructing vectors to repre-
+these programs, have some patterns in types, temporal or-                                  sent templates.
+ders, event count frequencies, and quantitative relationship                                  We propose a novel word representation method, tem-
+between counts of different events. Our core idea is then to                               plate2Vec, which is based on synonyms and antonyms, to ef-
+use deep learning to offline learn both sequential and quanti-                             fectively represent the words in templates distributedly. As
+tative patterns of the logs, each of which is represented by its                           shown in Figure 4, template2Vec includes three steps in the
+template’s semantics (as opposed to just the index of the tem-                             offline learning stage: (1) Construct the set of synonyms and
+plate); in online detection, the realtime logs which violated                              antonyms. As shown in Table 1, universal synonyms and
+the learned patterns are considered anomalous.                                             antonyms can be found in WordNet [Miller, 1995], which is a
+   The design of our proposed LogAnomaly is shown in Fig-                                  lexical database for English. Some domain specific synonyms
+ure 3. In the offline learning component, LogAnomaly first                                 and antonyms, however, have to be added by operators based
+leverages FT-Tree (see Section 2 for more details) to extract                              on domain knowledge. Therefore, we first search synonyms
+templates from historical logs and then match the historical                               and antonyms of the words in templates in WordNet. After
+logs to these templates. Each template is a set of words                                   that, operators can update synonyms and antonyms. (2) Gen-
+in semi-structured text. Inspired by word2Vec [Mikolov et                                  erate word vectors. We apply dLCE [Nguyen et al., 2016],
+al., 2013], we propose a novel method, template2Vec, which                                 which is a distributional lexical-contrast embedding model, to
+      Relations       Word1          Word2      Add Methods             ecution. Consequently, we learn the quantitative pattern of
+                       down           low         WordNet               logs as follows. For a log message si ∈ Sj , we calculate
+      Synonyms                                                          the count vector of the log sequence (si−w+1 , si−w+2 , ..., si ),
+                     interface        port        Operators
+                                                                        which is denoted as Ci = (ci (v1 ), ci (v2 ), ..., ci (vn )), where
+                      down            up          WordNet
+      Antonyms                                                          ci (vk ) is the number of vk in the template vector sequence
+                   powerDown       powerOn        Operators
+                                                                        (v(si−w+1 ) , v(si−w+2 ) , ..., v(si ) ), and vk ∈ V. Finally,
+      Table 1: Examples of synonyms and antonyms in logs                Cj , Cj+1 , ..., Cj+w−1 is input into LSTM to learn the quan-
+                                                                        titative pattern of Sj .
+           sequence      next              v1 v2 v3 v4                      In general, there are several branches in the fixed flows of
+            [v1 v2 v3]    v1        Cj     1 1 1 0                      program execution. For instance, after a file is opened, it can
+                                    Cj+1   1 1 1 0                      be read, written, or closed. Therefore, based on the sequen-
+            [v2 v3 v1]     v4
+                                    Cj+2   1 0 1 1                      tial and quantitative patterns of program execution and logs,
+            [v3 v1 v4]     v3       Cj+3   1 0 1 1                      there are several possibilities for the next template vector af-
+                                                                        ter a template (vector) sequence. For a log sequence, we sort
+          (a) Sequential pattern (b) Quantitative pattern
+                                                                        the possible next template vector based on their probabilities,
+Figure 5: The sequential and quantitative patterns of the templates     which is learned according to the LSTM model. If the ob-
+in Figure 2                                                             served next template vector is included in the top k candidates
+                                                                        (or similar enough with them), we regard it as normal.
+generate word vectors that distributedly represent the words                LogAnomaly learns the inherently sequential and quanti-
+in templates. (3) Calculate template vectors. For a given tem-          tative patterns of logs by learning the high dimensional de-
+plate, we calculate its template vector, which is the weighted          pendencies of template sequences. The combination of the
+average of the word vectors of the words in the template, to            sequential and quantitative patterns, we believe, can improve
+represent the distribution of the template. In online detec-            the accuracy, which is demonstrated in Section 4.2.
+tion stage, it will match a “temporary” template vector to an
+existing one for new types of logs. Therefore, template2Vec             3.4    Template Approximation Between Two
+combines operators’ domain knowledge and dLCE model in                         Consecutive Trainings
+order to accurately generate template vectors.                          In real-time systems, systems may generate new log tem-
+                                                                        plates online, but existing approaches cannot handle newly
+3.3   Log Anomaly Detection                                             generated template indexes. Manual feedback on large num-
+As aforementioned, programs, which generate logs using                  ber of new log templates (as is done by[Du et al., 2017]) is
+the “print” function, are usually executed according to fixed           infeasible in practice. Although periodic retraining can al-
+flows. Therefore, normal logs naturally have some sequential            leviate the problems, we still have to deal with the new log
+patterns. In other words, for a given template (vector) se-             templates that appear between two consecutive offline train-
+quence, its next template is predictable if no anomaly occurs.          ings. Our approach is as follows.
+Let Ω = {v1 , v2 , ..., vn } be the whole set of distinct template         In the online detection stage, for a log that cannot match
+vectors. The sequence for detection is a sliding window of              any existing template, we first apply FT-Tree to extract a
+the w most recent template vectors. For a log sequence S =              “temporary” template from the new log, and calculate its tem-
+(s1 , s2 , ..., sm ), suppose that Sj = (sj , sj+1 , ..., sj+w−1 ) is   plate vector. After that, we match this “temporary” template
+one of its subsequences. Figure 5 (a) shows the sequential              vector to an existing one based on the similarity among tem-
+pattern of the templates shown in Figure 2. For example,                plate vectors. The intuition is that majority of the “new”
+the next vector of [v1 , v2 , v3 ] is likely to be v1 . Because         template is just minor variants of existing templates, instead
+LSTM is a popular recurrent neural network architecture that            of brand new ones. Note that the template approximation is
+has been proved to robustly predict for sequences of data [Du           aimed to deal with the newly appeared log templates between
+et al., 2017; Zhang et al., 2016], we apply LSTM to learn the           two consecutive offline trainings. This is a better approach
+sequential pattern of logs. Then the template vector sequence           than the labor-intensive manual feedback by operators (as is
+of Sj is Vj = (v(sj ) , v(sj+1 ) , ..., v(sj+w−1 ) ), where v(si ) is   in[Du et al., 2017]).
+the template vector of si , and v(si ) ∈ Ω. Therefore, Vj is               Therefore, the challenge imposed by new types of logs is
+input into the LSTM model for Sj in the training stage.                 addressed without operators’ intervention. In this way, the
+   In addition to sequential patterns, a template (vector) se-          number of distinct template vectors remains constant, even
+quence also has quantitative patterns. Usually, a normal pro-           though new types of logs can emerge.
+gram execution has some invariants, and some quantitative
+relationships always hold in logs under different inputs and            4     Evaluation
+workloads. For example, each opened file will be finally
+closed at some stage. Therefore, the number of the logs indi-           4.1    Experiment Setting
+cating “open a file” should be equal to that of the logs show-          Datasets
+ing “close a file” in a normal condition. These quantitative            We conduct experiments over the BGL dataset [Oliner and
+relationships in logs can capture the normal program exe-               Stearley, 2007] and the HDFS dataset [Xu et al., 2009], as
+cution behavior. If a new log breaks certain invariants, we             listed in Table 2. The detailed information of the two datasets
+can determine that an anomaly occurs during the system ex-              are described as follows:
+   Datasets    Duration       # of logs       # of anomalies
+    HDFS      38.7 hours     11,175,629       16,838(blocks)
+    BGL        7 months      4,747,963        348,460(logs)
+                 Table 2: Detail of the datasets
+
+(1) BGL: The BGL dataset contains 4,747,963 logs. Each
+BGL log was manually labeled as either anomalous or nor-                       Figure 6: Accuracy on the BGL dataset
+mal, and 348,460 logs were labeled as anomalous. The BGL
+dataset was generated by the Blue Gene/L supercomputer,
+which consisted of 128K processors and was deployed at
+Lawrence Livermore National Laboratory (LLNL).
+(2) HDFS: The HDFS dataset consists of 11,175,629 logs
+collected from more than 200 Amazon EC2 nodes. A pro-
+gram execution in the HDFS system, e.g., writing a file and
+then closing it, usually involves a block of logs. There are
+575,061 blocks of logs in the dataset, among which 16,838
+blocks were labeled as anomalous by Hadoop domain ex-                         Figure 7: Accuracy on the HDFS dataset
+perts [Du et al., 2017].
+   In the following experiments, from either dataset, we lever-   dataset. Overall, LogAnomaly achieves the best accuracy
+age the front 80% (according to the timestamps of logs) as the    among the five methods, having an averaged F1 score of 0.96
+training data, and the rest 20% as the testing data. Moreover,    on the BGL dataset, and 0.95 on the HDFS dataset. Both
+because both of the above datasets were manually labeled, we      PCA and LogCluster, however, have low F1 scores (≤ 0.80)
+take these labels as the groundtruth for evaluation.              on the two datasets. Both Invariants Mining and Deeplog
+                                                                  achieve high recall on both the BGL dataset and the HDFS
+Baselines                                                         dataset. For example, Invariants Mining and Deeplog have
+We compare LogAnomaly with four unsupervised baseline             recalls of 0.99 and 0.96 on the BGL dataset, respectively.
+methods, i.e., LogCluster [Lin et al., 2016], PCA [Xu et          However, these high recalls are at cost of low precisions. For
+al., 2009], Invariant Mining (IM) [Lou et al., 2010], and         instance, on the BGL dataset, Invariants Mining and Deeplog
+Deeplog [Du et al., 2017] (see Section 2 for more details).       respectively decrease precisions by 0.14 and 0.07 compared
+The parameters of these methods are all set best for accuracy.    to LogAnomaly, resulting that they generate 5.67 and 3.33
+Evaluation Metrics                                                times false alarms, respectively. Generally, large service sys-
+Anomaly detection is a binary classification problem. A clas-     tems produce tens of millions of logs everyday. If a log
+sification method’s capability is usually assessed by preci-      anomaly detection method generates too many false alarms
+sion, recall, and F1 score. We label its outcome as a TP,         everyday, it will consume operators a large amount of unnec-
+TN, FP, and FN. T P are the anomalous logs (or blocks for         essary work. Both Invariants Mining and Deeplog leverage
+the HDFS dataset) that are accurately determined as such by       the indexes of log templates, which ignore the semantic infor-
+the method. T N are normal logs (or blocks for the HDFS           mation of templates, to learn the anomalous and normal pat-
+dataset) that are accurately determined. If the method de-        terns. However, different templates having different indexes,
+termines a log (or a block for the HDFS dataset) as anoma-        e.g., T1 and T2 in Figure 2, can share common semantic in-
+lous, but in fact it is normal, we label the outcome as a F P .   formation. Ignoring the above common semantic informa-
+The rest are F N . Precision = TP+FP   TP                 TP
+                                           , Recall = TP+FN   ,   tion results in that both Invariants Mining and Deeplog gen-
+             2*Precision*Recall                                   erate more false alarms than LogAnomaly. On the contrary,
+F1 score = Precision + Recall .
+                                                                  LogAnomaly, which employs template2Vec to learn the se-
+Experimental Setup                                                mantic information of log templates based on synonyms and
+We conduct all the experiments on a Linux server with In-         antonyms, effectively avoids these false alarms. That is be-
+tel Xeon 2.40 GHz CPU and 64G memory. FT-Tree [Zhang              cause comparing the similarity of template vectors, which
+et al., 2017] is leveraged to parse logs. We implement            LogAnomaly falls into, is tolerant to the small differences
+LogAnomaly and DeepLog with Python 3.6 and Keras 2.1.             of log templates, than comparing the similarity of template
+As for Log Clustering, PCA and Invariant Mining, we use a         indexes, where Invariants Mining and Deeplog fall.
+popular open-source toolkit implemented in [He et al., 2016].        In this work, for the first time, we learn both the quantita-
+                                                                  tive pattern and the sequential pattern of logs for anomaly
+4.2   Evaluation of The Overall Performance                       detection. To demonstrate the benefits of the combina-
+In this section, we compare LogAnomaly with the four base-        tion of these two patterns, we calculate the accuracy of
+line methods on the two datasets. The LogAnomaly in our           LogAnomaly without (w/o) template vector sequence which
+experiments has two LSTM layers with 128 neurons, and the         captures the sequential pattern of logs, as well as the accuracy
+size (step) of window is 20 (1). Figure 6 and Figure 7 re-        of LogAnomaly without (w/o) count vector extracting the
+spectively show the comparison results of LogAnomaly and          quantitative pattern of logs. As shown in Figure 6 and Fig-
+the four baseline methods on the BGL dataset and the HDFS         ure 7, compared to LogAnomaly, LogAnomaly without (w/o)
+   # template in     # template in     # unmatched logs by
+   training logs     detection logs     training templates
+                                                                                   DeepLog    IM    Traffic LogAnomaly Service were Service End
+        257               503                299,174                   Beginning
+                                                                                   alarmed alarmed dropped alarmed      impacted recovered
+
+Table 3: The detailed information of the BGL dataset for evaluating                Figure 8: Timeline of switch anomaly case study
+the performance of LogAnomaly in online anomaly detection
+                                                                      4.4     Case Study
+         Methods         Precision    Recall     F1 score             To further evaluate the performance of LogAnomaly, we here
+        DeepLog           0.3817      0.9768      0.5489              show a single anomaly case that happened on an aggrega-
+       LogAnomaly         0.8039      0.9319      0.8632              tion switch deployed in a top cloud service provider from
+                                                                      15:00, Oct 13 2018 to 1:16, Oct 14 2018. LogAnomaly, In-
+Table 4: The accuracy of LogAnomaly and Deeplog in online             variants Mining, and Deeplog are deployed to detect anoma-
+anomaly detection                                                     lies based on logs for this switch during Sep 25 2018 to Oct
+                                                                      19, 2018. More specifically, as shown in Figure 8, the traffic
+template vector sequence has much low precisions on both the          forwarded by this switch dropped from 15:00, Oct 13 2018,
+BGL dataset (0.84) and the HDFS dataset (0.83) compared               and the services provided by this switch were impacted from
+to LogAnomaly (0.97 and 0.96 on the two datasets, respec-             22:15, Oct 13 2018, until the switch recovered at 1:16, Oct
+tively). Therefore, the sequential pattern of LogAnomaly pre-         14 2018. LogAnomaly generated 29 alarms, all of which be-
+vents false alarms from disturbing operators. Similarly, the          gan from 15:59, Oct 13 2018, and ended before 1:16, Oct 14
+quantitative pattern, which are represented with count vec-           2018. Consequently, LogAnomaly successfully detected this
+tors, improves both precision and recall for LogAnomaly on            anomaly and generated no false alarm. DeepLog, however,
+the two datasets.                                                     generated 43 alarms during its deployment period (Sep 25 to
+                                                                      Oct 19), 15 of which were false ones. Moreover, Invariant
+                                                                      Mining generated five alarms, and three of them were false.
+4.3   Evaluation of Online Anomaly Detection                             We can see that, in real-world cases, LogAnomaly
+                                                                      achieved better accuracy than Invariants Mining and Deeplog,
+As described in Section 3.2, template2Vec not only improves           for the following reason. There are more than 10, 000 log
+the accuracy of LogAnomaly by leveraging the semantic in-             templates in this cloud service provider. A large number
+formation of log templates, but also addresses the challenges         of log templates having different template indexes represent
+of new types of log messages by matching new templates to             very similar events. Neither Invariants Mining nor Deeplog
+existing templates. Usually, service systems often generate           was able to leverage the similarities of log templates, whereas
+new types of logs and thus new log templates, due to fre-             LogAnomaly successfully extracted these similarities by us-
+quent software or firmware updates aiming to introduce new            ing template2Vec to learn templates’ semantic information.
+features or fix bugs of previous versions. If an anomaly detec-
+tion method cannot cope with new templates, it will generate          5     Conclusion
+false alarms, for the reason that the new templates can gener-
+ate new patterns which match no historical normal pattern.            Logs are one of the most valuable data sources for system
+                                                                      operation. In this paper, we propose LogAnomaly, a uni-
+   We evaluate the performance of LogAnomaly in address-              fied log anomaly detection system that leverages a novel tem-
+ing new types of logs at runtime as follows. As shown in              plate2Vec method to extract the semantic information of log
+Table 3, the front 50% (according to the timestamps of logs)          templates and address the challenges posed by new types of
+of the BGL dataset is used as the training set, which includes        logs at runtime, and combines the sequential and quantita-
+257 log templates, and the rest 50% involving 503 templates           tive patterns of logs. Extensive experiments strongly demon-
+is used as the testing set. More specifically, 299,174 logs           strate LogAnomaly’s superior performance. The real-world
+in the testing set cannot match any existing templates. Be-           case study further shows that the novel template2Vec method
+cause both PCA and Invariant Mining are offline methods,              successfully extracts the semantic information of logs.
+and LogCluster performs badly in offline scenario as shown
+in Section 4.2, we compare LogAnomaly with Deeplog in this
+section. Note that we do not provide any manual feedback to           Acknowledgments
+Deeplog and LogAnomaly after they are trained.                        We thank the anonymous reviewers for their valuable feed-
+   Table 4 shows the accuracy of LogAnomaly and Deeplog               back. We also thank Ya Su, Yixuan Zhang, Yu Zhou,
+in online anomaly detection. Although Deeplog achieves                Yimin Zhou for their helpful suggestions and thank Juex-
+relatively high recall, its precision is much lower than that         ing Liao for proofreading this paper. The work was sup-
+of LogAnomaly. More specifically, Deeplog generates 3.15              ported by the BNRist, Okawa Research Grant, the Funda-
+times of false alarms compared to LogAnomaly, which brings            mental Research Funds for the Central Universities (Grant
+much unnecessary work to operators. With template2Vec,                No. 63191427), National Natural Science Foundation of
+LogAnomaly is able to match a new type of log message to              China (Grant Nos. 61772307 and 61402257), National Key
+an existing template vector, and thus it is more accurate in          R&D Program of China (Grant No. 2017YFB0801700), and
+online anomaly detection.                                             CERNET Innovation Project (Grant No. NGII20180121).
+References                                                          word representations in vector space. arXiv preprint
+[Bu et al., 2018] Jiahao Bu, Ying Liu, Shenglin Zhang,              arXiv:1301.3781, 2013.
+   Weibin Meng, Qitong Liu, Xiaotian Zhu, and Dan Pei.           [Miller, 1995] George A Miller. Wordnet: a lexical database
+   Rapid deployment of anomaly detection models for large           for english. Communications of the ACM, 38(11):39–41,
+   number of emerging kpi streams. In IEEE IPCCC, 2018.             1995.
+[Du et al., 2017] Min Du, Feifei Li, Guineng Zheng, and          [Nandi et al., 2016] Animesh Nandi, Atri Mandal, Shubham
+   Vivek Srikumar. Deeplog: Anomaly detection and diag-             Atreja, Gargi B Dasgupta, and Subhrajit Bhattacharya.
+   nosis from system logs through deep learning. In Proceed-        Anomaly detection using program control flow graph min-
+   ings of the 2017 ACM SIGSAC Conference on Computer               ing from execution logs. In Proceedings of the 22nd ACM
+   and Communications Security, pages 1285–1298. ACM,               SIGKDD International Conference on Knowledge Discov-
+   2017.                                                            ery and Data Mining, pages 215–224. ACM, 2016.
+[He et al., 2016] Shilin He, Jieming Zhu, Pinjia He, and         [Nguyen et al., 2016] Kim Anh Nguyen, Sabine Schulte im
+   Michael R Lyu. Experience report: System log analysis            Walde, and Ngoc Thang Vu. Integrating distributional lex-
+   for anomaly detection. In 2016 IEEE 27th International           ical contrast into word embeddings for antonym-synonym
+   Symposium on Software Reliability Engineering (ISSRE),           distinction. arXiv preprint arXiv:1605.07766, 2016.
+   pages 207–218. IEEE, 2016.                                    [Oliner and Stearley, 2007] Adam J. Oliner and Jon Stearley.
+[He et al., 2018] Shilin He, Qingwei Lin, Jian-Guang Lou,           What supercomputers say: A study of five system logs.
+   Hongyu Zhang, Michael R Lyu, and Dongmei Zhang.                  IEEE International Conference on Dependable Systems
+   Identifying impactful service system problems via log            and Networks (DSN’07), pages 575–584, 2007.
+   analysis. In ESEC/FSE, pages 60–70. ACM, 2018.                [Satpathi et al., 2018] Siddhartha Satpathi, Supratim Deb,
+[Khatuya et al., 2018] Subhendu Khatuya, Niloy Ganguly,             R Srikant, and He Yan. Learning latent events from net-
+   Jayanta Basak, Madhumita Bharde, and Bivas Mitra.                work message logs: A decomposition based approach.
+   Adele: Anomaly detection from event log empiricism.              arXiv preprint arXiv:1804.03346, 2018.
+   IEEE INFOCOM 2018 - IEEE Conference on Computer               [Xu et al., 2009] Wei Xu, Ling Huang, Armando Fox, David
+   Communications, pages 2114–2122, 2018.                           Patterson, and Michael Jordan. Largescale system prob-
+[Liang et al., 2007] Yinglung Liang, Yanyong Zhang, Hui             lem detection by mining console logs. Proceedings of
+   Xiong, and Ramendra Sahoo. Failure prediction in ibm             SOSP’09, 2009.
+   bluegene/l event logs. In Data Mining, ICDM 2007, pages       [Zhang et al., 2015] Shenglin Zhang, Ying Liu, Dan Pei,
+   583–588. IEEE, 2007.                                             Yu Chen, Xianping Qu, Shimin Tao, and Zhi Zang. Rapid
+[Lin et al., 2016] Qingwei Lin, Hongyu Zhang, Jian-Guang            and robust impact assessment of software changes in
+   Lou, Yu Zhang, and Xuewei Chen. Log clustering based             large internet-based services. In International Conference
+   problem identification for online service systems. In Pro-       on emerging Networking EXperiments and Technologies
+   ceedings of the 38th International Conference on Software        (CoNEXT), pages 1–13, 2015.
+   Engineering Companion, pages 102–111. ACM, 2016.              [Zhang et al., 2016] Ke Zhang, Jianwu Xu, Martin Renqiang
+[Lou et al., 2010] Jian-Guang Lou, Qiang Fu, Shengqi Yang,          Min, Guofei Jiang, Konstantinos Pelechrinis, and Hui
+   Ye Xu, and Jiang Li. Mining invariants from console logs         Zhang. Automated it system failure prediction: A deep
+   for system problem detection. In USENIX Annual Techni-           learning approach. In 2016 IEEE International Conference
+   cal Conference, pages 23–25, 2010.                               on Big Data (Big Data), pages 1291–1300. IEEE, 2016.
+[Ma et al., 2018] Minghua Ma, Shenglin Zhang, Dan Pei,           [Zhang et al., 2017] Shenglin Zhang, Weibin Meng, Jiahao
+   Xin Huang, and Hongwei Dai. Robust and rapid adaption            Bu, Sen Yang, Ying Liu, Dan Pei, Jun Xu, Yu Chen, Hui
+   for concept drift in software system anomaly detection. In       Dong, Xianping Qu, et al. Syslog processing for switch
+   2018 IEEE 29th International Symposium on Software Re-           failure diagnosis and prediction in datacenter networks. In
+   liability Engineering (ISSRE), pages 13–24. IEEE, 2018.          2017 IEEE/ACM 25th International Symposium on Qual-
+[Meng et al., 2018] Weibin Meng, Ying Liu, Shenglin                 ity of Service (IWQoS), pages 1–10. IEEE, 2017.
+   Zhang, Dan Pei, Hui Dong, Lei Song, and Xulong Luo.           [Zhang et al., 2018a] Shenglin Zhang, Ying Liu, Weibin
+   Device-agnostic log anomaly classification with partial la-      Meng, Zhiling Luo, Jiahao Bu, Sen Yang, Peixian Liang,
+   bels. In 2018 IEEE/ACM 26th International Symposium              Dan Pei, Jun Xu, Yuzhi Zhang, et al. Prefix: Switch fail-
+   on Quality of Service (IWQoS), pages 1–6. IEEE, 2018.            ure prediction in datacenter networks. Proceedings of the
+[Messaoudi et al., 2018] Salma       Messaoudi,      Annibale       ACM on Measurement and Analysis of Computing Sys-
+   Panichella, and Domenico Bianculli. A search-based               tems, 2(1):2, 2018.
+   approach for accurate identification of log message for-      [Zhang et al., 2018b] Shenglin Zhang, Ying Liu, Dan Pei,
+   mats. In Proceedings of the 26th IEEE/ACM International          Yu Chen, Xianping Qu, Shimin Tao, Zhi Zang, Xiaowei
+   Conference on Program Comprehension. ACM, 2018.                  Jing, and Mei Feng. Funnel: Assessing software changes
+[Mikolov et al., 2013] Tomas Mikolov, Kai Chen, Greg                in web-based services. IEEE Transactions on Services
+   Corrado, and Jeffrey Dean.         Efficient estimation of       Computing, 11(1):34–48, 2018.
+

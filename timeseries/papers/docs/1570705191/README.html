@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>TraceRCA: Practical Root Cause Localization for Microservice Systems via Trace Analysis (ISSTA 2021)</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>TraceRCA: Practical Root Cause Localization for Microservice Systems via Trace Analysis（ISSTA 2021）</h1>
+
+<blockquote>
+作者：Zeyan Li, Junjie Chen, Rui Jiao, Nengwen Zhao, Zhijun Wang, Shuwei Zhang, Yanjun Wu, Long Jiang, Leiqin Yan, Zikai Wang, Zhekang Chen, Wenchi Zhang, Xiaohui Nie, Kaixin Sui, Dan Pei<br>
+机构：清华大学、天津大学、中国民生银行、BizSeer、北京信息科学与技术国家研究中心（BNRist）<br>
+发表年份：2021<br>
+会议/期刊：ISSTA 2021（ACM SIGSOFT International Symposium on Software Testing and Analysis）<br>
+关联 PDF：同目录下 <code>1570705191.pdf</code>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<tr><th>字段</th><th>值</th></tr>
+<tr><td>标题</td><td>Practical Root Cause Localization for Microservice Systems via Trace Analysis</td></tr>
+<tr><td>作者</td><td>Zeyan Li, Junjie Chen, Rui Jiao, Nengwen Zhao, Zhijun Wang, Shuwei Zhang, Yanjun Wu, Long Jiang, Leiqin Yan, Zikai Wang, Zhekang Chen, Wenchi Zhang, Xiaohui Nie, Kaixin Sui, Dan Pei</td></tr>
+<tr><td>机构</td><td>Tsinghua University, Tianjin University, China Minsheng Bank, BizSeer, BNRist</td></tr>
+<tr><td>发表年份</td><td>2021</td></tr>
+<tr><td>会议/期刊</td><td>ISSTA 2021</td></tr>
+<tr><td>分类</td><td>根因分析 / 微服务可观测性</td></tr>
+<tr><td>核心问题</td><td>在大规模微服务系统中，如何基于分布式追踪数据无监督地快速定位故障根因微服务。</td></tr>
+<tr><td>主要贡献</td><td>1) 提出基于"异常 trace 多 / 正常 trace 少"的简洁无监督根因定位思路；2) 设计自适应的多指标 trace 异常检测与特征选择方法；3) 通过频繁项集挖掘与 Jaccard Index 挖掘可疑微服务集合；4) 在 222 个注入故障（10 类）上完成迄今最大规模实验，top-1 准确率较 SOTA 无监督方法提升 44.8%；5) 已在中国民生银行生产环境落地。</td></tr>
+</table>
+
+<h2>二、背景（Background）</h2>
+<p>微服务架构已经成为现代分布式系统的事实标准。它通过将单体应用拆分为数十甚至数千个轻量、松耦合、可独立部署的微服务，提供了更快的交付节奏、更好的可扩展性以及更高的自治能力。但这种架构也带来了新的可观测性挑战：一个用户请求往往会跨越多个微服务节点，调用链路过长、调用关系错综复杂，使得故障的传播路径变得难以追踪。亚马逊 2018 年 Prime Day 的一次一小时宕机曾造成约 1 亿美元的损失，可以想见生产环境对快速定位故障根因的诉求有多强烈。</p>
+
+<p>在 TraceRCA 出现之前，微服务根因定位方法可以分为两大类：</p>
+<ol>
+<li><strong>基于调用（invocation-based）的方法</strong>：只检查相邻微服务之间的调用是否异常。这类方法假设"根因一定是异常调用最严重的相邻服务"，但实际生产中，异常可能跨越多层调用传播，因此只看相邻微服务不足以反映根因。</li>
+<li><strong>基于追踪（trace-based）的方法</strong>：通过整条 trace 关联所有涉及的微服务。代表方法包括 MicroScope（使用 DAG 表示微服务依赖，假设不存在环）、TraceAnomaly（专注于 trace 的结构或时延异常）、MEPFL（基于监督学习的根因预测）。这些方法存在如下局限：MicroScope 的 DAG 假设在真实生产系统和 Train-Ticket 基准中都不成立（有环）；TraceAnomaly 只关注单一指标（时延），且固定异常传播方向；MEPFL 需要大量高质量故障注入样本做训练，泛化能力差。</li>
+</ol>
+
+<p>工业界生产中往往无法保证训练数据的全类型覆盖，且系统拓扑常常存在环路，因此迫切需要一种更实用（practical）、不依赖监督、不假设固定传播方向、不假设无环的根因定位方法。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<p>TraceRCA 旨在解决以下 5 个具体问题：</p>
+<ul>
+<li><strong>痛点 1</strong>：基于 trace 的根因定位现有方法依赖监督或环状拓扑假设。<strong>解决方案</strong>：提出一个简单而通用的"异常 trace 多 / 正常 trace 少"洞察，无需训练，无需假设无环。</li>
+<li><strong>痛点 2</strong>：trace 是变长的，直接对 trace 做异常检测效率低、准确率差。<strong>解决方案</strong>：改为先检测 span（invocation）的异常，再通过 span 推断 trace 的异常状态。</li>
+<li><strong>痛点 3</strong>：微服务系统有大量监控指标（CPU、内存、时延、HTTP 状态、网络吞吐、磁盘 IO 等），并非所有指标都与本次故障相关，无关指标的噪声会污染异常检测。<strong>解决方案</strong>：在每类故障发生时，自适应地选择"对故障敏感"的有用特征。</li>
+<li><strong>痛点 4</strong>：很多情况下只有经过特定微服务组合的 trace 才会被故障影响，单看每个微服务可能分数都不高。<strong>解决方案</strong>：在集合层面而非单服务层面挖掘可疑微服务集合，使用频繁项集挖掘降低搜索空间。</li>
+<li><strong>痛点 5</strong>：现有方法假设异常永远从上游向下游传播（MicroScope、TraceAnomaly），但实际生产中异常也可能反向传播。<strong>解决方案</strong>：基于"incoming / outcoming 异常调用数之差"动态推断异常传播方向。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<p>TraceRCA 的整体方案可分为三阶段：① trace 异常检测；② 可疑微服务集合挖掘；③ 微服务排序。整体洞察是：<strong>一个微服务若有更多异常 trace 流经它、更少正常 trace 流经它，则它更可能是根因。</strong> 这个洞察借鉴自软件工程领域的频谱缺陷定位（SBFL）和多维根因定位，并在 25 + 22 个真实故障上验证了根因集合的 P(X|Y) 与 P(Y|X) 都集中在右上角（图 4）。</p>
+
+<p><strong>关键概念</strong>：</p>
+<ul>
+<li><strong>Invocation（Span）</strong>：单个微服务对（caller→callee）之间的 API 调用，包含时延、状态码等特征。</li>
+<li><strong>Trace</strong>：实现同一用户请求的所有 invocation 集合。</li>
+<li><strong>Anomaly Severity（异常严重度）</strong>：对于特征 f，定义 α = |v_f − μ_f| / σ_f，其中 μ_f、σ_f 是该特征的历史均值与标准差。</li>
+<li><strong>Useful Feature</strong>：故障后该特征上的平均异常严重度 α_after 比历史 α_before 显著增大（α_after − α_before > δ_fs · α_before）。</li>
+<li><strong>Support P(X|Y)</strong>：在异常 trace 中流经某微服务集合 X 的比例。</li>
+<li><strong>Confidence P(Y|X)</strong>：流经 X 的 trace 中异常 trace 的比例。</li>
+<li><strong>Jaccard Index (JI)</strong>：综合 Support 和 Confidence 的统一度量。</li>
+</ul>
+
+<p><strong>与现有方法的差异</strong>：</p>
+<table>
+<tr><th>维度</th><th>MicroScope</th><th>TraceAnomaly</th><th>MEPFL</th><th>TraceRCA</th></tr>
+<tr><td>是否监督</td><td>否</td><td>否</td><td>是</td><td>否</td></tr>
+<tr><td>拓扑假设</td><td>DAG 无环</td><td>DAG</td><td>—</td><td>不假设</td></tr>
+<tr><td>异常检测指标</td><td>多指标</td><td>仅时延</td><td>多指标</td><td>多指标 + 自适应特征选择</td></tr>
+<tr><td>异常传播方向</td><td>固定上游→下游</td><td>固定上游→下游</td><td>—</td><td>动态推断</td></tr>
+<tr><td>根因粒度</td><td>单微服务</td><td>单微服务</td><td>单微服务</td><td>可疑集合 + 单微服务</td></tr>
+</table>
+
+<p><strong>数学公式</strong>：</p>
+
+<p>异常严重度：</p>
+$$
+\alpha_f = \frac{|v_f - \mu_f|}{\sigma_f}
+$$
+
+<p>特征是否"有用"：</p>
+$$
+\alpha_{after} - \alpha_{before} > \delta_{fs} \cdot \alpha_{before}
+$$
+
+<p>Jaccard Index（其中 H 为调和平均）：</p>
+$$
+JI = \frac{P(X \cap Y)}{P(X \cup Y)} = \frac{2 - H(P(X|Y), P(Y|X))}{H(P(X|Y), P(Y|X))}
+$$
+
+<p>最终可疑分数（对微服务 m）：</p>
+$$
+Score(m) = \max_{S \ni m} \big( JI(S) \cdot IS(m, S) \big)
+$$
+
+<p>其中 IS(m, S) 是微服务 m 在集合 S 内的 in-set 分数 = |流入异常数 − 流出异常数|。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+<p><strong>1. 输入 / 输出</strong></p>
+<ul>
+<li><strong>输入</strong>：故障发生后的 trace 流（每个 trace 由若干 invocation 组成），以及每个微服务对的历史 invocation 特征值。</li>
+<li><strong>输出</strong>：根因微服务排名列表。</li>
+</ul>
+
+<p><strong>2. 核心模块</strong></p>
+<ul>
+<li><strong>A. Multi-metric Invocation Anomaly Detection</strong>：多指标调用异常检测。
+<ol>
+<li>计算每个特征 f 在历史窗口的 μ_f、σ_f。</li>
+<li>对每个特征比较 α_after 与 α_before，选择"有用"特征。</li>
+<li>对每个 invocation 计算其在"有用"特征上的异常分数；只要任何一个分数 > δ_ad，则该 invocation 异常。</li>
+</ol>
+</li>
+<li><strong>B. Trace Anomaly Inference</strong>：只要一条 trace 包含至少一个异常 invocation，则该 trace 被判定为异常。</li>
+<li><strong>C. Suspicious Set Mining</strong>：使用 FP-Growth 频繁项集挖掘，在异常 trace 中寻找出现频率 ≥ δ_spt 的微服务集合，然后对频繁集合按 JI 排序，取 top-k。</li>
+<li><strong>D. Microservice Ranking</strong>：对每个可疑集合 S 计算每个微服务 m ∈ S 的 in-set 分数，最终可疑分数 = max(JI(S) · IS(m, S))。</li>
+</ul>
+
+<p><strong>3. 伪代码</strong></p>
+<pre><code>def TraceRCA(invocations_after_fault, historical_stats):
+    # Stage 1: 多指标 invocation 异常检测
+    useful_features = []
+    for f in all_features:
+        alpha_after = mean_anomaly_severity(invocations_after_fault, f)
+        alpha_before = mean_anomaly_severity(historical_invocations, f)
+        if alpha_after - alpha_before > delta_fs * alpha_before:
+            useful_features.append(f)
+
+    abnormal_invocations = set()
+    for inv in invocations_after_fault:
+        for f in useful_features:
+            if anomaly_severity(inv, f) > delta_ad:
+                abnormal_invocations.add(inv.id)
+                break
+
+    # Stage 2: trace 异常推断
+    abnormal_traces = {t.id for t in all_traces
+                       if any(inv.id in abnormal_invocations for inv in t.invocations)}
+
+    # Stage 3: 可疑微服务集合挖掘
+    candidates = FP_Growth(abnormal_traces, delta_spt)   # 支持度 >= 10% 的集合
+    candidates = sorted(candidates, key=lambda S: JI(S))[:k]   # top-k
+
+    # Stage 4: 微服务排序
+    for m in all_microservices:
+        score = 0.0
+        for S in candidates:
+            if m in S:
+                IS = abs(incoming_abnormal_count(m, S) - outcoming_abnormal_count(m, S))
+                score = max(score, JI(S) * IS)
+        yield (m, score)
+</code></pre>
+
+<p><strong>4. 关键数学</strong></p>
+<ul>
+<li>异常严重度用均值-标准差 z-score 形式计算，简单高效。</li>
+<li>特征是否有用用 α_after 与 α_before 的相对差值判断。</li>
+<li>JI 同时编码了 support 和 confidence 两个条件。</li>
+</ul>
+
+<p><strong>5. 复杂度分析</strong></p>
+<ul>
+<li><strong>FP-Growth</strong> 复杂度 O(n · m)，其中 n 为异常 trace 数，m 为 trace 平均长度。论文实验每个故障 &lt; 10s 完成。</li>
+<li><strong>异常检测</strong>部分对每个 invocation 独立计算，可并行化；μ_f、σ_f 在线更新，每分钟滚动一次，开销低。</li>
+</ul>
+
+<p><strong>6. 训练与推理</strong></p>
+<p>TraceRCA <strong>不需要训练</strong>。μ_f、σ_f 是从历史 invocation 统计量直接计算，不依赖标签。</p>
+
+<p><strong>7. 示例</strong></p>
+<p>参考论文 Fig. 2：5 条 trace 经过微服务 {S_A, S_B, S_C, S_D, S_E}，红色虚线表示异常 invocation。</p>
+<ul>
+<li>异常 trace 集合 Y = {T1, T2, T3}（即含异常 invocation 的 trace）。</li>
+<li>FP-Growth 在异常 trace 上挖掘频繁集合，得到 {S_A, S_B} 支持度 1。</li>
+<li>进一步计算 JI 和 in-set 分数，得到 S_A 是最可能的根因。</li>
+</ul>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[分布式追踪系统<br/>收集 invocation 特征] --> B[历史统计<br/>μ_f, σ_f]
+    A --> C[故障后 invocation 流]
+    B --> D[特征选择模块<br/>判定 useful feature]
+    C --> D
+    D --> E[Invocation 异常检测<br/>α>δ_ad]
+    E --> F[Trace 异常推断]
+    F --> G[FP-Growth 频繁项集挖掘]
+    G --> H[JI 排序 + In-set 分数]
+    H --> I[微服务可疑度排名]
+    I --> J[运维人员优先排查]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[故障发生] --> S2[采集 invocation 特征]
+    S2 --> S3{特征是否<br/>对故障敏感?}
+    S3 -- 否 --> S4[丢弃该特征]
+    S3 -- 是 --> S5[保留为 useful feature]
+    S4 --> S3
+    S5 --> S6[计算 invocation 异常分数]
+    S6 --> S7{α>δ_ad?}
+    S7 -- 是 --> S8[标记 invocation 异常]
+    S7 -- 否 --> S6
+    S8 --> S9[推断 trace 异常]
+    S9 --> S10[FP-Growth 挖掘频繁集]
+    S10 --> S11[计算 JI & In-set]
+    S11 --> S12[得到根因微服务排名]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 简洁的无监督洞察</strong>：将 SBFL 思想迁移到微服务根因定位领域，把"异常 trace 多 / 正常 trace 少"作为唯一判据，简单、可解释。</li>
+<li><strong>+ 自适应多指标特征选择</strong>：通过 α_after − α_before 检验，自动过滤无关指标的噪声，避免误判。</li>
+<li><strong>+ 在集合层面挖掘根因</strong>：使用 FP-Growth 频繁项集 + JI 排序，解决了"只有特定微服务组合受影响"的实际问题。</li>
+<li><strong>+ 动态推断异常传播方向</strong>：通过 in-set 分数 |incoming − outcoming| 动态判断异常是上游→下游还是下游→上游，避免了固定方向假设。</li>
+<li><strong>+ 大规模真实实验与工业落地</strong>：222 个故障 × 10 类场景，并在民生银行生产环境部署并公开部署经验。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<p><strong>数据集</strong>：</p>
+<ul>
+<li><strong>A（Train-Ticket）</strong>：41 个微服务，部署在 7 台物理机（12 核 2.4GHz CPU、12GB RAM）。注入 200 个故障，涵盖 application bug、CPU exhausted、network delay 三类，分别在 microservice / container / API 三个层级注入。其中 11 个为多根因故障。共 242,259 条 trace，其中 22,675 条（9.36%）受故障影响。</li>
+<li><strong>B（生产系统）</strong>：某大型 ISP 的真实微服务系统，13 个微服务，服务超过 5000 万用户。22 个真实故障，5 类（CPU 耗尽、内存耗尽、主机网络错误、容器网络错误、数据库故障）。共 1,136,825 条 trace，17,041 条（1.50%）受影响。</li>
+<li>合计 <strong>222 个故障、1,379,084 条 trace、39,728 条异常 trace</strong>。</li>
+</ul>
+
+<p><strong>Baseline</strong>：</p>
+<ul>
+<li><strong>无监督调用级</strong>：Random Walk (RW)、RCSF</li>
+<li><strong>无监督 trace 级</strong>：MicroScope (MS)、TraceAnomaly (TA)</li>
+<li><strong>有监督</strong>：MEPFL (RF)</li>
+</ul>
+
+<p><strong>主要指标</strong>：Top-k 准确率（A@1, A@2, A@3）、Mean Average Rank (MAR)、Mean First Rank (MFR)。</p>
+
+<p><strong>关键结果数字</strong>（Table II）：</p>
+<ul>
+<li>在 A 上：TraceRCA 的 A@1 = 0.82，A@2 = 0.91，A@3 = 0.95，MAR = 1.54，MFR = 1.50。无监督 SOTA MS 在 A@1 仅 0.55，TraceRCA <strong>提升 51.02%</strong>。</li>
+<li>在 B 上：TraceRCA 的 A@1 = 0.88，A@2 = 1.0，A@3 = 1.0，MAR = 1.12，MFR = 1.12。无监督 SOTA MS A@1 = 0.82，<strong>提升 7.32%</strong>。</li>
+<li>与监督 MEPFL (RF) 相比：TraceRCA 在 A 上 A@1 仅低 10.72%，但无需训练数据；MEPFL 的效果在缺失故障类型或微服务时迅速退化（图 5）。</li>
+<li>多根因故障（Table IV）：TraceRCA 的 A@1 = 0.45，A@2 = 0.82，MAR = 1.77，显著优于无监督方法（MS 的 A@1 仅 0.27）。</li>
+<li>三种粒度（Table III）：microservice 级 A@1 = 0.83，container 级 A@1 = 0.80，API 级 A@1 = 0.83。</li>
+<li>TraceRCA-AD（异常检测）F1-score &gt; 0.8，与监督 RF-Trace 持平，远超 IF 和 TA-AD。</li>
+</ul>
+
+<p><strong>消融实验</strong>：</p>
+<ul>
+<li>特征选择：去掉特征选择后，F1 从 0.83 降到 0.81。</li>
+<li>超参数 δ_ad 和 δ_fs 的影响（图 7、8）：存在最优区间。</li>
+<li>噪声比实验（图 9、10）：随噪声增加，MS/RW 退化明显，TraceRCA 保持稳定。</li>
+</ul>
+
+<p><strong>效率分析</strong>：单个故障端到端 &lt; 10 秒（普通 CPU 机器）。</p>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>金融支付系统</strong>：当出现交易失败率上升时，TraceRCA 可快速定位是哪个微服务（如账户服务、风控服务、网关）异常。</li>
+<li><strong>电商订单系统</strong>：在大促期间，订单创建失败、库存不足等问题常因微服务链路抖动引发，TraceRCA 可基于 trace 推断根因。</li>
+<li><strong>银行核心系统</strong>：民生银行已部署该方案于生产，定位 CPU 耗尽、内存耗尽、网络错误、数据库故障等。</li>
+<li><strong>多根因异常排查</strong>：当一次故障由多个微服务共同引发（少数容器异常 + 数据库响应慢），TraceRCA 通过集合挖掘和 in-set 分数找出全部根因。</li>
+<li><strong>微服务架构演进期</strong>：当拓扑存在环、依赖经常变化时，TraceRCA 不需要假设 DAG，可直接适用。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<p>本批次中：</p>
+<ul>
+<li><code>paper-INFOCOM21-cfp</code>（CTF）也是面向多元时序异常检测，与 TraceRCA 的多指标异常检测可互补。</li>
+<li><code>wch_ISSRE-1</code>（RCLCF）也是关于在线服务系统根因指标识别，可与 TraceRCA 串联做"指标→微服务"两级根因。</li>
+<li><code>SCWarn</code> 关于代码变更级别的异常检测，可与 TraceRCA 联合做变更→故障的归因。</li>
+<li><code>刘平issre</code> 关于服务级深度贝叶斯网络 trace 异常检测，可作为 TraceRCA 异常检测阶段的替代。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>Microservice（微服务）</strong>：单一职责、可独立部署的小型服务。</li>
+<li><strong>Trace（追踪）</strong>：实现同一用户请求的所有 invocation 集合。</li>
+<li><strong>Span / Invocation（调用）</strong>：两个微服务对之间的一次 API 调用。</li>
+<li><strong>Anomaly Severity（异常严重度）</strong>：z-score 形式衡量当前值偏离历史均值的程度。</li>
+<li><strong>SBFL（Spectrum-Based Fault Localization）</strong>：频谱缺陷定位，源自软件工程。</li>
+<li><strong>Jaccard Index（Jaccard 相似度）</strong>：两集合交集占并集的比例。</li>
+<li><strong>FP-Growth</strong>：高效的频繁项集挖掘算法。</li>
+<li><strong>δ_fs, δ_ad, δ_spt, k</strong>：TraceRCA 的关键超参数（特征选择阈值、异常判定阈值、支持度阈值、top-k 集合数）。</li>
+<li><strong>In-set Score</strong>：在某个可疑集合内，incoming 异常数与 outcoming 异常数之差的绝对值。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>MicroScope (ISSTA 2020) — 假设 DAG 的无监督 trace-based 根因定位。</li>
+<li>TraceAnomaly (ISSRE 2018) — 单一指标异常检测。</li>
+<li>MEPFL (IWQOS 2021) — 监督学习根因预测。</li>
+<li>Random Walk、Isolation Forest — 经典图/无监督方法。</li>
+<li>FP-Growth (Han et al., 2000) — 频繁项集挖掘算法。</li>
+<li>开源实现与数据集：https://github.com/NetManAIOps/TraceRCA</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

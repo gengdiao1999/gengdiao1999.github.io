@@ -1,0 +1,815 @@
+             Illuminating the Gray Zone: Non-intrusive Gray Failure
+                    Localization in Server Operating Systems
+           Shenglin Zhang                                   Yongxin Zhao                               Xiao Xiong                        Yongqian Sun∗
+     Nankai University & HL-IT                             Nankai University                         Nankai University                 Nankai University &
+          Tianjin, China                                    Tianjin, China                            Tianjin, China                      TKL-SEHCI
+                                                                                                                                         Tianjin, China
+
+              Xiaohui Nie                                 Jiacheng Zhang                              Fenglai Wang                         Xian Zheng
+                CNIC, CAS                                  Nankai University                        Huawei Technologies                Huawei Technologies
+               Beijing, China                               Tianjin, China                            Nanjing, China                     Nanjing, China
+
+                                                             Yuzhi Zhang                                 Dan Pei
+                                                           Nankai University                     Tsinghua University &
+                                                            Tianjin, China                               BNRist
+                                                                                                     Beijing, China
+
+ABSTRACT                                                                                        KEYWORDS
+Timely localization of the root causes of gray failure is essential for                         Gray Failure, Server Operating System, Root Cause Localization,
+maintaining the stability of the server OS. The previous intrusive                              Causal Discovery
+gray failure localization methods usually require modifying the                                 ACM Reference Format:
+source code of applications, limiting their practical deployment. In                            Shenglin Zhang, Yongxin Zhao, Xiao Xiong, Yongqian Sun, Xiaohui Nie,
+this paper, we propose GrayScope, a method for non-intrusively                                  Jiacheng Zhang, Fenglai Wang, Xian Zheng, Yuzhi Zhang, and Dan Pei.
+localizing the root causes of gray failures based on the metric data                            2024. Illuminating the Gray Zone: Non-intrusive Gray Failure Localization
+in the server OS. Its core idea is to combine expert knowledge with                             in Server Operating Systems. In Companion Proceedings of the 32nd ACM
+causal learning techniques to capture more reliable inter-metric                                International Conference on the Foundations of Software Engineering (FSE
+causal relationships. It then incorporates metric correlations and                              Companion ’24), July 15–19, 2024, Ipojuca (Pernambuco), Brazil. ACM, New
+anomaly degrees, aiding in identifying potential root causes of gray                            York, NY, USA, 12 pages. https://doi.org/10.1145/3663529.3663834
+failures. Additionally, it infers the gray failure propagation paths
+between metrics, providing interpretability and enhancing opera-                                1     INTRODUCTION
+tors’ efficiency in mitigating gray failures. We evaluate GrayScope’s                           Servers support countless applications and services, serving as the
+performance based on 1241 injected gray failure cases and 135 ones                              core of large-scale data management and a key component in pro-
+from industrial experiments in Huawei. GrayScope achieves the                                   viding network services [18]. Server operating system (OS) acts
+𝐴𝐶@5 of 90% and interpretability accuracy of 81%, significantly                                 as an intermediary between applications and the server hardware.
+outperforming popular root cause localization methods. Addition-                                They provide essential services such as resource allocation, sched-
+ally, we have made the code publicly available to facilitate further                            uling, input/output processing, and security management, enabling
+research.                                                                                       applications to run efficiently and securely on hardware.
+                                                                                                   In server OS, the complex interactions between components can
+CCS CONCEPTS                                                                                    easily lead to performance or availability issues. A significant con-
+• Software and its engineering → Software maintenance tools.                                    cern is gray failure, a critical state where the server OS is between
+                                                                                                healthy and unhealthy and can cause system instability or opera-
+∗ Yongqian Sun is the corresponding author. Email: sunyongqian@nankai.edu.cn
+                                                                                                tional efficiency decrease [14, 15, 24]. Gray failures include severe
+                                                                                                performance degradation, random packet loss, flaky I/O, memory
+HL-IT, TKL-SEHCI, and BNRist are short for Haihe Laboratory of Information Tech-                thrashing, capacity pressure, and non-fatal exceptions [15]. It has
+nology Application Innovation, Tianjin Key Laboratory of Software Experience and
+Human Computer Interaction, and Beijing National Research Center for Information                been shown that gray failures are the root cause of many cata-
+Science and Technology, respectively.                                                           strophic failures in the real world [24]. For instance, a gray failure
+                                                                                                causing high disk I/O wait times in the server OS can slow down
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed           database applications that rely heavily on disk operations. Gray
+for profit or commercial advantage and that copies bear this notice and the full citation       failures occur frequently but are difficult to localize, making trou-
+on the first page. Copyrights for components of this work owned by others than the              bleshooting time-consuming and inaccurate.
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission      Due to the lack of practical fine-grained diagnostic tools, it is
+and/or a fee. Request permissions from permissions@acm.org.                                     labor-intensive to localize gray failures accurately, requiring trial-
+FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil                               and-error troubleshooting by operators. We have investigated the
+© 2024 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 979-8-4007-0658-5/24/07                                                                server OS failure tickets at Huawei Cloud and found that the average
+https://doi.org/10.1145/3663529.3663834                                                         time from the occurrence of a gray failure to localizing its root cause
+FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil          S. Zhang, Y. Zhao, X. Xiong, Y. Sun, X. Nie, J. Zhang, F. Wang, X. Zheng, Y. Zhang, D. Pei
+
+
+is about eight hours, with some lasting several weeks. Such failures           walk [34] or Page Rank [1] by considering only the anomaly degree
+significantly impact the performance and availability of systems,              of metrics while ignoring the correlations between each metric and
+yet research on root cause localization for gray failures is relatively        the gray failure. However, the correlation between metrics and the
+scarce. Some intrusive methods rely on modifying the source code               gray failure can guide the root cause inference method to localize
+of applications (e.g., Panomara [14] and OmegaGen [24]), limiting              the metrics causing the gray failure. Ignoring this correlation can
+their practical deployment due to high modification costs and long             degrade the performance of root cause inference.
+localization cycles.                                                           (3) Interpretability. Gray failures in system components can spread
+    In server OS, metrics are quantifiable measures that provide in-           with data flow or shared resources, potentially expanding the im-
+sights into performance and operational status. These metrics are              pact on the entire system. A lack of information about the propaga-
+collected non-intrusively, ensuring the monitoring process does                tion paths of gray failures can affect the efficiency of operators in
+not interfere with the system’s normal functioning or degrade                  mitigating failures.
+its performance. Several metrics serve as measures of application                 In this paper, we propose a novel method, GrayScope, tailored
+performance, known as Key Performance Indicators (KPIs), e.g., av-             for gray failures in server OS and can non-intrusively, timely, and
+erage response time. Anomalies on KPIs often signal potential gray             accurately localize the root cause of gray failures. The main contri-
+failures [21] (hereinafter, we use “KPI” to denote the metrics of              butions of this paper are as follows:
+applications and apply “metric” to represent other types of met-               (1) To the best of our knowledge, GrayScope is the first work target-
+rics). Therefore, operators swiftly undertake mitigation measures              ing root cause localization of gray failures for server OS in a non-
+to prevent further damage once a KPI exhibits anomalies. In recent             intrusive manner. It significantly improves operators’ efficiency in
+years, a collection of metric-based root cause localization methods            diagnosing and mitigating failures.
+has been proposed for distributed systems, such as microservices,              (2) To learn more reliable causal relationships between metrics,
+Web services [6, 20, 23, 27, 30, 32, 36, 37, 46]. These methods can be         GrayScope integrates expert knowledge with causal learning tech-
+roughly divided into statistical, graph-based, and feature learning            niques to learn the metric causality graph, addressing the first
+methods [38]. Statistical methods [23, 37], which use traditional              challenge. Moreover, it combines partial correlation with anomaly
+statistical analysis methods for root cause localization, are easily           degree to localize root causes, addressing the second challenge.
+affected by data noise. However, in the server OS, the varying work-           In addition, we present a simple yet effective failure propagation
+load and the complex interdependencies between components can                  path inference technique to infer the gray failure propagation paths
+generate significant noise in the metric data. This noise can obscure          between metrics, addressing the third challenge.
+the statistical patterns these methods rely on, leading to inaccurate          (3) To evaluate the performance of GrayScope, we collect the data
+root cause localization. Feature learning methods [20, 46] that use            of 1241 gray failures from 16 different server OSes in Huawei. Our
+machine learning techniques to learn feature models from metric                results show that GrayScope achieves the top 5 accuracy (𝐴𝐶@5) of
+data for root cause localization, often relying on many high-quality           90% and the average top 5 accuracy (𝐴𝑣𝑔@5) of 82%, significantly
+labeled cases. It presents a significant challenge in server OS envi-          outperforming advanced failure localization methods designed for
+ronments, where the specific manifestations of failures can vary               distributed systems. To ensure better reproducibility, we have made
+widely across different configurations. As a result, neither statistical       our code publicly available [11]. We also validate GrayScope’s per-
+nor feature learning methods designed for distributed systems are              formance using gray failure cases collected from the industrial
+appropriate in localizing the root cause of gray failures in server            environment.
+OS. Causality graph-based methods, which learn causal graphs
+and obtain potential root cause lists, have shown superior perfor-             2 BACKGROUND
+mance in real-world root cause localization [27, 30, 32, 36]. They are
+promising for non-intrusive metric-based gray failure localization             2.1 Preliminaries
+in server OS.                                                                  2.1.1 Gray Failure. When at least one component perceives the
+    Based on the observations above, our objective is to design a              server OS as unhealthy while observers observe the server OS as
+causality graph-based method to localize the root causes of gray fail-         healthy, the server OS is experiencing a gray failure [14, 15, 24].
+ures in server OS non-intrusively, accurately, and timely. However,            Gray failures include performance degradation, capacity pressure,
+it faces the following challenges:                                             flaky I/O, memory thrashing, random packet loss, and non-fatal
+(1) Complex causal relationships between metrics. Usually, there               exceptions. They lead to a critical state where the server OS is
+are hundreds of metrics in a server OS. The metric data changes dy-            between healthy and unhealthy states. The server OS can still de-
+namically in the server OS over time, and the relationships between            liver some normal functions but operates in a mode of decreased
+these metrics also evolve dynamically. Previous works apply only               performance or degraded functionality.
+causal learning techniques, such as the PC algorithm [39] or the
+Granger causality test [10], to construct the causal graph, making             2.1.2 KPI and Metric. The assessment of application performance
+the causal graph too large and complex for root cause inference.               and server OS state frequently relies on two principal categories of
+(2) Underutilization of the correlations. When a gray failure occurs,          indicators: Key Performance Indicator (KPI) and metric [30]. KPIs
+usually, some metrics become anomalous. The anomaly degree of                  (e.g., average response time, error rate, and page view count) are
+metrics helps prioritize exploration in the root cause inference, fo-          indicators used to assess and monitor the performance of appli-
+cusing on metrics potentially involved in the gray failure. Previous           cations. They provide valuable information about the operational
+works usually utilize root cause inference techniques like random              state of applications, user experience, and system efficiency. Metrics
+Illuminating the Gray Zone: Non-intrusive Gray Failure Localization in Server Operating Systems        FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil
+
+
+                                                                                         temporal dimension: Initially, the system may experience minor
+                                                                                         failures (latent failures) that are often suppressed. Gradually, the
+                                                                                         system transits to partial failure, where some but not all function-
+                                                                                         alities are compromised (gray failures). Ultimately, the continued
+Figure 1: The KPI and some metrics in a server OS during a                               spread of partial failures may lead to a system crash (complete
+gray failure caused by CPU exhaustion.                                                   failures) [15]. Gray failures are the root of many catastrophic fail-
+                                                                                         ures [24]. They can cause severe damage, including inconsistencies,
+(e.g., CPU utilization, memory utilization, and network throughput),                     "zombie" behavior, and data loss, which operators cannot ignore.
+on the other hand, indicate the status of the server OS’s founda-                           Given that modern server OS consists of many highly inter-
+tional components. An anomalous metric, suggesting an anomaly                            active components across layers, when one component becomes
+in a server OS, can potentially cause a KPI anomaly. However, not                        unhealthy, it will likely impact the performance of other compo-
+all metric anomalies cause KPI to be anomalous, as minor or tran-                        nents (possibly all), affecting the system’s regular operation. Con-
+sient fluctuations in server OS component performance do not                             sequently, timely and accurate localization and mitigation of gray
+necessarily translate to a degradation in application performance.                       failures in server OS are crucial for ensuring their high availability.
+    In server OS, gray failures are often accompanied by anomalies                       However, current research on the root cause localization of gray
+in KPIs [15]. To quickly mitigate these gray failures, it is essential to                failures in server OS is scarce. The root cause localization methods
+localize the root cause of the gray failure upon detecting anomalies                     designed for failures in distributed systems might be ineffective for
+in KPIs. KPI is variant in different applications [4]. In this work,                     server OS gray failures due to limitations of the methods (such as
+the application scenarios we study mainly include GaussDB [16]                           the inability to learn dependencies accurately, the need for manual
+(an enterprise-grade distributed relational database from Huawei),                       labels, etc.). Therefore, we propose GrayScope for localizing the
+Redis [5], Kafka [47], and Tomcat [29]. With the domain knowl-                           root causes of gray failures in server OS.
+edge of operators, we choose the database throughput as the KPI                             Expert knowledge is essential for accurate causality learn-
+for GaussDB, the database request response time for Redis, the mes-                      ing. Identifying causal relationships is a critical task that involves
+sage production rate per second for Kafka, and the Servlet request                       the intersection of causality and machine learning [44]. Previous
+processing time for Tomcat.                                                              research has successfully explored causal relationships within time
+                                                                                         series data through diverse methodologies [27, 30, 32, 36]. Neverthe-
+2.1.3 Problem Statement. Our objective is to design an accurate                          less, these studies frequently overlook the valuable expert knowl-
+and efficient method for identifying root cause metrics to assist                        edge on causality, deeply rooted in the extensive experience of
+operators in quickly repairing gray failures in server OS. Specifically,                 operators who have managed numerous system failures. It leads to
+when a gray failure occurs in a server OS, and an application’s KPI                      uncertain or inaccurate causality, which degrades the performance
+is detected as anomalous, we collect all relevant metrics from that                      of the gray failure localization process. Incorporating engineers’
+server OS. We aim to provide operators with a ranked list of root                        rich diagnostic experience can reduce this uncertainty and enhance
+cause metrics and the possible gray failure propagation paths for                        causality accuracy [2, 12, 44].
+each potential root cause. Given that an anomaly of a component                             Our examination of eight gray failure cases in server OS collected
+can propagate through the server OS [9], and multiple metrics may                        from Huawei determined that the fusion of expert knowledge is cru-
+exhibit anomalies during a gray failure [51], localizing the root                        cial in identifying the root causes of gray failures. Specifically, we
+causes (recognizing a small set of root cause metrics) is crucial for                    use three popular methods, including Granger causality tests [10],
+mitigating gray failures as operators can take targeted mitigation                       PC algorithm [39], and PCTS algorithm [30], to construct metric
+measures to prevent recurrence, optimize system performance. For                         causality graphs. By incorporating expert knowledge, we corrected
+instance, consider a scenario involving CPU exhaustion gray failure,                     erroneous edges. Subsequently, we employ the Root Cause Infer-
+where the identified root cause metric is CPU utilization. This                          ence module (see Section 3.4) of GrayScope to infer the root causes
+metric indicates the CPU is overused, leading to system slowdowns                        of gray failures. As listed in Table 1, the results underscore the crit-
+or performance degradation. This information allows operators to                         ical importance of expert knowledge in accurately localizing gray
+investigate processes or applications that consume excessive CPU                         failure root causes. When constructing causality graphs using vari-
+resources. Note that gray failure detection is beyond the scope of                       ous methods, fusing expert knowledge corrects some erroneously
+this paper.                                                                              learned causal relationships. Moreover, after integrating expert
+                                                                                         knowledge, there is a noticeable improvement in the accuracy of
+2.2     Motivation                                                                       root cause localization.
+We obtain a collection of gray failure cases from Huawei’s server                           Root cause metric exhibits anomaly during a gray failure
+OSes. A common symptom observed across all cases is the degra-                           and correlates with the KPI. Since applications often rely on
+dation or interruption of application performance. Once a KPI is                         various underlying components, metrics reflecting the health or
+anomalous, operators will act swiftly to mitigate the gray failure to                    performance of these components directly relate to the applica-
+prevent further damage. Analyzing these cases provided insights                          tion’s overall performance. For example, high CPU utilization can
+for designing a gray failure localization framework. Due to confi-                       lead to extended response times for processing requests. Similarly,
+dentiality reasons, we have to hide the details of these cases.                          excessive disk utilization or memory leaks can affect application
+   Gray failures are common and can propagate in server OS.                              performance. As shown in Fig. 1, the KPI exhibited anomaly and
+Gray failures typically exhibit a typical evolution pattern along the                    represented a gray failure in server OS. The root cause of this
+FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil                       S. Zhang, Y. Zhao, X. Xiong, Y. Sun, X. Nie, J. Zhang, F. Wang, X. Zheng, Y. Zhang, D. Pei
+
+
+Table 1: The number of edges in the causality graph constructed by different methods and the results of gray failure localization
+(✓for accurate localization and × for inaccurate localization).
+
+                                                          Disk         Disk         Delay           Delay         Packet Loss   Packet Loss       CPU           CPU
+                         Method
+                                                        Failure_1    Failure_2     Failure_1       Failure_2       Failure_1     Failure_2      Failure_1     Failure_2
+         Granger causality tests [10] w knowledge        76 ( ✓ )      92 ( ✓ )     88 ( ✓ )          81 ( ✓ )      42 ( ✓ )      142 ( ✓ )       63 ( ✓ )     54 ( ✓ )
+        Granger causality tests [10] w/o knowledge       297 ( × )     345 ( × )    152 ( ✓ )         153 ( ✓ )     155 ( × )     395 ( × )      210 ( ✓ )     217 ( × )
+             PC algorithm [39] w knowledge                12 ( × )     42 ( ✓ )       7 (×)             6 (×)       16 ( ✓ )       15 ( × )       31 ( ✓ )       3 (×)
+            PC algorithm [39] w/o knowledge               59 ( × )     95 ( × )      40 ( × )          43 ( × )     54 ( ✓ )       64 ( × )       60 ( × )      53 ( × )
+            PCTS algorithm [30] w knowledge              32 ( ✓ )      47 ( ✓ )     52 ( ✓ )           50 ( × )     48 ( ✓ )      45 ( ✓ )        64 ( ✓ )     43 ( × )
+           PCTS algorithm [30] w/o knowledge             40 ( ✓ )      51 ( × )      69 ( ✓ )          63 ( × )     73 ( ✓ )      48 ( ✓ )        64 ( ✓ )     89 ( × )
+
+
+
+                                                                                                considering direct and indirect relationships between metrics and
+                                                                                                the target KPI, overcoming the challenge introduced by complex
+            Data        Multivariate        Anomaly           Gray Failure                      causal relationships between metrics (the first challenge).
+          Collection    Time Series         Detection           Report                          (3) Root Cause Inference (§3.4). Inspired by the random walk
+                                                                                                algorithm, GrayScope considers the weighted combination of the
+                                                                                                correlation between metrics and KPI, as well as the anomaly degree
+                                                                                                of metrics themselves, as the transition probabilities for the walk.
+                                                                                                Starting from the anomalous KPI, GrayScope randomly traverses
+          Causality        Causal        Causality Graph       Root Cause
+          Skeleton        Inference         Learning            Inference
+                                                                                                along the metric causality graph to generate a potential root cause
+                                                                                                ranking list. Integrating the correlation provides a dynamic assess-
+                                                                                                ment of potential root causes, mitigating the underutilization of
+                                                                                                the correlations (the second challenge).
+                         Root Cause      Path Search     Propagation Path                       (4) Propagation Path Inference (§3.5). Finally, GrayScope com-
+                            List          Algorithm         Inference                           bines the metric causality graph with the potential root cause rank-
+                                                                                                ing list to infer possible propagation paths of the root cause within
+              Figure 2: The framework of GrayScope.
+                                                                                                the server OS. This provides an interpretable explanation of how
+                                                                                                the gray failure spreads through the server OS, aiding operators in
+gray failure was high CPU utilization, which led to extended re-                                implementing targeted mitigation strategies, thus addressing the
+sponse times for processing. During the gray failure, the metrics                               challenge of interpretability (the third challenge).
+“mem_utilization” and “cpu_utilization” also showed anomalies,
+while the metric “nic_in_packets” appeared normal. Although the
+                                                                                                3.2      Data Collection and Anomaly Detection
+anomaly degree of “mem_utilization” is higher, “cpu_utilization”                                By real-time monitoring of server OS metrics, operators can promptly
+correlates more with the KPI when the gray failure occurred. As a                               identify and resolve performance issues, ensuring that server OS
+result, the correlation between metrics and the KPI, as well as the                             meets user requirements. The Data Collection module gathers mul-
+anomaly degree of metrics, are crucial for accurately identifying                               tiple runtime information from the server OS across various data
+the root cause of the gray failure.                                                             sources, including system calls, applications, and process commu-
+                                                                                                nications. Gala-gopher [8] is an eBPF-based low-overhead probe
+3 APPROACH                                                                                      framework for monitoring and collecting data on server OS net-
+                                                                                                work, memory, disk I/O, and scheduling states. It allows for config-
+3.1 Overview                                                                                    uring existing collection probes based on business needs. We deploy
+As shown in Fig. 2, GrayScope consists of four key modules:                                     gala-gopher on each server OS to collect monitoring metrics, setting
+(1) Data Collection and Anomaly Detection (§3.2). GrayScope                                     the data collection interval at five seconds. Prometheus [35] is an
+uses metric collection tools to collect runtime monitoring metrics                              open-source service monitoring system and time-series database,
+from multiple data sources at fixed intervals in server OS. It then                             providing a generic data model and fast data collection, storage,
+triggers root cause localization when an anomaly in KPI is detected.                            and query interfaces. We employ Prometheus to collect metric data
+(2) Causality Graph Learning (§3.3). In root cause localization,                                from each server OS at given intervals.
+GrayScope first constructs a metric causality structure graph by                                   As described in Section §2.1.3, gray failures, when they occur, can
+plugging relevant metrics in a skeleton graph based on expert                                   lead to a degradation in application performance, with anomalies in
+knowledge. It then analyzes causal relationships between metrics                                KPI. Therefore, before localizing the root cause of gray failures, we
+using an observation window for causality testing. By integrating                               first require an anomaly detection algorithm to identify anomalies
+the metric causality structure graph with the causal relationships                              in KPI and report the gray failure occurring in the system. Further-
+between metrics, a metric causality graph is derived, represent-                                more, according to Pearl’s concept of cause-effect [33], if there is a
+ing how various metrics affect KPI and their mutual interactions.                               causal relationship between two variables, a change in one variable
+Therefore, GrayScope focuses on relevant metrics rather than all                                will lead to a change in the other. Usually, the root cause metrics
+available data, reducing the chance of spurious correlations. The de-                           will also exhibit anomalies during the gray failure, as anomalous
+rived metric causality graph captures the evolving causal structure,                            metrics could be the potential root causes of an abnormal KPI [30].
+Illuminating the Gray Zone: Non-intrusive Gray Failure Localization in Server Operating Systems                FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil
+
+
+
+                                Gray Failure Report
+                       Timestamp: 1698030369485,                                                                                               disk_read             sli_tps
+                                                                                                    DISK                 KPI
+                       Server OS: server_os_1
+                       Resource: {
+                          Anomalous KPI: redis_sli_rtt_nsec,
+                                                                                                                                               disk_write            cpu_util
+                          Anomaly Score: 9.42558,                                                   CPU                  MEM
+                          Cause Metrics: [
+                              {
+                                                                                                                                                            nic_rx
+                                  Metric: tcp_link_retran_packets,                                  TCP                  NIC                                 …
+                                  Anomaly Score: 5.03055
+                              },
+                              {                                                                                (a)                                          (c)
+                                  Metric: tcp_link_avl_snd_wnd,
+                                  Anomaly Score: 4.79047                                          disk_read            sli_tps                  disk_read            sli_tps
+                              },
+                              {
+                                  Metric: nic_tc_sent_drop,                                       disk_write           cpu_util
+                                  Anomaly Score: 4.57826                                                                                       disk_write            cpu_util
+                              },                                                                   cpu_irq            mem_util
+                              ...
+                          ]                                                                                                                                 nic_rx
+                       }                                                                           tcp_srtt            nic_rx
+                                                                                                                                                             …
+          Figure 3: An example of gray failure report.                                                          (b)                                         (d)
+
+
+                                                                                         Figure 4: Construction of the causality graph in GrayScope.
+We use gala-anteater [7] to detect anomalies in metrics and KPIs,                        (a): meta-metric causality skeleton graph; (b): monitoring
+as it integrates various time series anomaly detection algorithms,                       metrics plugging-in; (c): metric causality structure Graph; (d):
+enabling real-time anomaly detection for different scenarios and                         metric causality graph.
+applications. Additionally, it provides anomaly scores for each met-
+ric, which provides crucial input for the downstream Root Cause                          establish the causality skeleton graph. This method not only di-
+Inference module. Specifically, it collects data in real-time from                       minishes the continual reliance on expert intervention but also
+Prometheus and outputs the moment when the anomaly has oc-                               augments the adaptability and scalability of GrayScope in response
+curred, the anomalous KPI, and the anomaly scores for all metrics.                       to evolving scenarios.
+Finally, it generates a gray failure report, as shown in Fig. 3.                            We assume metric 𝑋 is not a Granger cause of 𝑌 . We estab-
+                                                                                         lish a multivariate regression model with an appropriate 𝑚𝑎𝑥𝑙𝑎𝑔
+3.3     Causality Graph Learning                                                         and perform an F-statistical test to compare the fit of models with
+Previous research [6, 27, 30, 32, 36] has shown that learning effective                  and without 𝑋 ’s lagged terms. We determine whether to reject
+causality graphs is crucial for failure root cause localization. Numer-                  the null hypothesis based on the F-statistic and significance level
+ous studies have utilized the PC algorithm [39] to learn causality                       𝑝_𝑡ℎ𝑟𝑒𝑠ℎ𝑜𝑙𝑑. If the null hypothesis is rejected, it indicates that vari-
+graphs between metrics. However, the PC algorithm can only learn                         able 𝑋 Granger causes variable 𝑌 .
+instantaneous causal relationships and fails to report the extensive                        As shown in Fig. 4(a), in the expert-knowledge-based causality
+continuous causal relationships between time series [30]. Other                          skeleton graph constructed, we insert the top 𝑚 related metrics
+works [31, 32, 40, 45] have employed Granger causality tests [10],                       with the highest anomaly scores for each category of meta-metrics
+a method of time series analysis used to test for causality between                      into the respective types as shown in Fig. 4(b), resulting in the
+two time series, to learn causality graphs between metrics. Its basic                    metric causality structure graph, as shown in Fig. 4(c). Specifically,
+idea is that if the past values of time series 𝑋 can better predict the                  in the causality skeleton graph, the network meta-metrics point
+current value of another time series 𝑌 , and 𝑌 ’s past values do not                     towards the CPU meta-metrics, suggesting that, based on expert
+provide a better prediction for 𝑋 ’s current value, then we can say 𝑋                    knowledge, network-related metrics might be the root cause of
+Granger-causes 𝑌 . However, in our scenario, it results in numerous                      CPU-related metrics. After plugging each meta-metric, their cor-
+false causal relationships, leading to low accuracy in root cause lo-                    responding related metrics maintain full connectivity, meaning all
+calization. Therefore, we propose a causality graph learning model                       network-related metrics point towards every CPU-related metric.
+that combines expert knowledge with Granger causality tests.                             However, causal relationships between two time series do not al-
+   Based on the data sources of the collected metrics, we categorize                     ways exist [32]. Therefore, we utilize the 𝑤-minute observation
+the monitoring metrics into six dimensions: performance-related                          window data before the gray failure report time for testing. We
+metrics, CPU-related metrics, memory-related metrics, network-                           perform the Granger causality test for all related metrics using time
+related metrics, disk-related metrics, and TCP-related metrics, which                    series data from the most recent 𝑤-minute window obtained from
+we refer to as meta metrics. The causal relationships between these                      gala-gopher. If the test confirms a causal relationship, we retain
+six categories of meta-metrics serve as a benchmark for causality                        the current edge; otherwise, we remove it. Finally, we preserve the
+testing between metrics. As shown in Fig. 4(a), leveraging expert                        subgraph containing the anomalous KPI, resulting in the learned
+knowledge of gray failure patterns, we construct a causality skele-                      metric causality graph, as shown in Fig. 4(d).
+ton graph of meta metrics for server OS gray failures. It is worth not-
+ing that expert knowledge is considered a one-shot cost. GrayScope                       3.4        Root Cause Inference
+enables users to categorize data gathered based on specific appli-                       Random walk algorithms are based on randomness and are com-
+cation scenarios and draw upon historical instances of failures to                       monly used to simulate random graph traversal. They inspire our
+FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil          S. Zhang, Y. Zhao, X. Xiong, Y. Sun, X. Nie, J. Zhang, F. Wang, X. Zheng, Y. Zhang, D. Pei
+
+
+proposed root cause inference algorithm. Identifying root causes               gray failure localization result, shorten the mitigation time of the
+should prioritize metrics highly correlated with KPI [27]. Addition-           gray failure, and enhance system availability.
+ally, root cause metrics usually exhibit anomalies during a gray                  Our goal is to deduce the gray failure propagation path from
+failure [30]. Therefore, the random walk should consider the cor-              𝑣𝑟𝑜𝑜𝑡 to 𝑣 𝐾𝑃𝐼 , based on the current anomalous KPI 𝑣 𝐾𝑃𝐼 obtained
+relation between each metric and the anomalous KPI and each                    from the Anomaly Detection module and the potential root cause
+metric’s anomaly degree.                                                       metric 𝑣𝑟𝑜𝑜𝑡 from the Root Cause Inference module. To achieve this,
+    To infer the root cause, we apply a random walk on the obtained            we designed a method that combines the metric causality graph
+causality graph. Specifically, we assume a transition probability              with each metric’s anomaly score, the anomalous KPI 𝑣 𝐾𝑃𝐼 , and
+matrix 𝐻 , where each element in 𝐻 represents the transition prob-             the root cause metric 𝑣𝑟𝑜𝑜𝑡 to infer potential propagation paths, as
+ability between any two metrics. Suppose there are metrics 𝑣𝑖 and              shown in Algorithm 1. We aim to find the shortest path with the
+𝑣 𝑗 in the causality graph, with an edge from 𝑣 𝑗 to 𝑣𝑖 , the transition       metrics’ highest cumulative anomaly score as the most likely gray
+probability between 𝑣 𝑗 and 𝑣𝑖 is calculated as follows:                       failure propagation path [36].
+    First, compute the partial correlation coefficient 𝑐𝑜𝑟𝑟𝑒𝑙𝑎𝑡𝑖𝑜𝑛(𝑣 𝑗 )
+between 𝑣 𝑗 and the KPI. Then, calculate the relative anomaly degree             Algorithm 1: GrayScope Gray Failure Propagation Path
+of 𝑣 𝑗 using the anomaly score:                                                  Inference
+                                      𝑎𝑛𝑜𝑚𝑎𝑙𝑦_𝑠𝑐𝑜𝑟𝑒 (𝑣 𝑗 )                          Input: anomalous KPI: 𝑣𝐾𝑃𝐼 ; root cause metric: 𝑣𝑟𝑜𝑜𝑡 ; metrics’
+𝑎𝑛𝑜𝑚𝑎𝑙𝑦_𝑑𝑒𝑔𝑟𝑒𝑒 (𝑣 𝑗 ) =                                                                    anomaly score: 𝐴𝑆; metric causality graph: 𝐺
+                           𝑎𝑛𝑜𝑚𝑎𝑙𝑦_𝑠𝑐𝑜𝑟𝑒 (𝑣𝑖 ) + 𝑎𝑛𝑜𝑚𝑎𝑙𝑦_𝑠𝑐𝑜𝑟𝑒 (𝑣 𝑗 )               Output: gray failure propagation 𝑝𝑎𝑡ℎ from 𝑣_𝑟𝑜𝑜𝑡 to 𝑣_𝐾𝑃𝐼
+                                                                     (1)
+                                                                                1 𝐺 ′ ← construct the undirected graph based on 𝐺
+The transition probability matrix 𝐻 between metrics is obtained by
+                                                                                2 𝑉 ← vertices set based on 𝐺 ′
+weighting the partial correlation coefficients and relative anomaly                                           ′
+                                                                                3 𝐸 ← edge set based on 𝐺
+degrees. Given the causality graph and the transition probability
+                                                                                4 𝑤𝑖,𝑗 ← 0 // weight of edge 𝑒𝑖,𝑗 ∈ 𝐸
+matrix 𝐻 , the visitor starts from 𝑣 𝐾𝑃𝐼 , calculating the probabilities
+                                                                                5 foreach edge 𝑒𝑖,𝑗 ∈ 𝐸 do
+for forward, backward, and self-transitions, and randomly walks                                      2
+                                                                                6      𝑤𝑖,𝑗 = 𝐴𝑆 [𝑖 ]+𝐴𝑆
+along the graph. We calculate the matrix 𝐻 ′ in random walk as                                           [𝑗 ]
+                                                                                7 end
+follows:
+                                                                                8 foreach vertex 𝑣 ∈ 𝑉 do
+(1) Forward step (walk from result metric to cause metric):
+                                                                                9     𝑑𝑖𝑠𝑡 [𝑣 ] = ∞ // Initial distance
+    ′
+   𝐻𝑖,𝑗 = 𝜆 · 𝑐𝑜𝑟𝑟𝑒𝑙𝑎𝑡𝑖𝑜𝑛(𝑣 𝑗 ) + (1 − 𝜆) · 𝑎𝑛𝑜𝑚𝑎𝑙𝑦_𝑑𝑒𝑔𝑟𝑒𝑒 (𝑣 𝑗 )    (2)       10     𝑝𝑟𝑒𝑣 [𝑣 ] = 𝑈 𝑁 𝐷𝐸𝐹 𝐼 𝑁 𝐸𝐷 // Previous vertex
+                                                                               11 end
+where 𝜆 ∈ [0, 1] is the weight that controls the contribution of par-
+                                                                               12 𝑑𝑖𝑠𝑡 [𝑣𝑟𝑜𝑜𝑡 ] = 0 // Distance from source to source
+tial correlation coefficient with the anomalous KPI and the anomaly
+                                                                               13 𝑄 = ∅ // Priority queue to hold vertices
+degree of the metric.
+                                                                               14 foreach vertex 𝑣 ∈ 𝑉 do
+(2) Backward step (walk from cause metric to result metric):
+                                                                                      // Add each vertex to the priority queue
+   ′
+ 𝐻 𝑗,𝑖 = 𝜌 · (𝜆 · 𝑐𝑜𝑟𝑟𝑒𝑙𝑎𝑡𝑖𝑜𝑛(𝑣𝑖 ) + (1 − 𝜆) · 𝑎𝑛𝑜𝑚𝑎𝑙𝑦_𝑑𝑒𝑔𝑟𝑒𝑒 (𝑣𝑖 )) (3)       15     𝑄.ADD-WITH-PRIORITY(v, dist[v])
+                                                                               16 end
+where 𝜌 is a parameter controlling the impact of the backward step
+                                                                               17 while 𝑄 ≠ ∅ do
+and 𝜌 ∈ [0, 1].
+                                                                                      // Extract vertex with min distance
+(3) Self step (stay in the present metric):
+                                                   ′
+                                                                               18     𝑢 = 𝑄.EXTRACT-MIN()
+                        ′              ′        𝑚𝑎𝑥
+                      𝐻 𝑗,𝑗 = max[0, 𝐻 𝑗,𝑗 − 𝐻 𝑗,𝑘  ]                (4)       19      if u == 𝑣𝐾𝑃𝐼 then
+                               ′𝑚𝑎𝑥                                                         // Break if destination vertex is reached
+                                              ′
+                             𝐻 𝑗,𝑘    = max 𝐻 𝑗,𝑘                    (5)       20           break
+where 𝑣𝑘 is a neighboring metric of 𝑣 𝑗 . If the algorithm reaches a           21      end
+metric and the probability of transitioning to a neighboring metric            22      foreach neighbor 𝑣 of 𝑢 do
+is low, then this metric is likely the root cause, and we consider             23           𝑎𝑙𝑡 = 𝑑𝑖𝑠𝑡 [𝑢 ] + 𝑤𝑢,𝑣
+that the walker should stay at this metric.                                    24           if 𝑎𝑙𝑡 < 𝑑𝑖𝑠𝑡 [𝑣 ] then
+    Finally, we get 𝐻 by normalizing every row of 𝐻 ′ . The next               25               𝑑𝑖𝑠𝑡 [𝑣 ] = 𝑎𝑙𝑡
+metric in the sequence of adjacent metrics is randomly selected for            26                𝑝𝑟𝑒𝑣 [𝑣 ] = 𝑢
+visiting. The probability of visiting each metric is proportional to its                        // Update priority in the queue
+anomaly degree and correlation with the anomalous KPI. We record               27                𝑄.DECREASE-PRIORITY(v, alt)
+the times each metric is visited and arrange them in descending                28           end
+order as the root cause localization result.                                   29      end
+                                                                               30 end
+                                                                               31 return 𝑝𝑎𝑡ℎ from 𝑣𝑟𝑜𝑜𝑡 to 𝑣𝐾𝑃𝐼 using 𝑝𝑟𝑒𝑣 [ ]
+3.5     Propagation Path Inference
+Localizing gray failures is crucial for rapidly taking necessary mea-
+sures to mitigate them. Studying the propagation paths of gray
+failures can assist operators in identifying critical metrics along the        4      EVALUATION
+gray failure propagation path, improve their confidence about the              We aim to answer the following research questions (RQs):
+Illuminating the Gray Zone: Non-intrusive Gray Failure Localization in Server Operating Systems        FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil
+
+
+                     Table 2: Dataset information                                        graphs based on the PC algorithm, uses a DFS strategy to traverse
+                                                                                         the causality graph, and infers potential root cause metrics based on
+                 #CPU           #Disk IO        #Network         #Network                anomaly scores. We set the sliding window length 𝑤 = 36. (2) Mi-
+  Dataset
+               Exhaustion       High Load        Latency        Packet Loss              croCause [30] applies a path condition time series (PCTS) algorithm
+ GaussDB             0                78            62               83                  to learn the dependency graph of metrics and employs a tempo-
+   Redis             0               196            46               32                  ral cause-oriented random walk (TCORW) algorithm to rank root
+   Kafka             20                0            94               187                 cause metrics. We set 𝜌 = 0.5 and 𝜆 = 0.1, where 𝜌 is a parameter
+  Tomcat            192                0            134              117                 controlling the impact of the backward step and 𝜆 controls the con-
+                                                                                         tribution of metric’s causal relationship with the anomalous KPI and
+                                                                                         the anomaly degree of the metric. (3) TS-InvarNet [13] constructs
+RQ1: How effective is GrayScope in root cause localization?                              an invariant network by modeling each pair of time series. The
+RQ2: Does each component of GrayScope contribute significantly                           parameter lag order 𝐿𝑎𝑔𝑠 is set to 3. (4) CIRCA [19] constructs the
+to GrayScope’s performance?                                                              skeleton based on system architecture and uses regression-based
+RQ3: How accurate is GrayScope in inferring propagation paths?                           hypothesis testing (RHT) and descendant adjustment methods to
+RQ4: What is the impact of different hyperparameters?                                    infer failure root cause metrics in the graph. Its training and testing
+                                                                                         window lengths are set to 110 and 10, respectively.
+4.1     Experimental Setup                                                                  Evaluation metrics. To evaluate GrayScope and baseline meth-
+Dataset. To comprehensively evaluate the performance of GrayScope,                       ods, we use 𝐴𝐶@𝑘 and 𝐴𝑣𝑔@𝑘 to assess their outcomes. These
+we establish a cluster environment in Huawei, comprising five phys-                      metrics are the most commonly used in the literature [19, 30, 50].
+ical host machines and 11 virtual machines. EulerOS, a Linux distri-                     𝐴𝐶@𝑘 represents the probability that the top 𝑘 results given by
+bution developed by Huawei based on Red Hat Enterprise Linux to                          each method include the real root causes of all given gray fail-
+provide OS for server and cloud environment [52], is installed on                        ure cases. A higher 𝐴𝐶@𝑘 value, especially for smaller 𝑘, indicates
+each of these 16 machines, and extensive experiments are conducted                       greater method accuracy in identifying root causes. Since the search
+on them. Four popular applications are deployed across these server                      space is smaller, the methods with higher 𝐴𝐶@𝑘 can significantly
+OSes to ensure comprehensive experimentation. We use the chaos                           improve the efficiency of operators in troubleshooting gray failures.
+engineering experimental tool Chaosblade [3] for gray failure sim-                       Given a set of gray failure cases 𝐴, 𝐴𝐶@𝑘 is calculated as follows:
+ulation to simulate network latency, packet loss, disk IO high load,                                                         Í
+                                                                                                                     1 ∑︁ 𝑖 ≤𝑘 𝑅𝑎 [𝑖] ∈ 𝑉𝑎
+and CPU exhaustion. In our experiments, each gray failure simu-                                           𝐴𝐶@𝑘 =                                              (6)
+lation lasts for two minutes, with an interval of approximately 20                                                  |𝐴|         𝑚𝑖𝑛(𝑘, |𝑉𝑎 |)
+                                                                                                                          𝑎∈𝐴
+minutes between injection operations to minimize the interaction
+                                                                                         where 𝑅𝑎 [𝑖] is the ranking result of all metrics for a gray failure
+effects between different gray failures. We inject 1241 gray failures,
+                                                                                         case 𝑎, and 𝑉𝑎 is the actual root cause set for the gray failure case
+including 212 gray failures caused by CPU exhaustion, 274 caused
+                                                                                         𝑎. 𝐴𝑣𝑔@𝑘 evaluates the overall performance of each method by
+by disk IO high load, 336 caused by network latency, and 419 caused
+                                                                                         calculating the average 𝐴𝐶@𝑘. 𝐴𝑣𝑔@𝑘 is calculated as follows:
+by network packet loss. Table 2 lists the detailed information about
+the dataset. Various types of gray failures may introduce perfor-                                                           1 ∑︁
+mance degradation for different applications; hence, different types                                           𝐴𝑣𝑔@𝑘 =           𝐴𝐶@𝑗                               (7)
+                                                                                                                            𝑘
+of gray failures are injected into the server OS hosting different                                                              1≤ 𝑗 ≤𝑘
+applications. Specifically, CPU exhaustion does not affect the per-
+formance of GaussDB or Redis applications. Therefore, the gray                           4.2      Overall Performance (RQ1)
+failures caused by CPU exhaustion are not injected in these two                          Table 3 lists the performance of different methods across four ap-
+applications. Similarly, the gray failures caused by disk IO high load                   plication scenarios. The complexity is analyzed by comparing the
+do not impact the performance of Kafka or Tomcat applications, so                        time required to localize each gray failure case. It takes 8.74 s for
+these are not injected in these two application scenarios.                               GrayScope, 307.72 s for CauseInfer [4], 19.71 s for MicroCause [30],
+   Implementation. GrayScope is implemented using Python 3.8.                            9.96 s for TS-InvarNet [13], and 2.40 s for CIRCA [19]. GrayScope
+We have made the source code publically available [11]. All of the                       achieves a satisfactory gray failure localization efficiency. GrayScope
+experiments are conducted on each server OS. As for the hyper-                           demonstrates superior performance compared to all baseline meth-
+parameters, in the Granger causality test, the significance level                        ods, achieving an impressive 𝐴𝐶@5 of 0.90. Specifically, GrayScope’s
+threshold 𝑝_𝑡ℎ𝑟𝑒𝑠ℎ𝑜𝑙𝑑 and the maximum lag order 𝑚𝑎𝑥𝑙𝑎𝑔 are set                           accuracy at 𝐴𝐶@5 is 10% higher than that of TS-InvarNet [13], the
+to 0.05 and 2, respectively. The parameter 𝜌, controlling the influ-                     best-performing baseline method. Regarding overall performance,
+ence of the backward steps in the random walk, is set to 0.2. The                        GrayScope outperforms others, with its 𝐴𝑣𝑔@5 reaching 0.82, a
+parameter 𝑐𝑜𝑟𝑟 _𝑝𝑟𝑜𝑝, which controls the weights of the partial                          relative improvement of 18% compared with the second place. In-
+correlation coefficient and the anomaly degree of metrics, is set to                     tegrating expert knowledge for capturing more accurate causal
+0.2. We will discuss these parameters in Section 4.5.                                    relationships and combining partial correlation with anomaly de-
+   Baselines. We select the following approaches as baselines be-                        gree for root cause inference empowers GrayScope’s success.
+cause these approaches use different types of techniques to localize                        Except for CIRCA [19], all other baseline methods ignore the
+the root causes of gray failures at the metric level, which aligns                       significance of expert experience, which is essential for accurately
+with the goal of GrayScope: (1) CauseInfer [4] constructs causality                      identifying the root causes of gray failures in server OS. However,
+FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil               S. Zhang, Y. Zhao, X. Xiong, Y. Sun, X. Nie, J. Zhang, F. Wang, X. Zheng, Y. Zhang, D. Pei
+
+
+                                                     Table 3: Effectiveness of root cause localization
+
+                                   All                      GaussDB                    Redis                        Kafka                         Tomcat
+        Method
+                       𝐴𝐶@3      𝐴𝐶@5     𝐴𝑣𝑔@5     𝐴𝐶@3      𝐴𝐶@5    𝐴𝑣𝑔@5   𝐴𝐶@3    𝐴𝐶@5      𝐴𝑣𝑔@5     𝐴𝐶@3      𝐴𝐶@5      𝐴𝑣𝑔@5     𝐴𝐶@3      𝐴𝐶@5      𝐴𝑣𝑔@5
+      GrayScope         0.86      0.90      0.82     0.96      0.97    0.95   0.97     0.97      0.91      0.81      0.85       0.80      0.77      0.86      0.70
+     CauseInfer [4]     0.23      0.25      0.21     0.39      0.41    0.37   0.42     0.49      0.40      0.14      0.15       0.12      0.09      0.10      0.08
+    MicroCause [30]     0.68      0.75      0.64     0.69      0.73    0.67   0.75     0.84      0.69      0.57      0.63       0.55      0.71      0.79      0.65
+    TS-InvarNet [13]    0.68      0.80      0.63     0.87      0.93    0.81   0.86     0.93      0.81      0.49      0.66       0.46      0.60      0.74      0.55
+      CIRCA [19]        0.51      0.64      0.50     0.74      0.83    0.73   0.92     0.95      0.88      0.39      0.57       0.38      0.21      0.39      0.22
+          C1            0.71      0.82      0.66     0.89      0.93    0.83   0.85     0.92      0.79      0.55      0.73       0.50      0.65      0.76      0.59
+          C2            0.27      0.34      0.26     0.47      0.54    0.45   0.42     0.47      0.40      0.18      0.24       0.17      0.15      0.21      0.15
+          C3            0.58      0.74      0.59     0.64      0.68    0.64   0.71     0.77      0.68      0.46      0.73       0.53      0.55      0.76      0.55
+          C4            0.73      0.80      0.69     0.70      0.75    0.69   0.84     0.88      0.78      0.68      0.73       0.67      0.71      0.81      0.66
+          C5            0.54      0.73      0.52     0.74      0.96    0.70   0.88     0.95      0.82      0.31      0.51       0.31      0.38      0.64      0.38
+
+
+CIRCA [19] localizes root causes based on metric data distribution,                  performance degrades as judging whether a metric is the root cause
+which is easily impacted by the data noise in server OS. The unsatis-                solely based on whether the metric is anomalous is not enough.
+factory performance of CauseInfer [4] is attributed to its use of the
+PC algorithm, which fails to learn continuous causal relationships                   4.4       Interpretability (RQ3)
+in time series, and its reliance on DFS for root cause inference based
+solely on whether metrics are anomalous, leading to inaccuracy.                      To the best of our knowledge, no standard in the academic or in-
+MicroCause’s [30] reduced accuracy is due to learning some incor-                    dustrial community can definitively determine the accuracy of a
+rect metric causality relationships. TS-InvarNet [13] localizes root                 given failure propagation path. Accordingly, we conducted a ran-
+causes based on the out-degree size of nodes in the causality graph,                 dom sampling of 200 cases wherein GrayScope accurately identified
+neglecting the failure propagation process across the entire causal                  the root cause at the top 1 position. Following this, we invited the
+network. Its inference results are limited as they consider only local               expertise of two seasoned operators, each possessing a minimum of
+features surrounding the nodes.                                                      five years of operational experience, to assess the potential gray fail-
+                                                                                     ure propagation paths delineated by GrayScope in these instances.
+4.3     Contribution of Key Components (RQ2)                                         Their task was to ascertain the correctness or incorrectness of these
+                                                                                     paths. When discrepancies arose between the assessments provided
+To demonstrate the effectiveness of different critical components in                 by the two operators, a third experienced operator was engaged
+GrayScope (causality graph construction; root cause inference), we                   to adjudicate, thereby ensuring the fidelity and impartiality of the
+reconfigured GrayScope by removing or substituting its components                    evaluation.
+with standard and state-of-the-art techniques, creating five variants,                  The results indicated that out of the sampled 200 cases, GrayScope
+C1-C5. (1) C1 removes the skeleton graph from GrayScope and only                     correctly identified the gray failure propagation path in 163 cases.
+uses causal inference between metrics (Granger causality test) to                    We reasonably infer that GrayScope can accurately provide the
+build the causality graph. (2) C2 uses the PC algorithm instead of                   correct gray failure propagation path with an accuracy rate of 81.5%,
+the Granger causality test and combines it with a skeleton graph                     which assists operators in rapidly mitigating the gray failures.
+based on expert knowledge for causality graph construction. (3)
+C3 relies solely on partial correlation coefficients for root cause
+inference. (4) C4 bases root cause inference only on the anomaly                     4.5       Hyperparameters Sensitivity (RQ4)
+degrees of metrics. (5) C5 uses DFS instead of the random walk for                   We will discuss the impact of four hyperparameters of GrayScope.
+root cause localization.                                                             Figure 5 shows the variation of AC@5 with different hyperparame-
+   Table 3 lists GrayScope’s superior performance across various ap-                 ter settings.
+plication scenarios compared to all the variants mentioned above,                    (1) The significance level threshold. 0.05 is an ordinary signifi-
+demonstrating each component’s significance. When the skele-                         cance level, and we aim to ensure that our conclusions are statis-
+ton graph is removed (C1), both AC@5 and Avg@5 degrade. The                          tically significant. Hence, 𝑝_𝑡ℎ𝑟𝑒𝑠ℎ𝑜𝑙𝑑 is usually set to less than
+results indicate that the skeleton graph can capture causal rela-                    0.05. When 𝑝_𝑡ℎ𝑟𝑒𝑠ℎ𝑜𝑙𝑑 changes from 0.01 to 0.05, the performance
+tionships between different metrics, thereby accurately learning                     of GrayScope remains relatively stable. Setting the 𝑝_𝑡ℎ𝑟𝑒𝑠ℎ𝑜𝑙𝑑 to
+inter-metric causal relationships by combining causal learning tech-                 the expected value of 0.05 is more reasonable for determining the
+niques. AC@5 and Avg@5 decrease when the PC algorithm replaces                       existence of causality, resulting in better model performance.
+the Granger causality test (C2), suggesting that the Granger causal-                 (2) Maximum lag order. This parameter represents the maximum lag
+ity test is more effective in learning the continuous causal rela-                   order in the Granger causality test. GrayScope performs optimally
+tionships in time series than the PC algorithm. The performance                      when 𝑚𝑎𝑥𝑙𝑎𝑔 is set to 2. When 𝑚𝑎𝑥𝑙𝑎𝑔 varies from 1 to 5, the 𝐴𝐶@5
+becomes worse when relying solely on partial correlation coeffi-                     of GrayScope remains almost unchanged. The experiment shows
+cients or solely on the anomaly degrees of metrics (C3 & C4). The                    that GrayScope is insensitive to changes in 𝑚𝑎𝑥𝑙𝑎𝑔.
+reason is that both partial correlation coefficients and anomaly                     (3) Parameter controlling the impact of a backward step in the
+degrees of metrics can provide effective assistance for root cause                   random walk. Here, we change 𝜌 from 0 to 1, and the results show
+inference, and both should be considered simultaneously during the                   that when 𝜌 is greater than 0, the 𝐴𝐶@5 of GrayScope tends to
+inference process. When DFS replaces the random walk (C5), the                       stabilize. GrayScope performs optimally when 𝜌 is set to 0.2.
+Illuminating the Gray Zone: Non-intrusive Gray Failure Localization in Server Operating Systems                                                FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil
+
+
+
+                                                                                                   AC@3       AC@5                       Avg@5
+
+              0.9                                                      0.9                                             0.9                                                   0.9
+              0.7                                                      0.7                                             0.7                                                   0.7
+      Score
+
+
+
+
+                                                               Score
+
+
+
+
+                                                                                                               Score
+
+
+
+
+                                                                                                                                                                     Score
+              0.5                                                      0.5                                             0.5                                                   0.5
+              0.3                                                      0.3                                             0.3                                                   0.3
+              0.1                                                      0.1                                             0.1                                                   0.1
+                 0.01   0.02     0.03   0.04    0.05                         1       2      3        4    5                  0.0   0.2   0.4       0.6   0.8   1.0                 0.1   0.2   0.3   0.4   0.5
+                          p threshold                                                    maxlag                                                ρ                                               λ
+                                                                                 Figure 5: Parameters sensitivity on GrayScope.
+
+                                                  trigger
+                                                                                                                       server OSes. GrayScope is deployed on each server OS and is trig-
+                                   root cause                    anomaly
+                                    inference                    detection                                             gered when a KPI becomes anomalous. We further evaluate the
+                                                                                                                       performance of GrayScope based on a dataset collected from the
+                   cpu_user_                                                                                           industrial environment of Huawei Cloud, denoted as 𝑪. There are
+                                                  disk_util
+                     msec
+                                                                                                                       135 server OS gray failure cases in 𝑪. Among 48 cases caused by net-
+                                                                                         sli_tps
+                    cpu_total_                      disk_                                                              work latency, GrayScope’s AC@3 reached 0.83; in 50 cases caused
+                     used_per                      wspeed                                                              by disk IO high load, the AC@3 achieved 0.98; and among 37 cases
+                                                                                 CPU exhaustion                        caused by high memory utilization, the AC@3 attained 0.94. It took
+                                                                                                                       GrayScope 6.97 s to localize the root cause of each gray failure on
+                   tcp_link_
+                                                  disk_util                                                            average.
+                      srtt
+                                                                                         sli_tps                          To gain insights into the gray failure localization process of
+                  cpu_iowait                           disk_
+                    _msec                              wareq                                                           GrayScope, we utilize three cases from dataset 𝑪 to illustrate the
+                                                                                 networ k latency                      step-by-step workflow employed by GrayScope, as shown in Fig. 6.
+                                                                                                                       (1) CPU exhaustion. When the Anomaly Detection module of
+                                   disk_
+                                  wspeed
+                                                               sli_tps                                                 GrayScope detected anomalies in the performance metric sli_tps of
+                                                                                 disk IO high load                     the GaussDB application, it triggered GrayScope to conduct root
+Figure 6: Gray failure cases: the red arrows represent the gray                                                        cause localization. GrayScope identified cpu_user_msec (the amount
+failure propagation path.                                                                                              of time that the CPU has spent executing processes in user mode)
+                                                                                                                       as the primary culprit behind the gray failure and provides the
+(4) Weight of partial correlation coefficient and anomaly degree. As                                                   possible propagation path of the gray failure. According to the
+can also be seen in the experiments in Section §4.3, the anomaly                                                       results provided by GrayScope, this gray failure was attributed to
+degree has a more significant impact on the accuracy of the results                                                    an application process consuming a significant amount of CPU
+than the partial correlation coefficient. Therefore, we set 𝜆 to be                                                    time (cpu_user_msec ↑), resulting in insufficient CPU resources for
+less than or equal to 0.5. When 𝜆 changes from 0.1 to 0.5, the 𝐴𝐶@5                                                    processing disk I/O, leading to disk operations being queued for pro-
+of GrayScope remains almost unchanged. Overall, GrayScope works                                                        cessing (disk_util ↓), ultimately causing a decrease in the throughput
+best when 𝜆 is set to 0.2.                                                                                             of the GaussDB application (sli_tps ↓). With the root cause localiza-
+                                                                                                                       tion result, operators promptly investigated suspicious processes
+4.6      Threats to Validity                                                                                           with high CPU utilization and quickly took measures to restore the
+                                                                                                                       performance of GaussDB.
+A primary threat to the internal validity of our study lies in the
+                                                                                                                       (2) Network latency. When network instability led to increased
+implementation process of GrayScope. Our implementation is based
+                                                                                                                       response time (tcp_link_srtt ↑ ), the number of requests received
+on mature frameworks to mitigate this potential threat and has
+                                                                                                                       by GaussDB from users within a unit of time decreased, resulting
+undergone rigorous checks and testing.
+                                                                                                                       in reduced disk I/O demands (disk_util ↓), ultimately manifesting
+   Regarding the external validity of our research, a potential threat
+                                                                                                                       as degradation in GaussDB performance (sli_tps ↓). After receiving
+lies in our study subjects. All our studies use data collected from
+                                                                                                                       the gray failure ticket generated by GrayScope, operators inspected
+four application scenarios in Huawei’s server OS. However, we
+                                                                                                                       and configured network-related devices on the server OS, promptly
+believe that our approach possesses sufficient generality. Server
+                                                                                                                       mitigating this gray failure.
+OS business scenarios in other companies or domains may have
+                                                                                                                       (3) Disk IO high load. The underlying logic involved suspicious
+different characteristics, such as metric fluctuations and anomaly
+                                                                                                                       processes heavily utilizing disk write bandwidth (disk_wspeed ↑),
+propagation. Our study’s accuracy and efficiency might not directly
+                                                                                                                       causing GaussDB to lack sufficient disk I/O resources for data write
+apply to other application scenarios. In the future, GrayScope will
+                                                                                                                       operations, resulting in performance degradation (sli_tps ↓). When
+include further evaluations to make it applicable to a broader range
+                                                                                                                       operators received the gray failure ticket generated by GrayScope,
+of application scenarios.
+                                                                                                                       they quickly identified and addressed suspicious processes with
+                                                                                                                       high disk write resource utilization.
+5 DISCUSSION                                                                                                              Based on the above analysis, it is evident that the measures taken
+5.1 Case Study                                                                                                         by GrayScope to provide gray failure paths offer greater convenience
+GrayScope has been deployed in Huawei Cloud for four months                                                            to operators and strengthen their acceptance of root causes.
+to help operators timely and accurately localize gray failures for
+FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil        S. Zhang, Y. Zhao, X. Xiong, Y. Sun, X. Nie, J. Zhang, F. Wang, X. Zheng, Y. Zhang, D. Pei
+
+
+5.2     Lessons Learned                                                      is inappropriate for our scenario where only little computational
+Our experiments on gray failure cases from the industrial environ-           resources can be used for gray failure localization in a server OS.
+ment of Huawei Cloud reveal that the current industrial practice of          FRL-MFPG [6] introduces a method (MFPG-FC) to map failure
+gray failure root cause localization relies heavily on the intuition         propagation, effectively handling dependencies in microservice ar-
+from operators’ diagnosing experience. Therefore, this paper ex-             chitectures. However, it may face challenges in scenarios like server
+plores the significance of expert knowledge for accurate root cause          OS, where microservice-specific failure patterns do not apply.
+localization. Furthermore, the anomaly scores of metrics, serving
+as preliminary evidence of potential root causes in the gray fail-           6.2      Root Cause Localization
+ures, are crucial for the effective operation of GrayScope. Based            DFS-based methods [4, 22] and BFS-based methods [32, 36] tra-
+on the conducted experiments, we draw attention to two primary               verse the graph more dependent on anomaly detection results. Both
+limitations of GrayScope as follows:                                         DFS and BFS can become computationally expensive and less ef-
+(1) GrayScope currently relies on expert knowledge when learning             ficient as the size of the metrics’ causality graph increases. More-
+causal graphs, as operators typically expect failure localization so-        over, these methods might localize multiple potential root causes
+lutions to be compatible with their existing knowledge. However,             without distinguishing which are more likely or impactful. Some
+it may limit the flexibility and accuracy of GrayScope’s implemen-           works adopt random walk and its variants [6, 26–28, 30, 41, 42] or
+tation. To resolve this issue, future iterations of GrayScope will           PageRank [25, 43, 48, 49] to rank and localize root causes. How-
+explore mechanisms to enhance the autonomy of the causal learn-              ever, these works usually ignore the correlations between metrics
+ing process, which can learn and update causal graphs with minimal           and KPIs, making the root cause inference inaccurate. Some ap-
+human intervention, thereby balancing the need for expert insight            proaches [17, 19] link causal inference interventions to root cause
+with the benefits of automated learning.                                     localization, utilizing causal methods to discover the root cause.
+(2) In the current version of GrayScope, the input requires the anom-        These approaches rely on the distribution of metric data to localize
+aly scores of various metrics, which depend on the accuracy of               root causes, hence the accuracy of localization is susceptible to the
+the anomaly detection methods and the reliability of the anomaly             data noise in server OS. Other approaches utilize machine learning
+score calculations. In the future, we plan to design a module to             techniques to automatically learn a microservices system’s nor-
+measure the degree of metric anomalies, eliminating the need to              mal and various failure states from metrics, aiming to accomplish
+input anomaly scores into the method directly.                               root cause localization tasks. For example, HRLHF [44] compares
+                                                                             the temporal causal mechanism between normal and abnormal
+6 RELATED WORK                                                               periods in microservices, aiding in anomaly attribution for each
+                                                                             sub-component. TS-InvarNet [13] is based on the assumption of
+6.1 Causal Discovery                                                         the stability of relationships between KPIs, aiming to mine and
+The PC algorithm [39] determines the presence or absence of edges            interpret state changes of invariants for root cause localization.
+(connections) between variables by employing statistical indepen-            Nevertheless, the performance of these approaches in gray fail-
+dence tests and conditional independence relationships and is par-           ure localization for server OS is primarily hindered by their high
+ticularly useful for inferring causal relationships from observational       computational cost that cannot be guaranteed in a server OS.
+data. CauseInfer [4], MS-Rank [26], and AutoMap [28] apply PC
+algorithm to construct causal graphs based on performance metrics            7     CONCLUSION
+(e.g., latency). ServiceRank [27] extracts the causal relationships          This paper investigates the root cause localization problem of gray
+between services. MicroCause [30] uses an improved PC algorithm              failures in server OS. We introduce GrayScope, a methodology for lo-
+to learn the causal relationship of each point of the time series.           calizing root causes by mining causal relationships between metrics
+However, due to the high computational complexity, the PC algo-              and gray failure propagation patterns. Integrating expert knowl-
+rithm requires a lot of computational resources and time, making it          edge with causal learning techniques ensures more reliable learning
+inappropriate for server OS with limited computational resources             of metric causal graphs. The combination of partial correlation and
+for gray failure localization. Moreover, the PC algorithm’s high             anomaly degree enhances the accuracy of root cause inference. The
+sensitivity to data distribution makes their results unstable.               recommendation of propagation paths enhances the interpretabil-
+   The Granger causality test [10] has been used by many methods             ity of the results. We conducted extensive evaluation experiments
+to analyze the causality of time series [31, 32, 40]. For instance,          based on the 1241 injected gray failures in Huawei to verify the
+DyCause [32] performs the Granger causality test to get the degree           effectiveness of GrayScope. Empirical results relying on the 135 gray
+of influence of the service on the front-end application and other           failure cases in the industrial environment affirm the robustness
+services. However, these methods may learn inaccurate causality by           and efficacy of GrayScope in achieving accurate and efficient root
+overlooking the valuable knowledge of experts regarding causality,           cause localization. We have made the source code publicly available
+thereby degrading the performance of the gray failure localization.          for further research.
+   Some other approaches employ novel techniques to learn causal
+relations. For example, REASON [42] proposes a hierarchical graph            ACKNOWLEDGMENTS
+neural network-based causal discovery method to learn interdepen-
+                                                                             This work is supported by the Advanced Research Project of China
+dent causation from multivariate time series. However, constructing
+                                                                             (No. 31511010501), and the National Natural Science Foundation of
+and training hierarchical graph neural networks to model causal
+                                                                             China (62272249, 62302244, 62072264).
+relationships require substantial computational resources, which
+Illuminating the Gray Zone: Non-intrusive Gray Failure Localization in Server Operating Systems            FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil
+
+
+REFERENCES                                                                                [21] Zhong Li, Yuxuan Zhu, and Matthijs Van Leeuwen. 2023. A Survey on Explainable
+ [1] Monica Bianchini, Marco Gori, and Franco Scarselli. 2005. Inside PageRank.                Anomaly Detection. ACM Transactions on Knowledge Discovery from Data 18, 1
+     ACM Transactions on Internet Technology (TOIT) 5, 1 (2005), 92–128. https:                (2023), 1–54. https://doi.org/10.1145/3609333
+     //doi.org/10.1145/1052934.1052938                                                    [22] Dewei Liu, Chuan He, Xin Peng, Fan Lin, Chenxi Zhang, Shengfang Gong, Ziang
+ [2] Mattia Carletti, Chiara Masiero, Alessandro Beghi, and Gian Antonio Susto. 2019.          Li, Jiayu Ou, and Zheshun Wu. 2021. MicroHECL: High-Efficient Root Cause
+     Explainable Machine Learning in Industry 4.0: Evaluating Feature Importance in            Localization in Large-Scale Microservice Systems. In 2021 IEEE/ACM 43rd In-
+     Anomaly Detection to Enable Root Cause Analysis. In 2019 IEEE International               ternational Conference on Software Engineering: Software Engineering in Practice
+     Conference on Systems, Man and Cybernetics (SMC). IEEE, Los Alamitos, CA,                 (ICSE-SEIP). IEEE, Los Alamitos, CA, 338–347. https://doi.org/10.1109/ICSE-
+     21–26. https://doi.org/10.1109/SMC.2019.8913901                                           SEIP52600.2021.00043
+ [3] Chaosblade. 2024. Open Source Repository of Chaosblade. https://github.com/          [23] Ping Liu, Yu Chen, Xiaohui Nie, Jing Zhu, Shenglin Zhang, Kaixin Sui, Ming
+     chaosblade-io/chaosblade                                                                  Zhang, and Dan Pei. 2019. FluxRank: A Widely-Deployable Framework to Auto-
+ [4] Pengfei Chen, Yong Qi, Pengfei Zheng, and Di Hou. 2014. CauseInfer: Auto-                 matically Localizing Root Cause Machines for Software Service Failure Mitigation.
+     matic and distributed performance diagnosis with hierarchical causality graph in          In 2019 IEEE 30th International Symposium on Software Reliability Engineering
+     large distributed systems. In IEEE INFOCOM 2014-IEEE Conference on Computer               (ISSRE). IEEE, Los Alamitos, CA, 35–46. https://doi.org/10.1109/ISSRE.2019.00014
+     Communications. IEEE, Los Alamitos, CA, 1887–1895. https://doi.org/10.1109/          [24] Chang Lou, Peng Huang, and Scott Smith. 2020. Understanding, Detecting and
+     INFOCOM.2014.6848128                                                                      Localizing Partial Failures in Large System Software. In 17th USENIX Symposium
+ [5] Shanshan Chen, Xiaoxin Tang, Hongwei Wang, Han Zhao, and Minyi Guo. 2016.                 on Networked Systems Design and Implementation (NSDI 20). USENIX Association,
+     Towards Scalable and Reliable In-Memory Storage System: A Case Study with                 Carlsbad, CA, 559–574.
+     Redis. In 2016 IEEE Trustcom/BigDataSE/ISPA. IEEE, Los Alamitos, CA, 1660–1667.      [25] Xianglin Lu, Zhe Xie, Zeyan Li, Mingjie Li, Xiaohui Nie, Nengwen Zhao, Qingyang
+     https://doi.org/10.1109/TrustCom.2016.0255                                                Yu, Shenglin Zhang, Kaixin Sui, Lin Zhu, et al. 2022. Generic and Robust Perfor-
+ [6] Yuhua Chen, Dongqi Xu, Ningjiang Chen, and Xu Wu. 2023. FRL-MFPG:                         mance Diagnosis via Causal Inference for OLTP Database Systems. In 2022 22nd
+     Propagation-aware fault root cause location for microservice intelligent opera-           IEEE International Symposium on Cluster, Cloud and Internet Computing (CCGrid).
+     tion and maintenance. Information and Software Technology 153 (2023), 107083.             IEEE, Los Alamitos, CA, 655–664. https://doi.org/10.1109/CCGrid54584.2022.
+     https://doi.org/10.1016/j.infsof.2022.107083                                              00075
+ [7] Gala-anteater. 2024. Open Source Repository of Gala-anteater. https://gitee.         [26] Meng Ma, Weilan Lin, Disheng Pan, and Ping Wang. 2019. MS-Rank: Multi-Metric
+     com/openeuler/gala-anteater                                                               and Self-Adaptive Root Cause Diagnosis for Microservice Applications. In 2019
+ [8] Gala-gopher. 2024. Open Source Repository of Gala-gopher. https://gitee.com/              IEEE International Conference on Web Services (ICWS). IEEE, Los Alamitos, CA,
+     openeuler/gala-gopher                                                                     60–67. https://doi.org/10.1109/ICWS.2019.00022
+ [9] Janos Gertler. 2002. Fault Detection and Diagnosis in Engineering Systems.           [27] Meng Ma, Weilan Lin, Disheng Pan, and Ping Wang. 2021. ServiceRank: Root
+     Control Engineering Practice 9, 10 (2002), 1037–1038. https://doi.org/10.1201/            Cause Identification of Anomaly in Large-Scale Microservice Architectures. IEEE
+     9780203756126                                                                             Transactions on Dependable and Secure Computing 19, 5 (2021), 3087–3100. https:
+[10] Clive WJ Granger. 1969. Investigating causal relations by econometric models              //doi.org/10.1109/TDSC.2021.3083671
+     and cross-spectral methods. Econometrica: journal of the Econometric Society 37,     [28] Meng Ma, Jingmin Xu, Yuan Wang, Pengfei Chen, Zonghua Zhang, and Ping
+     3 (1969), 424–438. https://doi.org/10.2307/1912791                                        Wang. 2020. AutoMAP: Diagnose Your Microservice-based Web Applications
+[11] GrayScope. 2024. Open Source Repository of GrayScope. https://gitee.com/                  Automatically. In Proceedings of The Web Conference 2020. ACM, New York, NY,
+     milohaha/grayscope                                                                        USA, 246–258. https://doi.org/10.1145/3366423.3380111
+[12] Shiqi Hao, Yang Liu, Yu Wang, Yuan Wang, and Wenming Zhe. 2022. Three-               [29] Luciano Manelli, Giulio Zambon, Luciano Manelli, and Giulio Zambon. 2020.
+     Stage Root Cause Analysis for Logistics Time Efficiency via Explainable Machine           Introducing JSP and Tomcat. Beginning Jakarta EE Web Development: Using JSP,
+     Learning. In Proceedings of the 28th ACM SIGKDD Conference on Knowledge                   JSF, MySQL, and Apache Tomcat for Building Java Web Applications (2020), 1–53.
+     Discovery and Data Mining. ACM, New York, NY, USA, 2987–2996. https://doi.           [30] Yuan Meng, Shenglin Zhang, Yongqian Sun, Ruru Zhang, Zhilong Hu, Yiyin
+     org/10.1145/3534678.3539024                                                               Zhang, Chenyang Jia, Zhaogang Wang, and Dan Pei. 2020. Localizing Failure
+[13] Zijun Hu, Pengfei Chen, Guangba Yu, Zilong He, and Xiaoyun Li. 2022. TS-                  Root Causes in a Microservice through Causality Inference. In 2020 IEEE/ACM
+     InvarNet: Anomaly Detection and Localization based on Tempo-spatial KPI                   28th International Symposium on Quality of Service (IWQoS). IEEE, Los Alamitos,
+     Invariants in Distributed Services. In 2022 IEEE International Conference on Web          CA, 1–10. https://doi.org/10.1109/IWQoS49365.2020.9213058
+     Services (ICWS). IEEE, Los Alamitos, CA, 109–119. https://doi.org/10.1109/           [31] Meike Nauta, Doina Bucur, and Christin Seifert. 2019. Causal Discovery with
+     ICWS55610.2022.00031                                                                      Attention-Based Convolutional Neural Networks. Machine Learning and Knowl-
+[14] Peng Huang, Chuanxiong Guo, Jacob R Lorch, Lidong Zhou, and Yingnong Dang.                edge Extraction 1, 1 (2019), 19. https://doi.org/10.3390/make1010019
+     2018. Capturing and Enhancing In Situ System Observability for Failure Detection.    [32] Yicheng Pan, Meng Ma, Xinrui Jiang, and Ping Wang. 2021. Faster, deeper,
+     In 13th USENIX Symposium on Operating Systems Design and Implementation                   easier: crowdsourcing diagnosis of microservice kernel failure from user space.
+     (OSDI 18). USENIX Association, Carlsbad, CA, 1–16.                                        In Proceedings of the 30th ACM SIGSOFT International Symposium on Software
+[15] Peng Huang, Chuanxiong Guo, Lidong Zhou, Jacob R Lorch, Yingnong Dang,                    Testing and Analysis. ACM, New York, NY, 646–657. https://doi.org/10.1145/
+     Murali Chintalapati, and Randolph Yao. 2017. Gray Failure: The Achilles’ Heel             3460319.3464805
+     of Cloud-Scale Systems. In Proceedings of the 16th Workshop on Hot Topics in         [33] Judea Pearl et al. 2000. Models, reasoning and inference. Cambridge, UK: Cam-
+     Operating Systems. ACM, New York, NY, USA, 150–155. https://doi.org/10.1145/              bridgeUniversityPress 19, 2 (2000), 3.
+     3102980.3103005                                                                      [34] Karl Pearson. 1905. The Problem of the Random Walk. Nature 72, 1865 (1905),
+[16] Ltd. Huawei Technologies Co. 2022. Introduction to Huawei Cloud Database                  294–294. https://doi.org/10.1038/072342a0
+     GaussDB. In Database Principles and Technologies–Based on Huawei GaussDB.            [35] Prometheus. 2024. Open Source Repository of Prometheus. https://github.com/
+     Springer, Berlin, 287–312. https://doi.org/10.1007/978-981-19-3032-4_8                    prometheus/prometheus
+[17] Azam Ikram, Sarthak Chakraborty, Subrata Mitra, Shiv Saini, Saurabh Bagchi,          [36] Juan Qiu, Qingfeng Du, Kanglin Yin, Shuang-Li Zhang, and Chongshu Qian.
+     and Murat Kocaoglu. 2022. Root Cause Analysis of Failures in Microservices                2020. A Causality Mining and Knowledge Graph Based Method of Root Cause
+     through Causal Discovery. Advances in Neural Information Processing Systems 35            Diagnosis for Performance Anomaly in Cloud Applications. Applied Sciences 10,
+     (2022), 31158–31170.                                                                      6 (2020), 2166. https://doi.org/10.3390/app10062166
+[18] M Frans Kaashoek, Dawson R Engler, Gregory R Ganger, and Deborah A Wallach.          [37] Huasong Shan, Yuan Chen, Haifeng Liu, Yunpeng Zhang, Xiao Xiao, Xiaofeng He,
+     1996. Server operating systems. In Proceedings of the 7th workshop on ACM                 Min Li, and Wei Ding. 2019. 𝜖 -diagnosis: Unsupervised and Real-time Diagnosis
+     SIGOPS European workshop: Systems support for worldwide applications. ACM,                of Small- window Long-tail Latency in Large-scale Microservice Platforms. In
+     New York, NY, USA, 141–148. https://doi.org/10.1145/504450.504478                         The World Wide Web Conference. ACM, New York, NY, USA, 3215–3222. https:
+[19] Mingjie Li, Zeyan Li, Kanglin Yin, Xiaohui Nie, Wenchi Zhang, Kaixin Sui, and             //doi.org/10.1145/3308558.3313653
+     Dan Pei. 2022. Causal Inference-Based Root Cause Analysis for Online Service         [38] Jacopo Soldani and Antonio Brogi. 2022. Anomaly Detection and Failure Root
+     Systems with Intervention Recognition. In Proceedings of the 28th ACM SIGKDD              Cause Analysis in (Micro) Service-Based Cloud Applications: A Survey. ACM
+     Conference on Knowledge Discovery and Data Mining. ACM, New York, NY, USA,                Computing Surveys (CSUR) 55, 3 (2022), 1–39. https://doi.org/10.1145/3501297
+     3230–3240. https://doi.org/10.1145/3534678.3539041                                   [39] Peter Spirtes and Clark Glymour. 1991. An Algorithm for Fast Recovery of
+[20] Zeyan Li, Nengwen Zhao, Mingjie Li, Xianglin Lu, Lixin Wang, Dongdong Chang,              Sparse Causal Graphs. Social science computer review 9, 1 (1991), 62–72. https:
+     Xiaohui Nie, Li Cao, Wenchi Zhang, Kaixin Sui, et al. 2022. Actionable and                //doi.org/10.1177/089443939100900106
+     Interpretable Fault Localization for Recurring Failures in Online Service Systems.   [40] Alex Tank, Ian Covert, Nicholas Foti, Ali Shojaie, and Emily B Fox. 2021. Neural
+     In Proceedings of the 30th ACM Joint European Software Engineering Conference             Granger Causality. IEEE Transactions on Pattern Analysis and Machine Intelligence
+     and Symposium on the Foundations of Software Engineering. ACM, New York, NY,              44, 8 (2021), 4267–4279. https://doi.org/10.1109/TPAMI.2021.3065601
+     996–1008. https://doi.org/10.5281/zenodo.6955909                                     [41] Dongjie Wang, Zhengzhang Chen, Yanjie Fu, Yanchi Liu, and Haifeng Chen.
+                                                                                               2023. Incremental Causal Graph Learning for Online Root Cause Analysis. In
+FSE Companion ’24, July 15–19, 2024, Ipojuca (Pernambuco), Brazil                      S. Zhang, Y. Zhao, X. Xiong, Y. Sun, X. Nie, J. Zhang, F. Wang, X. Zheng, Y. Zhang, D. Pei
+
+
+     Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and              [47] Han Wu, Zhihao Shang, and Katinka Wolter. 2020. Learning to Reliably Deliver
+     Data Mining. ACM, New York, NY, USA, 2269–2278. https://doi.org/10.1145/                   Streaming Data with Apache Kafka. In 2020 50th Annual IEEE/IFIP International
+     3580305.3599392                                                                            Conference on Dependable Systems and Networks (DSN). IEEE, Los Alamitos, CA,
+[42] Dongjie Wang, Zhengzhang Chen, Jingchao Ni, Liang Tong, Zheng Wang, Yanjie                 564–571. https://doi.org/10.1109/DSN48063.2020.00068
+     Fu, and Haifeng Chen. 2023. Interdependent Causal Networks for Root Cause             [48] Li Wu, Johan Tordsson, Jasmin Bogatinovski, Erik Elmroth, and Odej Kao. 2021.
+     Localization. In Proceedings of the 29th ACM SIGKDD Conference on Knowledge                MicroDiag: Fine-grained Performance Diagnosis for Microservice Systems. In
+     Discovery and Data Mining. ACM, New York, NY, USA, 5051–5060. https://doi.                 2021 IEEE/ACM International Workshop on Cloud Intelligence (CloudIntelligence).
+     org/10.1145/3580305.3599849                                                                IEEE, Los Alamitos, CA, 31–36. https://doi.org/10.1109/CloudIntelligence52565.
+[43] Hanzhang Wang, Zhengkai Wu, Huai Jiang, Yichao Huang, Jiamu Wang, Selcuk                   2021.00015
+     Kopru, and Tao Xie. 2021. Groot: An Event-graph-based Approach for Root Cause         [49] Li Wu, Johan Tordsson, Erik Elmroth, and Odej Kao. 2020. MicroRCA: Root
+     Analysis in Industrial Settings. In 2021 36th IEEE/ACM International Conference            Cause Localization of Performance Issues in Microservices. In NOMS 2020-2020
+     on Automated Software Engineering (ASE). IEEE, Los Alamitos, CA, 419–429.                  IEEE/IFIP Network Operations and Management Symposium. IEEE, Los Alamitos,
+     https://doi.org/10.1109/ASE51524.2021.9678708                                              CA, 1–9. https://doi.org/10.1109/NOMS47738.2020.9110353
+[44] Lu Wang, Chaoyun Zhang, Ruomeng Ding, Yong Xu, Qihang Chen, Wentao Zou,               [50] Guangba Yu, Pengfei Chen, Hongyang Chen, Zijie Guan, Zicheng Huang, Linxiao
+     Qingjun Chen, Meng Zhang, Xuedong Gao, Hao Fan, et al. 2023. Root Cause                    Jing, Tianjun Weng, Xinmeng Sun, and Xiaoyun Li. 2021. MicroRank: End-to-End
+     Analysis for Microservice Systems via Hierarchical Reinforcement Learning                  Latency Issue Localization with Extended Spectrum Analysis in Microservice
+     from Human Feedback. In Proceedings of the 29th ACM SIGKDD Conference on                   Environments. In Proceedings of the Web Conference 2021. ACM, New York, NY,
+     Knowledge Discovery and Data Mining. ACM, New York, NY, USA, 5116–5125.                    USA, 3087–3098. https://doi.org/10.1145/3442381.3449905
+     https://doi.org/10.1145/3580305.3599934                                               [51] Nengwen Zhao, Junjie Chen, Xiao Peng, Honglin Wang, Xinya Wu, Yuanzong
+[45] Gary White, Jaroslaw Diuwe, Erika Fonseca, and Owen O’Brien. 2021. MMRCA:                  Zhang, Zikai Chen, Xiangzhong Zheng, Xiaohui Nie, Gang Wang, et al. 2020.
+     MultiModal Root Cause Analysis. In International Conference on Service-Oriented            Understanding and handling alert storm for online service systems. In Proceedings
+     Computing. Springer, Springer-Verlag, Berlin, 177–189. https://doi.org/10.1007/            of the ACM/IEEE 42nd International Conference on Software Engineering: Software
+     978-3-031-14135-5_14                                                                       Engineering in Practice. ACM, New York, NY, USA, 162–171. https://doi.org/10.
+[46] Canhua Wu, Nengwen Zhao, Lixin Wang, Xiaoqin Yang, Shining Li, Ming Zhang,                 1145/3377813.3381363
+     Xing Jin, Xidao Wen, Xiaohui Nie, Wenchi Zhang, et al. 2021. Identifying Root-        [52] Minghui Zhou, Xinwei Hu, and Wei Xiong. 2022. openEuler: Advancing a Hard-
+     Cause Metrics for Incident Diagnosis in Online Service Systems. In 2021 IEEE               ware and Software Application Ecosystem. IEEE Software 39, 2 (2022), 101–105.
+     32nd International Symposium on Software Reliability Engineering (ISSRE). IEEE,            https://doi.org/10.1109/MS.2021.3132138
+     Los Alamitos, CA, 91–102. https://doi.org/10.1109/ISSRE52982.2021.00022
+                                                                                           Received 2024-02-08; accepted 2024-04-18
+

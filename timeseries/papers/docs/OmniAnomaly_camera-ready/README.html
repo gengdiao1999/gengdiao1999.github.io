@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OmniAnomaly: Robust Anomaly Detection for Multivariate Time Series through Stochastic Recurrent Neural Network（KDD 2019）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>OmniAnomaly: Robust Anomaly Detection for Multivariate Time Series through Stochastic Recurrent Neural Network（KDD 2019）</h1>
+
+<blockquote>作者：Ya Su、Youjian Zhao、Chenhao Niu、Rong Liu、Wei Sun、Dan Pei</blockquote>
+<blockquote>机构：清华大学；BNRist；Stevens Institute of Technology；北京邮电大学</blockquote>
+<blockquote>发表年份：2019</blockquote>
+<blockquote>会议/期刊：ACM SIGKDD 2019（DOI 10.1145/3292500.3330672）</blockquote>
+<blockquote>关联 PDF：同目录下 <code>OmniAnomaly_camera-ready.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Robust Anomaly Detection for Multivariate Time Series through Stochastic Recurrent Neural Network</td></tr>
+<tr><td>作者</td><td>Ya Su、Youjian Zhao、Chenhao Niu、Rong Liu、Wei Sun、Dan Pei</td></tr>
+<tr><td>机构</td><td>清华大学；BNRist；Stevens Institute of Technology；北京邮电大学</td></tr>
+<tr><td>发表年份</td><td>2019</td></tr>
+<tr><td>会议/期刊</td><td>ACM SIGKDD 2019</td></tr>
+<tr><td>分类</td><td>多变量时序异常检测 / 深度生成模型 / 解释性</td></tr>
+<tr><td>核心问题</td><td>工业实体多维传感器时序具有强随机性与复杂时序依赖，传统确定性 RNN / VAE 不能很好捕获，导致异常检测鲁棒性差且难以解释</td></tr>
+<tr><td>主要贡献</td><td>(1) OmniAnomaly：GRU + VAE + Planar Normalizing Flows + 随机变量连接；(2) 基于重建概率的实体级异常检测；(3) 按 univariate 重建概率做异常解释；(4) 在 3 个真实数据集上 F1 达 0.86，比最佳 baseline 提升 0.09</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>工业实体（如服务器、航天器、机器人、引擎）通常被多维时间序列（telemetry / sensor data）持续监控；及时检测这些实体的异常对于服务质量管理至关重要。一个实体通常有 12-55 个 metric（CPU load、network usage、memory usage、radiation、temperature、kinematic 等），需要 entity-level 的多变量联合异常检测，而不能只在每个 metric 上做 univariate 检测。</p>
+
+<p>为什么要在 entity-level 检测？</p>
+<ol>
+<li>运维工程师关心整个实体的健康度，而非单个指标；</li>
+<li>训练/维护 N 个 univariate 模型代价高（如 Mars 探测器有 27×55=1485 个 metric）；</li>
+<li>一个 incident 往往引起多个 metric 同时异常；</li>
+<li>建模一个 metric 的期望值时，使用同实体的其他 metric 信息更有效。</li>
+</ol>
+
+<p>但是工业实体受软件控制、外部环境、人类操作、其它系统影响，<b>行为具有强随机性 + 复杂时序依赖</b>。论文指出，已有方法在以下两点不足：</p>
+<ul>
+<li><b>简单 VAE</b>：用 VAE 处理时序时，把 feed-forward 网络替换为 LSTM 不足以表达随机性，stochastic 变量之间没有显式时序依赖；</li>
+<li><b>简单 stochastic RNN</b>：虽引入随机变量，但变量之间无连接，无法捕获长程依赖。</li>
+</ul>
+
+<p>另一个挑战是<b>可解释性</b>：运维不仅要知道"实体异常了"，还要知道"哪个 metric 最可疑"。基于深度生成模型做解释是公开难题。</p>
+
+<p>论文提出 <b>OmniAnomaly</b>：</p>
+<ol>
+<li>用 Linear Gaussian State Space Model 连接相邻时刻的 stochastic 变量 + 把 stochastic 变量与 GRU 隐变量拼接（<b>stochastic variable connection</b>）；</li>
+<li>用 <b>planar Normalizing Flows</b> 让 stochastic 变量能拟合复杂非高斯后验；</li>
+<li>用 <b>重建概率</b>（而非重建误差）做异常判定，对低频异常更鲁棒；</li>
+<li>用各 univariate 的重建概率做异常解释。</li>
+</ol>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<ul>
+<li><b>多变量时序异常检测鲁棒性差</b>：不同实体的统计特性差异大，模型需通用。</li>
+<li><b>随机变量无时序依赖</b>：现有方法用简单 VAE/LSTM 拼接，stochastic 变量在时间步间独立。</li>
+<li><b>重建误差 vs 重建概率</b>：固定阈值重建误差在低频异常上效果差；概率框架更稳。</li>
+<li><b>可解释性</b>：运维需知道"哪个 metric 异常"。</li>
+<li><b>少标签 / 无标签</b>：工业数据极少异常标签，模型应能无监督训练。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>系统总览</b>：OmniAnomaly 在每个时间步用 GRU 编码器 + 随机变量 $z_t$ 表达输入 $x_t$；$z_t$ 通过 Linear Gaussian State Space Model 关联到 $z_{t-1}$；用 Planar Normalizing Flows 让后验 $q(z_t|\cdot)$ 表达非高斯分布；用重建概率 $p(x_t|z_t)$ 作为异常分数；判定异常后，按各 univariate 的 $p(x_{t,d}|z_t)$ 排序给出解释。</p>
+
+<p><b>关键概念</b>：</p>
+
+<ul>
+<li><b>Multivariate Time Series</b>：多变量时间序列 $x_{1..T} \in \mathbb{R}^{T \times D}$。</li>
+<li><b>Entity-level Anomaly</b>：整个实体的异常，而非单个 metric。</li>
+<li><b>Stochastic Variable</b>：随机隐变量 $z_t$。</li>
+<li><b>GRU</b>：Gated Recurrent Unit。</li>
+<li><b>VAE</b>：Variational Autoencoder。</li>
+<li><b>Planar NF</b>：Planar Normalizing Flows。</li>
+<li><b>LG-SSM</b>：Linear Gaussian State Space Model。</li>
+<li><b>Reconstruction Probability</b>：重建概率，作为异常分数。</li>
+<li><b>Interpretation</b>：按各 univariate 重建概率排序。</li>
+</ul>
+
+<p><b>数学原理</b>：</p>
+
+<p><b>GRU 编码器</b>：</p>
+
+<p>$$h_t = \text{GRU}(x_t, h_{t-1})$$</p>
+
+<p><b>变分后验（带时序依赖）</b>：</p>
+
+<p>$$q(z_t | x_{1..t}, z_{1..t-1}) = \mathcal{N}\big(\mu_t, \text{diag}(\sigma_t^2)\big)$$</p>
+
+<p>其中均值 $\mu_t$ 由 $h_t$ 与 $z_{t-1}$ 共同决定：</p>
+
+<p>$$\mu_t = W_{zh} h_t + W_{zz} z_{t-1} + b_z$$</p>
+
+<p>$$\sigma_t = \text{softplus}(W_{zh}' h_t + W_{zz}' z_{t-1} + b_z')$$</p>
+
+<p><b>Planar Normalizing Flows</b>：</p>
+
+<p>$$z_t^{(0)} = \mu_t + \sigma_t \odot \epsilon,\quad z_t^{(l+1)} = z_t^{(l)} + u_l \cdot h(w_l^\top z_t^{(l)} + b_l)$$</p>
+
+<p>$$z_t = z_t^{(L)}$$</p>
+
+<p><b>重建模型</b>：</p>
+
+<p>$$p(x_t | z_t) = \prod_{d=1}^{D} p(x_{t,d} | z_t)$$</p>
+
+<p><b>ELBO</b>：</p>
+
+<p>$$\mathcal{L} = \mathbb{E}_{q}\big[\sum_{t=1}^T \log p(x_t | z_t)\big] - \text{KL}\big(q(z_{1..T} | x_{1..T}) \,\|\, p(z_{1..T})\big)$$</p>
+
+<p><b>异常分数</b>：</p>
+
+<p>$$s_t = -\sum_{d=1}^{D} \log p(x_{t,d} | z_t)$$</p>
+
+<p><b>解释得分</b>：</p>
+
+<p>$$s_{t,d} = -\log p(x_{t,d} | z_t)$$</p>
+
+<p><b>与现有方法的差异</b>：与 Donut、LSTM-VAE 相比，OmniAnomaly 同时引入时序随机变量连接 + 非高斯后验；与 DAGMM、USAD、LSTM-VAE 等相比，重建概率分数更鲁棒。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：多变量时序 $x_{1..T} \in \mathbb{R}^{T \times D}$；窗口大小 $W$。</li>
+<li>输出：实体级异常分数序列 $s_{1..T}$；异常区间；top-k 可疑 metric（解释）。</li>
+</ul>
+
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>窗口化</b>：用滑窗生成训练样本。</li>
+<li><b>GRU 编码器</b>：$h_t = \text{GRU}(x_t, h_{t-1})$。</li>
+<li><b>Stochastic Variable Connection</b>：把 $z_{t-1}$ 与 $h_t$ 拼接后映射到 $z_t$ 的均值和方差。</li>
+<li><b>Planar Normalizing Flows</b>：$L$ 步可逆映射得到 $z_t$。</li>
+<li><b>GRU 解码器</b>：用 $z_{1..t}$ 重构 $x_{1..t}$。</li>
+<li><b>重建概率</b>：$p(x_t | z_t)$。</li>
+<li><b>异常检测</b>：滑动窗口上聚合重建概率 → POT 阈值 → 异常区间。</li>
+<li><b>异常解释</b>：按各 univariate 重建概率排序，给出 top-k 可疑 metric。</li>
+</ul>
+
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+class OmniAnomaly(nn.Module):
+    def __init__(self, d_in, d_hid, d_z, n_flows=8):
+        super().__init__()
+        self.gru_enc = nn.GRU(d_in, d_hid, batch_first=True)
+        self.fc_mu = nn.Linear(d_hid + d_z, d_z)
+        self.fc_logvar = nn.Linear(d_hid + d_z, d_z)
+        self.flows = nn.ModuleList([PlanarFlow(d_z) for _ in range(n_flows)])
+        self.gru_dec = nn.GRU(d_z, d_hid, batch_first=True)
+        self.fc_x = nn.Linear(d_hid, d_in)
+        self.log_sigma_x = nn.Parameter(torch.zeros(d_in))
+
+    def encode(self, x):
+        h, _ = self.gru_enc(x)
+        return h
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        return mu + std * torch.randn_like(mu)
+
+    def planar_flow(self, z):
+        for flow in self.flows:
+            z = flow(z)
+        return z
+
+    def forward(self, x):
+        h = self.encode(x)
+        T = h.size(1)
+        zs = []
+        z_prev = torch.zeros(x.size(0), d_z)
+        for t in range(T):
+            mu = self.fc_mu(torch.cat([h[:, t, :], z_prev], dim=-1))
+            logvar = self.fc_logvar(torch.cat([h[:, t, :], z_prev], dim=-1))
+            z0 = self.reparameterize(mu, logvar)
+            z = self.planar_flow(z0)
+            zs.append(z)
+            z_prev = z
+        z_seq = torch.stack(zs, dim=1)
+        x_hat, _ = self.gru_dec(z_seq)
+        x_hat = self.fc_x(x_hat)
+        return x_hat, z_seq, mu, logvar
+
+def loss_function(x, x_hat, mu, logvar, sigma_x):
+    recon = -0.5 * ((x - x_hat) ** 2 / sigma_x ** 2 + 2 * torch.log(sigma_x)).sum()
+    kld = -0.5 * (1 + logvar - mu ** 2 - logvar.exp()).sum()
+    return recon - kld
+
+def anomaly_score(x, model):
+    x_hat, z, mu, logvar = model(x)
+    sigma_x = model.log_sigma_x
+    log_px = -0.5 * ((x - x_hat) ** 2 / sigma_x ** 2 + 2 * torch.log(sigma_x))
+    s = -log_px.sum(dim=-1)
+    return s
+
+def detect_anomalies(scores, q=0.999):
+    th = pot_threshold(scores, q=q)
+    return scores > th
+
+def interpret(x, model, topk=3):
+    x_hat, *_ = model(x)
+    sigma_x = model.log_sigma_x
+    log_px = -0.5 * ((x - x_hat) ** 2 / sigma_x ** 2)
+    score = -log_px.squeeze(0)
+    return score.topk(topk, dim=-1).indices
+
+def train_omnianomaly(X_train, epochs=50, batch_size=128, lr=1e-3):
+    model = OmniAnomaly(d_in=X_train.shape[-1], d_hid=128, d_z=32)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    for ep in range(epochs):
+        for batch in dataloader(X_train, batch_size):
+            x_hat, z, mu, logvar = model(batch)
+            loss = loss_function(batch, x_hat, mu, logvar, model.log_sigma_x)
+            opt.zero_grad(); loss.backward(); opt.step()
+    return model
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四。</li>
+</ol>
+
+<ol>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>训练：$O(T \cdot D \cdot H \cdot L)$ per batch；</li>
+<li>推理：$O(T \cdot D \cdot H \cdot L)$；</li>
+<li>内存：$O(B \cdot T \cdot (H + D + Z \cdot L))$。</li>
+</ul>
+
+<ol>
+<li><b>训练与推理</b>：</li>
+</ol>
+<ul>
+<li>训练：ELBO 最大化，Adam / RMSProp；</li>
+<li>推理：滑窗 → 重建概率 → POT 阈值 → 异常区间 → 解释 top-k。</li>
+</ul>
+
+<ol>
+<li><b>示例</b>：服务器集群 28 台机器 × 38 个 metric（CPU load、network usage、memory usage 等），2 天数据。某台机器 12:00-12:30 CPU load、network inflow 飙高，其他 metric 正常。OmniAnomaly 在该窗口给出高异常分数；解释给出 top-1 = network_inflow、top-2 = cpu_load。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[多变量时序 X_1..T] --> B[窗口化]
+    B --> C[GRU 编码器 h_t]
+    C --> D[拼接 h_t + z_{t-1}]
+    D --> E[FC -> mu, logvar]
+    E --> F[重参数化 z_0]
+    F --> G[Planar Normalizing Flow 8 步]
+    G --> G1[u1 h w1 z + b1]
+    G --> G2[u2 h w2 z + b2]
+    G --> G3[uL h wL z + bL]
+    G1 --> H[z_t]
+    G2 --> H
+    G3 --> H
+    H --> I[GRU 解码器]
+    I --> J[FC x_hat]
+    J --> K[重建概率 log p x_t | z_t]
+    K --> L[负对数 -> 异常分数 s_t]
+    L --> M[POT 阈值]
+    M --> N{超阈值?}
+    N -->|是| O[异常区间]
+    N -->|否| P[正常]
+    O --> Q[按各 univariate 重建概率排序]
+    Q --> R[Top-k 可疑 metric 解释]
+    H --> I
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[多变量时序采集] --> S2[归一化 + 滑窗]
+    S2 --> S3[GRU 编码]
+    S3 --> S4[随机变量连接: h_t + z_{t-1} -> mu, logvar]
+    S4 --> S5[重参数化 z_0]
+    S5 --> S6[Planar NF L 步 z_t]
+    S6 --> S7[GRU 解码 x_hat]
+    S7 --> S8[ELBO 损失: 重建 + KL]
+    S8 --> S9[反向传播 + Adam]
+    S9 --> S10{收敛?}
+    S10 -->|否| S4
+    S10 -->|是| S11[保存模型]
+    S11 --> S12[在线 滑窗 输入]
+    S12 --> S13[计算重建概率 s_t]
+    S13 --> S14[POT 自适应阈值]
+    S14 --> S15[异常区间]
+    S15 --> S16[按 metric 重建概率排序]
+    S16 --> S17[Top-k 可疑 metric 解释]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ 随机变量连接（LG-SSM + 拼接）</b>：让 $z_t$ 显式依赖 $z_{t-1}$ 与 $h_t$。</li>
+<li><b>+ Planar Normalizing Flows</b>：让后验 $q(z_t)$ 拟合复杂非高斯分布。</li>
+<li><b>+ 重建概率作异常分数</b>：比固定阈值重建误差更鲁棒。</li>
+<li><b>+ 按 univariate 重建概率做解释</b>：top-k 可疑 metric。</li>
+<li><b>+ POT 自适应阈值</b>：不依赖人工调阈值。</li>
+<li><b>+ 跨领域鲁棒</b>：在航天 + 互联网服务器两类截然不同的数据上 F1 全部 &gt; 0.84。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>（Table 1）：</li>
+<li><b>Server machine dataset</b>（本论文新发布）：28 台服务器 × 38 个 metric。</li>
+<li><b>Soil Moisture Active Passive (SMAP) satellite</b>：55 个 entity × 25 metric。</li>
+<li><b>Mars Science Laboratory (MSL) rover</b>：27 × 55 metric。</li>
+<li><b>Baseline</b>：OC-SVM、IF、PCA、AE、Donut、Bagel、LSTM-VAE、USAD、DAGMM、THOC 等。</li>
+<li><b>主要指标</b>：Precision、Recall、F1-Score（官方协议下整体）。</li>
+<li><b>关键结果数字</b>：</li>
+<li>3 个数据集 F1-Score 平均 <b>0.86</b>，相对最佳 baseline 提升 <b>+0.09</b>；</li>
+<li>3 个数据集 F1-Score <b>全部 &gt; 0.84</b>；</li>
+<li>异常解释准确率最高 <b>0.89</b>；</li>
+<li>论文同时公开代码 + server machine dataset。</li>
+<li><b>消融实验</b>：</li>
+<li>去掉 LG-SSM：F1 下降约 0.05；</li>
+<li>去掉 Planar NF：F1 下降约 0.03-0.05；</li>
+<li>去掉 stochastic 变量连接：F1 显著下降；</li>
+<li>重建误差 vs 重建概率：重建概率更稳。</li>
+<li><b>效率</b>：GPU 上训练分钟级到小时级；推理毫秒级。</li>
+<li><b>可视化</b>：异常区间 vs ground truth；top-k 解释热力图。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>服务器集群监控</b>：CPU / 内存 / 网络 / 磁盘多 metric 联合异常。</li>
+<li><b>航天器遥测</b>：辐射 / 温度 / 功率 / 计算活动联合监测。</li>
+<li><b>机器人系统</b>：kinematic / visual / haptic / auditory 异常。</li>
+<li><b>工业引擎</b>：accelerator / torque / temperature 异常。</li>
+<li><b>智能制造产线</b>：多 sensor 联合异常检测 + 故障定位。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>TraceSieve_ISSRE23</code>（追踪异常检测 / 微服务）</li>
+<li><code>liu_imc15_Opprentice</code>（KPI 异常检测 / 无监督）</li>
+<li><code>label-less-v3</code>（日志异常检测 / 无监督）</li>
+<li><code>LogAnomaly</code>（日志异常检测）</li>
+<li><code>FluxInfer</code>（指标异常检测 + 解释）</li>
+<li><code>08723601</code>（KPI 周期自适应）</li>
+<li><code>chenwenxiao_infocom2019</code>（多源指标故障定位）</li>
+<li><code>www2018</code>（KPI 异常检测）</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>Multivariate Time Series</b>：多变量时间序列。</li>
+<li><b>Entity-level Anomaly</b>：实体级异常。</li>
+<li><b>Metric-level Anomaly</b>：单 metric 异常。</li>
+<li><b>Stochastic Variable</b>：随机隐变量 $z_t$。</li>
+<li><b>GRU</b>：Gated Recurrent Unit。</li>
+<li><b>VAE</b>：Variational Autoencoder。</li>
+<li><b>Planar NF</b>：Planar Normalizing Flow。</li>
+<li><b>LG-SSM</b>：Linear Gaussian State Space Model。</li>
+<li><b>ELBO</b>：Evidence Lower Bound。</li>
+<li><b>KL Divergence</b>：Kullback-Leibler 散度。</li>
+<li><b>Reconstruction Probability</b>：重建概率。</li>
+<li><b>POT</b>：Peaks-Over-Threshold（自适应阈值）。</li>
+<li><b>SMAP</b>：Soil Moisture Active Passive satellite。</li>
+<li><b>MSL</b>：Mars Science Laboratory rover。</li>
+<li><b>Telemetry</b>：遥测数据。</li>
+<li><b>OC-SVM / IF / PCA / AE</b>：经典异常检测 baseline。</li>
+<li><b>DAGMM / USAD / THOC / Donut / Bagel / LSTM-VAE</b>：深度异常检测 baseline。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: GRU, <i>Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation</i>（Cho et al., 2014）。</li>
+<li>Paper: VAE, <i>Auto-Encoding Variational Bayes</i>（Kingma & Welling, 2014）。</li>
+<li>Paper: Planar NF, <i>Variational Inference with Normalizing Flows</i>（Rezende & Mohamed, 2015）。</li>
+<li>Paper: Stochastic RNN, <i>Stochastic Recurrent Neural Network</i>（Bayer & Osendorfer, 2014 / Chung et al., 2015）。</li>
+<li>Paper: Donut, <i>Unsupervised Anomaly Detection for Seasonal KPIs in Web Applications</i>（Xu et al., WWW 2018）。</li>
+<li>数据集：SMAP / MSL（NASA）、Server machine（本文发布）。</li>
+<li>相关论文：<code>TraceSieve_ISSRE23</code>、<code>liu_imc15_Opprentice</code>、<code>label-less-v3</code>、<code>LogAnomaly</code>、<code>FluxInfer</code>、<code>08723601</code>、<code>chenwenxiao_infocom2019</code>、<code>www2018</code>。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

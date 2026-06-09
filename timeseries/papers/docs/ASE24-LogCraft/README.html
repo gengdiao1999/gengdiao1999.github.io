@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>LogCraft - ASE 2024</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>End-to-End AutoML for Unsupervised Log Anomaly Detection（ASE 2024）</h1>
+
+<blockquote>
+<p>作者：Shenglin Zhang, Yuhe Ji, Jiaqi Luan, Xiaohui Nie, Zi'ang Chen, Minghua Ma, Yongqian Sun, Dan Pei</p>
+<p>机构：Nankai University、CNIC CAS、Microsoft、TKL-SEHCI、HL-IT、Tsinghua University</p>
+<p>发表年份：2024</p>
+<p>会议/期刊：39th IEEE/ACM International Conference on Automated Software Engineering (ASE '24), Sacramento, CA（CCF A）</p>
+<p>关联 PDF：同目录下 <code>ASE24-LogCraft.pdf</code></p>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>End-to-End AutoML for Unsupervised Log Anomaly Detection</td></tr>
+<tr><td>作者</td><td>Shenglin Zhang, Yuhe Ji, Jiaqi Luan, Xiaohui Nie, Zi'ang Chen, Minghua Ma, Yongqian Sun, Dan Pei</td></tr>
+<tr><td>机构</td><td>Nankai University, CNIC (CAS), Microsoft, Tsinghua University</td></tr>
+<tr><td>发表年份</td><td>2024</td></tr>
+<tr><td>会议/期刊</td><td>ASE 2024 (CCF A)</td></tr>
+<tr><td>分类</td><td>日志解析 / 异常检测 / AutoML / 元学习</td></tr>
+<tr><td>核心问题</td><td>无监督日志异常检测的"模型选型 + 特征工程 + 调参"完全自动化</td></tr>
+<tr><td>主要贡献</td><td>1) 首次将 AutoML 端到端用于无监督日志异常检测；2) LogAFE 自适应特征增强框架；3) 基于元学习的协作过滤模型推荐器；4) 在 5 个公开数据集上 F1 平均 0.899</td></tr>
+</tbody>
+</table>
+
+<h2>二、背景（Background）</h2>
+<p>现代分布式软件系统每天生成 GB 到 TB 量级的日志，是故障定位、性能瓶颈分析、异常检测的关键数据源。在拥有数千个微服务的大型系统中，一天的日志条目数往往达到数亿甚至数十亿。靠专家手写规则的传统方法已不可持续：规则维护成本高、漏报严重、跨系统难以复用。</p>
+<p>DeepLog、LogAnomaly、LogBERT、CNN 等多种日志异常检测算法被提出，但工业部署遇到三个顽固痛点：</p>
+<ol>
+<li><strong>算法选择困难</strong>：论文 Table 1 显示 DeepLog 在 BGL 上 F1 最高 0.778、最低 0.501；LogAnomaly 在 BGL 上 0.713/0.671；LogBERT 在 HDFS 上 0.828/0.749。没有任何一个算法能在所有数据集上稳定最优。</li>
+<li><strong>特征工程依赖专家</strong>：Drain 默认参数+基础正则只能把 BGL 解析准确率从 0.901 拉到 0.681，把 HDFS 从 0.990 拉到 0.808。运营人员必须为每种日志定制正则、调 Drain 参数、调模型超参，花费数天到数周。</li>
+<li><strong>超参组合爆炸</strong>：4 个常用超参 × 3 种算法就有 54 种组合，把搜索空间扩展到 11,136,000 后调参几乎不可能手工完成。</li>
+</ol>
+<p>数据科学项目统计显示 15%–26% 的时间花在模型选型上。因此，作者提出：与其不断设计新算法，不如用 AutoML 把"选模型 + 调特征 + 调超参"打包成端到端无监督流水线。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<ul>
+<li><strong>痛点 1 → 方案</strong>：日志多样性让特征工程难自动化 → 设计 LogAFE 自适应特征增强模块</li>
+<li><strong>痛点 2 → 方案</strong>：超参组合爆炸 + 无标签 → 用 PSO 在标签支持集上做粗筛，再训练 meta-learner 做精筛</li>
+<li><strong>痛点 3 → 方案</strong>：跨数据集迁移难 → 设计 59 维元特征向量，并提出 log 数据集相似度衡量</li>
+<li><strong>痛点 4 → 方案</strong>：新数据集冷启动 → 用支持集训练的协作过滤模型在 NDCG@3 上达到 0.9+ 排序质量</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<p>LogCraft 由三大部分构成：</p>
+<p><strong>1) LogAFE</strong>：先用 Drain 默认参数做第一轮解析得到原始模板；再用 <code>all-MiniLM-L6-v2</code> 把每个模板编码成 384 维语义向量；以 cosine 相似度为准则，通过 union-find 把高相似度模板聚合成代表模板；合并后的模板生成 event ID 序列、count 向量、semantic 向量三种特征。</p>
+<p><strong>2) Meta-Learner Construction（基于协作过滤的模型推荐）</strong>：</p>
+<ul>
+<li><strong>搜索空间初始化</strong>：4 种无监督算法（DeepLog, LogAnomaly, CNN, LogBERT）× 11 个超参维度，总计 11,136,000 组合。</li>
+<li><strong>粗筛（PSO）</strong>：在有标签的支持集上跑粒子群优化，3 个算法各保留 top-1000 模型，去重后得到 7,840 个候选，构成矩阵 $P \in \mathbb{R}^{n \times m}$。</li>
+<li><strong>精筛（Matrix Factorization）</strong>：随机初始化 $U \in \mathbb{R}^{n \times d}$、$V \in \mathbb{R}^{m \times d}$，最小化排序损失 $\text{Loss} = 1 - \text{NDCG@3}(P, U V^T)$。</li>
+<li><strong>推理</strong>：用随机森林回归拟合 $M \to U$ 的映射，对新数据集的元特征向量 $m$ 得到 $u = f(m)$，再计算 $q = u \cdot V^T$ 即可得到每个候选模型的预测分数，取最高者部署。</li>
+</ul>
+<p><strong>3) Meta-Feature Extractor</strong>：对每个 log 数据集抽 59 维向量：</p>
+<ul>
+<li>统计特征：最大、最小、数组长度、方差、偏度、峰度、KPSS 统计量+p值+lag</li>
+<li>模型特征：IForest 的决策树数量、LogCluster 的聚类数、簇内/簇间距离</li>
+</ul>
+<p><strong>4) 与现有技术的差异</strong>：以往的日志异常检测框架都依赖"专家+人工"做特征工程和模型选型；LogCraft 是第一个端到端无监督 + 元学习框架，只有一个超参（语义合并阈值 $s_{th}$）需要人工设置。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+<p><strong>5.1 输入 / 输出</strong></p>
+<ul>
+<li>输入：未标记的目标 log 数据集</li>
+<li>输出：训练好的异常检测模型（在测试集上的预测分数）+ F1 评估结果</li>
+</ul>
+<p><strong>5.2 核心模块</strong></p>
+<ol>
+<li>Log 解析 + 语义合并 (LogAFE)</li>
+<li>特征组合生成（event / count / semantic / 组合）</li>
+<li>粗筛：PSO 选出 top-K 候选模型</li>
+<li>训练：协作过滤 $U V^T$</li>
+<li>元特征提取 + 随机森林回归</li>
+<li>推荐：对新数据集输出最佳模型</li>
+</ol>
+<p><strong>5.3 伪代码</strong></p>
+<pre><code>def logcraft(target_set, support_sets, s_th=0.9):
+    # 阶段 1: 训练 meta-learner（仅做一次）
+    candidate_models = []
+    for ds in support_sets:
+        for algo in [DeepLog, LogAnomaly, CNN, LogBERT]:
+            top_k = pso_search(algo, ds, n_particles=2000, n_iter=100)
+            candidate_models.extend(top_k)
+    candidate_models = dedup(candidate_models)  # 7840 个
+
+    P = evaluate_f1(candidate_models, support_sets)  # n x m 矩阵
+
+    # 协作过滤
+    U = init_matrix(n, d)
+    V = init_matrix(m, d)
+    for epoch in range(epochs):
+        loss = 1 - ndcg_at_3(P, U @ V.T)
+        U, V = sgd_step(loss, U, V)
+    rf = train_random_forest(M, U)
+
+    # 阶段 2: 在目标集上做推荐
+    m_target = extract_meta_features(target_set)  # 59 维
+    u_target = rf.predict(m_target.reshape(1, -1))
+    scores = u_target @ V.T
+    best_model_idx = argmax(scores)
+    best_model = candidate_models[best_model_idx]
+    return best_model
+</code></pre>
+<p><strong>5.4 关键数学</strong></p>
+<p>NDCG@k：</p>
+<p>$$\text{NDCG@k} = \frac{\text{DCG@k}}{\text{IDCG@k}}, \quad \text{DCG@k} = \text{rel}_1 + \sum_{i=2}^{k} \frac{\text{rel}_i}{\log_2(i+1)}$$</p>
+<p>协作过滤目标：</p>
+<p>$$\min_{U, V} 1 - \text{NDCG@3}(P, U V^T)$$</p>
+<p><strong>5.5 复杂度分析</strong></p>
+<ul>
+<li>搜索空间大小：11,136,000 组合（论文 Table 4）</li>
+<li>PSO 单数据集单算法：30,082s vs. GA 52,169s vs. RS 22,423s</li>
+<li>推荐阶段：毫秒级（随机森林 + 矩阵乘法）</li>
+</ul>
+<p><strong>5.6 训练与推理</strong></p>
+<ul>
+<li>训练目标：NDCG@3 损失，逼近真实模型排名</li>
+<li>推理：对新数据集先抽元特征再 dot product</li>
+</ul>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[原始日志] --> B[Drain 解析]
+    B --> C[Sentence-BERT 编码]
+    C --> D[union-find 模板合并]
+    D --> E[三路特征<br/>event / count / semantic]
+    E --> F[Meta-Feature Extractor<br/>59 维向量]
+    F --> G[Random Forest Regressor]
+    G --> H[协作过滤 U·V^T]
+    H --> I[最佳模型推荐]
+    I --> J[在目标集训练+检测]
+    H --> K[支持集上 PSO 粗筛]
+    K --> H
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[输入: 目标数据集] --> S2{支持集已训练?}
+    S2 -- 否 --> S3[PSO 粗筛 11M 搜索空间]
+    S3 --> S4[训练/评估得到 F1 矩阵 P]
+    S4 --> S5[协作过滤 U V^T]
+    S5 --> S6[Random Forest 拟合 M->U]
+    S2 -- 是 --> S7[LogAFE 提取元特征 m]
+    S7 --> S8[u = RF m]
+    S8 --> S9[q = u · V^T]
+    S9 --> S10[argmax q 选择最佳模型]
+    S10 --> S11[用最佳模型做异常检测]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 端到端无监督 AutoML</strong>：第一个把"特征工程+模型选择+超参搜索"全部自动化的无监督日志异常检测框架</li>
+<li><strong>+ LogAFE 语义合并</strong>：用 Sentence-BERT 384 维向量 + union-find 自动合并近义模板，把 BGL 模板数从 1823 降到 684</li>
+<li><strong>+ 协作过滤排序损失</strong>：NDCG@3 替代 RMSE，更关注 top-K 推荐质量</li>
+<li><strong>+ 59 维元特征向量</strong>：首次将整个 log 数据集用固定维向量表征</li>
+<li><strong>+ 单超参设计</strong>：$s_{th} \in [0.75, 0.95]$，默认 0.9，部署门槛低</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<p><strong>数据集</strong>：HDFS（11.18M 条）、BGL（4.75M 条）、ThunderBird（5M 条）、Spirit（5M 条）、Liberty（5M 条）。</p>
+<p><strong>Baseline</strong>：PCA, IM, DeepLog, LogAnomaly, CNN, LogBERT, LogTAD</p>
+<p><strong>主要结果（F1 Score）</strong></p>
+<table>
+<thead><tr><th>数据集</th><th>PCA</th><th>IM</th><th>DeepLog</th><th>LogAnomaly</th><th>CNN</th><th>LogBERT</th><th>LogTAD</th><th>LogCraft</th></tr></thead>
+<tbody>
+<tr><td>BGL</td><td>0.594</td><td>0.757</td><td>0.778</td><td>0.713</td><td>0.679</td><td>0.874</td><td>0.644</td><td><strong>0.893</strong></td></tr>
+<tr><td>HDFS</td><td>0.622</td><td>0.668</td><td>0.944</td><td>0.883</td><td>0.828</td><td>0.953</td><td>0.854</td><td><strong>0.992</strong></td></tr>
+<tr><td>ThunderBird</td><td>0.501</td><td>0.533</td><td>0.723</td><td>0.734</td><td>0.740</td><td>0.803</td><td>0.038</td><td><strong>0.859</strong></td></tr>
+<tr><td>Spirit</td><td>0.740</td><td>0.694</td><td>0.718</td><td>0.696</td><td>0.724</td><td>0.816</td><td>0.766</td><td><strong>0.916</strong></td></tr>
+<tr><td>Liberty</td><td>0.612</td><td>0.690</td><td>0.814</td><td>0.752</td><td>0.684</td><td>0.790</td><td>0.943</td><td>0.846</td></tr>
+</tbody>
+</table>
+<p><strong>平均 F1 = 0.899</strong>，超过次优 LogBERT 0.847。</p>
+<p><strong>消融实验</strong>：</p>
+<ul>
+<li>去掉语义合并：性能下降 + 解析模板数翻倍</li>
+<li>用 Global Best 替代协作过滤：NDCG@3 跌到 0.4 以下</li>
+<li>用 RS 替代 PSO：候选集 F1 从 0.899 降到 0.781</li>
+</ul>
+<p><strong>效率分析</strong>：端到端训练时间 ~30,000s；推理时间 < 60s。</p>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ol>
+<li>互联网公司大规模微服务日志异常检测（电商、社交、金融支付）</li>
+<li>云服务提供商的客户日志托管分析</li>
+<li>电信运营商核心网日志监控</li>
+<li>工业 IoT 设备日志异常检测</li>
+<li>一线运维工程师"零门槛"部署</li>
+</ol>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><strong>ART（ASE24-ART）</strong>：同一团队、同一会议，互补解决"事件统一表征 + 多任务"</li>
+<li><strong>DeepHunt（24_TOSEM_DeepHunt）</strong>：同一团队、同样根因方向</li>
+<li><strong>UniDiag（24_TSC_UniDiag_TSC）</strong>：同样融合多模态，但目标是故障诊断</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>Drain</strong>：基于树结构的在线日志解析器</li>
+<li><strong>PSO</strong>：粒子群优化算法</li>
+<li><strong>NDCG@k</strong>：归一化折损累计增益，前 k 个排序质量指标</li>
+<li><strong>Meta-Feature</strong>：表征数据集固有属性的向量</li>
+<li><strong>Sentence-BERT / all-MiniLM-L6-v2</strong>：轻量句向量模型</li>
+<li><strong>KPSS Test</strong>：平稳性检验</li>
+<li><strong>IForest</strong>：孤立森林，离群点检测算法</li>
+<li><strong>LogCluster</strong>：日志聚类异常检测算法</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Drain: He et al., "Drain: An Online Log Parsing Approach with Fixed Structure Tree", ICSE 2017</li>
+<li>DeepLog: Du et al., "DeepLog: Anomaly Detection and Diagnosis from System Logs through Deep Learning", CCS 2017</li>
+<li>LogBERT: Guo et al., "LogBERT: Log Anomaly Detection via BERT", IJCNN 2022</li>
+<li>LogAnomaly: Meng et al., IJCAI 2019</li>
+<li>LogTAD: Wang et al., "LogTransfer", ISSRE 2022</li>
+<li>推荐阅读：Hutter et al., "Automated Machine Learning"（AutoML 综述）</li>
+<li>开源代码：https://doi.org/10.1145/3691620.3695535</li>
+</ul>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

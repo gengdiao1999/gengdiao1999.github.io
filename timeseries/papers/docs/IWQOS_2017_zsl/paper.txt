@@ -1,0 +1,695 @@
+        Syslog Processing for Switch Failure
+   Diagnosis and Prediction in Datacenter Networks
+          Shenglin Zhang † ‡ § Weibin Meng † ‡ § Jiahao Bu † ‡ § Sen Yang ¶ Ying Liu † § Dan Pei ∗ ‡ §
+                        Jun (Jim) Xu ¶ Yu Chen k Hui Dong k Xianping Qu k Lei Song k
+                        † Institute for Network Sciences and Cyberspace, Tsinghua University, Beijing, China
+                     ‡ Department of Computer Science and Technology, Tsinghua University, Beijing, China
+                § Tsinghua National Laboratory for Information Science and Technology (TNList), Beijing, China
+                         ¶ School of Computer Science, Georgia Institute of Technology, Atlanta, GA, USA
+                                                    k Baidu, Inc, Beijing, China
+
+           Email: {zhangsl12, mwb16, bjh16}@mails.tsinghua.edu.cn, sen.yang@gatech.edu, liuying@cernet.edu.cn,
+           peidan@tsinghua.edu.cn, jx@cc.gatech.edu, {chengyu07, donghui02, quxianping, song lei}@baidu.com,
+
+
+   Abstract—Syslogs on switches are a rich source of information         they have to be properly processed (e.g., using machine
+for both post-mortem diagnosis and proactive prediction of switch        learning techniques) before they can be effectively used for
+failures in a datacenter network. However, such information              such purposes [10], [11]. In this paper, we focus on syslog
+can be effectively extracted only through proper processing
+of syslogs, e.g., using suitable machine learning techniques.            processing techniques that can lead to more accurate and
+A common approach to syslog processing is to extract (i.e.,              efficient switch failure diagnosis, detection, or prediction. The
+build) templates from historical syslog messages and then match          current approach to switch syslog processing is to extract
+syslog messages to these templates. However, existing template           message templates from syslog messages and then match the
+extraction techniques either have low accuracies in learning the         syslog messages to the templates [6]–[8]. For example, in the
+“correct” set of templates, or does not support incremental
+learning in the sense the entire set of templates has to be              syslog message Interface ae0, changed state to down, ae0
+rebuilt (from processing all historical syslog messages again)           is a parameter (word) that varies from one message to another
+when a new template is to be added, which is prohibitively               and is not a part of a template, whereas the rest, i.e., Interface
+expensive computationally if used for a large datacenter network.        ..., changed state to up sketches out the event and hence
+To address these two problems, we propose a frequent template            is a template that summarizes this and other similar syslog
+tree (FT-tree) model in which frequent combinations of (syslog)
+words are identified and then used as message templates. FT-             messages.
+tree empirically extracts message templates more accurately                  Despite the crucial role that syslog processing plays in
+than existing approaches, and naturally supports incremental             switch failure diagnosis, detection, or prediction, existing
+learning. To compare the performance of FT-tree and three                syslog processing techniques have low accuracies in learning
+other template learning techniques, we experimented them on
+                                                                         the “correct” set of templates (e.g., Statistical Template Ex-
+two-years’ worth of failure tickets and syslogs collected from
+switches deployed across 10+ datacenters of a tier-1 cloud service       traction (STE) [8] and LogSimilarity [6]), or do not support
+provider. The experiments demonstrated that FT-tree improved             incremental learning in the sense the entire set of templates has
+the estimation/prediction accuracy (as measured by F1) by 155%           to be rebuilt (from processing all historical syslog messages
+to 188%, and the computational efficiency by 117 to 730 times.           again) when a new template is to be added (e.g., the signature
+                      I. I NTRODUCTION                                   tree based method 1 [7] and STE [8]), or both (e.g., STE [8]).
+                                                                         For example (concerning the “low accuracies” case), with
+   As nowadays cloud service providers employ a large num-
+                                                                         STE, some syslog messages cannot match to any template, and
+ber of switches in their datacenter networks, switch failures
+                                                                         with LogSimilarity, two syslog messages could be matched to
+have become a fact of life to be dealt with. For example,
+                                                                         the same template even when they represent very different
+tens of thousands of switches are deployed in Microsoft’s
+                                                                         events and should be matched to different templates.
+datacenter network [1], in which 400+ switch failures occur
+                                                                             Syslog-based failure diagnosis or prediction usually em-
+each year [2]. As a switch failure often has a significant
+                                                                         ploys machine learning techniques to discover patterns from
+impact on the performance of a datacenter network, much
+                                                                         historical failures [6], [8], [12], [13]. The underlying diagnosis
+research efforts have been devoted to the diagnosis or proactive
+                                                                         or prediction model, consisting of the set of templates and
+detection of switch failures, resulting a host of diagnosis or
+                                                                         the associated statistics, needs to be kept up-to-date, through
+proactive failure detection techniques in recent years [3]–[6].
+   Syslog messages generated by these switches (and routers)             retraining, every once in a while. It is highly desirable for the
+have long been recognized as a rich source of information                set of templates to be incrementally retrainable for the fol-
+for (switch) failure diagnosis, detection, or prediction [6]–            lowing reason. Network operators frequently conduct software
+[9]. However, since syslogs are usually unstructured texts,              or firmware upgrades on switches to introduce new features,
+
+  ∗ Dan Pei is the correspondence author.                                  1 Hereafter, we collectively refer to this method as Signature Tree
+
+
+
+
+                                                                     1
+or fix bugs in the previous version [14], [15]. These updates
+                                                                                                      Inter-DC
+can generate new subtypes of syslog messages that cannot                                              Network
+match to any existing template, thus requiring new templates
+to be extracted from these new messages and added to the set.                   Core IDPS               Core
+                                                                                                       Router              IDPS
+If the template extraction model (i.e., the set of templates)                         Firewall                            Firewall
+                                                                                                       Access
+is incrementally retrainable, only the syslog messages that                      L3                    Router
+                                                                                       VPN                                 VPN
+arrive after the previous (retraining) update need to be matched                       Load                                Load
+                                                                                                     Aggregation
+to the new set of templates (possibly with new templates                              balancer         Switch             balancer
+added as a result of software/firmware upgrades); otherwise,                     L2
+                                                                                                        ToR
+all historical syslog messages have to be reprocessed (i.e.,                                           Switch
+retrained) according to the new set of templates. The latter case
+(not incrementally retrainable), which STE and Signature Tree
+fall into, is prohibitively expensive computationally if used                                          Server
+for a large datacenter network that employs tens of thousands
+of switches and “learns” from historical syslogs and failure
+tickets accumulated over a long period of time (say two years).                Fig. 1: Typical datacenter network architecture
+
+   We propose a novel frequent template tree (FT-tree) tech-
+nique that both has high accuracy in identifying “correct” tem-                                  II. BACKGROUND
+plates, and is incrementally retrainable. Based on the observa-            In this section, we first describe switch syslogs in details in
+tion that a “correct” message template is usually a combination         Section II-A. Then in Sections II-B and II-C respectively, we
+of words that occur frequently in syslog messages, FT-tree              introduce syslog-based failure diagnosis and prediction, and
+dynamically maintains a tree structure of such frequent words           describe the intuitions behind extracting templates for such
+that implicitly defines the set of message templates. Since this        purposes.
+implicitly-defined set of message templates dynamically and
+“gradually” (i.e., incrementally) evolves with the arrival of new       A. Switch Syslogs
+syslog messages, which may be of the new message subtypes                  Each switch reports, from time to time, the observed hard-
+(due to the aforementioned software/firmware upgrades), FT-             ware/software condition or (anomalous) event, in a syslog
+tree is naturally incrementally retrainable. Intuitively, FT-tree       message. Examples of such conditions or events include state
+also empirically guarantees that, with high probability, the            changes of interfaces, links, or neighbors (e.g., the state of
+template extracted from a given syslog message accurately               an interface changes from up to down), operational main-
+characterizes the event that the message describes.                     tenance (e.g., operators log in/out), environmental condition
+                                                                        alerts (e.g., high temperature), etc. Although syslog messages
+   To compare the performance of FT-tree to those of Signature          are designed mainly for debugging software and hardware
+Tree, STE, and LogSimilarity, we applied failure tickets and            problems of the switches, they can also be used for root
+syslogs collected from 2, 223 switches deployed across 10+              cause analysis of a network incident. Hence, usually dedicated
+datacenters owned by a tier-1 cloud service provider over               servers are deployed in a datacenter network to collect syslog
+a two-year period. We evaluated the accuracies of the four              messages from all its switches.
+techniques based not only on manual classifications of syslog              As can be seen from several example syslog messages
+messages, but also on the failure prediction results. FT-tree           shown in Table I, a syslog message usually has a simple
+and Signature Tree achieve the same accuracy, and they both             structure consisting of several fields, including a timestamp
+improve the prediction accuracy by 155% to 188% compared                recording when the switch generated the syslog message, a
+to STE and LogSimilarity. However, Signature Tree and STE               switch ID identifying the switch that generated the message,
+respectively consume 730 times and 117 times more compu-                a message type that describes the rough characteristics of the
+tational resources than FT-tree, as they are not incrementally          message, and a message body depicting the details of the event.
+retainable. The evaluation results clearly demonstrate the ben-         The syntax and semantics of the message type field and the
+efits of FT-tree: highly accurate and incrementally retrainable.        detailed message field vary with switch vendors and models.
+
+   The rest of the paper is organized as follows. We provide            B. Failure Diagnosis and Prediction
+an introduction to switch syslog, switch failure diagnosis and             A switch failure occurs when the service provided by
+prediction, and the intuition behind extracting templates in            a switch (traffic forwarding) deviates from the norm [16],
+Section II. The design of FT-tree is described in Section III.          [17]. Switch failures are known to significantly impact the
+The evaluation of FT-tree is presented in Section IV. The re-           performance of datacenter networks. For example, the switch
+lated works, including Signature Tree, STE and LogSimilarity,           failures in the datacenters of Colo4 [18], and Hosting.com [19]
+are discussed in Section V. Finally, we conclude our paper in           all brought outages to their datacenters. Although switches in
+Section VI.                                                             datacenter networks have built-in failover technologies, such
+
+
+
+                                                                    2
+                                         TABLE I: Examples of switch syslog messages
+      Vendor          Time stamp          Switch ID        Message type                       Detailed message
+     Vendor 1    Jan 23 14:24:41 2016     Switch 1         SIF                                Interface te-1/1/8, changed state to up
+     Vendor 1    Mar 19 15:04:11 2016     Switch 4         OSPF                               A single neighbour should be configured
+                                                                                              Attempt to send lacpdu on port(38)
+     Vendor 1    Apr 16 08:07:19 2016     Switch 4         lacp
+                                                                                              from lag failed,Transport failed
+     Vendor 2    Apr 21 14:53:05 2016     Switch 11        10DEVM/2/POWER FAILED              Power PowerSupply1 failed
+     Vendor 2    Sep 23 00:10:39 2015     Switch 13        10IFNET/3/LINK UPDOWN              GigabitEthernet1/0/18 link status is DOWN
+                                                           10CFM/5/CFM SAVE
+     Vendor 2     Nov 8 07:29:06 2015     Switch 17                                           Configuration is saved successfully
+                                                           CONFIG SUCCESSFULLY
+
+
+
+         Non-ominous        s           e         h                    Suppose a failure occurs at τh . The mission of switch failure
+        message sequence                                                  prediction is to predict the failure at any time bin τx within
+                                              ∆𝜏𝑎
+                ∆𝜏𝑚               x                                      [τs , τe ]. Because network operators need at most ∆τa time
+                                                                          to react to a positive failure prediction, such as to reroute the
+                      y                                                  traffic and to replace the failure-looming switch, τe is ahead of
+                           ∆𝜏𝑚                   Failure
+                                                                          τh by ∆τa . While making the duration [τs , τe ] longer always
+                       Ominous message
+                          sequence
+                                                                          leads to a higher precision of failure prediction (e.g., if we set
+                                                                          this duration to ∞, a positive failure prediction guarantees to
+Fig. 2: The model of switch failure prediction. For a given               be correct), if the duration of [τs , τe ] is too long, the (positive
+switch failure occurred at τh , our mission is to predict the             failure) prediction is of little use as it does not provide a clear
+failure during [τs , τe ]. τe is ∆τa before τh for network opera-         guidance to operators as to whether the switch at issue needs
+tors need at most ∆τa to react to a positive failure prediction.          to be replaced and when. Hence, in this work, we try to make
+For any τx in [τs , τe ], the syslog sequence in [τx − ∆τm , τx ]         this duration meaningfully small.
+is an ominous message sequence, while the syslog sequence                     The failure prediction at any time τx in Fig. 2 is based on
+in [τy − ∆τm , τy ] is a non-ominous message sequence when                the statistical analysis (i.e., machine learning) of the switch
+τy ∈/ [τs , τh ].                                                         syslog messages within the interval [τx − ∆τm , τx ] leading
+                                                                          up to τx . Hence, we refer to the syslog message sequence
+                                                                          within the interval [τx −∆τm , τx ] simply as τx ’s corresponding
+as replicating data for services and deploying a backup switch            message sequence. For any time τx , we call τx0 s corresponding
+for redundancy, they do not “mask” all switch failure scenar-             message sequence or the time τx ominous if τx ∈ [τs , τe ] –
+ios [16] (see Figure 1). Therefore, it is important to accurately         because in this case τx is close enough to the failure time
+and quickly diagnose switch failures so that measures can                 τh and its corresponding message sequence should give some
+be taken to effectively and promptly mitigate the service                 cues about the imminent failure – and the number of messages
+degradation brought by the failures. Furthermore, if we can               in the sequence is large enough (say at least θ) to allow for
+accurately predict switch failures, carefully reroute the traffic,        meaningful statistical analysis. Similarly, for any τy ∈   / [τs , τh ],
+and replace the switches before failures actually happen, we              τy0 s corresponding message sequence or the time τy is called
+can keep the impact of switch failures on datacenter network              non-ominous – because it is not close enough to the failure
+performance to a minimum.                                                 time τh – as long as there are at least θ syslog messages in
+   In this paper, we focus on diagnosis or prediction of a                the sequence. The time bins described later all contain enough
+single switch failure, and do not consider the relationship               syslog messages (to exceed this threshold θ) so that it is either
+between two spatially and temporally related switch failures.             ominous or non-ominous. Then the failure prediction problem
+In addition, we do not explore the detailed network topology              becomes that of classifying each time bin as either ominous
+of data center network in this work.                                      or non-ominous.
+   While syslog-based network device failure diagnosis has
+been a well formulated problem [6], [7], [20], syslog-based               C. Syslog Processing for Failure Diagnosis and Prediction by
+failure prediction has not been investigated before. Hence,               Extracting Templates
+we derive the switch failure prediction problem formulation                  Since switch syslog messages are unstructured texts in many
+from that of the failure prediction for computer systems [17].            different forms, and a certain pair of neighboring IP addresses
+More specifically, the objective of switch failure prediction is          or interface IDs that appear in a syslog message may never
+to determine in real time whether a switch failure will happen            appear again, it is nearly infeasible to extract patterns from raw
+in the near future, based on the the switch and network status            syslog messages for failure diagnosis or prediction. Although
+information contained in the syslog messages.                             there is a message type field (see Table I) that describes
+   Fig. 2 illustrates the task of switch failure prediction. For          the schematic characteristics of the event in each syslog
+this task, the (continuous) time is discretized into small time           message, each message type can include multiple subtypes. For
+bins of fixed duration (say 15 min) and numbered as integers.             example, although there are 12 syslog messages in Table II that
+
+
+
+                                                                     3
+                                  TABLE II: Example of syslog sequence before a switch failure
+        Time stamp    Message type     Detailed message
+        9:21:10           SIF          Interface ae3, changed state to down
+        9:22:23           SIF          Vlan-interface vlan22, changed state to down
+        9:23:45           SIF          Interface ae3, changed state to up
+        9:25:28           SIF          Vlan-interface vlan22, changed state to up
+        9:27:20          OSPF          Neighbour(rid:10.231.0.42, addr:10.231.38.85) on vlan22, changed state from Full to Down
+        9:30:31           SIF          Interface ae1, changed state to down
+        9:32:34           SIF          Vlan-interface vlan20, changed state to down
+        9:35:25           SIF          Interface ae1, changed state to up
+        9:39:21          OSPF          Neighbour(rid:10.231.0.40, addr:10.231.36.85) on vlan20, changed state from Full to Down
+        9:41:29           SIF          Vlan-interface vlan20, changed state to up
+        9:41:52          OSPF          A single neighbour should be configured
+        9:42:50           SIF          Interface ae1, changed state to down
+        9:44:38           SIF          Vlan-interface vlan20, changed state to down
+        9:45:15           SIF          Interface ae1, changed state to up
+        9:47:58           SIF          Vlan-interface vlan20, changed state to up
+        9:49:25          OSPF          A single neighbour should be configured
+
+
+         TABLE III: Syslog message subtypes of SIF                                       III. F REQUENT T EMPLATE T REE
+      Subtype No.    Subtype structure                                        Our objective in syslog processing is to automatically ex-
+          N1         Interface *, changed state to down                    tract template and subtype information from syslog messages
+          N2         Interface *, changed state to up
+          N3         Vlan-interface *, changed state to down               without relying on any domain knowledge. Although three
+          N4         Vlan-interface *, changed state to up                 techniques, namely Signature Tree, STE, and LogSimilarity,
+                                                                           were proposed for this purpose, they are not well suited for
+                                                                           our application scenario due either to their low accuracies
+                                                                           (in template or subtype extraction) or to their inability to be
+belong to the message type “SIF” (system interconnect fabric)              incrementally trained. Inspired by the Frequent Pattern Tree
+and describe the switch status changes collected using SIF                 (FP-tree) [21], we propose FT-tree, an incrementally trainable
+technology, the detailed messages can be quite different. The              technique with high accuracy for template and subtype extrac-
+detailed message field of syslog messages is essentially free-             tion. FT-tree is an extended prefix-tree structure for encoding
+form text, and a switch’s OS usually generates this field using            message templates. The basic idea behind FT-tree is that, a
+the “printf” function with detailed information as variables,              syslog message subtype is usually the longest combination of
+such as the location (line card/port/interface), package loss              words with high frequencies, and hence extracting a template
+ratio, IP address, etc. For instance, the detailed message field           is equivalent to identifying such longest combination of fre-
+of the syslog message in the first line of Table II, i.e., Interface       quent words from syslog messages.
+ae3, changed state to down, means that the event impacted                     In the following, we first introduce the design and construc-
+on interface ae3, and, as a result, the state of the interface             tion of FT-tree in Section III-A, and then demonstrate how FT-
+changed to down. In other words, the ae3 part is the detailed              tree facilitates incremental template learning in Section III-B.
+information variable, whereas the rest parts, i.e., Interface ...,
+changed state to up, are predefined outputs by the switch’s                A. Design and Construction
+OS and can be used as a subtype for the syslog messages                       Let I = a1 , a2 , ..., am be the set of distinct words that
+that belong to this message type, i.e., SIF. When we mask                  occur in a message set DM = hM1 , M2 , ..., Mn i, where each
+the variable for the detailed message field of the 12 syslog               Mi is a syslog message. The support (i.e., the frequency of
+messages, i.e., interface number or vlan-interface number                  occurrence) of a word combination (i.e., a set of words) A, is
+using the same symbol, e.g., an asterisk as shown in Table IV,             the number of distinct messages containing A in DM . A is
+there are only four different syslog message structures, or                considered a template if A is occurring frequently (i.e., with
+subtypes. However, manually obtaining all subtypes without                 a large support).
+domain knowledge is almost impossible because not every part                  The second column of Table IV shows an example syslog
+that should be masked in the detailed message can be as easily             message set DM = hM1 , M2 , ..., M8 i, in which every mes-
+characterizable as the interface number. In addition, although             sage belongs to the message type “SIF” (see in the second
+part of the syslog subtypes can be obtained with support from              column of Table II). The FT-tree for this DM is constructed,
+vendors, these subtypes may change due to software upgrades.               using the algorithm shown in Algorithm I, as follows.
+Therefore, our objective is to automatically obtain message                   First, our FT-tree construction algorithm scans DM once
+templates in which the need-to-be-masked parts are removed                 (line 1 in Algorithm I), and derives a list L of words in the
+and the message subtypes are retained without relying on any               descending order of their frequencies of occurrences (the num-
+domain knowledge.                                                          ber after each “:”). Clearly, L = h(“changed”:8), (“state”:8),
+
+
+
+                                                                       4
+    TABLE IV: Different messages belonging to message type “SIF” in Table II, and the words ordered according to L
+      Message No.     Detailed Message                                   Words ordered according to L
+          M1          Interface ae3, changed state to down               “changed”, “state”, “to”, “Interface”, “down”, “ae3”
+          M2          Vlan-interface vlan22, changed state to down       “changed”, “state”, “to”, “Vlan-interface”, “down”, “vlan22”
+          M3          Interface ae3, changed state to up                 “changed”, “state”, “to”, “Interface”, “up”, “ae3”
+          M4          Vlan-interface vlan22, changed state to up         “changed”, “state”, “to”, “Vlan-interface”, “up”, “vlan22”
+          M5          Interface ae1, changed state to down               “changed”, “state”, “to”, “Interface”, “down”, “ae1”
+          M6          Vlan-interface vlan20, changed state to down       “changed”, “state”, “to”, “Vlan-interface”, “down”, “vlan20”
+          M7          Interface ae1, changed state to up                 “changed”, “state”, “to”, “Interface”, “up”, “ae1”
+          M8          Vlan-interface vlan20, changed state to up         “changed”, “state”, “to”, “Vlan-interface”, “up”, “vlan20”
+
+
+(“to”:8), (“Interface”:4), (“Vlan-interface”:4), (“down”:4),             Algorithm 1 FT-tree construction
+(“up”:4), (“ae3”:2), (“ae1”:2), (“vlan22”:2), (“vlan20”:2)i.             Input: A message set DM that contains all the different
+   Then, we create the root of a tree which is labeled with                  messages of a specific message type, and a threshold k.
+the message type, which in this case is “SIF”. Our FT-tree               Output: A FT-tree, T
+construction algorithm scans DM for a second time (lines 5                1: Scan the message set DM once.
+through 9 in Algorithm I). The processing of M1 leads to the              2: Calculate the support for each word in I.
+construction of the first path/branch of the tree: h“changed”,            3: Let L be the list of words in the descending order of their
+“state”, “to”, “Interface”, “down”, “ae3”i (a word in an FT-tree             supports.
+is called the word-name of the node containing the word).                 4: Create the root of T and label it as the message type.
+Note these words are ordered according to the order of the                5: for each message in DM do
+words in L. When M2 is processed, since its ordered word list             6:   Sort its words according to their order in L
+h“changed”, “state”, “to”, “Vlan-interface”, “down”, “vlan22”i            7:   Let the sorted word list be [p|P ], where p is the first
+shares a common prefix h“changed”, “state”, “to”i with the                     element and P is the remaining list
+existing path/branch h“changed”, “state”, “to”, “Interface”,              8:   Call insert tree([p|P ], T )
+“down”, “ae3”i, a new branch h“Vlan-interface”, “down”,                   9: end for
+“vlan22”i is created as a subtree of node h“to”i. The rest six           10: for Child C in T do
+messages in Table IV are processed similarly, resulting in the           11:   if C has more than k children then
+final FT-tree shown in Fig. 3 (the rightmost tree).                      12:      Eliminate all the children of C
+   Finally, we prune the tree until it satisfies the following           13:   end if
+node degree constraint (lines 10 through 14 in Algorithm I).             14: end for
+Intuitively, there should be only a small number of subtypes             15: return T
+for each message type, and, for each subtype, there should be
+many different messages that match to it. Therefore, if a node
+has too many children (say exceeding a threshold k), all its             and new templates need to be generated for these messages
+children (or subtrees) are deleted from the tree and the node            to match to. As shown in Fig. 3 and Algorithm 1, this is
+becomes leaf itself. In the pruned FT-tree, each root-to-leaf            accomplished via inserting new nodes/branches to the FT-tree.
+path is a message template (i.e., type + subtype). For example,          It is also clear from Algorithm 1 that such insertions can
+h“SIF”, “changed”, “state”, “to”, “Interface”, “down”i is a              be done incrementally, by scanning only the recently arrived
+message template, as shown in Figure 3.                                  syslog messages (after the OS or firmware upgrade) twice.
+   Definition 1: As illustrated by the above example, given a            More specifically, when a new message Mnew that does not
+specific message type, its FT-tree is defined as follows:                match any template arrives, a new branch is inserted into
+   1) Its root is labeled by the message type, and each root-            the FT-tree by calling insert tree() (line 8) in Algorithm 1.
+       to-leaf path corresponds to a message template.                   Please note that, if one or more words in Mnew do not exist
+   2) Each non-root node in the FT-tree has only one at-                 in L, we will add these words to the tail of L. When a switch
+       tribute/field, namely word-name, which registers which            starts to generate new subtypes of messages, it is highly likely
+       word this node represents.                                        that, in one day, these messages will contain enough number
+   It remains to describe the function insert tree([p|P ], T )           (more than the pruning threshold k) of distinct parameter
+in Algorithm 1. It works as follows. If @N , N.word-name =               words (such as “ae3”, “vlan22” in Figure 3) as the children
+p.word-name, and N is a child of T , then create a new node              of a node, so that this node becomes a leaf itself after the
+N , and make it a child of T . If P 6= Φ, call insert tree(P, N )        pruning.
+recursively.                                                                We illustrate this incremental learning process by an exam-
+                                                                         ple shown in Fig. 3. Suppose that a new message Mnew =
+B. Incremental Template Learning                                         “Interface ae1 changed state to RETURN” arrives, and that
+   As mentioned earlier, for a given message type, new sub-              right before this arrival, the FT-tree is the rightmost tree shown
+types of messages can emerge due to OS or firmware upgrades,             in Figure 3, but with all leaf nodes (“ae3”, “ae1”, “vlan22”,
+
+
+
+                                                                     5
+   SIF                                    SIF                                 SIF                                                             SIF
+
+                  M1                                           M2           changed
+                                                                                                               ...                          changed
+                                     changed
+
+                                         state                               state                                                           state
+
+                                          to                                  to                                                              to
+
+
+                 Interface                                 Interface                           Vlan-                 Interface                                 Vlan-
+                                                                                             interface                                                       interface
+
+            down                                     down                             down                 down                  up                   down                 up
+
+
+          ae3                                      ae3                         vlan22                    ae3     ae1      ae3         ae1      vlan22 vlan20      vlan22        vlan20
+
+
+                                                           Fig. 3: Example of constructing an FT-tree
+
+
+                                          SIF                                             which we will explain shortly, can, to a certain extent, be
+                Mnew
+                                                                                          considered the ground truth. We focus on this homogenous
+                                         changed
+                                                                                          subset of switches (of the same model) because they share
+                                          state                                           the same failure pattern (i.e., observable behaviors before,
+                                                                                          during, and after a failure), and hence intuitively share the
+                                           to
+                                                                                          same underlying statistical model for the machine-learning-
+                                                            Vlan-
+                                                                                          based failure diagnosis or prediction.
+                   Interface
+                                                          interface                          We also collected switch hardware failure data over the
+           down          up       RETURN           down                up
+                                                                                          same time period across the same data centers, which consist
+                                                                                          of the following three types.
+                                   ae1                                                    Failure tickets. When a service anomaly event is detected
+                                                                                          (e.g., the average response time of the search engine deterio-
+                Fig. 4: FT-tree after Mnew is added                                       rates significantly for more than a minute or two) and a switch
+                                                                                          failure is suspected as the root cause (e.g., the total amount of
+                                                                                          traffic to all servers connected to a switch sees a significant
+etc.) pruned. Then the new message arrival Mnew results in the                            drop during the same time period), a failure ticket is generated
+insertion of the branch (“RETURN”→“ae1”) to the FT-tree,                                  (by the data center performance monitoring system) and sent
+and the new leaf “ae1” will eventually be pruned as explained                             to the network operators. The network operators will then look
+earlier.                                                                                  into this ticket and determine whether the service deterioration
+   After learning the templates from syslog messages, we can                              was indeed caused by the suspected switch failure, and record
+match a historical syslog message or a recent syslog message                              this event in a failure ticket.
+to a specific template, which is encoded as a numerical value.
+                                                                                          Proactive switch failure detection via SNMP polling. In
+More specifically, for a syslog sequence (s1 , s2 , ..., sn ), if si
+                                                                                          the tier-1 cloud service provider we are working with, the
+is matched to template tsi , we refer to (ts1 , ts2 , ..., tsn ) as the
+                                                                                          real-time status of a switch, such as its CPU and memory
+template sequence of (s1 , s2 , ..., sn ).
+                                                                                          utilizations and the traffic rate at each interface, is constantly
+                               IV. E VALUATION                                            monitored by the network operators via SNMP polling. If a
+   In this section, we evaluate and compare the performance                               problem in packet forwarding occurs at one or more interfaces,
+of FT-tree to those of Signature Tree, STE and LogSimilarity                              network operators will research the root cause of the failure
+using syslogs and failure tickets collected from real-world                               and record this event accordingly.
+sources. We evaluated the accuracies of these four techniques                             Proactive switch failure detection via syslogs. Vendors usu-
+in both template learning (Section IV-B) and failure prediction                           ally provide operational instructions for their switch products,
+(Section IV-C), and compared their efficiency in Section IV-D.                            which include a list of syslog keywords that may indicate
+                                                                                          a switch failure. A regular expression match, by a syslog
+A. Data Sets                                                                              message, with any of these keywords will alert network
+   In cooperation with a a tier-1 cloud service provider, we                              operators of a possible switch failure. When alerted, network
+collected all syslog messages over a 2-year period from all                               operators will verify whether the event is indeed a switch
+switches of a specific (switch) model across more than 10                                 failure and identify the root cause of the failure if the answer
+datacenters owned by this cloud service provider. Syslog-based                            is yes. However, such regular expression matching technique
+failure diagnosis and prediction was then performed over this                             can only detect a small portion of switch failures (i.e., high
+syslog data set and compared against the switch failure data,                             false negative rates) in practice, and can also have false
+
+
+
+                                                                                      6
+            TABLE V: Detailed information for switches                 one switch model, and collected all the switches that belong
+     #        # failed   # switches   # Ominous    # Non-ominous       to this switch model, and analyzed all the syslogs of the
+ failures     switches     in total    time bins      time bins        switches. That is, billions of syslog messages were analyzed
+   228          131         2223         1273        5,516,435         for the above switches and, thus, manually classifying all
+                                                                       the syslogs was prohibitive. Thereby, we randomly collected
+                                                                       a sample of syslog messages for the evaluation as follows.
+positives [16]. Therefore, in this work we employ a machine            We first randomly picked four message types (see Table I for
+learning technique based on HSMM (Hidden Semi-Markov                   the definitions) from all switches. For each message type,
+Model) – which uses a sequence of syslog messages rather               we randomly collected 500 syslog messages. The network
+than a single syslog message – to predict switch failures.             operators then manually classified the syslog messages based
+   Since every such switch hardware failure event (of any of           on the event each message represents. Considering the large
+the above three types) was all manually verified by the network        number of the syslog messages that should be manually
+operators, this failure data set can serve as the ground truth         classified (2000), this is a large amount of work. After that, we
+for our evaluations.                                                   ran FT-tree, Signature Tree, STE, and LogSimilarity to learn
+   Based on their experience, network operators believe that           the templates for the above syslog messages, respectively.
+the syslogs within 24 hours before a switch failure have high             We applied the Rand index [22] technique to quantitatively
+predicative power; once a failure is so predicted, they need no        compare the accuracy of the four techniques. Rand index is
+more than 30 minutes to react to a positive failure prediction         a popular technique for evaluating the similarity between two
+(e.g., by rerouting the traffic and replacing the switch). How-        data clustering techniques. We could evaluate the accuracy for
+ever, constantly maintaining and processing syslogs within a           each technique by calculating the Rand index between the
+sliding window of 24 hours for the online failure prediction is        manual classification results and the templates learned by the
+too computationally expensive. Fortunately, after analyzing the        technique. Specifically, among the template learning results of
+syslogs right before dozens of know switch failures, we found          a specific technique for a given message type, we randomly
+that in most cases a 2-hour sliding window of syslog messages          selected two messages, i.e., x and y, and defined a, b, c, d as
+within 24 hours before a given failure can capture the ominous         follows:
+pattern. We also found that, if there are less than five syslog
+                                                                         • a: x and y are manually classified into the same cluster
+messages in a time bin’s corresponding message sequence,
+                                                                           and they have the same template;
+the extracted template sequence would be too short to capture
+                                                                         • b: x and y are manually classified into different clusters
+the ominous pattern and hence cannot be used for failure
+                                                                           and they have different templates;
+prediction. Therefore, in our evaluation experiments, we set
+                                                                         • c: x and y are manually classified into different clusters
+∆τm = 2 h, ∆τa = 30 min, [τs , τe ] = 24 h, ξ = 15 min, and
+                                                                           and they have the same template;
+θ = 5. Table V illustrates the number of hardware failures, the
+                                                                         • d: x and y are manually classified into the same cluster
+number of failed switches, the number of switches in total, the
+                                                                           and they have different templates;
+number of ominous time bins, and the number of non-ominous
+time bins.                                                             Moreover, the Rand index can be calculated using the above
+                                                                       terms as follows:
+B. Evaluation of Template Learning Accuracy
+                                                                                                          a+b
+   As mentioned earlier, three techniques were proposed in                             Rand index =                                 (1)
+                                                                                                        a+b+c+d
+previous works for parsing syslog messages and learning
+syslog templates for network devices, i.e., Signature Tree [7],           Fig. 5 shows the Rand indexes for FT-tree, Signature
+STE [8], and LogSimilarity [6]. In addition, we propose                Tree, STE, and LogSimilarity among the four message types.
+a novel template extraction technique, i.e., FT-tree, for ac-          FT-tree and Signature Tree achieved averaged close-to-1
+curately and incrementally learning templates from syslog              Rand indexes and performed excellent across all the four
+messages. After analyzing the four techniques, we believe              message types. In contrast, STE and LogSimilarity achieved
+that FT-tree and Signature Tree are more accurate in template          relatively low averaged Rand indexes, i.e., 62.10% and
+extraction than STE and LogSimilarity in our scenario (see             59.31%, respectively. This is because STE cannot match some
+Section V for more details). To demonstrate our analysis, we           specific syslog messages to any template, and LogSimilarity
+here compare the performance of the four techniques using              may match some specific syslog messages belonging to dif-
+real-world switch syslogs.                                             ferent subtypes to the same template (see Section V for more
+   Learning templates from syslog messages is equivalent to            details). FT-tree and Signature Tree are both word frequency
+classifying syslog messages based on the events they describe.         based techniques, i.e., both FT-tree and Signature Tree are
+Since the network operators analyze switch syslogs every               constructed based on the frequency of words in messages. As a
+day, they are really familiar with the event that a given              consequence, the templates extracted by FT-tree and Signature
+syslog message represents. Therefore, we can use the network           Tree are almost identical. However, FT-tree can construct a
+operators’ manual classification results of syslog messages as         tree and learn templates incrementally, whereas Signature Tree
+the ground truth. As described in Section IV-A, we picked              cannot.
+
+
+
+                                                                   7
+                                                    FT-tree                                                                                    FT-tree
+                                             Signature Tree                                1.2                                          Signature Tree
+                    1.2                                STE                                                                                        STE
+                                               LogSimilarity                                 1                                            LogSimilarity
+                     1
+                                                                                           0.8
+     Random Index
+
+
+
+
+                                                                              Precision
+                    0.8
+                                                                                           0.6
+
+                    0.6                                                                    0.4
+
+
+                    0.4                                                                    0.2
+
+                                                                                             0
+                    0.2
+
+                                                                                           -0.2
+                     0                                                                            0        0.2         0.4            0.6         0.8     1
+                          Type1   Type2   Type3      Type4                                                                   Recall
+
+Fig. 5: Comparison of rand indexes for FT-tree, Signature                Fig. 6: Comparison of PRCs among FT-tree, Signature Tree,
+Tree, STE and LogSimilarity among four message types                     STE, and LogSimilarity
+
+                                                                         TABLE VI: P recision, Recall and F 1 measure of FT-tree,
+C. Evaluation of Failure Prediction Accuracy                             Signature Tree, STE and LogSimilarity
+                                                                                            technique            P recision      Recall        F 1 measure
+   Since FT-tree, Signature Tree, STE and LogSimilarity are                                  FT-tree               32.27%        95.3%            48.21%
+all template extraction techniques for failure diagnosis or pre-                          Signature Tree           32.27%        95.3%            48.21%
+diction, we evaluated the four techniques directly on the basis                                STE                  9.14%        99.6%            16.75%
+                                                                                          LogSimilarity            10.67%        83.5%            18.93%
+of not only the template learning results, but also the failure
+prediction results following [10], [11]. HSMM (Hidden Semi-
+Markov Model) is a popular failure prediction technique used               Figure 6 shows the comparison of the precision recall curves
+for predicting failures based on logs [12]. It was demonstrated          (PRCs) of the failure prediction results of FT-tree, Signature
+with high accuracy using data collected from commercial                  Tree, STE, and LogSimilarity. Please note that, in a PRC, to
+cellular networks. Therefore, we here applied HSMM as                    the upper right means a good accuracy, whereas to the left
+the failure prediction technique to demonstrate the template             bottom means a bad one. As mentioned earlier, the templates
+learning performance of FT-tree, Signature Tree, STE, and                extracted by FT-tree and Signature Tree are almost identical
+LogSimilarity.                                                           and, thus, they had the same PRCs. Through the PRCs, we
+   A system’s capability to predict failure is usually assessed          can see that applying FT-tree or Signature Tree for learning
+by the following three intuitive metrics: P recision, Recall             templates achieved a much better failure prediction accuracy
+and F 1 measure [12], [17]. Hence we used these metrics to               than applying STE and LogSimilarity.
+evaluate the performance of each technique. For a time bin, ac-            To intuitively compare the best accuracy, we show in
+cording to the ground truth provided by the network operators,           Table VI the P recision, Recall and F 1 measure when the
+we knew the outcome as either an ominous time bin or a non-              prediction system achieved the best F 1 measure. Whereas
+ominous one. For each technique, we labeled its outcome as a             the four techniques achieved an approximate Recall, FT-tree
+true positive (TP), true negative (TN), false positive (FP), and         and Signature Tree improved the P recision for the failure
+false negative (FN). True positives were ominous time bins that          prediction system by 202% to 253% and the F 1 measure by
+were accurately determined as such by the technique, and true            155% to 188%.
+negatives were time bins that were accurately determined as
+non-ominous. If the technique determined that a time bin was             D. Evaluation on Computational Efficiency
+an ominous one when, in fact, it was actually non-ominous, we              As mentioned earlier, network operators may frequently
+then labelled the outcome as a false positive. False negatives           conduct firmware or software upgrades on switches to intro-
+were ominous time bins that were incorrectly missed by the               duce new features or fix bugs in the previous versions [14],
+technique. We calculated the Precision, Recall and F 1 mesure            [15]. New subtypes of syslog messages can be generated be-
+as follows: P recision = T PT+F      P                      TP
+                                       P , Recall = T P +F N ,           cause of the said upgrades and, thus, new templates should be
+                 2∗P recision∗Recall
+F 1 mesure = P recision+Recall .                                         extracted. Otherwise, these new subtypes of syslog messages
+   We used the 10-fold cross validation model to evaluate the            cannot be matched to any template. Since both FT-tree and
+four techniques [23]. 10-fold cross validation is a model vali-
+dation technique that provides an insight on how a prediction            TABLE VII: Comparison of template matching time per day
+model will generalize to an independent dataset [24]. The                for FT-tree, Signature Tree, STE and LogSimilarity
+benefit of 10-fold cross-validation is that all time bins are used
+for both training and validation, and each time bin is used for                           FT-tree     Signature Tree             STE         LogSimilarity
+validation exactly once.                                                                  51 min          628 h                 100 h          80 min
+
+
+
+                                                                     8
+LogSimilarity learn templates in an incremental manner, when             spam detection, Qiu et al. proposed a template extraction
+new subtypes of syslog messages occur it is not necessary that           technique [7]. The idea behind this technique is that a syslog
+all the templates have to be retrained and all the historical            message subtype is usually a combination of words with high
+syslogs have to be matched to new templates. However, if                 frequency. Therefore, for syslog messages that belong to a
+new subtypes of syslog messages occur, we have to retrain all            given message type, the technique constructs a signature tree
+the templates and rematch all the historical syslog messages to          whose root node is the message type and the child nodes are
+templates when Signature Tree or STE is applied for template             arranged on the basis of the frequency of the combinations
+extraction. This is because neither Signature Tree nor STE can           of words in syslog messages. Using the frequency of the
+learn templates incrementally.                                           combinations of words rather than that of words themselves
+   Suppose that the failure prediction or diagnosis technique            leads to that Signature Tree is not incrementally retrainable.
+(such as HSMM) is retrained every day. We here compare                   That is, we have to retrain the signature tree, learn the
+the computational cost for FT-tree, Signature Tree, STE, and             templates, and match all the historical syslog messages when
+LogSimilarity. Since it is often the case that new subtypes of           new subtypes of syslog messages occur (probably due to
+syslog messages can be generated everyday, all the historical            upgrades). Considering the large number of syslog messages
+syslogs should be rematched to templates for Signature Tree              generated every day (tens of millions) and the long period
+and STE, but not for FT-tree and LogSimilarity. We imple-                of historical syslog messages (two years), matching all the
+mented FT-tree, Signature Tree, STE and LogSimilarity in                 historical syslog messages to templates does consume a huge
+C++, and deployed them on the same server (CPU information:              amount of computational resources. Therefore, Signature Tree
+12 Intel(R) Xeon(R) CPU E5645 @ 2.40GHz) with a single                   is not suitable for learning templates in our scenario.
+thread. The CPU utilization remained 100% while the process                 In addition, Kimura et al. presented an STE approach that
+of each technique was running so that we could use the total             extracts log message templates using a statistical clustering
+time to evaluate the complexity [25].                                    algorithm [8]. The high level idea is that template words
+   Table VII shows the time consumed for matching templates              appear more frequently than parameter words, and that sys-
+per day for FT-tree, Signature Tree, STE, and LogSimilarity.             log messages that belong to the same subtype usually have
+FT-tree and LogSimilarity can incrementally learn templates              similar structures with the positions of words. Specifically,
+and, thus, they just had to match 1-day’s worth of syslog                for a word w that appears in the x-th position of a syslog
+messages to the templates. However, STE and Signature Tree               message that contains L words, the word score for w is
+had to match all the historical syslogs, i.e., 2-year’s worth of         Score(w, x, L) = P robability(w|x, L). Then using clustering
+syslog messages to the templates. Hence FT-tree and LogSimi-             techniques, STE classifies words with high word scores into
+larity consume much less time compared to STE and Signature              template words. However, STE can miss some templates and,
+Tree. More specifically, FT-tree improved the computational              thus, some subtypes of syslog messages cannot be matched to
+efficiency by 730 times and 117 times compared to Signature              any templates. For example, suppose that the syslog messages
+Tree and STE, respectively. Although LogSimilarity is also               that belong to subtypes U0 , U1 , ..., Un have the same number
+capable of incremental template extraction and hence is also             of words. If the syslog messages that belong to U0 occur much
+more computationally efficient than Signature Tree and STE, it           less often than those belonging to U1 , U2 , ..., Un , each of the
+generates very different templates and is less computationally           template words in U0 will have a relatively small word score
+efficient than FT-tree.                                                  and, thus, will be classified into parameter words. That is,
+                                                                         syslog messages belonging to U0 cannot be matched into any
+                     V. R ELATED W ORKS                                  template. Therefore, as the evaluation experiments show in
+   Using log files for failure diagnosis and prediction has been         Sections IV-B and IV-C, STE has a relatively low accuracy.
+widely applied in ISP networks [10], [12], computers [11],               In addition, STE is not incremental either.
+[13], [26], [27], and online ad services [28]. Liang et al. inves-          To learn templates in an incremental manner, Kimura et
+tigated the RAS event logs and developed three simple failure            al. [6] developed an online message template extraction
+prediction techniques based on the characteristics of failure            technique, named LogSimilarity. In this technique, they first
+events, as well as on the correlation between failure events and         classified words into five classes on the basis of the tendency
+non-failure events [26]. Realizing the the importance of the             to constitute a log template: only symbols, only letters, only
+sequential feature of log files to failure prediction, Fronza et         symbols and letters, only numbers and letters, and only num-
+al. used random indexing (RI) to represent the sequence of               bers or numbers and symbols. When a new syslog message
+operations extracted from logs, and then applied weighted                arrives, according to the number of words in different classes
+support vector machine to associate sequences to a class of              in the message, the technique will assign this message to
+failures or non-failures [27]. Salfner et al. applied HSMM to            an existing template cluster or create a new template cluster
+recognize the patterns of logs that indicate an imminent failure         from this message. In this technique, message templates are
+directly [12].                                                           learned on the basis of the classes of words rather than of
+   Syslog parsing techniques for network devices including               the words themselves and, thus, syslog messages that belong
+routers and switches have been well studied in [6]–[8].                  to different subtypes can be easily assigned to one template
+Specifically, inspired by the signature abstraction applied in           cluster. For example, the syslog messages of message type
+
+
+
+                                                                     9
+“SIF” in Table II can be assigned to one or two template                             [8] T. Kimura, K. Ishibashi, T. Mori, H. Sawada, T. Toyono, K. Nishimatsu,
+clusters in this technique, rather than to four clusters as shown                        A. Watanabe, A. Shimoda, and K. Shiomoto, “Spatio-temporal factor-
+                                                                                         ization of log data for understanding network events,” in INFOCOM,
+in Table IV.                                                                             2014 Proceedings IEEE. IEEE, 2014, pp. 610–618.
+                                                                                     [9] K. Yamanishi and Y. Maruyama, “Dynamic syslog mining for network
+                          VI. C ONCLUSION                                                failure monitoring,” in Proceedings of the Eleventh ACM SIGKDD
+                                                                                         International Conference on Knowledge Discovery in Data Mining, ser.
+   In this paper, we proposed a novel template extraction tech-                          KDD ’05, 2005, pp. 499–508.
+nique, i.e., FT-tree, for accurately and incrementally learning                     [10] F. Salfner and S. Tschirpke, “Error log processing for accurate failure
+templates. We evaluated and compared the performance of FT-                              prediction,” in Proceedings of the First USENIX Conference on Analysis
+                                                                                         of System Logs, ser. WASL’08, 2008.
+tree to those of Signature Tree, STE and LogSimilarity using                        [11] Z. Zheng, Z. Lan, B. H. Park, and A. Geist, “System log pre-processing
+real-world switch failure tickets and syslogs collected from                             to improve failure prediction,” in Dependable Systems Networks, 2009.
+more than 10 datacenters over a 2-year period. Both FT-tree                              DSN ’09. IEEE/IFIP International Conference on, June 2009, pp. 572–
+                                                                                         577.
+and Signature Tree achieved much higher accuracy than STE                           [12] F. Salfner and M. Malek, “Using hidden semi-markov models for
+and LogSimilarity, not only on the template learning, but also                           effective online failure prediction,” in Reliable Distributed Systems,
+on the failure prediction. Our experiments also showed that                              2007. SRDS 2007. 26th IEEE International Symposium on. IEEE,
+                                                                                         2007, pp. 161–174.
+Signature Tree and STE consumed much more computational                             [13] E. W. Fulp, G. A. Fink, and J. N. Haack, “Predicting computer system
+resources than FT-tree and LogSimilarity, as they are not                                failures using support vector machines,” WASL, vol. 8, pp. 5–5, 2008.
+incrementally retainable. In summary, the evaluation results                        [14] A. A. Mahimkar, H. H. Song, Z. Ge, A. Shaikh, J. Wang, J. Yates,
+                                                                                         Y. Zhang, and J. Emmons, “Detecting the performance impact of
+clearly demonstrate the benefits of FT-tree: highly accurate,                            upgrades in large operational networks,” in SIGCOMM, New Delhi,
+low computational cost and incrementally retrainable.                                    India, August 2010.
+                                                                                    [15] A. Mahimkar, Z. Ge, J. Wang, J. Yates, Y. Zhang, J. Emmons, B. Hunt-
+                     VII. ACKNOWLEDGMENT                                                 ley, and M. Stockert, “Rapid detection of maintenance induced changes
+                                                                                         in service performance,” in CONEXT, Tokyo, Japan, December 2011.
+   The work was supported by National Natural Science                               [16] P. Gill, N. Jain, and N. Nagappan, “Understanding network failures in
+Foundation of China (NSFC) under grant No.61402257, No.                                  data centers: Measurement, analysis, and implications,” in Proceedings
+                                                                                         of the ACM SIGCOMM 2011 Conference, ser. SIGCOMM ’11, 2011,
+61472214 and No. 61472210, US NSF under grant No. CNS-                                   pp. 350–361.
+1423182, the State Key Program of National Science of                               [17] F. Salfner, M. Lenk, and M. Malek, “A survey of online failure prediction
+China under grant No. 61233007, the National Key Basic                                   methods,” ACM Computing Surveys (CSUR), vol. 42, no. 3, p. 10, 2010.
+                                                                                    [18] “Transfer switch failure causes outage at colo4 data center,”
+Research Program of China (973 program) under grant No.                                  http://www.datacenterdynamics.com/content-tracks/power-
+2013CB329105, the Global Talent Recruitment (Youth) Pro-                                 cooling/transfer-switch-failure-causes-outage-at-colo4-data-
+gram, and the Cross-disciplinary Collaborative Teams Program                             center/32548.fullarticle.
+                                                                                    [19] “Switch failure causes outages at hosting.com data center,”
+for Science, Technology and Innovation, of Chinese Academy                               http://www.datacenterdynamics.com/content-tracks/servers-
+of Sciences-Network and system technologies for security                                 storage/switch-failure-causes-outages-at-hostingcom-data-
+monitoring and information interaction in smart grid.                                    center/32344.fullarticle.
+                                                                                    [20] Y. Zhang, M. Roughan, W. Willinger, and L. Qiu, “Spatio-temporal com-
+                                                                                         pressive sensing and internet traffic matrices,” in SIGCOMM, Barcelona,
+                             R EFERENCES                                                 Spain, 2009.
+ [1] C. Guo, L. Yuan, D. Xiang, Y. Dang, R. Huang, D. Maltz, Z. Liu,                [21] J. Han, J. Pei, and Y. Yin, “Mining frequent patterns without candidate
+     V. Wang, B. Pang, H. Chen, Z.-W. Lin, and V. Kurien, “Pingmesh: A                   generation,” in ACM Sigmod Record, vol. 29, no. 2. ACM, 2000, pp.
+     large-scale system for data center network latency measurement and                  1–12.
+     analysis,” in Proceedings of the 2015 ACM Conference on Special                [22] W. M. Rand, “Objective criteria for the evaluation of clustering meth-
+     Interest Group on Data Communication, ser. SIGCOMM ’15, 2015, pp.                   ods,” Journal of the American Statistical association, vol. 66, no. 336,
+     139–152.                                                                            pp. 846–850, 1971.
+ [2] P. Gill, N. Jain, and N. Nagappan, “Understanding network failures in          [23] G. McLachlan, K.-A. Do, and C. Ambroise, Analyzing microarray gene
+     data centers: Measurement, analysis, and implications,” in SIGCOMM,                 expression data. John Wiley & Sons, 2005, vol. 422.
+     2011.                                                                          [24] R. Kohavi, “A study of cross-validation and bootstrap for accuracy
+ [3] N. Handigol, B. Heller, V. Jeyakumar, D. Mazières, and N. McKeown,                 estimation and model selection,” in Proceedings of the 14th International
+     “I know what your packet did last hop: Using packet histories to                    Joint Conference on Artificial Intelligence - Volume 2, ser. IJCAI’95,
+     troubleshoot networks,” in 11th USENIX Symposium on Networked                       1995, pp. 1137–1143.
+     Systems Design and Implementation (NSDI 14), 2014, pp. 71–85.                  [25] M. Yamada, A. Kimura, F. Naya, and H. Sawada, “Change-point
+ [4] X. Wu, D. Turner, C.-C. Chen, D. A. Maltz, X. Yang, L. Yuan, and                    detection with feature selection in high-dimensional time-series data,”
+     M. Zhang, “Netpilot: automating datacenter network failure mitigation,”             in Proceedings of the Twenty-Third international joint conference on
+     in Proceedings of the 2012 ACM Conference on Special Interest Group                 Artificial Intelligence. AAAI Press, 2013, pp. 1827–1833.
+     on Data Communication, ser. SIGCOMM ’12, 2012, pp. 419–430.                    [26] Y. Liang, Y. Zhang, M. Jette, A. Sivasubramaniam, and R. Sahoo,
+ [5] Y. Wu, M. Zhao, A. Haeberlen, W. Zhou, and B. T. Loo, “Diagnosing                   “Bluegene/l failure analysis and prediction models,” in Dependable
+     missing events in distributed systems with negative provenance,” in ACM             Systems and Networks, 2006. DSN 2006. International Conference on.
+     SIGCOMM Computer Communication Review, vol. 44, no. 4. ACM,                         IEEE, 2006, pp. 425–434.
+     2014, pp. 383–394.                                                             [27] I. Fronza, A. Sillitti, G. Succi, M. Terho, and J. Vlasenko, “Failure
+ [6] T. Kimura, A. Watanabe, T. Toyono, and K. Ishibashi, “Proactive failure             prediction based on log files using random indexing and support vector
+     detection learning generation patterns of large-scale network logs,” in             machines,” Journal of Systems and Software, vol. 86, no. 1, pp. 2–11,
+     Network and Service Management (CNSM), 2015 11th International                      2013.
+     Conference on. IEEE, 2015, pp. 8–14.                                           [28] M. Shatnawi and M. Hefeeda, “Real-time failure prediction in online
+ [7] T. Qiu, Z. Ge, D. Pei, J. Wang, and J. Xu, “What happened in my                     services,” in 2015 IEEE Conference on Computer Communications
+     network: Mining network events from router syslogs,” in Proceedings                 (INFOCOM). IEEE, 2015, pp. 1391–1399.
+     of the 10th ACM SIGCOMM Conference on Internet Measurement, ser.
+     IMC ’10, 2010, pp. 472–484.
+
+
+
+
+                                                                               10
+

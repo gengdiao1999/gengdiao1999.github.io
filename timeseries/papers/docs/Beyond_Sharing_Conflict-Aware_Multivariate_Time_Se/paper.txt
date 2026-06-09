@@ -1,0 +1,734 @@
+                                                   Beyond Sharing: Conflict-Aware Multivariate Time Series
+                                                                    Anomaly Detection
+                                                               Haotian Si∗                                              Changhua Pei†                                       Zhihan Li
+                                               Computer Network Information                                 Computer Network Information                              Kuaishou Technology
+                                             Center, Chinese Academy of Sciences                          Center, Chinese Academy of Sciences                            Beijing, China
+                                                        Beijing, China                                               Beijing, China
+
+                                                             Yadong Zhao∗                                                Jingjing Li                                      Zulong Diao
+                                               Computer Network Information                                            Haiming Zhang                         Institute of Computing Technology,
+arXiv:2308.08915v1 [cs.LG] 17 Aug 2023
+
+
+
+
+                                             Center, Chinese Academy of Sciences                           Computer Network Information                         Chinese Academy of Sciences
+                                                        Beijing, China                                   Center, Chinese Academy of Sciences                            Beijing, China
+                                                                                                                    Beijing, China
+
+                                                                Jianhui Li                                                Gaogang Xie                                        Dan Pei
+                                               Computer Network Information                                Computer Network Information                                Tsinghua University
+                                             Center, Chinese Academy of Sciences                         Center, Chinese Academy of Sciences                              Beijing, China
+                                                        Beijing, China                                              Beijing, China
+
+                                         ABSTRACT                                                                                    based MTS AD model. Evaluations on multiple public datasets re-
+                                         Massive key performance indicators (KPIs) are monitored as mul-                             veal that CAD obtains an average F1-score of 0.943 across three pub-
+                                         tivariate time series data (MTS) to ensure the reliability of the                           lic datasets, notably outperforming state-of-the-art methods. Our
+                                         software applications and service system. Accurately detecting the                          code is accessible at https://github.com/dawnvince/MTS_CAD.
+                                         abnormality of MTS is very critical for subsequent fault elimination.
+                                         The scarcity of anomalies and manual labeling has led to the de-                            CCS CONCEPTS
+                                         velopment of various self-supervised MTS anomaly detection (AD)                             • Computing methodologies → Anomaly detection; Neural
+                                         methods, which optimize an overall objective/loss encompassing all                          networks.
+                                         metrics’ regression objectives/losses. However, our empirical study
+                                         uncovers the prevalence of conflicts among metrics’ regression ob-                          KEYWORDS
+                                         jectives, causing MTS models to grapple with different losses. This                         Unsupervised Anomaly Detection, Multivariate Time Series
+                                         critical aspect significantly impacts detection performance but has
+                                                                                                                                     ACM Reference Format:
+                                         been overlooked in existing approaches. To address this problem,
+                                                                                                                                     Haotian Si, Changhua Pei, Zhihan Li, Yadong Zhao, Jingjing Li, Haiming
+                                         by mimicking the design of multi-gate mixture-of-experts (MMoE),
+                                                                                                                                     Zhang, Zulong Diao, Jianhui Li, Gaogang Xie, and Dan Pei. 2023. Beyond
+                                         we introduce CAD, a Conflict-aware multivariate KPI Anomaly                                 Sharing: Conflict-Aware Multivariate Time Series Anomaly Detection. In
+                                         Detection algorithm. CAD offers an exclusive structure for each                             Proceedings of the 31st ACM Joint European Software Engineering Conference
+                                         metric to mitigate potential conflicts while fostering inter-metric                         and Symposium on the Foundations of Software Engineering (ESEC/FSE ’23),
+                                         promotions. Upon thorough investigation, we find that the poor per-                         December 3–9, 2023, San Francisco, CA, USA. ACM, New York, NY, USA,
+                                         formance of vanilla MMoE mainly comes from the input-output                                 11 pages. https://doi.org/10.1145/3611643.3613896
+                                         misalignment settings of MTS formulation and convergence is-
+                                         sues arising from expansive tasks. To address these challenges, we                          1    INTRODUCTION
+                                         propose a straightforward yet effective task-oriented metric selec-                         With the rapidly increasing number of Internet applications and
+                                         tion and p&s (personalized and shared) gating mechanism, which                              the number of users, ensuring the stability of Internet services and
+                                         establishes CAD as the first practicable multi-task learning (MTL)                          software systems is now very important. Service Level Agreements
+                                                                                                                                     (SLAs) on service reliability ask for real-time and accurate incident
+                                         ∗ Also with University of Chinese Academy of Sciences, Beijing, China.
+                                                                                                                                     identifications. To improve the observability of the system, oper-
+                                         † Changhua Pei is the corresponding author. Email: chpei@cnic.cn
+                                                                                                                                     ators deploy monitoring programs to produce a large amount of
+                                                                                                                                     time series data to monitor the status (i.e., metrics) of the entities
+                                         Permission to make digital or hard copies of part or all of this work for personal or       (e.g., software systems, online services) in different application do-
+                                         classroom use is granted without fee provided that copies are not made or distributed       mains (e.g., IT systems, manufacturing industry), providing rich
+                                         for profit or commercial advantage and that copies bear this notice and the full citation
+                                         on the first page. Copyrights for third-party components of this work must be honored.      information for anomaly detection and incident alert. Traditional
+                                         For all other uses, contact the owner/author(s).                                            metric-level anomaly detection methods determine whether to re-
+                                         ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                                    port an incident or not based on manually setting thresholds on
+                                         © 2023 Copyright held by the owner/author(s).
+                                         ACM ISBN 979-8-4007-0327-0/23/12.                                                           each metric, becoming unqualified for more strict SLAs and less
+                                         https://doi.org/10.1145/3611643.3613896                                                     effective due to the explosive growth in the number of metrics.
+                                                                                                                            Haotian Si, Changhua Pei, Zhihan Li,
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                   Yadong Zhao, Jingjing Li, Haiming Zhang, Zulong Diao, Jianhui Li, Gaogang Xie, Dan Pei
+
+
+   There is a natural tendency for anomalies to be detected in                 train a separate model for each metric that takes into consideration
+univariate time series (UTS) [5, 17, 26], that is to say, the anom-            the influences of other metrics. However, it is unrealistic to train
+aly detection is performed on each metric separately. However,                 one model using all data for each metric since the number of met-
+researchers have found that in the complex real-world system, dif-             rics to be detected is increasing rapidly. Google [15] has proposed
+ferent UTS interact with each other, which is called inter-metric              multi-gate mixture-of-expert (MMoE), using a group of experts
+dependency [14]. Anomaly detection on each metric separately may               and multiple gates to leverage the correlations while avoiding in-
+lead to considerable false negatives. To better illustrate this, we take       terference among tasks under a multi-task learning framework.
+CPU utilization of certain services and Query Per Second (QPS)                 We prepare an exclusive structure for each metric and attempt to
+metrics as examples. At the time 𝑡, we observe that QPS drops while            borrow ideas from MMoE in the multivariate time series anomaly
+CPU utilization increases. Under normal circumstances, QPS has a               detection domain. Unfortunately, unlike the information retrieval
+positive relationship with the CPU. It indicates an anomaly because            domain that MMoE is designed for, introducing the idea of MMoE
+the normal inter-metric dependency is violated. The UTS-based                  in the anomaly detection domain cannot meet our expectations due
+anomaly detection model fails to detect the anomaly as each met-               to the following challenges:
+ric’s absolute value is within the normal range. On the contrary,
+this anomaly can be easily detected by the MTS anomaly detection                     • Misalignment of input and output spaces: Due to the
+model as it can not only model the intra-metric temporal depen-                        employment of self-supervised regression learning or its vari-
+dency but also models the inter-metric dependency. In this paper,                      ants, the output of an isolated subtask (one specific metric)
+we focus on anomaly detection for multivariate time series data                        is a sub-space of the whole input feature space (all metrics).
+(MTS for short hereafter). Various MTS anomaly detection methods                       This requires an appropriate mapping mechanism for sub-
+are proposed to model the correlations between different metrics.                      tasks to extract more related information from the large
+They almost all use self-supervised learning frameworks, more                          feature spaces.
+specifically, regression learning due to the scarcity of anomalies                   • Convergence issues: A monitor system would produce mas-
+and manual labeling. All metrics’ regression objectives compose                        sive metrics for anomaly detection, each of which is viewed
+the overall optimization objective/loss.                                               as a subtask. The number of subtasks in MTS tasks is dozens
+   After considerable empirical investigation, we observe that the                     of times more than that in the vanilla MMoE scenario. As
+objectives of different subtasks may not be consistent, and can                        the number of subtasks increases, the naive gate structure
+even be disparate in some cases. A representative case is that while                   fails to spread the gradients to experts in a stable way, caus-
+most metrics have stable baselines and patterns, on one single                         ing oscillations in the parameter updates of the experts and
+metric or some groups of metrics, either baseline drifts or inherent                   finally influencing the convergence of the model.
+stochastic fluctuations (BD&ISF for short) happen frequently, both                 To address the above challenges, in this paper, we propose CAD,
+of which are not labeled as anomalies, which is contrary to our                 a Conflict-aware multivariate Anomaly Detection algorithm. CAD
+naive instincts. Analysis and consultation with relevant people                 trains a number of experts which can model the temporal-spatial
+indicate the justification for the existence of these metrics in the            dependency from multiple perspectives with the help of convolu-
+real-world scenario. In this case, the objectives of stable metrics             tion networks. Then the expert networks are combined together in
+induce the model to pay more attention to subtle variation (hence               a weighted summing manner. For one specific metric, an automatic
+sensitive to BD&ISF), while metrics with BD&ISF require the model               gating mechanism can assign personalized weights to different ex-
+to be insensitive to these changes. We refer to this as conflicts. As           perts. In this way, compared with current MTS anomaly detection
+a result, the objectives at odds would cause the gradients of model             models which share the same network, CAD can flexibly learn
+parameters to descend in different or even opposite directions. This            personalized inter-metric dependencies for each target detection
+weakens the ability of the model and ultimately results in a decrease           metric while isolating the negative effect brought by conflicts.
+in detection performance.                                                          To handle the misalignment of input and output space of MTS, a
+   However, We find that existing models cannot deal with the loss              task-oriented feature selection as well as a p&s (personalized and
+conflicts among metrics. These methods can be roughly divided                   shared) gating mechanism is designed. Additionally, the p&s gating
+into two classes: graph-based and sequence-based. The graph-based               mechanism greatly improves the robustness and convergence of
+methods [4, 7, 9] take each metric as a node, construct the complete            the model as the number of tasks increases. The personalized gate
+graph between them and apply extensive techniques of graph neu-                 selects the most related experts for each task which can prevent
+ral networks to model inter-metric dependency. In sequence-based                the collapse of experts from learning the same thing. The shared
+methods, attention-based [22, 24] or RNN-based [11, 14] mecha-                  gate ensures robust expert selection to make the expert network
+nisms are widely used to extract sequential information. Unfortu-               converge quickly.
+nately, none of them thinks of conflicts between learning objectives               The main contributions of our paper can be summarized as
+from a framework perspective and takes active action to isolate the             follows:
+effect scopes of these contradictory objectives. This causes poor
+performance when conflicts occur.                                                    • Our work is based on an observation that has never been
+   The aforementioned findings call for a detection method that is                     considered before that the discordance of data distribution
+capable of eliminating conflicts. As the conflicts are discrepant ob-                  is likely to cause conflicts between the objectives of metrics,
+jectives essentially, we expect that the gradient descent process of                   which do harm to the detection performance of existing
+conflicting losses can be isolated to some extent. A naive idea is to                  methods. We propose CAD, a Conflict-aware MTS Anomaly
+Beyond Sharing: Conflict-Aware Multivariate Time Series Anomaly Detection                       ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+       Detection algorithm, to address the limitations of existing
+       models when dealing with conflicts in MTS.
+     • We summarize the key challenges encountered when elimi-
+       nating the impact of conflicts, proposing a task-oriented fea-
+       ture selection to prompt the subtasks to focus more on their
+       own patterns and a p&s gate mechanism to make the model
+       more robust when facing massive subtasks. Well-designed
+       experts are capable to extract both temporal and inter-metric
+       dependency embedded in MTS in multiple perspectives, sig-
+       nificantly enriching the expressivity of the whole model.            Figure 1: Illustration of one possible conflict among metrics.
+     • We conduct comprehensive evaluations on multiple open-               Anomalous segments at the metric level are highlighted in
+       source public datasets, showing that CAD outperforms the             red, and the segment corresponding to reasonable drift in
+       state-of-the-art by considerable margins (average 4.3% to            metric 3 is highlighted in blue. The regions enclosed by the
+       37.9% improvement over three datasets under best-F1 using            yellow boxes share similar distribution. A previous method’s
+       point-adjustment approach and 4.2% to 93.1% under best-              detection result as well as ours is zoomed in and listed below.
+       F1 using the k-th point-adjustment approach). Our code is            Red backgrounds in the results are the union set of all met-
+       publicly released.                                                   rics’ anomalies (including the three metrics plotted).
+   This paper is organized as follows. In Section 2, We give a formu-
+lation of MTS AD tasks and an illustration of conflict. The method-
+ology of our model is presented in Section 3 and the experimental           module to make the network more sparse. This allows for the in-
+setup is presented in Section 4. We offer comprehensive evaluations         corporation of more parameters without incurring additional com-
+of our model in Section 5. We review the related works in Section 6         putational costs. Ma et.al. [15] further adapt the layer to multi-task
+and conclude our paper in Section 7.                                        learning, substituting the only gate with multi-gates each of which
+                                                                            is allocated to a specific task individually, to utilize shared embed-
+2     BACKGROUND                                                            ding while handling complex task correlation issues gracefully. The
+                                                                            k-th task of the Multi-gate Mixture-of-Experts (MMoE) Model can
+In this section, we formulate the MTS anomaly detection problem
+                                                                            be formulated as follows:
+and provide a brief introduction to MMoE. Then we use a case to
+help readers better understand the concept of conflict.                                           𝑦𝑘 = ℎ𝑘 (𝑔𝑘 (𝑥) ⊙ 𝐹 (𝑥))
+                                                                            Here, ⊙ denotes element-wise product, 𝐹 (∗) denotes the set of
+2.1     Problem Formulation                                                 intermediate results produced by experts, 𝑔(∗) denotes gate struc-
+Multivariate time series consists of multiple curves that are time-         ture and ℎ𝑘 (∗) denotes the model of the k-th downstream task,
+aligned, each of which represents successive observations of a met-         which is known as tower network. Given 𝑀 experts’ output em-
+ric over a long period of time. MTS with 𝑇 consecutive timestamps           beddings 𝑒 1, · · · , 𝑒𝑀 , 𝑔𝑘 ∈ R1×𝑀 includes the weight of experts,
+and 𝐾 metrics is represented by an ordered sequence:                        hence 𝑔𝑘 (𝑥) ⊙ 𝐹 (𝑥) assembles all embeddings into one as the in-
+                                                                            put of k-th tower. Each tower would give final results based on its
+                          
+                     X = x1, · · · , xi, · · · , xT ,
+                                                                            particular aggregation of embeddings.
+where xi is defined as the set of observations for all metrics at the
+particular timestamp 𝑖 ∈ [1,𝑇 ]:
+                                              ⊤                           2.3    Illustration example of conflicts
+                     xi = 𝑥𝑖1, 𝑥𝑖2, · · · , 𝑥𝑖𝐾 ,                           An illustrative example with regard to conflicts is presented to
+                      𝑗
+                                                                            motivate our approach (Fig. 1). In a dataset sampled from a real-
+as each datapoint 𝑥𝑖 denotes the value of metric 𝑗 at this time point.      world software system [23], there are three metrics: metric 3, metric
+   Given current observation xt at timestamp 𝑡 on the test set, a MTS       14 and metric 18. During one particular period, sudden baseline drift
+anomaly detection system calculates the anomaly score in some               (highlighted in blue in Fig. 1) happens in metric 3, while all other
+way based on historical observations, then identifies whether xi is         metrics behave normally. Despite the drift, the distribution of data
+anomalous or not by comparing its anomaly score with threshold.             in this period is very similar to two previous normal distributions
+   In MTS anomaly detection task, contextual observations, i.e.,            (enclosed by the yellow boxes). Meanwhile, the baselines of all
+observations at nearby timestamps, play an essential role in under-         three regions are at different levels, showing the metric’s inherent
+standing current data because they notably describe the relevant            sensitivity to normal external factors, e.g., load balancing strategy.
+temporal patterns [2, 23]. Thus for observation xt , rather than sim-       Thus we consider that no anomalies occurred in this period which is
+ply usingstandalone vector xt−1 , we take a sliding window of              confirmed by labels (highlighted in red in Fig. 1). While this change
+length 𝑙, xt− 𝑙 , · · · , xt−1 (denoted by wt ), as input to precisely      is reasonable, the baseline drift of metric 3 misleads the parameter
+capture sequential dependency in our implementation.                        updating of existing models. An obvious drift can be observed in
+                                                                            the output anomaly score of a previous model (shown as USAD in
+2.2     Basis of MMoE framework                                             Fig. 1), which misjudges this period as an anomaly eventually.
+The MoE layer proposed by Eigen et.al. [8] and Shazeer et.al. [20]              The detection result indicates that our method could handle
+leverages the techniques of ensemble learning, introducing a gate           conflicts effectively while other previous works perform poorly
+                                                                                                                              Haotian Si, Changhua Pei, Zhihan Li,
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                     Yadong Zhao, Jingjing Li, Haiming Zhang, Zulong Diao, Jianhui Li, Gaogang Xie, Dan Pei
+
+
+
+
+                                                           Figure 2: Network Architecture of CAD.
+
+
+as they are influenced by conflicts to some extent. More detailed                 3.2     Task-oriented Feature Selection
+discussions and evaluations on this case can be found in Sec. 5.                 In a typical scenario where MMoE works, there is no obvious cor-
+                                                                                 relation between the downstream task and the input data. In other
+3     METHODOLOGY                                                                words, each dimension of the input data is equally significant for
+In this section, we first give an overview of the system. Then we                the current task, thus each gate calculates the weight combination
+introduce the sub-components of the model individually, includ-                  of experts based on all input data. This assumption, however, does
+ing task-oriented feature selection, expert network, personalized                not hold true in MTS anomaly detection. In this case, for a subtask
+& shared gate and tower network. At last, we introduce the loss                  determining if the particular metric is abnormal, it is counterin-
+balance module.                                                                  tuitive that historical information in its own feature space is as
+                                                                                 important as the one in overall input feature spaces composed
+3.1     Overall Structure                                                        of other metrics. More metrics mean more possibility to distract the
+As illustrated in Fig. 2, we leverage a group of task-oriented isolated          limited volume structure, especially when conflicts and reasonable
+structures to tackle the conflict problems discussed in Section 1.               drifts exist among metrics (discussed in Section 5.2). We split the
+Since previous works have no independent structures to determine                 input at metric level, using its own local time window instead of
+whether inter-metric dependencies are helpful or harmful to a                    all metrics’ windows to prompt gate structure for learning per-
+specific metric, the correlation may have a negative impact on                   sonalized mappings from time series to distribution over experts.
+describing reasonable patterns of the current metric. Our approach,              Assuming that wkt denotes time window of the k-th metric in wt
+as each task has its own structure to autonomously select various                defined in Sec. 2.1, the embeddings of raw input 𝐸 at time 𝑡 consist
+expert-derived features that are highly correlated with it, solves               of all experts’ outputs:
+the conflicts in an elegant manner. Moreover, the isolated tower                                 𝐸 (𝑡 ) (wt ) = [𝑓1 (wt ), 𝑓2 (wt ), · · · , 𝑓𝑀 (wt )]         (1)
+becomes even more focused on its own metric since irrelevant
+                                                                                 where 𝑓𝑖 (𝑥) denotes the output of the i-th expert network given
+information is separated out.
+                                                                                 input 𝑥, which is described in detail in Sec. 3.3. Then the embeddings
+   However, original frameworks like MMoE are unacclimatized
+                                                                                 𝐵 (𝑡,𝑘 ) sent into subtask 𝑘 are combined according to weights given
+when facing MTS issues. Firstly, misalignment of input and
+                                                                                 by gate 𝐺𝑘 :
+output spaces distract the gates from focusing on more relevant
+patterns. Secondly, well-designed structures are required to capture                                   𝐵 (𝑡,𝑘 ) = 𝐺𝑘 (wkt ) ⊙ 𝐸 (𝑡 ) (wt )           (2)
+the complicated temporal-spatial dependency. Thirdly, massive                        Finally, each subtask 𝑘 corresponding to the metric 𝑘 calculates
+                                                                                                           (𝑡 )
+metrics bring more interference to feature extraction, which needs               the prediction value 𝑦ˆ𝑘 :
+a way for experts to converge on specific traits.                                                             (𝑡 )
+   To address the problems mentioned above, we design CAD, a                                                𝑦ˆ𝑘      = 𝑇𝑜𝑤𝑒𝑟𝑘 (𝐵 (𝑡,𝑘 ) )                      (3)
+hierarchical unsupervised and forecasting-based model. Then a two-
+dimensional input window is fed into multiple expert networks                     3.3     Expert Network
+including a convolution layer to enrich the representation of tem-               Expert networks are the main structure for extracting ample traits
+poral and inter-metric dependency (Section 3.3). The hybrid gating               in time series. Each expert consists of one convolution layer and
+mechanism (Section 3.4), which is designed for massive metrics,                  two feed-forward layers. Previous works primarily use RNN-based
+transforms the feature space selected for each metric (Section 3.2)              units, e.g. LSTM or GRU, to capture temporal patterns [4, 13, 23].
+into a set of weights to fuse embeddings extracted by different                  Whereas, its inherently sequential nature makes it impossible for
+experts. The embedding is then sent to its corresponding tower                   parallel computation, dramatically increasing training time. By con-
+network (Section 3.5). All towers jointly finalize anomaly scores                trast, convolution network, known as a structure with superior
+based on the gap between predictions and ground-truth values.                    computational parallelism, shows its powerful capability of extract-
+For the multiple losses balance problem, we preprocess the data to               ing features in time series tasks [3, 10, 12]. Especially, kernels can
+balance all metrics’ losses (Section 3.6). These components are then             sharpen the change within a successive region, which suits MTS
+described in detail.                                                             anomaly detection tasks even better.
+Beyond Sharing: Conflict-Aware Multivariate Time Series Anomaly Detection                             ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+   In our implementation shown in Fig. 3, the convolution layer                   Here, ||.|| 2 denotes the L2 norm. L is also used in the inference
+contains 𝑁 kernels of width 𝑙 (equals to window size) and height 1.               phase as anomaly score, which is further compared to the threshold
+As a kernel sweeps through the input wt including all 𝐾 metrics,                  set in line with previous detection performance in online detection
+each metric’s window is convolved into a single value, so the layer               scenarios.
+produces a vector whose size is 𝑁 × 1 × 𝐾. In this way, we obtain
+temporal dependency by the metric-level convolution operation,                    3.6    Loss Balancing
+meanwhile obtaining inter-metric dependency by the shared filters.                Balancing the weight of loss for each metric is a crucial topic as
+Then the vector is flattened and further fed into a two-layer fully-              improper weights could narrow the perspective of detection and
+connected network, forming an embedding of the original input.                    neglect some important metrics. Thanks to the homogeneity among
+All embeddings constitute a candidate set.                                        metrics and even between inputs and outputs in MTS anomaly
+                                                                                  detection, we are able to alleviate the problem of imbalance simply
+                                                                                  by proper data preprocessing. For datasets whose metrics are not
+                                                                                  on the same order of magnitude, we normalize the original training
+                                                                                  data via a MinMax Scaler. Hence the loss of metric won’t be too
+                                                                                  far from each other. More details about data preprocessing can be
+                                                                                  found in Section 4.1.
+
+                                                                                  4     EXPERIMENTAL SETUP
+                      Figure 3: Expert Network.
+                                                                                  In this section, we first introduce the experimental datasets and
+                                                                                  evaluation metrics that are widely used in MTS anomaly detection
+                                                                                  domain. Then we present the details of hyperparameters settings.
+3.4     Personalized & Shared Gate
+A hybrid gate structure is employed to map the selected input to the              4.1    Datasets and Evaluation Metrics
+weights of embeddings in the candidate set. If patterns of metrics
+                                                                                  We conduct experiments based on three real-world MTS datasets
+differ greatly from each other, instead of sharing the same expert,
+                                                                                  to evaluate the effectiveness of CAD: SMD [23], SWaT [18] and
+the loss of backpropagation will induce them to take advantage of
+                                                                                  WADI [1]. All of these datasets are public and universally employed
+different experts, which is reflected by diverse weight combinations
+                                                                                  in previous works [14, 21, 23, 24]. The summary of these datasets
+given by gates. This empowers the model to resolve conflicts and
+                                                                                  is listed in Table 1, including the number of entities, dataset size,
+irrelevant drifts among metrics. Furthermore, we design a dual-gate
+                                                                                  the number of dimensions and anomaly ratio in the test set.
+mechanism. A shared gate 𝐺𝑠 receives all selected windows from
+input, yet a personalized gate 𝐺𝑝𝑘 belonging to the k-th metric only
+                                                                                                     Table 1: Dataset Statistics.
+receives its own window. Since there are massive metrics, too many
+gates with the same weight make the backpropagation gradient
+more chaotic for experts. A shared gate with a greater weight can                  Dataset    Entities   Metrics      Train       Test      Anomaly (%)
+learn the robust mapping relationships between expert fusion and                    SMD         28         38        708405      708420         4.16
+input from more data and is more likely to induce experts to con-                  SWaT          1         51        495000      449919        11.98
+verge on dominant characteristics. We combine shared gate and                      WADI          1        123        784517      172801        5.77
+personalized gate to leverage the advantages of both, making per-
+sonalized gate act as an auxiliary role to tune the subtle differences
+between metrics. The hybrid gate is formulated as follows:                           As the range of each metric in SMD has been limited to 0-1, we
+                                                                                  skip the data preprocessing of this dataset. For SWaT and WADI
+               𝐺𝑠 (wkt ) = 𝑊𝑠 wkt,      𝐺𝑝𝑘 (wkt ) = 𝑊𝑝𝑘 wkt,               (4)   whose readings range from 10 −2 to 103 , we apply MinMax Scaler
+                                                                                  to limit the value of the training set to 0-1. The maximum and the
+             𝐺𝑘 (wkt ) = 𝑠𝑜 𝑓 𝑡𝑚𝑎𝑥 (𝜀 · 𝐺𝑠 + (1 − 𝜀) · 𝐺𝑝𝑘 ).  (5)                minimum value of the training set are further used as criteria to
+where 𝑊𝑠 and 𝑊𝑝𝑘 (𝑘 = 1, 2, · · · , 𝐾) are trainable matrixs, and                 normalize the test set. Time series are then clipped to a proper scale.
+𝜀 > 0.5 is a weight coefficient of the shared gate.                               More details about the datasets’ particulars and preprocessing can
+                                                                                  be found in our repository.
+3.5     Tower Network                                                                In a real-time system, anomalies generated by system or external
+                                                                                  factors tend to persist for some time (e.g. bugs in programs cause
+In our framework, the purpose of the tower network is to condense
+                                                                                  sustained high CPU usage), forming a contiguous anomaly segment.
+the embeddings into one final predicted value. We utilize two dense
+                                                                                  Human operators rarely care about point-wise metrics in applica-
+layers along with the activation function 𝑅𝑒𝐿𝑈 and a dropout layer
+                                                                                  tions. Thus we apply the point-adjustment approach introduced
+to reduce the dimensions. All towers’ predictions are appended to
+                                                                                  by [27], based on the assumption that it is reasonable to consider the
+set yˆt . As the ground truth observation at time 𝑡 is yt , the final
+                                                                                  anomaly segment has been detected if at least one moment within
+training objective L aims to minimize the squared L2 norm:
+                                                                                  the segment triggers the alert. If any point within the contiguous
+                                            (𝑡 ) (𝑡 )
+                                          (𝑦 − 𝑦ˆ𝑘 ) 2                            anomaly segment from ground truth is marked as an anomaly, the
+                                      Í𝐾
+                L = ||yt − yˆt || 22 = 𝑘=1 𝑘                       (6)            whole segment is considered to be detected correctly. Additionally,
+                                             𝐾
+                                                                                                                           Haotian Si, Changhua Pei, Zhihan Li,
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                  Yadong Zhao, Jingjing Li, Haiming Zhang, Zulong Diao, Jianhui Li, Gaogang Xie, Dan Pei
+
+
+in practice, an alert after a long delay is futile since the sooner the        5     EVALUATION
+anomaly is identified, the less damage it causes to the system or             We conduct quantitative and qualitative experiments to evaluate
+the service. According to this presumption, we also adopt the k-th            the performance of our model. Four research questions need to be
+PA approach proposed by [19], which assumes that the anomaly                  answered urgently during the experiments:
+segment is recognized correctly only if the delay of the detected             RQ1: How does our model perform on public datasets compared
+point is less than k from the start point of this segment.                    to other state-of-the-art approaches?
+    We employ Precision (P), Recall (R) and F1-score to evaluate the          RQ2: How much does each constituent in our design contribute to
+performance of our method and baselines based on the above two                overall performance?
+approaches respectively. These metrics are calculated as follows:             RQ3: Is CAD robust enough under various parameter settings?
+                                                                              RQ4: Can different experts learn the representations of data from
+                                                                              different perspectives?
+                  𝑇𝑃                  𝑇𝑃                   2·𝑃 ·𝑅
+           𝑃=           ,     𝑅=            ,      𝐹1 =
+                𝑇𝑃 + 𝐹𝑃             𝑇𝑃 + 𝐹𝑁                 𝑃 +𝑅               5.1     Baseline Approaches
+                                                                              To demonstrate the merit of our proposed algorithm, we select
+   where TP denotes True Positives, FP denotes False Positives and            nine recent state-of-the-art unsupervised methods for multivariate
+FN denotes False Negatives. For each entity, we enumerate all pos-            time series anomaly detection for comparison with CAD, including
+sible anomaly thresholds to find the optimal one for getting the              both prediction-based and reconstruction-based approaches. All
+highest anomaly scores when calculating F1-score [2, 13, 14]. The             methods’ source codes are available in Github1 . We use full-size
+result is denoted as 𝑭 1𝒃𝒆𝒔𝒕 . We discard threshold selection methods         datasets for all methods.
+like POT [23] because they introduce parameters that need to be                      • LSTM-NDT [11] uses the LSTM-RNN model to attain high
+tuned, which is unfair for those methods that do not provide these                     prediction accuracy and provides an unsupervised threshold
+parameters. The purpose of using 𝑭 1𝒃𝒆𝒔𝒕 is not meant to find a                        selection method to dynamically evaluate residuals.
+threshold for performance evaluation, but to directly measure a                      • DAGMM [29] learns a low-dimensional embedding of the
+model’s optimal performance without introducing any hyperparam-                        original time series via a deep autoencoder (AE), then feeds
+eter, which ensures fair evaluations for baselines. Several datasets                   the embedding and reconstruction error of AE into Gaussian
+contain more than one MTS entity. For instance, SMD embodies                           Mixture Model to predict their likelihood.
+time series from 28 machines distributed in three clusters. In this                  • MAD-GAN [13] employs LSTM-RNN as GAN’s base model.
+case, the F1-score represents the average of all machines’ F1-best.                    Contrasting with conventional GAN, MAD-GAN takes the
+In [23], the authors use the average precision (denoted 𝑷¯ ) and aver-                 whole variable set into account concurrently in order to draw
+                     ¯ to get the F1-score. This measure is denoted
+age recall (denoted 𝑹)                                                                 the inter-metric dependency between metrics.
+𝑭 1∗ score in our experiments. As 𝑷¯ and 𝑹¯ neutralize some severe                   • OmniAnomaly [23] and Interfusion [14] are methods
+deviations in original precisions and recalls, in the case of uneven                   based on variational auto-encoder to denoise the anomalies
+data distribution among metrics, 𝑭 1∗ score usually exceeds 𝑭 1𝒃𝒆𝒔𝒕 .                  and capture dependencies via hierarchical stochastic latent
+                                                                                       variables.
+                                                                                     • USAD [2] and TranAD [24] apply the idea of adversarial
+4.2     Hyperparameters Settings                                                       learning and design a two-stage training framework, combin-
+We select different hyperparameter combinations empirically on                         ing the advantages of autoencoders/self-attention encoders
+different datasets for CAD and its variant. Due to the differences                     and adversarial training.
+in characteristics among the datasets, the window of time series is                  • DVGCRN [4] adopts an adaptive variational graph convolu-
+set to 16 for SMD, 32 for SWaT and WADI. The number of experts                         tional recurrent network unit to capture spatial and temporal
+is 5 for SMD, 7 for WADI and 9 for SWaT. As a prediction-based                         fine-grained correlations, which are further extended into a
+method, we use horizon as one hyperparameter, which means the                          deep variational network.
+distance between the predicted timestamp and the last timestamp                      • Anomaly Transformer [28] utilizes an attention mecha-
+in the window. We set the horizon to 3 for SMD which is more                           nism to compute the association discrepancy and further
+stable, and 1 for SWaT and WADI.                                                       amplifies it via a minimax strategy.
+   For all datasets, the number of kernels in one expert network is
+set to 16 and the weight coefficient of the shared gate 𝜀 is set to 0.7
+                                                                               5.2     RQ1. Evaluation Results and Analysis
+empirically. We apply the Adam optimizer and CosineLR scheduler
+with an initial learning rate of 0.001 to optimize models. Batch sizes        Anomaly detection performance of CAD as well as all baselines
+are set to 128 in the training process. The early stopping strategy           is listed in Table 2 under the point-adjustment (PA) approach and
+is adopted while the maximum epoch for training is set to 10.                 Table 3 under the k-th point-adjustment (k-th PA) approach. CAD
+   All variants in the ablation study use the same hyperparameters
+as CAD. The models of baselines are trained using the parameters               1 Source code of LSTM-NDT comes from https://github.com/khundman/telemanom.
+
+provided in their article. Specifically, we train and test Anomaly             DAGMM, MAD-GAN, USAD and TranAD come from https://github.com/imperial-
+                                                                               qore/TranAD. OmniAnomaly comes from https://github.com/NetManAIOps/
+Transformer on each entity in SMD instead of on concatenated one               OmniAnomaly. Interfusion comes from https://github.com/zhhlee/InterFusion.
+shown in their source code for a fair comparison.                              DVGCRN comes from https://github.com/BoChenGroup/DVGCRN.
+Beyond Sharing: Conflict-Aware Multivariate Time Series Anomaly Detection                                 ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+Table 2: Performance comparison under the Point-Adjustment (PA) approach. Best scores are highlighted in bold, and second
+best scores are highlighted in bold and underlined.
+
+                                                            SMD                                 SWaT                            WADI
+                      Method
+                                              𝑃¯         𝑅¯     𝐹1            𝐹 1∗       𝑃         𝑅         𝐹1         𝑃          𝑅     𝐹1
+                 LSTM-NDT                  0.9033     0.8479 0.8623         0.8747    0.9750    0.7120     0.8230    0.5340     0.4564 0.4921
+                  DAGMM                    0.9130     0.9391 0.9163         0.9258    0.9797    0.7456     0.8468    0.8873     0.5111 0.6486
+                 MAD-GAN                   0.8601     0.7576 0.7712         0.8056    0.8868    0.7999     0.8411    0.8933     0.3842 0.5374
+                    USAD                   0.9269     0.9393 0.9228         0.9330    0.9365    0.8421     0.8868    0.4893     0.5606 0.5225
+                OmniAnomaly                0.9396     0.9344 0.9300         0.9370    0.8777    0.7884     0.8306    0.6360     0.5391 0.5836
+                   TranAD                  0.9228     0.9492 0.9244         0.9358    0.9566    0.7734     0.8553    0.9920     0.3728 0.5420
+                 InterFusion               0.9396     0.9344 0.9300         0.9327    0.9858    0.8481     0.9118    0.9510     0.7683 0.8499
+                  DVGCRN                   0.9596     0.9604 0.9578         0.9600    0.6842    0.8674     0.7650    0.5779     0.6228 0.5995
+             Anomaly Transformer           0.8999     0.8953 0.8875         0.8976    0.9760    0.8761     0.9234    0.8226     1.0000 0.9026
+                    CAD                    0.9624     0.9914 0.9760         0.9767    0.9542    0.9122     0.9327    0.9301     0.9124 0.9212
+
+Table 3: Performance comparison under the k-th PA approach on SMD. Delay denotes the detection deadline in each anomaly
+segment. Only when outliers are detected within delay can the detection be recognized as a valid one.
+
+                                                   10 points                              20 points                             30 points
+                 Delay (k)
+                                        𝑃¯       𝑅¯       𝐹1         𝐹 1∗      𝑃¯       𝑅¯       𝐹1        𝐹 1∗      𝑃¯       𝑅¯       𝐹1        𝐹 1∗
+              LSTM-NDT               0.5277   0.5645 0.4977        0.5455   0.6395   0.6194 0.5937       0.6293   0.6857   0.6532 0.6366       0.6691
+               DAGMM                 0.7774   0.7418 0.7187        0.7592   0.8127   0.7829 0.7668       0.7975   0.8128   0.8259 0.7854       0.8193
+              MAD-GAN                0.5903   0.5379 0.4864        0.5629   0.7453   0.5677 0.5938       0.6445   0.7508   0.5982 0.6140       0.6659
+                 USAD                0.7566   0.7197 0.6939        0.7377   0.7903   0.8020 0.7547       0.7961   0.8209   0.8207 0.7779       0.8208
+             OmniAnomaly             0.7710   0.7076 0.6996        0.7380   0.7803   0.7711 0.7369       0.7757   0.7920   0.8048 0.7624       0.7983
+                TranAD               0.7699   0.8266 0.7627        0.7973   0.7978   0.8583 0.7966       0.8269   0.8180   0.8765 0.8268       0.8462
+              InterFusion            0.7618   0.7448 0.7200        0.7532   0.8235   0.7898 0.7784       0.8063   0.8365   0.8183 0.8026       0.8273
+               DVGCRN                0.7755   0.7626 0.7395        0.7690   0.8555   0.7940 0.7994       0.8236   0.8820   0.8543 0.8470       0.8679
+          Anomaly Transformer        0.4980   0.4206 0.4086        0.4560   0.5110   0.5274 0.4708       0.5190   0.5983   0.5704 0.5270       0.5840
+                 CAD                 0.8452   0.7861 0.7894        0.8146   0.8850   0.8287 0.8439       0.8598   0.8871   0.9060 0.8822       0.8965
+
+
+presents superior performance over other methods in general, achiev-                 given to higher recall to some extent in anomaly detection tasks [9].
+ing improvements by 0.009 to 0.429 under the normal PA approach                      As most of the methods perform well on SMD, we further adopt
+and up to 0.380 under the k-th PA approach.                                          the k-th point-adjustment evaluation which is more discriminat-
+    As shown in the table, most of the models work better on SMD,                    ing and more practical to real-world detection. As shown in Table
+which is collected from a scenario involving real-time server clus-                  3, we assign the value of 10, 20 and 30 to 𝑘 respectively. Despite
+ters. Anomalies are relatively arresting on several machines (si-                    the fact that performance drops dramatically for some methods,
+multaneous large spikes on several metrics), enhancing the overall                   CAD achieves the highest score in each case while maintaining a
+performance, especially 𝑭 1∗ mentioned above. For example, almost                    score of 0.7894 when 𝑘 is 10 and 0.8822 when 𝑘 is 30, exhibiting the
+all methods are able to obtain F1-scores up to 0.95 when evaluating                  effectiveness of our method in practice.
+machine-1-1. Nonetheless, time series in certain machines are quite                     Further analysis is conducted based on baseline scores. LSTM-
+misleading, specifically, data fluctuation in temporal dimension                     NDT and DAGMM are two unsupervised methods employing obser-
+and intricate relationships in inter-metric dimension, requiring the                 vation at a specific moment in time. In comparison with methods
+model to obtain a higher capability of discerning subtle differences                 taking a sequence of observations as input, both cases are weak at
+between normal patterns and anomalies. Performance of models                         exploiting temporal relationships during highly correlated periods
+on these machines varies greatly, contributing to the major discrep-                 of time [2]. Moreover, LSTM-NDT predicts values for each metric
+ancy in final results. On machine-1-8, CAD earns a score of 0.9782,                  separately, further leading to the loss of information embedded
+while other methods’ scores range from 0.5961 to 0.9780. In terms                    in inter-metric dependency [14]. As a typical generative model,
+of the whole SMD dataset, CAD outperforms baselines by 1.9%                          OmniAnomaly adopts bits of stochastic variables to model data
+(DVGCRN) to 26.5% (MAD-GAN), exhibiting a powerful capacity to                       distribution in a sequence of observations, yet a limited number of
+deal with a variety of situations. In addition, most existing models                 stochastic variables cannot extract complicated characteristics of
+obtain rather poor grades on high-noise datasets like SWaT and                       time series sufficiently. Interfusion partially solves this problem by
+WADI. Comparatively, our methodology performs better in terms                        two-view stochastic variables, introducing an extra dimension to
+of F1 with a slight compromise in precision, as a priority should be                 expand the representation space. However, these variables, along
+                                                                                                                            Haotian Si, Changhua Pei, Zhihan Li,
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                   Yadong Zhao, Jingjing Li, Haiming Zhang, Zulong Diao, Jianhui Li, Gaogang Xie, Dan Pei
+
+
+with MCMC imputation in the inference phase, bring an increase in
+model instability. Several runs yield results with some deviations.
+What’s more, methods employing LSTM or GRU structures tend
+to consume extremely long training time, which is inapplicable to
+real-world situations.
+   Compared with baselines, CAD maximizes the effectiveness of
+temporal and inter-metric interconnections with the assistance of
+its well-designed structures. Such phenomena are observed that
+considerable drifts exist in some metrics over a prolonged period of
+time, which are labeled as normal patterns in both training sets and
+test sets. Due to the fact that certain metrics’ trends are unstable                 (a) Metrics Visualization. Representative metrics are plotted with their raw
+                                                                                     value. Anomalous segments at the metric level are highlighted in red.
+inherently, even reasonable fluctuations in them will have a sub-
+stantial impact on other metrics when using existing models. This
+results in the model misinterpreting them as an inter-metric anom-
+aly. Expert selection mechanism in CAD can effectively shield this
+irrelevant influence and smooth anomaly score on these time slices.
+As a result, CAD is more sensitive to genuine anomalies. Mean-
+while, this mechanism resolves the issue of the unpredictability of
+some metrics to some extent that has been criticized in traditional
+prediction-based methods [16].
+   In detail, we conduct several case studies to illustrate the efficacy
+mentioned above. We visualize a few metrics in machine-1-8 in-
+cluded in SMD, on which models’ performance varies significantly,
+from 0.5761 to 0.9782 (Fig. 4a). We also present anomaly scores
+achieved from models except for MAD-GAN which even does not
+converge on this dataset (Fig. 4b). Despite the fact that both CAD
+and LSTM-NDT are forecasting-based methods, LSTM-NDT is too
+sensitive to fluctuation to distinguish anomalies from trivial noise.
+Anomaly scores of DAGMM and TranAD drift obviously on account
+of time series circled in green. These time series don’t violate data
+distribution but just get a higher baseline within reasonable limits
+as a matter of, e.g., load balancing strategy. Even though Interfusion
+                                                                                     (b) Anomaly scores of baselines. The best score threshold is represented by
+handles the previous situation appropriately, it fails to earn proper                the red dotted line. Anomalous segments of all metrics are highlighted in
+scores circled in blue, which are even more "normal" than the pre-                   red.
+vious one. We also plot the score of a variant of CAD, CAD-single,
+whose metrics are trained and tested separately. Due to the absence                             Figure 4: Case study in machine-1-8.
+of inter-metric dependency, this variant works well on the seg-
+ment mentioned above, yet performs poorly on other data. Instead,
+CAD works in both cases since it learns great lessons jointly from             gates can automatically learn metric-specific combinations of rep-
+intra-metric and inter-metric dependency to find out the intrinsic             resentations generated by experts. Second, we want to know if
+normal pattern of each metric. The drifts are almost removed by                dependency between metrics helps improve the model’s capability
+the techniques in our framework according to the anomaly score                 to catch anomalies, that is to say, if training with metrics of time
+of CAD. Even on datasets that all methods achieve high grades, as              series jointly outperforms the corresponding single-metric model.
+shown in Fig. 5, owing to its superior anti-interference capabilities,         In the aspect of components in the model, are convolution units,
+CAD exhibits more evident spikes when encountering anomalies.                  which are designed for the time series task, able to effectively ex-
+                                                                               tract representations embedded in raw data? In addition, what is
+                                                                               the relationship between the number of experts and the model’s
+                                                                               performance?
+5.3     RQ2. Ablation Study                                                    Effectiveness of MoE framework. We pick out a commonly
+We omit every relevant component of the framework to observe                   used model in the field of multi-task learning, which is known as
+the extent to which it impacts the performance of the model with               Shared-Bottom structure [15], as our baseline. Compared with CAD
+reference to the F1-score on various datasets. By virtue of lever-             which has a group of bottom networks, it sends the shared repre-
+aging inter-metric dependency to jointly detect anomalies in time              sentations to task-specific towers directly without going through
+series with all metrics, it is indispensable to concentrate on two             gate networks, thus we refer to this structure as w/o gate. To ex-
+issues in terms of model framework design. First, we are inter-                clude effects induced by model complexity, for different numbers
+ested in finding out if different experts can pick up specific traits          of experts, we modify the scale of bottom layers in the w/o gate
+of temporal patterns in distinct perspectives as expected, and if              structure such that the number of convolution kernels in the two
+Beyond Sharing: Conflict-Aware Multivariate Time Series Anomaly Detection                         ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+                                                                            even rendered ineffective due to the lack of representations, demon-
+                                                                            strating that convolution units along with two feed-forward layers
+                (a) CAD                            (b) LSTM-NDT             in CAD have the ability to efficiently extract substantial temporal
+                                                                            information embedded in raw time series.
+
+                                                                            Table 4: Performance of CAD and its variants in terms of
+              (c) DAGMM                             (d) TranAD              best-F1 under point-adjustment.
+
+                                                                                    Variants                SMD          SWaT             WADI
+                (e) USAD                         (f) OmniAnomaly                   single-task             0.9551        0.8739           0.8048
+                                                                                    w/o conv               0.9617        0.9101           0.7470
+                                                                                  w/o selection            0.9638        0.8899           0.7586
+                                                                                    w/o gate               0.9558        0.8488           0.7485
+             (g) Interfusion                        (h) DVGCRN
+                                                                                   w/o s-gate              0.9647        0.9271           0.8063
+                                                                                   w/o p-gate              0.9736        0.9223           0.8704
+Figure 5: Anomaly scores of baselines in machine-1-1 without
+                                                                                      CAD                  0.9760        0.9327           0.9211
+first 10000 trivial (stable and normal) points. In all baselines,
+the best-F1 is greater than 0.95.
+
+                                                                            5.4    RQ3. Hyperparameter Sensitivity
+models is equal. For example, the shared-bottom model with 80               As an application-oriented approach, the feasibility of a model de-
+kernels is contrasted with CAD which contains five experts, each            serves adequate consideration. We conduct contrast experiments
+of which has 16 kernels. The results of experiments suggest that            in terms of key hyperparameters to test whether the model is
+the shared-bottom model has at most a 0.172 drop in performance             parameter-sensitive (Fig. 6). One of these parameters is the win-
+in terms of F1-score, due to the fact that it copes with inherent           dow size. A larger window size means more long-term dependency
+conflict from irrelevant metrics badly. Sequentially, performance is        within metrics, whereas introducing more remote time points that
+rarely improved as the scale of the bottom layers grows. In compar-         may dilute the significance of neighboring observations. In our
+ison, CAD has awesome effectiveness owing to its flexible expert            experiments, the score of CAD has a slight downward trend as the
+selection mechanism which handles this drawback gracefully. We              window size exceeds 40. In general, however, CAD gets relatively
+also conduct a single-task model sharing the same structure as CAD          smooth scores under a variety of settings, showing its robustness
+yet each tower only has one exclusive expert network. Due to the            to window size. Another key parameter is the number of experts.
+inability to learn inter-metric dependency, it performs poorly even         When it is set to 1, CAD degrades to a shared-bottom model. With
+though the amount of parameters increases greatly.                          the increase in the number of experts, the model has a greater ca-
+Effectiveness of task-oriented feature selection. Original time             pacity to capture temporal and inter-metric dependency hidden
+series contains multiple metrics, all of which do not have rela-            in time series, while more parameters sacrifice the simplicity of
+tions with a particular KPI. Instead of exposing all data to gate           the model, spending extra time training and testing data which
+(w/o selection), the task-oriented selected window eliminates a lot         is unacceptable for real-time anomaly detection. A value between
+of irrelevant information interference, which may confuse gates             5 and 11 provides a reasonable trade-off between representation
+when computing weights. In our experiments, models without se-              capacity and time efficiency.
+lection strategy have 0.0122 to 0.1625 drops on various datasets,
+demonstrating the great improvement brought by this mechanism.
+Effectiveness of personalized & shared gate. In general, CAD’s
+performance surpasses two models employing personalized gate
+(w/o s-gate) or shared gate (w/o p-gate) separately, especially on high
+dimensional datasets like SWaT. Due to the insufficient fineness
+of feature extraction, the model only using s-gate cannot achieve
+as high scores as the one using a hybrid gate. Without the robust
+s-gate, the model is more likely to overfit historical patterns. That’s                  (a) window size                 (b) number of experts
+the reason why shared gate performs even better than personalized
+gate which is considered to learn task-specific traits better in some       Figure 6: Hyperparameter sensitivity under three datasets.
+cases. Experimental results show that the combination of the two
+gates further improves detection performance.
+Effectiveness of convolution units. In the model without convo-
+lution structure (w/o conv), experts consist of solely feed-forward
+                                                                            5.5    RQ4. Feature Extraction Capability of
+networks. Temporal metrics in time windows are flattened as input                  Experts
+to multi-layers neural networks. The absence of convolution units           A key prerequisite for modeling inter-metric promotion as well
+drastically degrades performance in general, and our framework is           as conflict is that experts are able to learn the traits of time series
+                                                                                                                            Haotian Si, Changhua Pei, Zhihan Li,
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                   Yadong Zhao, Jingjing Li, Haiming Zhang, Zulong Diao, Jianhui Li, Gaogang Xie, Dan Pei
+
+
+from diverse perspectives. Given a time window as input, the expert            rules, and anomalies are those who violate the inherent patterns.
+network generates 𝐸 (𝑡 ) (wt ) whose shape is 𝑁 ×𝑊 where 𝑁 denotes             These models predict forthcoming points based on historical obser-
+the number of experts and 𝑊 denotes the dimension of the hidden                vations, then estimate if an anomaly occurs or not according to the
+vector. To analyze the validity of the expert network, we visualize            point-wise difference between predicted values and ground truth
+the distribution of embeddings sampled from 𝐸 (𝑡 ) (wt ) during the            values. Compared with traditional long sequence time-series fore-
+test phase on machine-1-8, as the value of 𝑁 is 5 and 𝑊 is 128. Due            casting tasks, anomaly detection asks for more precise prediction
+to the lack of a straightforward way of viewing 128-dimensional                in a closer horizon and extended ability to cover diverse metrics
+space, we compress it to 2-dimensional space through t-distributed             concurrently. LSTM-NDT [11] is a well-known effort to handle this
+Stochastic Neighbor Embedding (t-SNE) [25]. Each point in the                  problem in a forecasting-based manner by using a non-parametric
+scatter plot corresponds to a low-dimensional representation of the            dynamic error thresholding strategy. THOC [21] uses a dilated skip-
+primitive hidden vector, meanwhile colored in line with the expert it          RNN structure to capture temporal dynamics and a hierarchical
+comes from (Fig. 7). In the t-SNE space, there are certain similarities        clustering process to fuse the multi-scale features.
+among embeddings from the same expert since they aggregate                     Hybrid models. These methods leverage composite errors, e.g.,
+together. On a global scale, the well-separated space further proves           forecasting error or reconstruction error, to obtain the final anomaly
+experts’ ability to discern abundant yet distinct features.                    score. USAD [2], as well as TranAD [24], adopts two-phase training
+                                                                               to amplify reconstruction errors. Generative Adversarial Network is
+                                                                               another framework applied to reconstruct inputs. MAD-GAN [13]
+                                                                               uses an RNN-based discriminator and generator to detect anomalies
+                                                                               based on both reconstruction and discrimination losses. As a GNN-
+                                                                               based method, FuSAGNet [9] jointly optimizes reconstruction and
+                                                                               forecasting errors. DVGCRN [4] also computes both reconstruction
+                                                                               and prediction scores via a graph convolutional recurrent network.
+
+
+                                                                                7    CONCLUSION
+                                                                               Today’s software systems demand rapid responses to anomalies.
+Figure 7: Visualization of embedding distributions of differ-                  Adequate analysis of MTS indicates that inappropriate use of inter-
+ent experts. The high-dimensional vectors are mapped to a                      metric dependencies brings negative effects in some cases. In this
+2-dimensional space through t-SNE.                                             paper, we propose Conflict-aware multivariate KPI Anomaly Detec-
+                                                                               tion (CAD), a novel unsupervised framework that effectively weeds
+                                                                               out harmful conflicts which may confuse the detection for certain
+6    RELATED WORK                                                              metrics. Based on the understanding of real-world data, we offer an
+                                                                               exclusive structure for each metric to isolate the possible conflicts to
+Deep neural networks have been proven to be highly effective at
+                                                                               a certain degree. What’s more, the task-oriented feature-selection
+modeling intricate dependencies in time series over the past few
+                                                                               mechanism and a hybrid gate structure are elaborately designed
+years. As a result, they have become the method of choice in this
+                                                                               to deal with the conflicts among metrics, greatly enhancing the
+field. Moreover, most proposed models are based on unsupervised
+                                                                               effectiveness of the model. Time series-oriented experts learn rich
+learning due to the paucity of anomaly labels. Since anomalies
+                                                                               characteristics from diverse perspectives under the combined effect
+are only small probability events, this approach works quite well.
+                                                                               of the above techniques.
+Taxonomically, these unsupervised solutions can be identified as
+                                                                                   We adopt a series of metrics for comprehensive evaluation. CAD
+reconstruction-based, forecasting-based and hybrid models [6].
+                                                                               outperforms all state-of-the-art baselines on three widely used
+Reconstruction-based models. These models encode subsequences
+                                                                               datasets. Several experiments have demonstrated that CAD is adept
+of training data in latent space to filter out rare outlier points. Usu-
+                                                                               in modeling intrinsic normal patterns while immune from irrelevant
+ally, a continuous sliding window is sent into the network and
+                                                                               interference which results in false alarms or omissions in baseline
+then mapped onto a low-dimension space. Soon a network expands
+                                                                               methods. The concise structure and high computing efficiency allow
+the dimension of these data to reconstruct the input. In this pro-
+                                                                               it to be widely deployed in various scenarios and enable real-time
+cess, an anomaly is more unlikely to be recovered as the model
+                                                                               detection. Moreover, the hyperparameter sensitivity study confirms
+learns few abnormal patterns, resulting in a large gap between
+                                                                               its strong feasibility for a variety of detection tasks.
+outputs and abnormal inputs, called reconstruction error, accord-
+ing to which the anomaly score is calculated. As an early attempt,
+EncDec-AD [16] embeds encoder-decoder structure into the LSTM
+network to learn condensed temporal patterns. OmniAnomaly [23]                  ACKNOWLEDGMENTS
+and Interfusion [14] further employ stochastic variables to improve            This work was partially funded by the National Natural Science
+the robustness of the model. However, these methods are prone to               Foundation of China (No.62202445), the National Key Research and
+error accumulation in long sequences [21].                                     Development Program of China (No.2022YFB2901800) and the State
+Forecasting-based models. The prerequisite of unsupervised                     Key Program of National Natural Science of China under Grant
+forecasting-based models is that normal time series follows some               62072264.
+Beyond Sharing: Conflict-Aware Multivariate Time Series Anomaly Detection                                          ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+REFERENCES                                                                                 [22] Huan Song, Deepta Rajan, Jayaraman Thiagarajan, and Andreas Spanias. 2018.
+ [1] Chuadhry Mujeeb Ahmed, Venkata Reddy Palleti, and Aditya P Mathur. 2017.                   Attend and diagnose: Clinical time series analysis using attention models. In
+     WADI: a water distribution testbed for research in the design of secure cyber phys-        Proceedings of the AAAI conference on artificial intelligence, Vol. 32.
+     ical systems. In Proceedings of the 3rd international workshop on cyber-physical      [23] Ya Su, Youjian Zhao, Chenhao Niu, Rong Liu, Wei Sun, and Dan Pei. 2019. Robust
+     systems for smart water networks. 25–28.                                                   anomaly detection for multivariate time series through stochastic recurrent
+ [2] Julien Audibert, Pietro Michiardi, Frédéric Guyard, Sébastien Marti, and Maria A           neural network. In Proceedings of the 25th ACM SIGKDD international conference
+     Zuluaga. 2020. Usad: Unsupervised anomaly detection on multivariate time series.           on knowledge discovery & data mining. 2828–2837.
+     In Proceedings of the 26th ACM SIGKDD International Conference on Knowledge           [24] Shreshth Tuli, Giuliano Casale, and Nicholas R Jennings. 2022. Tranad: Deep
+     Discovery & Data Mining. 3395–3404.                                                        transformer networks for anomaly detection in multivariate time series data.
+ [3] Shaojie Bai, J Zico Kolter, and Vladlen Koltun. 2018. An empirical evaluation              arXiv preprint arXiv:2201.07284 (2022).
+     of generic convolutional and recurrent networks for sequence modeling. arXiv          [25] Laurens Van der Maaten and Geoffrey Hinton. 2008. Visualizing data using t-SNE.
+     preprint arXiv:1803.01271 (2018).                                                          Journal of machine learning research 9, 11 (2008).
+ [4] Wenchao Chen, Long Tian, Bo Chen, Liang Dai, Zhibin Duan, and Mingyuan                [26] Haowen Xu, Wenxiao Chen, Nengwen Zhao, Zeyan Li, Jiahao Bu, Zhihan Li,
+     Zhou. 2022. Deep variational graph convolutional recurrent network for mul-                Ying Liu, Youjian Zhao, Dan Pei, Yang Feng, et al. 2018. Unsupervised anomaly
+     tivariate time series anomaly detection. In International Conference on Machine            detection via variational auto-encoder for seasonal kpis in web applications. In
+     Learning. PMLR, 3621–3633.                                                                 Proceedings of the 2018 world wide web conference. 187–196.
+ [5] Wenxiao Chen, Haowen Xu, Zeyan Li, Dan Pei, Jie Chen, Honglin Qiao, Yang              [27] Haowen Xu, Wenxiao Chen, Nengwen Zhao, Zeyan Li, Jiahao Bu, Zhihan Li,
+     Feng, and Zhaogang Wang. 2019. Unsupervised anomaly detection for intricate                Ying Liu, Youjian Zhao, Dan Pei, Yang Feng, et al. 2018. Unsupervised anomaly
+     kpis via adversarial training of vae. In IEEE INFOCOM 2019-IEEE Conference on              detection via variational auto-encoder for seasonal kpis in web applications. In
+     Computer Communications. IEEE, 1891–1899.                                                  Proceedings of the 2018 world wide web conference. 187–196.
+ [6] Zahra Zamanzadeh Darban, Geoffrey I Webb, Shirui Pan, Charu C Aggarwal,               [28] Jiehui Xu, Haixu Wu, Jianmin Wang, and Mingsheng Long. 2022. Anomaly
+     and Mahsa Salehi. 2022. Deep Learning for Time Series Anomaly Detection: A                 Transformer: Time Series Anomaly Detection with Association Discrepancy. In
+     Survey. arXiv preprint arXiv:2211.05244 (2022).                                            International Conference on Learning Representations. https://openreview.net/
+ [7] Ailin Deng and Bryan Hooi. 2021. Graph neural network-based anomaly detection              forum?id=LzQQ89U1qm_
+     in multivariate time series. In Proceedings of the AAAI conference on artificial      [29] Bo Zong, Qi Song, Martin Renqiang Min, Wei Cheng, Cristian Lumezanu, Daeki
+     intelligence, Vol. 35. 4027–4035.                                                          Cho, and Haifeng Chen. 2018. Deep autoencoding gaussian mixture model for
+ [8] David Eigen, Marc’Aurelio Ranzato, and Ilya Sutskever. 2013. Learning factored             unsupervised anomaly detection. In International conference on learning represen-
+     representations in a deep mixture of experts. arXiv preprint arXiv:1312.4314               tations.
+     (2013).
+ [9] Siho Han and Simon S Woo. 2022. Learning Sparse Latent Graph Representations          Received 2023-05-18; accepted 2023-07-31
+     for Anomaly Detection in Multivariate Time Series. In Proceedings of the 28th
+     ACM SIGKDD Conference on Knowledge Discovery and Data Mining. 2977–2986.
+[10] Siteng Huang, Donglin Wang, Xuehan Wu, and Ao Tang. 2019. Dsanet: Dual
+     self-attention network for multivariate time series forecasting. In Proceedings of
+     the 28th ACM international conference on information and knowledge management.
+     2129–2132.
+[11] Kyle Hundman, Valentino Constantinou, Christopher Laporte, Ian Colwell, and
+     Tom Soderstrom. 2018. Detecting spacecraft anomalies using lstms and nonpara-
+     metric dynamic thresholding. In Proceedings of the 24th ACM SIGKDD interna-
+     tional conference on knowledge discovery & data mining. 387–395.
+[12] Guokun Lai, Wei-Cheng Chang, Yiming Yang, and Hanxiao Liu. 2018. Modeling
+     long-and short-term temporal patterns with deep neural networks. In The 41st
+     international ACM SIGIR conference on research & development in information
+     retrieval. 95–104.
+[13] Dan Li, Dacheng Chen, Baihong Jin, Lei Shi, Jonathan Goh, and See-Kiong Ng.
+     2019. MAD-GAN: Multivariate anomaly detection for time series data with gen-
+     erative adversarial networks. In Artificial Neural Networks and Machine Learning–
+     ICANN 2019: Text and Time Series: 28th International Conference on Artificial
+     Neural Networks, Munich, Germany, September 17–19, 2019, Proceedings, Part IV.
+     Springer, 703–716.
+[14] Zhihan Li, Youjian Zhao, Jiaqi Han, Ya Su, Rui Jiao, Xidao Wen, and Dan Pei. 2021.
+     Multivariate time series anomaly detection and interpretation using hierarchical
+     inter-metric and temporal embedding. In Proceedings of the 27th ACM SIGKDD
+     conference on knowledge discovery & data mining. 3220–3230.
+[15] Jiaqi Ma, Zhe Zhao, Xinyang Yi, Jilin Chen, Lichan Hong, and Ed H Chi. 2018.
+     Modeling task relationships in multi-task learning with multi-gate mixture-of-
+     experts. In Proceedings of the 24th ACM SIGKDD international conference on
+     knowledge discovery & data mining. 1930–1939.
+[16] Pankaj Malhotra, Anusha Ramakrishnan, Gaurangi Anand, Lovekesh Vig, Puneet
+     Agarwal, and Gautam Shroff. 2016. LSTM-based encoder-decoder for multi-sensor
+     anomaly detection. arXiv preprint arXiv:1607.00148 (2016).
+[17] Pankaj Malhotra, Lovekesh Vig, Gautam Shroff, Puneet Agarwal, et al. 2015. Long
+     Short Term Memory Networks for Anomaly Detection in Time Series.. In ESANN,
+     Vol. 2015. 89.
+[18] Aditya P Mathur and Nils Ole Tippenhauer. 2016. SWaT: A water treatment
+     testbed for research and training on ICS security. In 2016 international workshop
+     on cyber-physical systems for smart water networks (CySWater). IEEE, 31–36.
+[19] Hansheng Ren, Bixiong Xu, Yujing Wang, Chao Yi, Congrui Huang, Xiaoyu Kou,
+     Tony Xing, Mao Yang, Jie Tong, and Qi Zhang. 2019. Time-series anomaly detec-
+     tion service at microsoft. In Proceedings of the 25th ACM SIGKDD international
+     conference on knowledge discovery & data mining. 3009–3017.
+[20] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le,
+     Geoffrey Hinton, and Jeff Dean. 2017. Outrageously large neural networks: The
+     sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538 (2017).
+[21] Lifeng Shen, Zhuocong Li, and James Kwok. 2020. Timeseries anomaly detection
+     using temporal hierarchical one-class network. Advances in Neural Information
+     Processing Systems 33 (2020), 13016–13026.
+

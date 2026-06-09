@@ -1,0 +1,554 @@
+Improving the Freshness of NDN Forwarding States
+      Jianxun Cao∗ , Dan Pei∗ , Zhelun Wu∗ , Xiaoping Zhang∗ , Beichuan Zhang† , Lan Wang‡ , Youjian Zhao∗
+                      ∗ Tsinghua University † University of Arizona ‡ University of Memphis
+               ∗ Tsinghua National Laboratory for Information Science and Technology (TNList)
+
+
+
+
+   Abstract—Named Data Networking (NDN) is a new Internet            congestion, and take an alternative path to resolve the problem
+architecture that replaces today’s focus on where – addresses        without relying on the control plane, i.e., routing convergence.
+and hosts – with what – the content that users and applications      Thus compared with IP’s forwarding plane, NDN’s is more
+care about. A unique advantage of NDN over IP is the adaptive
+forwarding plane, which, by observing the performance of             intelligent, more resilient to network faults, and more effective
+Interest/Data exchange, can dynamically select the best perform-     in using multiple paths.
+ing forwarding path, detect and recover from failures, load-            The decision process at the adaptive forwarding plane is
+balance across multiple paths, and mitigate attacks such as prefix   called a “forwarding strategy,” which considers the recorded
+hijacking and DDoS. A key component of adaptive forwarding is        performance metrics of multiple interfaces and chooses the
+interface ranking, namely when and how to update the interfaces’
+metrics and rank them.                                               most suitable one to forward an incoming Interest packet.
+   As we will point out in this paper, however, the existing         A key component of forwarding strategies is the interface
+interface ranking scheme suffers from the problem of outdated        ranking, which updates the interfaces’ metrics and ranks
+forwarding states. Using two concrete problems, SRTT slow-           all the outgoing interfaces, so that the strategy can choose
+convergence and probing oscillation, we illustrate how outdated      the best interface to use. Without a good interface ranking
+forwarding states can impact the forwarding performance. We
+propose new forwarding strategies with Adaptive SRTT Update          scheme, forwarding states may be outdated, leading to reduced
+(ASU) and Proactive Probing to achieve up-to-date forwarding         forwarding efficiency. In this paper, we focus on designing
+states, and evaluate how these strategies are able to address the    interface ranking schemes that can keep forwarding states
+two problems. Both theoretical analysis and simulation results       up to date. We analyze two key parts of interface ranking:
+show that the new strategies can reduce SRTT convergence time        periodical measurement and color classification. The existing
+by 37.9% and the loss rate by 75% to 94.75%, compared to the
+existing interface ranking strategies.                               interface ranking schemes suffer from two problems: SRTT
+                                                                     slow-convergence and Probing oscillation, which illustrates
+                      I. I NTRODUCTION                               the impact of outdated forwarding states on forwarding per-
+                                                                     formance. We propose new schemes for interface ranking to
+   Named Data Networking (NDN) [1] is a new Internet                 achieve up-to-date forwarding states, and show the effective-
+architecture that emphasizes the content itself rather than its      ness of our proposed solution via theoretical analysis and
+container (e.g., host) or channel (e.g., connection). In NDN,        simulations.
+the consumer sends an Interest packet into the network to               The contributions of our work are twofolds. First, to the
+request a Data packet. The Interest carries the name of the          best of our knowledge, this paper is the first to study in
+data being requested instead of the destination address, and         depth interface ranking strategies and report two specific
+the matching Data packet can be retrieved from anywhere.             problems, SRTT slow-convergence and probing oscillation,
+By shifting the network service abstraction from “delivering a       which affect the accuracy of forwarding states. Second, we
+packet to the destination” to “retrieving a named data”, NDN         propose two new schemes, the Adaptive SRTT Update (ASU)
+brings benefits such as in-network caching, native multicast,        algorithm and Proactive Probing approach, to achieve up-to-
+data-centric security and many others.                               date forwarding states. Both theoretical analysis and NDNSim
+   A unique feature of NDN is its adaptive forwarding                simulation results show that our new schemes reduce SRTT
+plane [2], [3]. When an NDN router forwards an Interest              convergence time by 37.9% and the loss rate by 75% to
+packet out via a particular interface, it records this Interest      94.75%, compared to existing interface ranking strategies.
+in the Pending Interest Table (PIT) and starts waiting for              The remainder of the paper is organized as follows. Sec-
+a matching Data packet to return on the same interface. If           tion II introduces basic concepts in NDN’s adaptive forward-
+the Data does return, the content retrieval is a success and         ing, especially interface ranking. Limitation of current adaptive
+the round-trip time (RTT) can be recorded to reflect the             forwarding strategies is shown in Section III. SRTT slow-
+performance of using that interface. If the Data does not return     convergence and probing oscillation problems are described in
+in time or a Negative Acknowledgement (NACK) packet is               Section IV and Section V, respectively. We introduce our new
+received, the router knows that this interface does not work         strategies and carry out the analysis theoretically in Section VI
+in retrieving this content and can record this information as        and Section VII, respectively. In Section VIII, we evaluate
+well. This forms a forwarding-plane feedback loop that allows        our new strategies using ndnSIM 2.0 simulator and analyze
+the router to detect any network fault, e.g., link failures and      the results. Section IX briefly reviews related work. Finally,
+ISBN 978-3-901882-83-8 ⃝
+                       c 2016 IFIP                                   Section X presents our conclusion.
+              II. A DAPTIVE F ORWARDING IN NDN                                      1) Ranking rules: For choosing the best path, GREEN
+                                                                                 interfaces are preferred over YELLOW ones. RED interfaces
+   In NDN, routers maintain state information of pending                         are not used in forwarding, and can change color only by
+Interests, which brings adaptive forwarding plane to observe                     the routing protocol. When ranking interfaces of the same
+data retrieval performance and explore multiple forwarding                       color, NDN supports a wide variety of forwarding policies
+paths. Interface ranking [3] is the key component of adaptive                    (or ranking metrics), such as “follow routing” based on OSPF
+forwarding1 to help routers find the current best outgoing                       cost, “the sooner the better” based on SRTT, and so on.
+interface to fetch data. Color classification and periodical mea-                   2) Forwarding based on ranking: For a specific Interest
+surement are introduced to help implement interface ranking.                     prefix, all the Interest packets destined to the same prefix
+   Based on interface ranking, there are two major adaptive                      will be transmitted through the best GREEN interface until
+forwarding strategies in the literature2 : Best-Route [3] and NC-                the router receives a NACK or Timeout. The router will then
+C [5]. These two approaches are similar in interface ranking                     degrade the currently used GREEN interface to YELLOW. If
+and only differ slightly in the number of probed interfaces in                   there still exists any GREEN interface, the router will switch
+color classification.                                                            to the highest ranked GREEN interface. Otherwise, the router
+                                                                                 will probe the YELLOW outgoing interfaces in the order of
+A. Name prefix                                                                   their ranking. We call the process of probing the YELLOW
+                                                                                 interfaces as triggered probing. We will explain the triggered
+   In NDN, Data names instead of IP addresses are hier-                          probing in detail in the following.
+archically structured. For routing aggregation, router’s FIB
+(Forwarding Information Base) contains name prefixes, and                        C. Triggered Top-N probing
+network routing protocols will distribute name prefixes in a
+                                                                                    In Best-Route, once the probing process is triggered, the
+way similar to distributing IP prefixes in todays Internet. A
+                                                                                 router will keep forwarding Interests along the current for-
+FIB entry records the working status of each interface. Please
+                                                                                 warding interface, which was just degraded from GREEN to
+note that interface status is per-name-prefix-per-interface.
+                                                                                 YELLOW, and send a probing Interest to the highest ranked
+                                                                                 YELLOW interface to test whether it can bring Data back.
+B. Periodical measurement and color classification                               When it receives NACK or Timeout for the probing packet, it
+                                                                                 will start trying the second-ranked YELLOW interfaces, and
+   Detailed interface metrics (e.g. SRTT) are used for ranking
+                                                                                 so on. On the other hand, if a Data comes back from the
+interfaces. For a given prefix, to maintain the ranking metrics
+                                                                                 probed YELLOW interface, the router will change the color
+for interface ranking, the router periodically sends a copy of
+                                                                                 of this interface from YELLOW to GREEN, and this GREEN
+the Interest packet to all the interfaces to measure various
+                                                                                 interface will be used as the best path, by now the triggered
+metrics (such as SRTT) used in forwarding policies, and we
+                                                                                 probing process is finished.
+name this probing as periodical measurement.
+                                                                                    NCC is implemented in CCNx 0.7.2 as the default strategy.
+   Besides ranking with interface metrics, color classifica-
+                                                                                 In NCC strategy, once the probing process is triggered, the
+tion [3] is used to record an outgoing interface’s working status
+                                                                                 router probes the top 2 YELLOW interfaces together if there
+for each prefix: GREEN means that the interface can bring
+                                                                                 are more than one YELLOW interfaces. Otherwise, it probes
+the data back, YELLOW means that it is unknown whether
+                                                                                 the only YELLOW interface. All other mechanisms are the
+the interface can bring the data back, and RED shows that the
+                                                                                 same as in Best-Route. We unify these two approaches as
+interface cannot bring the data back. The color classification
+                                                                                 Triggered Top-N probing approaches, where N = 1 in best-
+are updated based on various feedbacks (whether to get the
+                                                                                 route, and N = 2 in NCC.
+data successfully or not) from the network. Please note the
+periodical measurement can only change the ranking metrics,                      D. Benefits of interface ranking in adaptive forwarding plane
+and it does not change the color of the interfaces regardless
+of the measurement results.                                                         The periodical measurement and color classification with
+   With periodical measurement and color classification, the                     triggered probing in NDN’s adaptive forwarding plane help
+interface ranking for a given prefix works as follows.                           a router maintain the information for all its interfaces. It
+                                                                                 allows the forwarding plane to quickly detect link fault through
+   1 Adaptive forwarding consists of NACK, interface ranking, congestion         NACK mechanism and path probing. When a NACK arrives or
+control, and so on. In this paper, we just focus on interface ranking, and       any Interest packet is timed out, the router can freely explore
+our study does NOT influence the strategy of NACK and congestion control.        the alternative path to find an available path to continue the
+   2 In this paper, we omit the impractical broadcast approach [1], which
+                                                                                 forwarding work.
+floods the Interest packet to all available interfaces when a router receives
+any incoming Interest packet. Obviously, for each Interest packet, broadcast        Compared with the routing plane, the forwarding plane can
+approach can guarantee fetching the data from the optimal path, but it will      handle the link failure more quickly and solve the problem
+tremendously add extra overhead. Furthermore, broadcast strategy breeds the      more flexibly. The forwarding plane can deal with the link
+Interest flooding attack [4] and causes trouble for network security in NDN.
+Thus, broadcast strategy has little practical application value except in some   failure without too much additional overhead as soon as
+extreme cases.                                                                   possible when discovering any network fault.
+         III. L IMITATIONS OF INTERFACE RANKING                                                    TABLE I
+                                                                                            T HE FIB ENTRY OF Rc
+   Interface ranking can help routers detect link fault more
+quickly, handle the link failure more promptly and solve the                                            interface
+problem more flexibly. In ideal conditions, to choose outgoing           prefix
+                                                                                     ID     OSPF      RTT COST            COLOR
+interface, routers should make the decision to forward packets                       R2     0.55      0.7      1.27       GREEN
+according to the global network status, because, for routers,                        R3     0.67      0.73      1.4      YELLOW
+the global network status can provide the optimal decision               /prefix
+                                                                                     R1     0.69      0.75     1.44      YELLOW
+in real time to help routers optimize the outgoing packets                           R4     0.75      0.8      1.55      YELLOW
+flow. Specially, when the routers detect link fault, the global
+real-time network status can help routers ensure the essential                                    TABLE II
+network problem and figure out the most efficient solution.                                   S OME NOTATIONS
+However, with the network measurement in the forwarding
+plane, the routers can just obtain the local information. Unlike       Con                       The consumer
+the global information in routing plane, the local information         P ro                      The producer
+in the forwarding plane limits the efficiency of forwarding              Ri                       The routers
+packets and dealing with the link failure.                               r                    The loss rate of Rp
+   To approximate the global network status as far as possible,          k        The number of sent Interest packets per second
+the network measurement for interface ranking metrics in               tdata           The RTT of each outgoing interface
+forwarding plane and the ranking rules should be adaptive               tout                   The timeout value
+enough. However, the existing simple periodical measurement
+and color classification cannot work well enough.
+                                                                    impact of the network jitter which is caused by the instable
+A. Periodical measurement                                           network state such as the queue buffer congestion. In this
+   With the in-network cache, the uncertainty of location where     paper, we adopt the typical algorithm: Exponential weighted
+Interest packets are satisfied leads to the frequent changing       moving average in TCP/IP to update the SRTT:
+of network metrics. Thus, in NDN, the simple periodical                        SRT Ti = α · SRT Ti−1 + (1 − α) · RT Ti                  (1)
+measurement will lead to some outdated network metrics. In
+this paper, we focus on the important network metric for            Where α is the constant weighting factor (0 < α < 1).
+interface ranking: SRTT (Smoothed Round-Trip Time). In              Usually, α is between 0.8 and 0.9. In this paper, we let α = 0.8
+Section IV, we will introduce a new problem caused by SRTT          for the analysis and evaluation.
+measurement: SRTT slow-convergence.
+B. Triggered Top-N probing approach for color classfication
+   From Section II, we note that Triggered Top-N probing
+approach is reactive, which is illustrated in the following two
+key details. First, The probing is triggered after the NACK or
+Timeout, and YELLOW interfaces are probed in the order of
+their rankings. However, the ranking is based on periodical
+measurement, which can be quite outdated when there are
+bursty congestions along the path. Second, the change of
+interface color is done at the packet-level feedback for each            Fig. 1. A sub-topology of Tsinghua University Campus Network
+prefix: NACK or Timeout for GREEN interfaces, and Data
+for YELLOW interfaces. When faced with burst congestions,              Here is an example to describe SRTT slow-convergence.
+the colors might frequently change between GREEN and                We use the sub-topology of Tsinghua University as shown in
+YELLOW back and forth. In fact, later in Section V, we              Fig 1 and give the COST3 for interface ranking as shown in
+will show that, with the outdated ranking information under         Table I. Some notations are defined in Table II.
+burst congestions, color oscillation will result from the packet-      We assume that at some time the consumer fetches the data
+level action and will cause a new problem in NDN forwarding         along the path Con − Rc − R2 − Rp − P ro. Here is a simple
+plane: probing oscillation.                                         simulation to illustrate the problem. At the start, there is no
+                                                                    cache in R2 and Rp , so the consumer gets the data from the
+              IV. SRTT SLOW- CONVERGENCE                            producer, which needs 150ms. From 5s to 10s, we assume that
+   In this section, we will focus on the measurement of SRTT        R2 caches the needed data4 and the consumer can just get the
+and introduce a new problem: SRTT slow-convergence. SRTT
+                                                                       3 We specify COST to be OSP F + RT T and the value of OSPF and RTT
+reflects the network situation and is used for calculating RTO
+                                                                    are both normalized linearly.
+(Retransmission Time-Out) value. The reason why SRTT is                4 For example, another consumer connected to R fetches the same data
+                                                                                                                     2
+used instead of RTT, is to eliminate as much as possible the        from 5s to 10s.
+                                                                              choice. However, because congestion just causes packet loss
+                                                                              instead of failure, even if the loss rate of Rp − P ro reaches
+                                                                              up to 10%, the success rate of probing is as high as 90%.
+                                                                              Thus, there is a very low possibility that a simple probing
+                                                                              packet detects congestion, while for a given period of time,
+                                                                              there is a very high possibility that congestion leads to timer
+                                                                              expiration of some Interest packets. So, if the router probes
+                                                                              R3 successfully, R3 then becomes GREEN to forward Interest
+                                                                              packets and R2 changes to YELLOW.
+                                                                                 2) Situation 2: R3 → R2 : Once the choice for Rc changes
+                                                                              from R2 to R3 , this choice is still instable and may change
+Fig. 2. A case to describe SRTT Slow-Convergence. In this case, the initial   from R3 to R2 . There are two possible reasons. First, the
+RTT is 150ms. From 5s, the RTT is reduced to 50ms and is recovered to
+150ms after 10s.                                                              path Rc − R3 − Rp − P ro also congests (including the
+                                                                              congested pathRp − P ro), then Rc will check the highest
+                                                                              ranked YELLOW interface, namely R2 , and may switch back
+data from R2 directly during this 5s. We assume this RTT                      to R2 . Second, as illustrated in Fig. 3, we suppose at time t0 ,
+equals 50ms. If the first consumer sends 100 Interest packets                 Rc sends an Interest packet I1 to R2 which is lost later. So
+per second and the interval between two adjacent probing                      after tout time, Rc does not receive the corresponding Data
+equals 100, then the RTT and SRTT perform as shown in                         packet and mark the interface as YELLOW (Situation 1). But
+Fig. 2. We can see that after 5s, SRTT cannot reflect the real                during this tout tentative-sending time period, Rc has sent
+RTT. We call this problem as SRTT Slow-Convergence.                           out k · tout Interest packets to R2 and some of these Interest
+   SRTT slow-convergence just exists in NDN while not in IP.                  packets, such as I2 , I3 , are satisfied after t0 + tout . This will
+In IP routing plane, the network metrics are nearly constant                  cause R2 to become GREEN again and R2 replaces R3 as the
+when the network works stably. Thus, SRTT filters the varia-                  forwarding interface.
+tion of RTT that are just caused by network jitter. However,                     In conclusion, Rc will switch its outgoing interface back
+in NDN, the variation of RTT cannot completely represent                      and forth between R2 and R3 , and we name this phenomenon
+the network faults because of in-network cache. With the                      as probing oscillation.
+additional overhead, the frequency of periodical measurement
+cannot be very high, while the low measurement frequency
+will cause the SRTT value to not converge to the rapidly
+variational RTT timely, which makes SRTT often outdated.
+The outdated SRTT will deeply influence the judgement and
+lead to the above-mentioned SRTT Slow-Convergence.
+
+                    V. P ROBING O SCILLATION
+   In this section, we introduce a new problem existing in NDN
+forwarding plane but not in IP: Probing Oscillation.
+
+A. Problem description
+   Here is a simple example to illustrate what probing oscilla-
+tion is. In Fig 1, the router Rc has four next hops R1 , R2 , R3
+and R4 . According to the interface ranking in FIB Table I, we
+see that firstly Rc will choose R2 as the top choice to forward                          Fig. 3. A simple illustration of Probing Oscillation
+all the Interest packets.
+   Now we assume that Rp − P ro congests, then, for Rc ,                         The essential reason why probing oscillation occurs is the
+the next actions of choosing the forwarding interface oscillate               high-frequency color variation between GREEN and YEL-
+between the next two situations:                                              LOW caused by multipath forwarding with a shared congested
+   1) Situation 1: R2 → R3 : When congestion occurs, some                     common link and packet-level triggered probing, which makes
+Interest packets along Rc − R2 − Rp − P ro cannot fetch                       that probing oscillation is unique in NDN while not in TCP/IP.
+the corresponding data before the timer expires. But Rc                       In NDN, probing oscillation commonly happens and greatly
+just considers that R2 now is not suitable to fetch data,                     influences the benefit of multipath forwarding according to
+so according to interface ranking, Rc will probe the second                   our experiments. When the router detects the network failure,
+highest ranked interface R3 to forward Interest packets along                 with the influence of probing oscillation, it cannot recover
+Rc −R3 −Rp −P ro. It is worth noting that the link Rp −P ro is                from the network failure, which may bring a high loss of
+the shared common sub-path of both paths (Rc −R2 −Rp −P ro                    packets. Although we just chose a simple topology to explain
+and Rc −R3 −Rp −P ro), thus for Rc , R3 is still not the good                 the problem, in a more large and complex network, probing
+oscillation still continues to appear as long as there exists a       In the above formula, ηthreshold denotes the critical value
+shared common link, especially when there is a bottleneck             for distinguishing RTT changing greatly from RTT tending
+link. Experiments in Section VIII prove the above claims.             to SRTT. If η is larger than ηthreshold , ∆n should become
+                                                                      smaller to increase the probing frequency. Otherwise, ∆n
+  VI. A DAPTIVE SRTT U PDATE (ASU) ALGORITHM FOR                      should become bigger to decrease the probing frequency.
+                 PERIODICAL MEASUREMENT
+
+   In this section and the next section, we propose some              B. Analysis for solving SRTT slow-convergence
+new strategies to improve the freshness of forwarding states            There are two cases when calculating SRTT: 1) When RTT
+to essentially solve the SRTT slow-convergence and probing            changes little and 2) When RTT changes greatly. In case 1,
+oscillation. In this section, for periodical measurement, we          no matter whether the ASU algorithm is used or not, SRTT
+firstly propose an Adaptive SRTT Update (ASU) algorithm               will still be close to the real RTT, that is, all the strategies
+to calculate SRTT more accurately with dynamic sample fre-            perform perfectly. However, by using the ASU algorithm, the
+quency instead of the simple periodical measurement. Then we          Extra Overhead Ratio (EOR) will be lower:
+will analyze the theoretical efficiency of solving the probing                                           1
+oscillation.                                                                                 EOR =                                 (5)
+                                                                                                       ∆nmax
+A. Adaptive SRTT Update (ASU) algorithm                               In case 2, according to the definition of η in Equation 2, great
+   Unlike IP, the forwarding plane in NDN can gain the                variation of RTT means η ≥ ηthreshold . We assume that at
+dynamic network congestion status in real time, so that any           0 time, RTT changes from one value to another. Let SRT T0
+router can update the cost of each outgoing interface per prefix      denote the initial SRTT at 0 time. We define m as:
+according to the RTT of the pending Interest packets. Thus,                                           RT T
+all the interfaces need to update the SRTT value to reflect the                                m=                                  (6)
+                                                                                                     SRT T0
+network situation more exactly, which means routers need to
+flood a probing Interest packet periodically to all the interfaces.   Obviously, when ηi < ηthreshold , SRT Ti approximately
+However, the probing frequency is hard to be set. On the              converges to RTT. From Equation 1, we can get the general
+one hand, low probing frequency will cause SRTT slow-                 term formula of SRTT:
+                                                                                                 [    (         )]
+convergence as described in Section IV. On the other hand,                                                  1
+                                                                                  SRT Ti = RT T · 1 − 1 − αi                (7)
+high probing frequency will cause too much extra overhead.                                                 m
+In fact, in the most situation, SRTT tends to be constant
+except when the current RTT varies widely, e.g, cache hit.            Let ηi < ηthreshold , then the probing number of quitting the
+We hope to adopt dynamical sample frequency to make sure              SRTT-convergence ic equals:
+                                                                                   ⌈                                ⌉
+that the probing frequency can get lower when the RTT is                                         2ηthreshold
+                                                                             
+                                                                             
+approximately constant and get higher with the great variation                ic = lgα (1 − η                         ,m < 1
+                                                                                                 threshold )( m − 1)
+                                                                                                              1
+of RTT.                                                                             ⌈                                ⌉          (8)
+                                                                             
+                                                                                                 2ηthreshold
+   Thus, we propose a new Adaptive SRTT Update (ASU)                          ic = lgα
+                                                                                                                      , m > 1
+algorithm to calculate SRTT more accurately with dynamical                                 (1 + ηthreshold )(1 − m
+                                                                                                                 1
+                                                                                                                   )
+sample frequency and improve SRTT slow-convergence. We                Assume that m = 3, ηthreshold = 0.1, α = 0.8, we can work
+use ∆n to denote the number of Interest packets between two           out ic = 6, which means, SRTT will converge to RTT after
+adjacent probing. The initial value of ∆n is denoted as ∆n0           sampling for only 6 times. Thus, ASU algorithm is efficient
+and the minimum or the maximum of ∆n is denoted as ∆nmin              for SRTT slow-convergence.
+or ∆nmax . We define the Changing Factor of RTT to be η
+which is calculated as follows:                                           VII. P ROACTIVE P ROBING APPROACH FOR COLOR
+                           RT T − SRT T                                                      CLASSIFICATION
+                     η=                                        (2)
+                           RT T + SRT T                                  In this section, for color classification, we introduce Proac-
+                                                                      tive Probing approach as a new triggered probing approach,
+From Equation 2, we can see that:
+                                                                      including introducing path backup and probability-based for-
+                           0≤η<1                               (3)    warding, to improve interface ranking and analyze the theo-
+                                                                      retical efficiency of solving probing oscillation.
+Obviously, η is a normalized value to describe the distance
+between the real RTT and SRTT. The greater RTT changes,               A. Proactive Probing approach
+the bigger η will be. Based on the Changing Factor η, we
+                                                                         The Proactive Probing approach contains two sides: 1) con-
+propose the stretch ∆n:
+                                                                      stant Multi-GREEN-Interface strategy to maintain several
+         {
+            max(∆nmin , (1 − ηi )∆ni−1 ) η ≥ ηthreshold               path backups, and 2) probing based on Probing Probability
+  ∆ni =                                                               Function (PPF) algorithm for YELLOW interfaces to avoid
+            min(∆nmax , (1 + β)∆ni−1 ) η < ηthreshold
+                                                        (4)           probing strictly by interface ranking.
+   1) Constant Multi-GREEN-Interface strategy: The basic          analyze how many probing times the loss rate of Rc will
+idea of constant Multi-GREEN-Interface strategy is that, for      converge to 0.
+all the routers of which outgoing interfaces number is larger       We assume that, at first, Rc chooses R2 to fetch the data.
+than 2, we set more than one GREEN interface to ensure some       When the first packet loss occurs, only if Rc doesn’t choose
+backup paths. The router will keep the number of GREEN            R3 as its next outgoing interface, then Rc jumps out of
+interfaces as a constant Minimal Number of GREEN Inter-           the probing oscillation. Thus, the probability of loss rate
+faces (MNGI). Constant Multi-GREEN-Interface strategy will        convergence equals 1 − P P F (3). Similarly, when the second
+start when an Interest packet comes to check the number of        packet loss occurs, the probability of quitting the probing
+GREEN interfaces. While the number of GREEN interfaces            oscillation equals 1 − P P F (2). Now we assume that the ith
+is less than MNGI, the probing based on PPF mentioned in          packet loss occurs, then the probability of quitting the probing
+the following part will be triggered to choose one YELLOW         oscillation equals:
+interface to explore an available path. When this trying suc-                      {
+                                                                                      1 − P P F (2) if i%2 = 1
+ceeds, the router will mark it as a GREEN interface. In order                  p=                                             (11)
+                                                                                      1 − P P F (3) if i%2 = 0
+to prevent an extra cost, the value of MNGI should not be too
+large. We suggest that MNGI value does not exceed half the        We can approximatively consider it as Geometric distribution
+number of total interfaces.                                       G(p) while p ≃ [(1 − P P F (2)) + (1 − P P F (3))]/2. Thus,
+   2) Probing based on Probing Probability Function algo-         the expectation of the number of quitting probing oscillation
+rithm: As the above description, probing will be triggered        (nq ) equals:
+when constant Multi-GREEN-Interface strategy discovers that                             1               2
+the GREEN interfaces number is less than MNGI. However,                      E(nq ) =     =                                  (12)
+                                                                                        p   2 − P P F (2) − P P F (3)
+how to probe will affect the performance directly. It is not
+smart enough that the router chooses the probing interface        Even if we assume that P P F (2) and P P F (3) are as high as
+only based on the Interface Ranking. There are two reasons        0.8, E(nq ) just equals 5. We can see that with Proactive Prob-
+for this: 1) For each YELLOW outgoing interface, with the         ing approach, limited probing times is enough to theoretically
+introduction of router cache, the OSPF value from the routing     help routers jump out of probing oscillation.
+algorithm cannot reflect the actual time of fetching the data.
+                                                                              VIII. P ERFORMANCE E VALUATION
+2) Because SRTT will not be updated since this interface was
+remarked as YELLOW, the SRTT similarly cannot reflect the            In this section, we evaluate the performance of both ASU
+actual efficiency of fetching the data, which means that the      algorithm and Proactive Probing approach for interface rank-
+SRTT may be outdated. For example, in Fig. 1, the OSPF            ing in NDN using modified NDNSim 2.0 simulator [6]. The
+value of R4 is the highest, but when the requested data is        new version of NDNSIM integrates ndn-cxx library (NDN
+cached in R4 , choosing R4 to fetch data is the optimal choice.   C++ library with eXperimental eXtensions) and the NDN
+   Thus, at this time, the COST attribute is not effective        Forwarding Daemon (NFD) to enable experiments with real
+enough to rank all the YELLOW interfaces. But we can              code in a simulation environment. Our evaluation contains two
+assume that the smaller the COST is, the higher the probability   parts. All the network parameters are set as follow:
+of the optimal choice will be. Based on this thought, we             • tdata = 100ms, tout = 120ms
+come up with the Probing Probability Function (PPF) to help          • k = 100
+probability-based probing. PPF should satisfy the decreasing         • ηthreshold = 0.1
+monotonicity:
+                                                                  A. Evaluation on sub-topology of TUNET
+         COSTi > COSTj ⇔ P P F (i) < P P F (j)              (9)      We use the sub-topology of Tsinghua University Campus
+In this paper, we choose the following formula as PPF:            Network shown in Fig. 1 to verify the effectiveness of solving
+                                                                  SRTT slow-convergence and probing oscillation.
+                              1/COSTi
+                 P P F (i) = ∑                            (10)       1) Adaptive SRTT update algorithm for slow-convergence:
+                               (1/COSTi )                         Given the two different variations of generated Gaussian
+   PPF ensures that each outgoing interface has a chance          distributed RTT data, we use SRTT calculated by Equation 1 to
+to be selected for probing. The probability is due to the         see how the ASU algorithm has ameliorated the performance
+history information of the COST calculated by both the routing    of RTT detection. Firstly: As shown in the Fig. 4(a), we
+algorithm and SRTT. Based on PPF, the router has a high           set the distribution of RTT to be N (100, 2) designed as a
+probability of choosing the interface which performed well in     variable with very small variation. We see that no matter
+the past, which guarantees the fairness for all interfaces.       whether using ASU algorithm, SRTT can converge to real
+                                                                  RTT as well. But paying attention to the overhead, we can
+B. Analysis of solving probing oscillation                        find that in 15 seconds, with the advent of ASU algorithm,
+   The topology in Fig. 1 is selected for analysis. With Proac-   the total number of probing decreases from 30 to 16 and the
+tive Probing strategy, we choose the Best-Route (Triggered        average interval increases from 0.5s to 0.94s, which means
+Top-1 probing) strategy for theoretical analysis. We try to       that the Extra Overhead Ratio (EOR) is decreased by 46.7%.
+            (a) SRTT comparison when RTT variation is small                                    (a) The loss rate of Rc when r = 0.01
+
+
+
+
+       (b) SRTT comparison when RTT is suddenly reduced by half                                (b) The loss rate of Rc when r = 0.1
+
+Fig. 4. SRTT comparison when RTT variation is small or s suddenly reduced   Fig. 5. The loss rate of Rc when r = 0.01 or r = 0.1. In a), the loss rate
+by half.                                                                    with NCC strategy and Best-route strategy nearly coincide while the loss rate
+                                                                            with Proactive Probing strategy decreases to 0 at about 10 seconds. In b), the
+                                                                            loss rate with Best-route strategy still performs the worst. The loss rate with
+                                                                            NCC strategy converges to 0 after about 18s while the loss rate with Proactive
+So this proves that in the flat phase of RTT, probing with ASU              Probing strategy decreases to 0 after only about 3 seconds.
+algorithm performs as well as the periodical measurement but
+brings a lower extra overhead. Secondly: In this case, SRTT
+slow-convergence occurs. In the Fig. 4(b), we assume that                   of packet loss, these three approaches perform closely to each
+there is a striking decline at around the time 6s. Before that,             other except that Proactive Probing approach slumps down to
+the distribution of RTT is N (100, 2) and later is N (50, 2).               0 at around 12s, while the other two keep on oscillating and
+The figure illustrates that the SRTTs with ASU algorithm are                do not reveal any trend to converge to 0. But as shown in
+more sensitive to the change. With ASU algorithm, the time                  Fig. 5(b), when the loss rate Rp is 0.1, things become more
+from when RTT declines to it’s convergence (η < ηthreshold )                obvious. Proactive Probing approach leads to zero loss rate in
+is just 3.6 seconds, while on the other hand without ASU                    only 3 seconds, which is about 1/5 of the time as NCC falls
+algorithm it’s time is about 5.8 seconds. Thus, the response                to 0 loss rate. Best-route, however, does not show any trend of
+time is decreased by 37.9%. With ASU algorithm, although                    converging to 0. Therefore, we conclude from the experiments
+a little extra probing is generated during [6,10]s, the total               that Proactive Probing approach performs the best in solving
+overhead (average probing interval) in 15 seconds is also close             the probing oscillation as compared to both the Best-Route
+to the plain probing. Thus, we conclude that ASU algorithm                  and NCC.
+can alleviate SRTT slow-convergence with little extra overhead                 Second, we see that the overhead of Rc is strongly related
+as compared to the simple periodical measurement.                           to the loss rate of Rc , because when the current path fails,
+   2) Proactive Probing approach for probing oscillation:                   each of the three strategies requires spontaneous probing of
+To verify the performance of solving probing oscillation, we                other pathes, and inevitably this incurs a detection overhead.
+investigate two parameters: the loss rate of Rc and the extra               Accordingly, from Fig. 6(a), we observe that when Rp = 0.01,
+overhead.                                                                   the overhead of NCC is approximately 2 times as large as
+   First, we analyze the loss rate of Rc in two occasions – one             the loss rate of Best-route since NCC needs to find the first
+when the loss rate of Rp is 0.01 and the other is when the loss             2 available GREEN paths with the lowest cost. Best-Route
+rate of Rp is 0.1. Both of the two cases will cause the probing             and Proactive Probing approach, however, only need to find
+oscillation of Rc . As shown in Fig. 5(a), when the loss rate               the cheapest GREEN path. And Proactive Probing approach
+of Rp is 0.01, we see that due to the very limited probability              performs as well as the Best-Route before it drops to 0 at
+                                                                         section when the loss rate rises to 5%. Then the client will
+                                                                         decrease the sending rate by half and repeat the increasing
+                                                                         method. All the link bandwidth equals 1Gbps except for the
+                                                                         bandwidth of MICH-LIP6 it is set as 100Mbps. Because of
+                                                                         the significantly lower bandwidth, the link MICH-LIP6 may
+                                                                         become the bottleneck of this topology.
+                                                                            We analyze the loss rate of the node MICH and the node
+                                                                         CSU with the Best-Route and Proactive Probing approach
+                                                                         respectively shown in Fig. 8. Because the link MICH-LIP6
+                                                                         is the bottleneck, it will get congested easily. Thus, it will
+                                                                         cause one of its downstream nodes, CSU, to have probing
+                                                                         oscillation. Fig. 8(a) shows that since the link MICH-LIP6
+            (a) Extra Overhead Ratio (EOR) when r = 0.01
+                                                                         becomes congested, the node CSU begins to fall into probing
+                                                                         oscillation and cannot handle this problem effectively with
+                                                                         the Best-Route. Hence, the loss rate of CSU is almost as high
+                                                                         as MICH’s. While, in Fig. 8(b), with our Proactive Probing
+                                                                         approach, although the congestion of MICH-LIP6 occurs, we
+                                                                         can see that the loss rate of CSU decreases to 0 quickly. It
+                                                                         means that CSU chooses another path to get data bypassing
+                                                                         the link MICH-LIP6. We notice that after several seconds, the
+                                                                         loss rate of CSU appears again and still returns to 0 in seconds.
+                                                                         This is because that when the loss rate of MICH becomes low,
+                                                                         CSU will reselect the path with MICH-LIP6 to get data until
+                                                                         MICH-LIP6 seriously congests again. It’s also worth noting
+             (b) Extra Overhead Ratio (EOR) when r = 0.1
+                                                                         that with Proactive Probing approach, the congestion level
+                                                                         of MICH-LIP6 is significantly lower than that of Best-Route.
+    Fig. 6. Extra Overhead Ratio (EOR) when r = 0.01 or r = 0.1.         With Proactive Probing approach, when CSU detects probing
+                                                                         oscillation, it will finally unselect the congestion link MICH-
+                                                                         LIP6, which will reduce the network flow via MICH-LIP6 and
+around the same time as the loss rate drops to 0. When Rp =
+                                                                         bring down the congestion level. Fig. 8(c) illustrates CDF of
+0.1, from Fig. 6(b) we still see that they almost copy the shape
+                                                                         the loss rate with two approaches.
+of the loss rate except for the 2-time-magnification of NCC.
+B. Evaluation on a replica of the actual NDN testbed topology                                IX. R ELATED W ORK
+
+                                                                            In TCP/IP, the stateless forwarding plane limits the network
+                                                                         forwarding ability. Thus, multipath forwarding with which
+                                                                         networks can provide end-hosts with multiple path choic-
+                                                                         es are argued in [7] and [8] to perform better based on
+                                                                         their experiments. Path Splicing [9], Pathlet routing [10] and
+                                                                         Routing deflection [11] are designed to implement this idea.
+                                                                         Multipath TCP [12] are introduced to set up multiple sub-TCP
+                                                                         connections between the two ends. But all these improvement
+                                                                         for TCP/IP forwarding plane is limited to the end-to-end
+                                                                         transmission mode. Therefore, the increased adaptability of
+                                                                         the forwarding plane are very limited. In TCP/IP, based on
+                                                                         Fast reroute (FRR) mechanism [13], improved mechanisms
+Fig. 7. A replica of the actual NDN testbed topology which contains 22
+nodes and 50 links.
+                                                                         such as MPLS FRR [14] and IPFRR [15] cannot efficiently
+                                                                         handle multiple concurrent failures. For handling congestion
+   We use a replica of the actual NDN testbed topology which             control, Active Queue Management (AQM) mechanisms, such
+contains 22 nodes and 50 links shown in Fig. 7. The node                 as Random Early Detection (RED) [16], have been introduced.
+”SystemX” is set as a server/producer and the other nodes are               As an architecture of Information-Centric Networking (IC-
+set as clients/consumers. The size of an Interest packet and a           N), NDN supports multipath forwarding intrinsically. Adaptive
+Data packet equals 25 Bytes and 1KB respectively. Each client            forwarding plane [3] provide great performance in handling
+initializes the sending rate of Interest packets as 10Kpps and           link failures and network congestion. Also, other congestion
+randomly increases the sending rate by 5%-15% per second                 control mechanisms are studied. Hop-by-hop congestion con-
+until the client detects the congestion which is defined in this         trol such as HR-ICP [17] and HIS [18] can take full advantage
+              (a) With Best-route strategy.                (b) With Proactive Probing strategy.                   (c) The CDF of loss rate.
+
+           Fig. 8. The loss rate comparison between the node MICH and CSU in network testbed when using different strategies respectively.
+
+
+
+of NDN adaptive forwarding plane, while all these mecha-                       [3] C. Yi, A. Afanasyev, I. Moiseenko, L. Wang, B. Zhang, and L. Zhang, “A
+nisms cannot effectively handle the dynamics in returning Data                     case for stateful forwarding plane,” Computer Communications, vol. 36,
+                                                                                   no. 7, April 2013.
+traffic. With AIMD algorithm liked in TCP/IP, Interest window                  [4] A. Afanasyev, P. Mahadevan, I. Moiseenko, E. Uzun, and L. Zhang, “In-
+size is presented to avoid excessive Interest packets [19], [20].                  terest flooding attack and countermeasures in named data networking,”
+                                                                                   IFIP Networking Conference, May 2013.
+                          X. C ONCLUSION                                       [5] J. Shi, “ccnd 0.7.2 forwarding strategy,” http://redmine.named-
+                                                                                   data.net/projects/nfd/wiki/CcndStrategy, University of Arizona, 2014.
+   Adaptive forwarding plane is a key component for NDN                        [6] S. Mastorakis, A. Afanasyev, I. Moiseenko, and L. Zhang, “ndnsim 2.0:
+architecture, but its existing strategies can suffer from outdated                 A new version of the ndn simulator for ns-3,” NDN Technical Report,
+                                                                                   vol. NDN, no. 0028, January 2015.
+forwarding states, namely interface coloring and ranking. For                  [7] D. Wendlandt, I. Avramopoulos, D. G. Andersen, and J. Rexford, “Dont
+the first time in the literature, in this paper we illustrate the                  secure routing protocols, secure data delivery,” 2006.
+impact of outdated forwarding states in the existing interface                 [8] M. Caesar, M. Casado, T. Koponen, J. Rexford, and S. Shenker,
+                                                                                   “Dynamic route recomputation considered harmful,” ACM SIGCOMM
+ranking mechanism through two concrete problems, SRTT                              Computer Communication Review, vol. 40, no. 2, pp. 66–71, 2010.
+slow-convergence and probing oscillation.                                      [9] M. Motiwala, M. Elmore, N. Feamster, and S. Vempala, “Path splicing,”
+   In order to efficiently achieve up-to-date forwarding states,                   in ACM SIGCOMM Computer Communication Review, vol. 38, no. 4.
+                                                                                   ACM, 2008, pp. 27–38.
+the key challenge is to design metric measurement and color                   [10] P. Godfrey, I. Ganichev, S. Shenker, and I. Stoica, “Pathlet routing,”
+classification mechanism to balance the measurement over-                          ACM SIGCOMM Computer Communication Review, vol. 39, no. 4, pp.
+head and the freshness of the forwarding states. Towards                           111–122, 2009.
+                                                                              [11] X. Yang and D. Wetherall, “Source selectable path diversity via routing
+this goal, we propose adaptive SRTT update approach and                            deflections,” in ACM SIGCOMM Computer Communication Review,
+proactive probing approach to improve the freshness of the                         vol. 36, no. 4. ACM, 2006, pp. 159–170.
+forwarding states in NDN. Both theoretical analysis and                       [12] D. Wischik, C. Raiciu, A. Greenhalgh, and M. Handley, “Design,
+                                                                                   implementation and evaluation of congestion control for multipath tcp.”
+NDNSim simulation results show that our new strategies                             in NSDI, vol. 11, 2011, pp. 8–8.
+reduce SRTT convergence time by 37.9% and the loss rate                       [13] P. Pan, G. Swallow, A. Atlas et al., “Fast reroute extensions to rsvp-te
+by 75% to 94.75% with little extra overhead, compared to the                       for lsp tunnels,” 2005.
+                                                                              [14] T. Nadeau, K. Koushik, and R. Cetin, “Multiprotocol label switching
+existing interface ranking strategies. We believe that this paper                  (mpls) traffic engineering management information base for fast reroute,”
+is an important first step towards up-to-date NDN adaptive                         RFC 6445, Tech. Rep., 2011.
+forwarding plane.                                                             [15] A. K. Atlas and A. Zinin, “Basic specification for ip fast-reroute: loop-
+                                                                                   free alternates,” 2008.
+                       ACKNOWLEDGEMENT                                        [16] S. Floyd and V. Jacobson, “Random early detection gateways for
+                                                                                   congestion avoidance,” Networking, IEEE/ACM Transactions on, vol. 1,
+   This work has been supported by two National Natural Sci-                       no. 4, pp. 397–413, 1993.
+ence Foundations of China (NSFC) under Grant No.61472210                      [17] G. Carofiglio, M. Gallo, and L. Muscariello, “Joint hop-by-hop and
+                                                                                   receiver-driven interest control protocol for content-centric networks,” in
+and No.61472214, the Sate Key Program of National Science                          Proceedings of the second edition of the ICN workshop on Information-
+of China under Grant No.61233007, the National Key Ba-                             centric networking. ACM, 2012, pp. 37–42.
+sic Research Program of China (973 program) under Grant                       [18] Y. Wang, N. Rozhnova, A. Narayanan, D. Oran, and I. Rhee, “An
+                                                                                   improved hop-by-hop interest shaper for congestion control in named
+No.2013CB329105, the Tsinghua National Laboratory for                              data networking,” ACM SIGCOMM Computer Communication Review,
+Information Science and Technology Key Projects.                                   vol. 43, no. 4, pp. 55–60, 2013.
+                                                                              [19] S. Braun, M. Monti, M. Sifalakis, and C. Tschudin, “An empirical study
+                             R EFERENCES                                           of receiver-based aimd flow-control strategies for ccn,” in Computer
+                                                                                   Communications and Networks (ICCCN), 2013 22nd International Con-
+ [1] L. Zhang, A. Afanasyev, J. Burke, V. Jacobson, kc cllaffy, P. Crowley,        ference on. IEEE, 2013, pp. 1–8.
+     C. Papadopoulos, L. Wang, and B. Zhang, “Named Data Networking,”         [20] L. Saino, C. Cocora, and G. Pavlou, “Cctcp: A scalable receiver-
+     ACM SIGCOMM Computer Communication Review (CCR), vol. 44,                     driven congestion control protocol for content centric networking,” in
+     no. 3, July 2014.                                                             Communications (ICC), 2013 IEEE International Conference on. IEEE,
+ [2] C. Yi, J. Abraham, A. Afanasyev, L. Wang, B. Zhang, and L. Zhang, “On         2013, pp. 3775–3780.
+     the role of routing in named data networking,” ICN(14): Proceedings
+     of the 1st international conference on Information-centric networking,
+     2014.
+

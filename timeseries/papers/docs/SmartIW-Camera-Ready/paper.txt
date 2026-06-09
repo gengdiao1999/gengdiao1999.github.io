@@ -1,0 +1,825 @@
+Reducing Web Latency through Dynamically Setting
+ TCP Initial Window with Reinforcement Learning
+                   Xiaohui Nie† , Youjian Zhao† , Dan Pei† , Guo Chen‡∗ , Kaixin Sui§ , Jiyang Zhang¶
+                       † Tsinghua University  ‡ Hunan University    § Microsoft Research     ¶ Baidu
+                  † Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+                                                                                      TCP state after flow ends   % of flows
+   Abstract—Latency, which directly affects the user experience
+and revenue of web services, is far from ideal in reality, due to the                        Slow Start            80.27%
+                                                                                        Congestion Avoidance       19.73%
+well-known TCP flow startup problem. Specifically, since TCP
+starts from a conservative and static initial window (IW, 2∼4 or        TABLE I: The distribution of TCP states after finishing trans-
+10), most of the web flows are too short to have enough time            mission. Measured in the mobile search service of B during
+to find its best congestion window before the session ends. As a
+result, TCP cannot fully utilize the available bandwidth in the         one week in 2017. The average flow size is about 120KB.
+modern Internet. In this paper, we propose to use group-based
+reinforcement learning (RL) to enable a web server, through             standard IW from 2 ∼ 4 to 10 [6]. But is 10 still too small
+trial-and-error, to dynamically set a suitable IW for a web flow        for those high-speed users (e.g., with fiber access) and is 10
+before its transmission starts. Our proposed system, SmartIW,           too large for low-speed users (e.g., GPRS access in remote
+collects TCP flow performance metrics (e.g., transmission time,         areas)? Since the network conditions can be highly variable
+loss rate, RTT) in real-time without any client assistance. Then
+                                                                        both spatially and temporally, it is actually infeasible to choose
+these metrics are aggregated into groups with similar features
+(subnet, ISP, province, etc.) to satisfy RL’s requirement. SmartIW      a static IW that is best for all flows. In this paper, we argue
+has been deployed in one of the top global search engines for           that a web-service provider can collect TCP flow data and use
+more than a year. Our online and testbed experiments show               an appropriate data-driven learning method to set a suitable
+that, compared to the common practice of IW = 10, SmartIW               IW for a web flow even before its transmission starts.
+can reduce the average transmission time by 23% to 29%.
+                                                                           Setting TCP IW through data-driven learning has been little
+                        I. I NTRODUCTION                                studied. Since the network condition can be highly variable
+                                                                        and the relationship between IW and network conditions is
+   Latency, which greatly affects the user experience and rev-          complex, we model the IW setting as a reinforcement learning
+enue [1, 2], has become one of the most important performance           (RL) problem (real-time exploration and exploitation) instead
+metrics for modern online web services (e.g., web search, e-            of a prediction problem (offline training and online prediction).
+commerce website). However, the network transmission time               Its basic idea is to continuously strike a balance between ex-
+in those web services is still far from ideal, and signifi-             ploring suboptimal decisions and exploiting currently optimal
+cantly increases the end-to-end latency [3, 4]. One of the key          decisions [8]. Our choice of RL is inspired and encouraged
+reasons is that TCP, which most online web services (e.g.,              by the recent progress in applying RL (instead of prediction
+Microsoft [5], Google [3], Baidu [4]) are based on, cannot              model) to Internet video QoE optimization through dynami-
+deal with short web flows gracefully.                                   cally deciding a video session’s serving frontend servers [9]
+   Specifically, TCP starts with a conservative and static initial      or through tuning ABR algorithms [10].
+congestion window (IW, 2, 4, or 10 [6]), then tries to find the            In this paper, RL is used to continuously update the deci-
+best sending rate of a flow by keeping probing and adjusting            sions of the suitable IW for flows, based on the most recent
+its congestion window (CWND) during flow transmission.                  fresh performance data, to maximize the cumulative reward
+However, most web flows are so short that they could be                 (network performance). Although applying RL to set TCP
+finished in just one RTT with the best CWND, but inadequately           IW is a promising abstraction, there are three major practical
+take multiple RTTs to probe for its best CWND although the              challenges in practice:
+flows are too short to have enough time for TCP find one
+starting from the conservative IW. As a real-world example,               • Challenge 1: How to measure TCP performance data
+Table I shows that, for the mobile search service in a top global           on the server side only? RL method needs fresh TCP
+search company B where IW =10, more than 80% of the TCP                     performance data to compute reward. However, a tradi-
+flows are still in slow-start phase when the sessions end, not              tional web service server cannot directly measure the TCP
+utilizing the available bandwidth.                                          transmission time without clients’ collaboration.
+   The above TCP flow startup problem is still considered by              • Challenge 2: How to apply RL methods on highly variable
+
+the research community as an open research problem [7] for                  and non-continuous network conditions of the Internet?
+general TCP environment. Google proposed to increase the                    RL continuously updates the decisions based on fresh
+                                                                            data and historical experience. Its decision is determined
+  ∗ Guo Chen is the corresponding author.                                   by a static (but unknown) distribution of the context,
+
+
+
+978-1-5386-2542-2/18/$31.00 ©2018 IEEE
+     and traditional RL methods require the continuity of the                              Users              Frontend Servers           Backend Servers
+
+     context that affects the reward of the decision [11, 12].                                     The Internet             Private Network
+
+     In our case, the decision of RL is the latest suitable IW
+     for a flow, and the context of RL is a flow’s network                                !)
+     conditions (i.e., available end-to-end bandwidth and
+
+
+
+
+                                                                          Response Time
+
+
+
+
+                                                                                                                                                Estimated Response Time
+     RTT). However, not every user or user group can satisfy                              !+
+                                                                                                             !"#$%#
+     RL’s context continuity requirement. Even worse, for
+     some fine-grained user groups such as user IP, most                                  !*                             TCP Response Time
+                                                                                                                         in this paper
+     of them do not even have enough data samples to tell
+     whether their network conditions are continuous or not.                              !,
+                                                                                                                  !&'(
+   • Challenge 3: How to search for the optimal IW from a
+     large window space quickly? RL methods are essentially       Fig. 1: Typical infrastructure of web services, HTTP interac-
+     based on trial and error. They require clever exploration    tions, and TCP response time.
+     mechanisms. Brute-forcedly selecting actions results in
+                                                                  servers interact to complete a web request. Frontend servers
+     poor performance [13], and typically only suits small and
+                                                                  parse users’ requests from the Internet (step 1), and redirect
+     limited decision space, which can quickly converge to the
+                                                                  them to the backend servers who handle the concrete tasks
+     best decision after a small number of trials. However, the
+                                                                  (step 2). Then they receive the responses (HTML, images,
+     possible IW space for a TCP flow can be so large that the
+                                                                  css, js files) from backend servers (step 3) and send them to
+     network conditions might have already changed before
+                                                                  users through the Internet (step 4). The Web response time (or
+     brute-forcedly searching can find the optimal IW for the
+                                                                  informally Web latency) [3] consists of (T1 + T2 + T3 ) , the
+     previous network conditions.
+                                                                  transmission time between frontend servers and users through
+In this paper, we propose a system called SmartIW that can set
+                                                                  the Internet, and T2 , the time between frontend and backend
+TCP IW at server side smartly using group-based reinforce-
+                                                                  servers through the dedicated high-speed private network and
+ment learning, which addresses all the above challenges. The
+                                                                  the processing time at the backend servers. Unfortunately,
+contributions of this paper are summarized as follows:
+                                                                  neither T1 nor T3 can be directly measured at server-side
+   • To address Challenge 1, we modify Linux kernel and
+                                                                  without client assistance. However, the frontend server can
+     Nginx software to enable web servers to collect and          measure Tstart and Tend , where Tstart is the moment when
+     store billions of TCP flow performance records (e.g.,        the frontend server begins to send data to the user (step 4),
+     transmission time, loss rate, RTT) in real-time without      and Tend is the moment when the frontend server receives
+     any client assistance (§V). Such a server-side TCP mea-      the last ACK of the response which indicates the end of this
+     surement system can be used beyond SmartIW, e.g., for        network transmission (step 5). Thus, T4 is the transmission
+     TCP performance troubleshooting.                             time of the response’s last TCP ACK (a small packet), which
+   • To address Challenge 2, our intuition is that flows from
+                                                                  can be used to closely approximate T1 (the time to transmit the
+     users sharing the same network features (e.g., subnet,       HTTP request, also a small packet). Therefore, it is a common
+     ISP, province) typically have similar network perfor-        practice [3] to use T2 + T3 + T4 (estimated response time) to
+     mance [9]. Thus, we propose a bottom-up approach to          estimate T1 + T2 + T3 (response time).
+     group flows from users with the same network features
+                                                                     Because T2 can be considered by the users as an overall
+     to find the most fine-grained user groups that both have
+                                                                  processing time of the web service provider, and T1 + T3 is
+     enough samples and satisfy the RL context continuity
+                                                                  affected by the TCP flow start problem the most, in this paper
+     requirements. Then we apply RL methods at the group
+                                                                  we focus on (T1 + T3 ) only, and call it TCP Response Time
+     granularity. (§IV-B)
+                                                                  hereinafter. It is calculated as (Tend − Tstart ).
+   • To address Challenge 3, we improve RL with a fast de-
+     cision space searching algorithm. Based on the common        B. IW greatly affects the network transmission time
+     perception of the relationship between TCP performance
+     and the IW, we propose a sliding-decision-space method          The common perception of IW: IW determines the initial
+     that can quickly converge to the best IW (§IV-A).            sending rate at the flow startup phase. Too small an IW suffers
+   • SmartIW has been deployed in one of the top global           from more RTTs than necessary to finish the transmission;
+     search engines for more than a year. Our online and          too large an IW results in congestion or even expensive TCP
+     testbed experiments show that, compared to the common        timeout, which results in high TCP response time [6]. In
+     practice of IW = 10, SmartIW can reduce the average          summary, different IWs can greatly affect TCP response time.
+     transmission time by 23% to 29%.                                Fig. 2 shows IWs’ effects in two example network condi-
+                                                                  tions. In Fig. 2(a) the network condition is relatively good
+                    II. BACKGROUND
+                                                                  where the link can support CWND =3. So if server’s IW =3,
+A. TCP response time in web services                              the TCP response time is 1 RTT. But when the IW = 1, the
+  Fig. 1 shows a typical infrastructure of web services [3, 6],   response time is 2 RTTs. In Fig. 2(b), the network condition
+and illustrates how users, frontend servers, and backend          is worse, i.e., when the CWND is larger than 2, it would
+                                                                                                         Server
+cause link congestion and packet loss. As such, if IW = 3,                                                                                   Brain for IW selection
+
+the response time would be RTT + retransmission timeout
+(RTO, which is typically several times of RTTs). But if IW =
+
+
+
+
+                                                                                                               Reward2
+                                                                                                                                          IW=10   IW=20 IW=30
+1, the response time is 2 RTTs, shorter than that when IW =3.                                                                                                         …
+
+
+
+
+                                                                                                         IW2
+We can see that a proper IW can greatly reduce the network                                                                                              Select IW =20
+
+transmission time.                                                                                   …                   …
+                                                                                                                                                            Server-side performance measurement
+          Client   IW = 1    Server           Client   IW = 3      Server                 User Group1 User Group2 User Group3                                           (Goodput, RTT)
+
+                                                                                      (a) Using different IWs for different user groups   (b) The logic of IW selection for one user group
+
+                                                                           1*RTT                               Fig. 3: The key idea of SmartIW.
+                                      2*RTT
+                                                                                      above situation. Basically, it continuously makes decisions
+                                                                                      based on the environment feedback. Once the optimization
+          (a) Client request for 3 packets data. The link supports CWND ≥ 3.
+          Client   IW = 1     Server          Client   IW = 3     Server
+                                                                                      goal (called as reward function in RL) is properly defined, RL
+                                                                                      can gradually find the best decision based on a trial and error
+                                                                                      manner, by striking a dynamic balance between exploring
+                                      2*RTT                                           suboptimal decisions and exploiting currently optimal deci-
+                                                        Waiting for RTO     RTT+RTO
+                                                                                      sions. Moreover, its exploration and exploitation algorithm can
+                                                                                      quickly react to the environment change. As such, RL naturally
+          (b) Client request for 3 packets data. The link only supports CWND ≤ 2.     fits the task of dynamically setting IW. With a properly defined
+                                                                                      reward function, the RL algorithm can help automatically find
+  Fig. 2: An illustrative example to show the effect of IW.
+                                                                                      a good IW, without worrying about the complex network
+                                                                                      factors and their variation.
+         III. C ORE I DEAS AND SYSTEM OVERVIEW
+                                                                                      B. How to define the reward function
+   As mentioned in §I, the best IW is determined by the client-
+server end-to-end link’s network conditions (e.g., available                             A naive way would be directly using the TCP response time,
+bandwidth and RTT), but the network conditions are highly                             which is our optimization goal in this paper. However, the size
+variable, both temporally and spatially. To deal with the                             of web responses may vary largely for different requests, so
+variability of the network conditions, we propose a bottom-up                         their network transmission time cannot be directly compared.
+approach to group flows from users with the same network                              We note that, RL method needs to aggregate TCP flows data
+features (e.g., subnet, ISP, province) to find the most fine-                         together to learn history and choose IW by comparing the
+grained user groups that both have enough samples and satisfy                         rewards of different decisions. Therefore, we need a reward
+the RL context continuity requirements.                                               function that can accurately reflects the effect of IW on the
+   On the one hand, using RL method can naturally deal with                           TCP response time, regardless of the response size.
+the temporal variability of the network conditions. i.e., RL                             Goodput, which is the number of bytes transmitted per unit
+aims to find the best IW for each given network condition of a                        of time, is a good candidate that satisfies above requirements.
+specific user group and dynamically adapt to the latest network                       Increasing IW to get the best goodput of flows that deploy
+conditions of the user group. On the other hand, user grouping                        our approach (called SmartIW flows) can hurt the performance
+is used to handle the spatial variability of network conditions.                      of non-SmartIW flows that share some network resource with
+Our intuition is that, for a given server at a given time, users’                     SmartIW flows. Therefore, to maintain fairness, we constrain
+network features (i.e., subnet, ISP, province) largely determine                      our RL optimization goal to be getting as higher goodput
+client-server end-to-end link’s network conditions. If we run                         as possible for SmartIW flows while trying best not to hurt
+RL for each user group within which network conditions are                            non-SmartIW flows. As such, we take into consideration both
+similar, the performance of each group can be improved.                               goodput and RTT in the reward function, where RTT is a
+                                                                                      good indicator to the network congestion that affects the per-
+A. Why reinforcement learning                                                         formance of non-SmartIW flows [14]. Here we do not add loss
+   Choosing a proper IW for a TCP flow is not an easy job.                            to the reward function, because many RTT-based congestion
+Using data-driven method is a promising direction, but even                           control algorithms [15, 16] work well without considering loss.
+if we have detailedly logged the networking conditions, it is
+still hard to decide a proper IW since it is highly related to                        C. Overview of SmartIW
+multiple complex factors such as network bandwidth, RTT,                                 When the SmartIW, shown in Fig. 3, the frontend server
+router buffer size, flow size, etc., along the end-to-end path                        receives an HTTP request from a user, it establishes a session
+between the user and the server. Moreover, all these factors                          with the user and identifies which user group it belongs to.
+can frequently change over time, which means the proper IW                            Then the frontend server obtains the most up-to-date decision
+changes over time. Reinforcement learning (RL), inspired by                           of IW from the per-group RL’s result and set this IW for the
+human behaviorist psychology [8], is a popular technique in                           session quickly before sending the response to the user. After
+machine learning community and is very suitable to cope with                          the response’s transmission is finished, the frontend server
+outputs the TCP performance data and reports it to the server              Algorithm 1 The discounted UCB
+cluster which runs per-group RL with fresh measurement data                1: for t from 1 to K, play arm It = t
+and acts as the brain for learning each user groups’ IW.                   2: for t from K + 1 to T , play arm
+Besides, the brain runs the user grouping algorithm with the                                  It = arg max X t (γ + i) + ct (γ + i)
+                                                                                                    1≤i≤K
+historical data. The brain continuously sends the IW decision
+of each user group to the frontend servers at a timescale of
+minutes. In this way, it controls all the sessions’ behavior.                 In order to use discounted UCB in IW learning, the keys
+Note that, all the procedures are done at server side without              are the definitions of the reward function and the arms.
+any client or middleware (e.g. router, switch, link) modification             Reward function definition: Our goal is to set the ideal IW
+or assistance, and our method only changes the IWs without                 which can fully utilize the client-server end-to-end link’s band-
+modifying the TCP congestion control algorithm.                            width without causing congestion. As mentioned in §III-B,
+                                                                           we consider RTT as the signal of the network congestion.
+                   IV. C ORE A LGORITHMS                                   The reward in Equation 4 reflects our goal of maximizing
+   In this section, we present two core algorithms of SmartIW:             the goodput and minimizing the RTT. Goodputs (i) is arm
+RL algorithm for learning per-group IW given a user group                  i’s instantaneous goodput at time s, RT Ts (i) is arm i’s RTT
+(§IV-A) , and user grouping algorithm (§IV-B ).                            at time s. Goodputmax is maximum goodput in the history
+                                                                           measurement, and RT Tmin is the minimum RTT in the history
+A. Reinforcement Learning
+                                                                           measurement. α is the parameter which strikes the balance
+   In this paper, we formulate the IW learning problem as a                between the goodput and RTT. Small α favors low RTT, which
+non-stationary multi-armed bandit problem, a reinforcement                 may make the algorithm be conservative with a small IW.
+learning problem. It focuses on the online performance by                  Large α favors high goodput, which may make the algorithm
+striking a balance between exploration (uncharted actions) and             be aggressive with a large IW.
+exploitation (current optimal actions). Many algorithms for
+                                                                                                  Goodputs (i)             RT Tmin
+this problem have been proposed [8].                                               Xs (i) = α ∗                + (1 − α) ∗               (4)
+                                                                                                  Goodputmax               RT Ts (i)
+   For the stationary multi-armed bandit problem, the basic
+UCB algorithm [17] has been shown to be optimal [12]. Its                     Arms definition: The list of arms in discounted UCB is the
+assumption is that the unknown distribution of the context                 decision space with some discrete values. However, IW has a
+does not change over time. However, in our scenario, the                   continuous and large value space. Our goal is to find the best
+network conditions could change over time, making our RL                   IW in the large decision space quickly. Brutally searching the
+problem a non-stationary bandit problem. In this paper, we                 whole decision space is inefficient, because too many arms
+adopt discounted UCB algorithm [12] which was proposed to                  will waste time in the exploration procedure. To address this
+solve the non-stationary bandit problem. The basic procedure               problem, we propose a sliding-decision-space method based
+is as shown in Algorithm 1. At each time t, the player chooses             on the common perception (mentioned in § II-B) about the
+an arm It ∈ 1, ..., K (an decision) with the highest expected              relationship between TCP performance and the IW. At first,
+upper-confidence X t (γ, i)+ct (γ, i). X t (γ, i) is the discounted        we start with a short list of IWs as the arms, and the value in
+empirical average reward shown in Equation 1. Xs (i) denotes               the arm list is dynamic based on the arms’ performance.
+the arm i’s instantaneous reward at time s. When Is = i,                      The basic procedure is shown in Fig. 4. We use n IWs as
+1{Is =i} = 1, otherwise 1{Is =i} = 0. γ ∈ (0, 1) is a discount             the initial arms list (e.g., n = 4, IWs = [15, 20, 25, 30]). When
+factor to calculate the average reward.                                    updating the decision, we will first check whether to update
+                                                                           the arm list. The basic idea is to check whether the largest
+                                     t
+                              1                                            arm IWlarge or smallest arm IWsmall is currently the best
+                                        γ t−s Xs (i)1{Is =i}
+                                    X
+           X t (γ, i) =                                              (1)
+                          Nt (γ, i) s=1                                    arm. If yes, we update the arm list; else the arm list keeps
+                                   t
+                                                                           the same. The best arm is the arm having largest reward and
+                                         γ t−s 1{Is =i}                    smallest value of padding function in Equation 3. Smallest
+                                   X
+                  Nt (γ, i) =                                        (2)
+                                   s=1
+                                                                           value of padding function means the arm has been exploited
+                                                                           more frequently than the other arms. Based on the common
+   ct (γ, i) is the discounted padding function defined in Equa-           perception of IW (§ II-B), too large and too small IW are both
+tion 3, where B is an upper-bound on the rewards and ξ > 0                 sub-optimal. If the current best arm is IWlarge , we will add
+is an appropriate constant variance to control the probability             a new IW (IWlarge + 4) to the arm list and delete IWsmall .
+of exploration. Note that if one arm is frequently used in the             If the current best arm is IWsmall , we will add a new IW
+history, its ct (γ, i) is smaller than that of the other arms, so          (IWsmall − 4) to the arm list and delete IWlarge . 4 is the
+the suboptimal arm can be used for exploration. In this way,               constant step size for searching IW space. If the current best
+the algorithm can strike a balance between exploration and                 IW is not the largest or smallest, the arm list keeps the same.
+exploitation.
+                         s
+                                                      K
+                                                                           B. User grouping
+                             ξ log nt (γ)            X
+        ct (γ, i) = 2B                    , nt (γ) =     Nt (γ, i)   (3)     In reality, the users’ network conditions have large diversity
+                               Nt (γ, i)             s=1                   because users have different network features (i.e., subnets,
+                            Best Arm                                            All                            All                                                     All
+                     Arms
+
+   5   10 15 20 25 30 35 40            Increase   5    10 15 20 25 30 35 40   Province          Beijing        …       Shanghai                         Beijing       …        Shanghai
+
+          Best Arm
+                                                                                ISP      CMNET       UNICOM          CHINANET                     CMNET      UNICOM          CHINANET
+
+   5   10 15 20 25 30 35 40            Decrease   5    10 15 20 25 30 35 40
+                                                                              Subnet S1        S2   S3    S4   S5      S6    S7   S8         S1   Others   S3     Others       S6    Others
+
+                                                                                  Step1. Check the leaf nodes of the user group             Step2. Merge the blue sibling leaf nodes into a
+Fig. 4: The procedure of the sliding-decision-space method.                       tree, if the node satisfies the RL’s requirement,         new leaf node called Others which is a new child
+                                                                                  the node is green, else blue.                             node of their original parent node.
+          Subnet (IPstart ∼ IPend )                      ISP     Province       All                            All                                                     All
+
+        S1 (223.72.97.0∼223.72.98.255)                 CMNET      Beijing
+                                                                              Province          Beijing        …       Shanghai                         Beijing       …        Shanghai       Others
+       S2 (223.71.208.0∼223.71.208.255)                CMNET      Beijing
+       S3 (123.118.89.0∼123.118.93.255)                UNICOM     Beijing       ISP      CMNET       UNICOM          CHINANET      Others         CMNET      UNICOM          CHINANET
+       S4 (114.243.33.0∼114.243.33.255)                UNICOM     Beijing
+       S5 (123.120.72.1∼123.120.72.189)                UNICOM     Beijing     Subnet      S1        S3    Others        S6                         S1      S3     Others        S6
+       S6 (219.143.38.0∼219.143.38.255)               CHINANET    Beijing         Step3. Check the Others nodes in the Subnet               Step4. Check the Others nodes in the ISP layer.
+        S7 (58.130.48.0∼58.130.54.255)                CHINANET    Beijing         layer. If the Others node is blue, merge it into a        If the Others node is blue, merge it into a new
+       S8 (58.131.131.0∼58.131.132.255)               CHINANET    Beijing         new Others node which is the child node of its            Others node of All node. At last, check the Others
+                                                                                  grandparent node.                                         node of All node.
+
+TABLE II: An example of the B company’s geolocation                                   Fig. 5: The procedure of the user grouping algorithm.
+database.
+                                                                              least Smin samples in a time bin with length t. For each time
+ISP, province). For the users coming from different provinces                 bin, we calculate the distribution of the reward and use the
+(e.g., Beijing, Shanghai) and ISP (e.g., CHINANET, CMNET,                     average reward to quantify the network condition of this time
+UNICOM), both their network conditions (e.g., bandwidth and                   bin. In this way, we obtain a time series of average reward to
+RTT) could be different. To apply RL in highly spatially                      characterize the changes of network conditions.
+variable network conditions, users with different network                        We then define a metric called network jitter J shown in
+conditions should be treated differently.                                     Equation 5 to capture the continuity of the network conditions.
+   The flow’s IW is determined by its end-to-end link’s net-                  n denotes the number of time bins, and Xs is the reward at
+work conditions (i.e., bandwidth and RTT). The ideal solution                 time bin s. Since IW affects the reward, when computing J,
+would be learning IW for per-link. However, each link hardly                  the IW should remain the same in each time bin. Note that
+has enough samples for RL to learn IW. Thus, we argue that                    a small J means the change of network condition is small.
+grouping users with similar network features to share their                   To apply RL method to a given user group, the smaller J,
+samples is a promising solution. However, grouping users is                   the better. Here we choose a threshold T , if user group has
+challenging due to the following dilemma. 1) Too fine-grained                 J ≤ T , it satisfies the requirement of RL.
+a user group (e.g., IP) typically lacks enough samples to                                            Pn
+monitor its network performance continuously, which cannot                                                  |Xs − Xs−1 |/Xs
+                                                                                                J = s=2                                   (5)
+satisfy the requirement of RL; 2) Too coarse-grained a user                                                   n−1
+group (e.g., all flows) leads to suboptimal performance.                         In the example, assuming the finest users’ network feature
+   To address the above problem, we propose a new user                        is the subnet and the coarsest feature is All. Beijing has three
+grouping method. The goal of user grouping is to find the                     ISPs: CMNET, UNICOM and CHINANET, they have 8 subnets
+most fine-grained user groups that can satisfy the RL’s require-              S1∼S8. The user grouping algorithm has 4 steps:
+ment (i.e., keep continuity in network conditions). The basic                    • Step 1: we check whether all the leaf nodes can satisfy
+idea is using a bottom-up (thus finest-to-coarsest) searching                      the RL’s requirement (Equation 5). The example’s result
+technique to find the finest user groups, each of which has                        is that S1, S3, S6 (in green color) satisfy the RL’s
+enough samples and keeps the continuity of the network con-                        requirement and S2, S4, S5, S7, S8 (in blue color) do
+ditions. We quantify the network conditions with the reward                        not, so S1, S3, S6 are three finest user groups that can
+function in §IV-A, which considers both goodput and RTT.                           use RL to learn IW.
+   More specifically, before the data transmission, IP is the                    • Step 2: the sibling leaf nodes which cannot satisfy the
+most fine-grained user group, because the server at that time                      RL’s requirement are merged into a new leaf node called
+can only obtain the IP as the user’s network feature. By                           Others, which is a new child of their original parent node.
+looking up B company’s geolocation database by IP, which is                        In the example, S1 is turned into the Others, a new child
+similar to the geolocation database [18], we can infer the other                   node of CMNET. S4 and S5 are merged into the Others, a
+network features such as subnet, ISP, province etc. Table II                       new child node of UNICOM. S7 and S8 are merged into
+shows an example of the geolocation database. Note that an                         the Others, a new child node of CHINANET.
+IP only belongs to one record of the features in the table, and                  • Step 3: we check whether Others nodes satisfy the
+all the records are mutually exclusive in IP space. Thus the                       RL’s requirement. If the Others node doesn’t meet the
+structure of user grouping result forms a 4-layer (subnet, ISP,                    requirement, it needs to be merged with its parent (ISP)’s
+Province, All) tree. Fig. 5 shows an example.                                      sibling’s Others nodes, and form a new child Others node
+   We say a user group has enough samples when it has at                           of its original grandparent (Province). In the example,
+    the node Others of CMNET and the node Others of                                         TABLE III: The performance data in our system
+    CHINANET are merged into the Others, a new child node                              TCP Metrics                Description
+    of Beijing. The node Others of UNICOM satisfies the                                Size                       The data size of the HTTP response.
+                                                                                       TCP Response Time          The transmission time defined in Fig. 1.
+    requirement because it has sufficient samples to measure                           MSS                        Maximum segment size.
+    its network conditions after merging S4 and S5.                                    Goodput                           Size
+                                                                                                                  T cpResponseT ime
+  • Step 4: the algorithm continues to check the leaf Others                           RTT                        The smoothed round-trip time (srtt) at the end
+    nodes until all the leaf nodes (except root’s child Others                                                    of the transmission.
+                                                                                       Client Initial Rwnd        Initial receive window of the user.
+    node) satisfy the RL’s requirement. Finally, if the Others
+                                                                                       IW                         Initial congestion window of the TCP session.
+    of All doesn’t meet the requirement, we use the standard                           Retrans                    The retransmission rate of the HTTP response.
+    IW [6] for its flows. In the example, the leaf nodes except                        Network Features           Description
+    the Others of All node are the user groups that can use                            IP                         the user’s IP
+    RL to learn IW.                                                                    Province                   the user’s province
+                                                                                       ISP                        the user’s ISP
+              V. D ESIGN AND I MPLEMENTATION                                           Subnet                     the subnet that user belongs to.
+
+   In this section, we present the system design and imple-                          modified Linux kernel’s job is just exporting two new APIs
+mentation of SmartIW as shown in Fig. 6. It has three keys                           to change the value of IW and output the TCP performance
+components. 1) Connection Manager is a module implemented                            data. The web proxy cooperates with the modified kernel by
+in the web proxy (e.g., Nginx [19]), which is deployed at                            calling these two APIs. The first API is SetIW(fd, iw), which
+frontend servers. Its basic functions are setting a suitable IW                      is implemented in the setsockopt function in Linux, fd is the
+for each TCP session and output the performance data for                             file descriptor of the TCP socket, iw is the value of IW. When
+each TCP session. It has a configuration file called IW Table,                       it is called, the socket’s IW is changed. The second API is
+which stores each user group’s IWs. 2) Data Collector collects                       GetData(fd), which is implemented in the getsockopt function
+and stores all the performance data of the frontend servers. It                      in Linux. When it is called, it returns the performance data
+provides the fresh data for Reinforcement Learning. (Note that                       of the TCP socket. For the web proxy, the IW Table is the
+these two components can be used beyond SmartIW, e.g., for                           configuration file, providing per-group IWs for different user
+TCP performance troubleshooting.) 3) Reinforcement Learning                          groups. Since the value of IW for each user group is based on
+runs user grouping and RL algorithms in §IV based on the                             RL’s decision and can change over time, the web proxy also
+fresh data and updates the IW Table for Connection Manager                           reloads IW Table on demand or periodically.
+periodically. It is the controller of the SmartIW system.
+                                                                                               User(IP=192.168.1.1)        Frontend Server
+
+                       User                                                                                                                                IW Table
+         4. Response          1. Request                                                                                            1. Look up IW          IP→IW
+                                                                                                                                                      192.168.1.1 → 10
+                                                                                                                                   2. SetIW(fd, iw = 10)
+                   Connection              5. Performance          Data                                                             3. GetData(fd)
+                    Manager                      data            Collector
+
+
+               3. IW          2. Look up                             6. Fresh data
+
+                                                                                                                                    4. GetData(fd)
+                                           7. Latest IW for   Reinforcement
+                   IW Table                each user group       Learning                                            …
+                                                                                                             Connection Closed      5. GetData(fd)
+               Frontend Server                                Control Center
+                                                                                      Fig. 7: An example of the connection manager’s workflow.
+                          Fig. 6: System Design
+                                                                                        Fig. 7 is a simple example that illustrates the basic work-
+A. Connection Manager                                                                flow of Connection Manager. It obtains the use’s IP (e.g.,
+                                                                                     192.168.1.1) when a TCP connection is established, and then
+   When the frontend server establishes a TCP connection with
+                                                                                     looks up the user’s IW from the IW Table. The IW Table is
+a user, Connection Manager queries the IW Table with the
+                                                                                     stored in a trie [20] structure with IP as the key and IW the
+user’s IP, the result is the IW for this session. Then it modifies
+                                                                                     value, which provides longest prefix IP lookup function. The
+the IW for this TCP session immediately. All the procedures
+                                                                                     time consumption of query is O(N), where the worst case is
+are quickly finished before the frontend server sends TCP
+                                                                                     N = 32. In this example, the query result is IW = 10. Then it
+data to the user. When the TCP session is closed, Connection
+                                                                                     calls the API SetIW(fd, iw=10) to set the session’s IW before
+Manager outputs the TCP performance data of this session.
+                                                                                     sending the response data to 192.168.1.1.
+   To realize the functions of Connection Manager, we im-
+plemented a new module in a web proxy (e.g., Nginx) and
+                                                                                     B. Data Collector
+modified Linux kernel. To be a robust and easily controllable
+system, most of the jobs are done in application level in the                          The TCP Response Time described in Fig. 1 is the key
+web proxy, such as getting user’s IP after TCP three-way                             metric for evaluating TCP performance. However, it cannot
+handshake, looking up the IW from the IW Table, etc. The                             be obtained directly. Our system aims to be easily deployable
+with only server-side modification. Here we use a carefully-                                              100
+                                                                                                           90
+designed method to record the latency with only server-side                                                80
+                                                                                                           70
+
+
+
+
+                                                                             CDF(%)
+change. The key is collecting the timestamp of Tstart and                                                  60
+                                                                                                           50
+Tend (see Fig. 1). When the web proxy begins to send data to                                               40
+                                                                                                           30
+the user or terminate the connection, it calls the GetData(fd),                                            20
+                                                                                                           10
+                                                                                                                                                                               Size
+
+which labels the Tstart of this HTTP response, and it also                                                          100     200        300      400   500     600     700      800      900 1000
+                                                                                                                                                      KB
+records the Tend of the previous HTTP response. When it is
+                                                                                                                (a) The distribution of response size (KB).
+called, the transmission of the previous HTTP response should                                             100
+                                                                                                           90
+be finished and Tend is the timestamp of the last TCP ACK.                                                 80
+                                                                                                           70
+
+
+
+
+                                                                               CDF(%)
+   In addition to the TCP response time, all the return data                                               60
+                                                                                                           50
+of GetData(fd) is shown in Table III. Each frontend server                                                 40
+                                                                                                           30
+                                                                                                           20                                                           RTT
+outputs the data in a log file and also use HTTP POST to                                                   10                                                  Response Time
+                                                                                                            0
+send the data to a centralized data storage platform in Data                                                    1                 10                  100               1000               10000
+                                                                                                                                                      ms
+collector. Reinforcement Learning takes this performance data
+as the basic input. All the data is collected in real time, Data            (b) The distribution of RTT and response time (ms). The
+                                                                            x-axis is logscale.
+Collector aggregates and monitors the network performance of
+each user group, including TCP Response Time, RTT Goodput,         Fig. 8: The characteristics of mobile search service in B.
+Retrans, etc.. Note that these TCP performance data can            Response time is the TCP response time introduced in §II-A.
+be used beyond just SmartIW, e.g., for TCP performance
+
+
+
+
+                                                                             Average Response time (ms)
+troubleshooting.                                                                                          280
+                                                                                                                                                                             TCP-10
+                                                                                                          260
+                                                                                                                                                                            SmartIW
+                                                                                                          240
+C. Reinforcement Learning                                                                                 220
+                                                                                                          200
+   After collecting all the performance data, SmartIW runs                                                180
+                                                                                                          160
+user grouping and reinforcement learning algorithm in §IV.                                                140
+The user grouping algorithm runs at a long timescale such as                                              120
+
+
+                                                                                                            09/12
+                                                                                                            12:00
+
+
+                                                                                                                          09/13
+                                                                                                                          00:00
+
+
+                                                                                                                                        09/13
+                                                                                                                                        12:00
+
+
+                                                                                                                                                      09/14
+                                                                                                                                                      00:00
+
+
+                                                                                                                                                                    09/14
+                                                                                                                                                                    12:00
+
+
+                                                                                                                                                                                09/15
+                                                                                                                                                                                00:00
+
+
+                                                                                                                                                                                            09/15
+                                                                                                                                                                                            12:00
+day or week. RL algorithm runs at a timescale of minutes to
+continuously learn the suitable IW for each user group. The                                                                                           time
+
+result is the IW Table which contains the user groups’ IWs                  (a) The average response time of SmartIW and TCP-10.
+at the next learning iteration. This module controls all the                  30
+                                                                              25
+                                                                       Improvement (%)
+
+
+
+
+frontend servers’ behavior by updating their IW Tables. It is
+implemented with Golang [21] and Python in Control Center.                    20
+                                                                              15
+                 VI. O NLINE E VALUATION                                      10
+   In this section, we use a large-scale online experiment to                  5
+                                                                               0Average 10th    20th    50th   80th   90th  99th
+evaluate the performance of SmartIW. We mainly present the
+performance in one production data center of mobile search                  (b) Each percentile’s improvement of SmartIW compared
+service in B company, which was chosen in our experiment                    with TCP-10.
+because it is among B’s most important services. SmartIW has                                                Fig. 9: TCP response time of SmartIW.
+been deployed in this service for more than a year. Our real-
+world A/B testing results show that SmartIW can continuously       10Gbps NIC. The Linux kernel version is 2.6.32 and the
+bring about 23% improvement of the average TCP response            congestion control algorithm is Cubic [22]. To perform an
+time. For some specific user groups, the improvement can be        A/B test experiment, we select 4 frontend servers in the data
+up to 30%.                                                         center and divide them into two groups as follows:
+                                                                     • TCP-10: Current standard method with a static IW = 10.
+A. Experiment Setup                                                  • SmartIW: Our method with group-based RL. The learning
+   Fig. 9 has shown the statistics of mobile search service,            iteration interval is 10min, which means SmartIW will
+which confirms that the flow sizes are almost all small in this         recalculate and update the IWs for all user groups in
+service, but the TCP response time (with IW =10) is far from            every 10min. The user grouping method takes Subnet,
+the ideal (one RTT transmission according to [3] for short              ISP, Province as users’ network features. The parameters
+flows). Besides, as shown previously in Table I, more than              of user grouping is Smin = 100, θ = 0.1 and the size
+80% of the TCP flows are still in slow-start phase when the             of time bin = 10min. The RL’s α = 0.8, 4 = 5, and
+sessions end, not utilizing the available bandwidth.                    ξ = 0.1. The initial arm list is IW = [5, 10, 15, 20]
+   In the studied data center located in Beijing, the HTTP
+sessions are uniformly load-balanced to frontend servers,          B. Overall Performance
+which have the same functions and configurations. They all            Fig. 9a shows an example of the average TCP response
+use 21 Intel(R) Xeon(R) 2.40GHz CPUs, 62GB RAM and                 time in the two groups of frontend servers. Before 2017.09.13
+10:00:00, both groups of servers use IW = 10 [6], and their                         0.100
+
+
+
+
+                                                                   Average Jitter
+                                                                                    0.075
+performance proved to be the same. After that, SmartIW is                           0.050
+started in one group. The TCP response time of SmartIW                              0.025
+                                                                                    0.000
+decreases dramatically and continuously outperforms the other
+
+
+
+
+                                                                                                    Shanghai
+                                                                                                                      Xinjiang
+                                                                                                                                     Heilongjiang+CHINANET
+                                                                                                                                                             Guangdong
+                                                                                                                                                                            Jiangsu+CMNET
+                                                                                                                                                                                            Liaoning+CHINANET
+                                                                                                                                                                                                                Shaanxi+CHINANET
+                                                                                                                                                                                                                                   Shanxi+CMNET
+                                                                                                                                                                                                                                                  Jilin+CMNET
+                                                                                                                                                                                                                                                                Shaanxi+CMNET
+                                                                                                                                                                                                                                                                                Liaoning+CMNET
+                                                                                                                                                                                                                                                                                                 Heilongjiang+CMNET
+                                                                                                                                                                                                                                                                                                                      Henan+CMNET
+                                                                                                                                                                                                                                                                                                                                          Hebei+CMNET
+                                                                                                                                                                                                                                                                                                                                                              Beijing+CMNET
+                                                                                                                                                                                                                                                                                                                                                                                 Others
+                                                                                                                                                                                                                                                                                                                                                                                                   Hubei+CMNET
+                                                                                                                                                                                                                                                                                                                                                                                                                   Shandong+CMNET
+                                                                                                                                                                                                                                                                                                                                                                                                                                     Sichuan+CMNET
+group TCP-10 with about 23% improvement. Besides, Fig. 9b
+shows that SmartIW can make improvement in each percentile
+of the response time. The 50th and 80th percentiles have been
+improved by about 25%. We observe that 99th percentile has
+the smallest improvement, and the main reason is SmartIW
+does not explicitly help with the loss that are part of the                          Fig. 10: The average network jitter of each user group.
+reasons that causes the 99th percentile long tail response
+
+
+
+
+                                                                  Improvement (%)
+time [3]. Compared with TCP-10, SmartIW may appear to                               40
+                                                                                    30
+be more aggressive in IW, but the results show that even in                         20
+                                                                                    10
+99th percentile, SmartIW also has about 5% improvement over                          0
+
+
+
+
+                                                                                         Shanghai
+                                                                                                      Sichuan+CMNET
+                                                                                                                        Liaoning+CMNET
+                                                                                                                                             Heilongjiang+CMNET
+                                                                                                                                                                  Jinlin+CMNET
+                                                                                                                                                                                  Beijing+CMNET
+                                                                                                                                                                                                      Shaanxi+CMNET
+                                                                                                                                                                                                                          Guangdong
+                                                                                                                                                                                                                                           Hubei+CMNET
+                                                                                                                                                                                                                                                          Xinjiang
+                                                                                                                                                                                                                                                                          Shandong+CMNET
+                                                                                                                                                                                                                                                                                            Others
+                                                                                                                                                                                                                                                                                                                  Henan+CMNET
+                                                                                                                                                                                                                                                                                                                                    Heilongjiang+CHINANET
+                                                                                                                                                                                                                                                                                                                                                            Hebei+CMNET
+                                                                                                                                                                                                                                                                                                                                                                              Liaoning+CHINANET
+                                                                                                                                                                                                                                                                                                                                                                                                  Jiangsu+CMNET
+                                                                                                                                                                                                                                                                                                                                                                                                                  Shaanxi+CHINANET
+                                                                                                                                                                                                                                                                                                                                                                                                                                     Shanxi+CMNET
+TCP-10. From this we can see that SmartIW is also quite
+cautious when increasing IW.
+C. User Group’s performance
+   SmartIW uses user grouping technique to treat different
+user groups individually. In this section, we mainly introduce
+                                                                       Fig. 11: The average TCP response time’s improvement of
+the performance of each user group. Af first, there are about
+                                                                       each user group.
+1501665 IPs, after using the user grouping method. The output
+is 19 user groups (3 Provinces, 15 Province+ISP, 1 Others)             and 64 CPUs (2.4 GHz). One machine acts as the server with
+which can use RL to improve their performance. Fig. 10 shows           SmartIW deployed, and each of the other 9 machines acts as
+the jitter J of each these 19 groups. For the user groups              one user group. All the machines use TCP cubic with default
+Shanghai, Guangdong, Xinjiang, their jitters are high (closer          configuration.
+to the threshold 0.1) flows cannot be grouped into more fine-             Given the HTTP traffic typically has a daily pattern, we
+grained user groups because the more fine-grained user groups          selected one day of data traces for 9 user groups from the
+cannot satisfy the RL’s requirement. i.e., there are not enough        online experiments in §VI. The HTTP requests are replayed in
+samples (either jitter is larger than 0.1 or number of samples         the original timing order by the users and served by the server
+are smaller than Smin ). This is because the requests of these         with the original response sizes. To simplify the experiments,
+users should be routed to data centers, but are by accident            we assume that the network conditions of each user group
+routed to the studied data center in Beijing. Fig. 11 shows            change at the timescale of one hour. Then for each hour of
+that all the use groups’ response time have been improved (by          each user group, we estimate its bandwidth (RTT) using the
+about 15% ∼ 31%).                                                      90th-percentile goodput (average RTT) from the data traces
+                VII. T ESTBED E VALUATION                              of this user group and hour. We then simulate the network
+                                                                       conditions by using the Linux TC tool [23] (with HTB and
+   In this section, we use a trace-driven method to systemat-          netem queue) to shape the traffics.
+ically evaluate SmartIW. We built a testbed which supports
+                                                                          To systematically evaluate the performance of SmartIW, we
+replaying the online data traces and running different opti-
+                                                                       compare the performance of the following techniques:
+mization techniques. The data traces consist of user groups’
+network conditions (e.g. Bandwidth, RTT) and application                            1) TCP-10: It is the baseline [6], which uses one static IW
+information (e.g. size) in each time bin, which is collected                           = 10 for all the flows. The data size of IW = 10 is about
+from the online production data center in B. The testbed                               14KB (M SS = 1448).
+experiments validate the following:                                                 2) TCP-200: It uses a aggressive IW = 200 for all the flows1 .
+                                                                                       The data size of IW = 200 is about 280KB.
+  1) Both key techniques, user grouping and reinforcement
+                                                                                    3) SmartIW: The learning iteration interval is 10min. The
+      learning, can help improve the network performance.
+                                                                                       RL’s α = 0.8, 4 = 1, and ξ = 0.1. The initial arm list is
+  2) The flows using a aggressive IW can cause network
+                                                                                       IW = [5, 10, 15, 20].
+      congestion and even hurt their own performance.
+                                                                                    4) SmartIW without grouping: Compared with SmartIW, it
+  3) SmartIW’s performance is the closest to the optimal
+                                                                                       only uses RL to learn the IW for all the flows.
+      performance.
+                                                                                    5) Optimal: It is the best possible performance in the testbed
+A. Testbed Setup                                                                       experiment setting, obtained by exhaustively searching
+   The testbed consists of 10 physical machines, which are                1 The actual sending window size is min(Rwnd, Cwnd). Rwnd is the client
+connected by one switch. Its network environment is totally            receive window. In order to remove the influence of the client’s Rwnd, the
+private. Every machine has two 1000Mbps NICs, 64GB RAM                 initial Rwnd is set to be larger than 200.
+          (a) Reward               (b) TCP response time               (c) Goodput                       (d) RTT
+Fig. 12: Compared with the baseline TCP-10, the figures show each technique’s the improvement in the average reward, TCP
+response time, goodput and the degradation in the average RTT.
+
+
+
+
+          (a) Reward               (b) TCP response time               (c) Goodput                       (d) RTT
+                Fig. 13: The distribution of each technique’s reward, TCP response time, goodput and RTT.
+    the IW space for the best IW for each network condition     D. Aggressive IW’s effect:
+    of each user group.
+                                                                   According to the common perception of IW (see §II-B),
+B. Overall Performance                                          neither too small an IW nor too large a IW is suitable. The
+                                                                results of TCP-200 confirm the second half of this common
+   Fig. 12 shows each technique’s improvement or degradation    perception. The flows using an aggressive IW =200 can cause
+over TCP-10, and Fig. 13 shows each technique’s                 network congestion and even hurt their own performance.
+distribution of the network metrics (response time,             Fig. 13d shows that TCP-200 has a highest average RTT,
+reward, goodput, and RTT). We define the technique t’s          which is a good indicator for network congestion. On the other
+improvement in reward, goodput, and response time as            hand, SmartIW’s RTT is closet to that of Optimal’s, and is
+(rewardt − rewardtcp−10 )/rewardtcp−10 , (goodputt −            better than that of SmartIW without grouping. From this we
+goodputtcp−10 )/goodputtcp−10 , (responsetimetcp−10 −           can see, SmartIW is quite cautious in avoiding congestions.
+responsetimet )/responsetimetcp−10 . The degradation of         For average response time and goodput, TCP-200 outperforms
+RTT is defined as (RT Tt − RT Ttcp−10 )/RT Ttcp−10 . We can     TCP-10, but it cannot beat SmartIW. The reason is that directly
+see that SmartIW is closest to the optimal, and significantly   using a large IW may cause packet loss and increase the
+outperforms TCP-10. Its improvement over TCP-10 is 30%          response time. Fig. 13b shows TCP-200 has a much longer
+for the average reward, 29% for the average response time       tail than SmartIW because it suffers from packet loss, which
+and 49% for the average goodput.                                causes costly TCP timeout.
+C. Contributions of user grouping and RL
+                                                                                     VIII. R ELATED WORK
+   In this experiment, we use reward as the metric since
+it capture the effects of both goodput and RTT. Firstly, to        TCP Optimization from within a TCP session: There is
+evaluate the performance of RL, we compare the reward of        a rich body of literature in TCP optimizations which utilize
+SmartIW without grouping with TCP-10. Fig. 12a shows that       information from within a TCP session only, and do not utilize
+SmartIW without grouping has 25% improvement. Fig. 13a          the valuable information from previous sessions. For example,
+also shows that SmartIW without grouping greatly outper-        TCP congestion control algorithms (such as [15, 16, 24, 25])
+forms TCP-10. Secondly, to evaluate the performance of user     use a heuristic-based trial-and-error approach to probe for
+grouping, we compare the reward of SmartIW with SmartIW         the best CWND within a TCP session only. Remy [26] uses
+without grouping. Fig. 13a shows SmartIW can bring more         offline-trained machine learning model to dynamically assign
+improvement (29%) than SmartIW without grouping (25%).          the congestion window sizes based on the latest network
+Besides, SmartIW also outperfoms SmartIW without grouping       conditions measured within the TCP session only. [3, 27, 28]
+in goodput (Fig. 12c) and RTT (Fig. 12d). The reason is that    modify TCP protocol to achieve fast loss recovery based on
+using RL for all the flows (without grouping) with variable     the data collected within a TCP session only. None of these
+network conditions is suboptimal. From this we can see, both    above approaches try to improve IW or utilize information
+user grouping and reinforcement learning can help improve       from history sessions, thus SmartIW is complementary to and
+the TCP response time.                                          compatible with these approaches.
+   IW Improvement: [6] proposed to simply increase the                         [2] I. Arapakis, X. Bai, and B. B. Cambazoglu, “Impact of Response
+standard IW to 10 for all flows, and we have shown that                            Latency on User Behavior in Web Search,” in SIGIR. ACM, 2014,
+                                                                                   pp. 103–112.
+SmartIW outperforms this approach by 23%. Halfback [29]                        [3] T. Flach, N. Dukkipati, A. Terzis, B. Raghavan, N. Cardwell, Y. Cheng,
+always starts with a large IW, then applies pacing and redun-                      A. Jain, S. Hao, E. Katz-Bassett, and R. Govindan, “Reducing Web
+dancy technologies to deal with the loss (caused by the ag-                        Latency: The Virtue of Gentle Aggression,” in SIGCOMM, vol. 43, no. 4.
+                                                                                   ACM, 2013, pp. 159–170.
+gressive startup) within the flow without using history session                [4] D. Liu, Y. Zhao, K. Sui, L. Zou, D. Pei, Q. Tao, X. Chen, and D. Tan,
+information, while we have shown SmartIW outperforms the                           “FOCUS: Shedding Light on the High Search Response Time in the
+approach that blindly sets a large IW (e.g., 200) which can                        Wild,” in INFOCOM. IEEE, 2016, pp. 1–9.
+                                                                               [5] Y. Chen, R. Mahajan, B. Sridharan, and Z.-L. Zhang, “A Provider-Side
+cause significant congestion. In an early work, for repeated                       View of Web Search Response Time,” in SIGCOMM, vol. 43, no. 4.
+flows between the same client and server, [30] uses the last                       ACM, 2013, pp. 243–254.
+session’s TCP parameters for a fast startup, but it needs router               [6] N. Dukkipati, T. Refice, Y. Cheng, J. Chu, T. Herbert, A. Agarwal,
+                                                                                   A. Jain, and N. Sutin, “An Argument for Increasing TCP’s Initial
+support and there might not be many repeated flows between                         Congestion Window,” Computer Communication Review, vol. 40, no. 3,
+the same client and server. In comparison, SmartIW utilizes                        pp. 26–33, 2010.
+much richer history information from the user group, is much                   [7] D. Papadimitriou, M. Welzl, M. Scharf, and B. Briscoe, “Open Research
+                                                                                   Issues in Internet Congestion Control,” Tech. Rep., 2011.
+more applicable, and only needs to modify the TCP servers.                     [8] R. S. Sutton and A. G. Barto, Reinforcement learning: An introduction.
+   Cases of Reinforcement Learning in Internet Video                               MIT press Cambridge, 1998, vol. 1, no. 1.
+QoE Optimization: Pytheas [9] applies RL to the video                          [9] J. Jiang, S. Sun, V. Sekar, and H. Zhang, “Pytheas: Enabling Data-Driven
+                                                                                   Quality of Experience Optimization Using Group-Based Exploration-
+QoE optimization, through dynamically deciding a session’s                         Exploitation,” in NSDI, 2017, pp. 393–406.
+serving frontend server, and differ with SmartIW due to                       [10] H. Mao, R. Netravali, and M. Alizadeh, “Neural Adaptive Video
+domain difference as follows. First, IW uses the sliding-                          Streaming With Pensieve,” in SIGCOMM. ACM, 2017, pp. 197–210.
+                                                                              [11] A. Slivkins, “Contextual Bandits With Similarity Information,” in The
+decision-space approach to deal with the large IW decision                         Journal of Machine Learning Research, vol. 15, 2014, pp. 2533–2568.
+space, which is much larger than frontend server selection                    [12] A. Mahajan and D. Teneketzis, “Multi-Armed Bandit Problems,” Foun-
+in Pytheas. [9] only shows testbed evaluation while SmartIW                        dations and Applications of Sensor Management, pp. 121–151, 2008.
+                                                                              [13] M. Tokic and G. Palm, “Value-Difference Based Exploration: Adaptive
+has been deployed in real data centers for more than a year.                       Control Between Epsilon-Greedy and Softmax,” in Annual Conference
+Third, the user grouping methods are different in SmartIW                          on Artificial Intelligence. Springer, 2011, pp. 335–346.
+(for general TCP performance) and Pytheas (tailored for video                 [14] S. Sundaresan, M. Allman, A. Dhamdhere, and K. Claffy, “TCP Con-
+                                                                                   gestion Signatures,” in IMC. ACM, 2017, pp. 64–77.
+QoE). Pensieve [10] improves video QoE through applying                       [15] L. S. Brakmo, S. W. O’Malley, and L. L. Peterson, TCP Vegas: New
+Deep RL to generate ABR algorithms for each client session                         Techniques for Congestion Detection and Avoidance.            ACM, 1994,
+given the measurement data from within the session, without                        vol. 24, no. 4.
+                                                                              [16] R. Mittal, N. Dukkipati, E. Blem, H. Wassel, M. Ghobadi, A. Vahdat,
+utilizing history session data.                                                    Y. Wang, D. Wetherall, D. Zats et al., “TIMELY: RTT-based Congestion
+                                                                                   Control for the Datacenter,” in SIGCOMM, vol. 45, no. 4. ACM, 2015,
+                         IX. C ONCLUSION                                           pp. 537–550.
+                                                                              [17] P. Auer, N. Cesa-Bianchi, and P. Fischer, “Finite-Time Analysis of the
+   In this paper, we propose a system, called SmartIW, to use                      Multiarmed Bandit Problem,” Machine learning, vol. 47, no. 2-3, pp.
+group-based reinforcement learning to enable a web server                          235–256, 2002.
+                                                                              [18] “DB-IP,” https://db-ip.com/, 2018, Accessed: 2018-04-18.
+to dynamically set a suitable TCP initial congestion window                   [19] N. Inc., “A Free, Open-Source, High-Performance HTTP Server,”
+for a web flow before its transmission starts. SmartIW is                          https://www.nginx.com/, Accessed: 2018-04-18.
+incrementally deployable at the server side without any client                [20] P. E. Black, “Dictionary of Algorithms and Data Structures,” Tech. Rep.,
+                                                                                   1998.
+or router support. It doesn’t change and is compatible with                   [21] “The Go Programming Language,” https://golang.org, Accessed: 2018-
+existing TCP congestion control algorithms. SmartIW has been                       04-18.
+deployed in one of the top global search engines for more                     [22] S. Ha, I. Rhee, and L. Xu, “CUBIC: A New TCP-Friendly High-Speed
+                                                                                   TCP Variant,” ACM SIGOPS, vol. 42, no. 5, pp. 64–74, 2008.
+than a year. Our online and testbed experiments show that,                    [23] “Linux           Traffic        Control,”        http://tldp.org/HOWTO/
+compared to the common initial window size of 10, SmartIW                          Traffic-Control-HOWTO/intro.html, 2018.
+can reduce the TCP response time by 23% to 29%.                               [24] V. Jacobson, “Congestion Avoidance and Control,” in SIGCOMM,
+                                                                                   vol. 18, no. 4. ACM, 1988, pp. 314–329.
+   We believe that SmartIW is an important step towards                       [25] N. Cardwell, Y. Cheng, C. S. Gunn, S. H. Yeganeh, and V. Jacobson,
+applying advanced machine learning techniques to solving the                       “BBR: Congestion-Based Congestion Control,” Queue, vol. 14, no. 5,
+hard and open network research problems.                                           p. 50, 2016.
+                                                                              [26] K. Winstein and H. Balakrishnan, “TCP ex Machina: Computer-
+                                                                                   Generated Congestion Control,” in SIGCOMM, vol. 43, no. 4. ACM,
+                      X. ACKNOWLEDGMENT                                            2013, pp. 123–134.
+                                                                              [27] J. Zhou and etc., “Demystifying and Mitigating TCP Stalls at the Server
+  This work was supported by Baidu Front End team and                              Side,” in CoNEXT, 2015.
+National Natural Science Foundation of China (NSFC) under                     [28] G. Chen et al., “Fast and Cautious: Leveraging Multi-Path Diversity for
+grant NO. 61472214, 61472210. We appreciate Qinghua Ding                           Transport Loss Recovery in Data Centers,” in USENIX ATC, 2016.
+                                                                              [29] Q. Li, M. Dong, and P. B. Godfrey, “Halfback: Running Short Flows
+and Jiachang Liu for their survey of RL and coding in Nginx.                       Quickly and Safely,” in CoNEXT, 2015.
+                                                                              [30] R. H. Katz and V. N. Padmanabhan, “TCP Fast Start: A Technique for
+                             R EFERENCES                                           Speeding up Web Transfers,” in IEEE Globecom, vol. 34, 1998.
+ [1] “Latency Is Everywhere And It Costs You Sales,” https://goo.gl/bRi5Xs,
+     Accessed: 2018-04-18.
+

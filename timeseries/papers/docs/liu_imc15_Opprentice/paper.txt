@@ -1,0 +1,1249 @@
+       Opprentice: Towards Practical and Automatic Anomaly
+               Detection Through Machine Learning
+
+                 Dapeng Liu† , Youjian Zhao† , Haowen Xu† , Yongqian Sun† , Dan Pei†⇤, Jiao Luo‡ ,
+                                           Xiaowei Jing§ , Mei Feng§
+                                                     Tsinghua University, ‡ Baidu, § PetroChina
+                                                             †
+                                    †
+                                        Tsinghua National Laboratory for Information Science and Technology
+                      {liudp10, xhw11, sunyq12}@mails.tsinghua.edu.cn, {zhaoyoujian,
+                peidan}@tsinghua.edu.cn, luojiao01@baidu.com, {jxw, fm}@petrochina.com.cn
+
+ABSTRACT                                                                                        1.    INTRODUCTION
+Closely monitoring service performance and detecting anomalies                                     Closely monitoring service quality and detecting performance
+are critical for Internet-based services. However, even though                                  anomalies are critical for Internet-based services, such as search
+dozens of anomaly detectors have been proposed over the years, de-                              engines, online shopping, and social networking. For example,
+ploying them to a given service remains a great challenge, requiring                            a search engine can monitor its search response time (SRT) [1]
+manually and iteratively tuning detector parameters and thresholds.                             by detecting anomalies in SRT time series in an online fashion.
+This paper tackles this challenge through a novel approach based                                However, even though dozens of anomaly detectors [1–24] have
+on supervised machine learning. With our proposed system,                                       been proposed over the years in the context of both Internet-
+Opprentice (Operators’ apprentice), operators’ only manual work                                 based services and telecom services, deploying detectors to a
+is to periodically label the anomalies in the performance data                                  given service remains a great challenge. This is, we argue,
+with a convenient tool. Multiple existing detectors are applied                                 because there exists no convenient method to automatically match
+to the performance data in parallel to extract anomaly features.                                operators’ practical detection requirements with the capabilities
+Then the features and the labels are used to train a random forest                              of different detectors. Currently, for a given service quality
+classifier to automatically select the appropriate detector-parameter                           metric, selecting and applying detectors usually require manually
+combinations and the thresholds. For three different service KPIs                               and iteratively tuning the internal parameters of detectors and the
+in a top global search engine, Opprentice can automatically satisfy                             detection thresholds, which operators are neither interested nor feel
+or approximate a reasonable accuracy preference (recall ≥ 0.66 and                              comfortable in doing. Instead, based on our experience of working
+precision ≥ 0.66). More importantly, Opprentice allows operators                                with operators from a large search engine, a campus network, and
+to label data in only tens of minutes, while operators traditionally                            an enterprise network, operators are used to specify simple require-
+have to spend more than ten days selecting and tuning detectors,                                ments for detection accuracy and manually spot-check anomalies
+which may still turn out not to work in the end.                                                occasionally. As a result, services either settle with simple static
+                                                                                                thresholds (e.g., Amazon Cloud Watch Alarms [24]), intuitive to
+                                                                                                operators although unsatisfying in detection performance, or, after
+Categories and Subject Descriptors                                                              time-consuming manual tuning by algorithm designers, end up
+C.2.3 [Network Operations]: Network monitoring                                                  with a detector specifically tailored for the given service, which
+                                                                                                might not be directly applicable to other services.
+                                                                                                   We elaborate on the challenges of anomaly detection by review-
+General Terms                                                                                   ing the current practice. The detectors proposed in the literature [1–
+Measurement; Design                                                                             24] typically work on (time, value) pair time series data,1 which
+                                                                                                we call KPI (Key Performance Indicator) data hereinafter. Given a
+Keywords                                                                                        KPI, the first step for the anomaly detection practitioner is to collect
+                                                                                                the requirements from the service operators. This step encounters
+Anomaly Detection; Tuning Detectors; Machine Learning                                           Definition Challenges: it is difficult to precisely define anomalies
+                                                                                                in reality [21, 25]. In particular, the operators often have trouble
+                                                                                                describing their domain knowledge completely when “put on the
+                                                                                                spot” [25]. In addition, it is often impossible for the operators
+⇤
+    Dan Pei is the corresponding author.                                                        to quantitatively define anomalies, let alone to translate the vague
+                                                                                                definition into specific parameters and thresholds of a detector [21]
+                                                                                                (e.g., how many times of the standard deviation [1]) . On the
+Permission to make digital or hard copies of all or part of this work for personal or
+                                                                                                contrary, according to our experience of building detection systems
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+                                                                                                with operators, they prefer to describe the anomalies qualitatively,
+on the first page. Copyrights for components of this work owned by others than                  with anecdotal anomaly cases as examples.
+ACM must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission   1
+and/or a fee. Request permissions from Permissions@acm.org.                                       In this paper, we focus on the performance anomalies of time
+IMC’15, October 28–30, 2015, Tokyo, Japan.                                                      series (also known as volume-based anomalies) rather than other
+�c 2015 ACM. ISBN 978-1-4503-3848-6/15/10 ...$15.00.                                            types of anomalies, e.g., intrusion detection using the payload
+DOI: http://dx.doi.org/10.1145/2815675.2815679.                                                 information of packets.
+   Detector Challenges: In order to provide a reasonable detection        2.     BACKGROUND
+accuracy, selecting the most suitable detector requires both the            In this section, we first introduce the background of KPI anomaly
+algorithm expertise and the domain knowledge about the given              detection. Then we present the goals and the challenges of
+service KPI. The best parameters and thresholds of a given detector       designing Opprentice.
+often highly depend on the actual data in the studied service.
+As such, it is very time-consuming to tune the parameters and             2.1      KPIs and KPI Anomalies
+thresholds of the detector. Sometimes, it might even require a
+combination of multiple detectors [8, 21, 22] for a given KPI. As a          KPIs: The KPI data, which Opprentice aims to work with, are
+result, many rounds of time-consuming iterations between anomaly          the time series data with the format of (timestamp, value). These
+detection practitioners and operators are needed to find appropriate      data can be collected from SNMP, syslogs, network traces, web
+detectors and tune their parameters and thresholds. In reality, we        access logs, and other data sources. In this paper, we choose
+observe that it is not uncommon for operators to give up after a few      three representative KPIs from a global top search engine as a
+rounds of iterations and settle with static threshold-based detection.    case study. Table 1 describes their basic information, and Fig. 1
+   To address the definition challenge and the detector challenge,        shows their 1-week examples. We hide the absolute values for
+we advocate for using supervised machine learning techniques,2            confidentiality. Fig. 1(a) shows the search page view (PV), which
+well known for being able to capture complex concepts based on            is the number of successfully served queries. PV has a significant
+the features and the labels from the data (e.g., KPI data). Our           influence on the revenue of the search engine. Fig. 1(b) shows the
+approach relies on two key observations. First, it is straightforward     number of slow responses of search data centers (#SR), which is an
+for operators to visually inspect the time series data and label          important performance metric of the data centers. Fig. 1(c) is the
+anomaly cases they identified [1, 4, 9, 12, 14, 17, 26]. Operators can    the 80th percentile of search response time (SRT). This KPI has a
+periodically (e.g., weekly) label the cases as new data arrive, the       measurable impact on the users’ search experience [29].
+only manual work for operators. Because anomalies are typically            ���
+infrequent [16], the time for labeling is quite reasonable with the
+help of a dedicated labeling tool, as shown in [27] and §4.2. The
+second key observation is that the anomaly severities measured by
+different detectors can naturally serve as the features in machine         ���
+learning, so each detector can serve as a feature extractor (see §4.3).      ���       ���     ���     ���         ���   ���    ���
+Opprentice then learns from the labeled data, automatically cap-                                          (a) PV
+turing the domain knowledge from the operators, just as a smart            ���
+and diligent apprentice of the operators would do. Specifically,
+multiple detectors are applied to the KPI data in parallel to extract
+features. Then the features and the labels are used to train a
+                                                                           ���
+machine learning model, i.e., random forests [28], to automatically          ���       ���     ���     ���         ���   ���    ���
+select the appropriate detector-parameter combinations and the                                           (b) #SR
+thresholds. The training objective is to maximally satisfy the             ���
+operators’ accuracy preference.
+   The major contributions of the paper are summarized as fol-
+lows. First, to the best of our knowledge, Opprentice is the
+first detection framework to apply machine learning to acquiring           ���
+realistic anomaly definitions and automatically combining and                ���       ���     ���     ���         ���   ���    ���
+tuning diverse detectors to satisfy operators’ accuracy preference.                                      (c) SRT
+Second, Opprentice addresses a few challenges in applying ma-
+chine learning to such a problem: labeling overhead, infrequent           Figure 1: 1-week examples of three major KPIs of the search
+anomalies, class imbalance, and irrelevant and redundant features,        engine. The circles mark some obvious (not all) anomalies.
+elaborated on in §3.2 and addressed in §4. Third, we build and
+                                                                             Beyond the physical meanings, the characteristics of these KPI
+evaluate Opprentice in a top global search engine (§5). 14 existing
+                                                                          data are also different. First, they have different levels of sea-
+detectors have been implemented and plugged into Opprentice. For
+                                                                          sonality. For example, by visually inspecting, we see that the
+three different service KPIs, Opprentice can automatically satisfy
+                                                                          PV is much more regular than the other two KPIs and shows a
+or approximate a reasonable accuracy preference (recall ≥ 0.66
+                                                                          strong seasonality. In addition, the dispersions of the KPIs are
+and precision ≥ 0.66). Furthermore, although the best performing
+                                                                          different too. Since we have to hide the absolute values, we use
+detector-parameter combination changes with different KPIs, Op-
+                                                                          the coefficient of variation (Cv ) to measure the dispersions. Cv
+prentice consistently performs similarly or even better than them.
+                                                                          equals the standard deviation divided by the mean. In Table 1, #SR
+More importantly, Opprentice takes operators only tens of minutes
+                                                                          has Cv = 209% and is spread out the most; SRT has Cv = 7%
+to label data. In comparison, operators traditionally have to spend
+                                                                          and concentrates the most to the mean.
+days learning and selecting detectors, then another tens of days
+tuning them, which may still turn out not to work in the end.
+We believe this is the first anomaly detection framework that does             Table 1: Three kinds of KPI data from the search engine.
+not require manual detector selection, parameter configuration, or                                      PV       #SR       SRT
+threshold tuning.                                                                    Interval (minute)    1        1        60
+                                                                                      Length (week)      25       19        16
+                                                                                        Seasonality    Strong Weak Moderate
+2
+ In the rest of this paper, machine learning refers particularly to                         Cv          0.48      2.1      0.07
+supervised machine learning.
+   Anomalies: KPI time series data can also present several                          a popular solution where hand-crafted rules of classification are
+unexpected patterns (e.g., jitters, slow ramp-ups, sudden spikes and                 difficult to specify in advance, e.g., computer vision and data
+dips) in different severity levels, such as a sudden drop by 20% or                  mining. In anomaly detection, manually pre-defining anomalies is
+50%. When identifying anomalies, operators care about certain                        also challenging, which motivates us to tackle the problem through
+patterns with different severities, which can vary among KPIs.                       supervised machine learning.
+Fig. 1 shows a few anomaly examples. However, this knowledge is
+difficult to be described accurately by some pre-defined rules [1,2].                                          Anomaly labels
+This is because operators usually determine anomalies according                                                                            KPI Data
+to their own understandings of the KPIs and the real operational
+demands. Throughout this paper, we assume that operators have no
+concept drift [30] regarding anomalies. This is consistent with what
+                                                                                              ...          1    2     3   4     5    ...    Slot
+we observed when the operators labeled months of data studied in
+this paper.                                                                                                                                   Decision boundaries identified
+                                                                                                     Detectors            Labeling
+   To identify anomalies automatically, researchers have proposed                                                                             by a machine learning algorithm
+many detectors using a variety of techniques. We call them basic                                                                                   feature2
+detectors in the rest of the paper. More details about detectors will                  Slot     feture1 feture2            labels
+                                                                                        ...        ...     ...               ...
+be discussed in §4.3.                                                                    1                                Normal                                      Anomaly
+                                                                                         2                                Normal
+2.2      Problem and Goal                                                                3
+                                                                                         4
+                                                                                                                          Anomaly
+                                                                                                                          Normal                                       ?
+   The KPI data labeled by operators are the so called “ground                           5                                Normal
+                                                                                        ...          ...            ...      ...                      Normal         feature1
+truth”. The fundamental goal of anomaly detection is to be
+                                                                                                    A training set
+accurate, e.g., identifying more anomalies in the ground truth, and
+avoiding false alarms. We use recall ( # of #true anomalous points detected
+                                               of true anomalous points
+                                                                            )
+                                                                                     Figure 2: High level idea of applying machine learning in
+and precision ( # of# oftrueanomalous
+                              anomalous points detected
+                                        points detected
+                                                        ) to measure the detection   Opprentice.
+accuracy. Precision describes what matters to operators bet-
+ter than false positive rate (FPR), because anomalies are infre-                        Fig. 2 shows the high-level idea of how machine learning is
+quent [31]. Precision is also equivalent to 1-FDR (false discovery                   applied in Opprentice. We generate a training set from historical
+rate: # of# of
+            false anomalous points detected
+                                            ). Based on our experience, opera-       KPI data, which is used by a machine learning algorithm to build
+               anomalous points detected
+tors not only understand the concepts of recall and precision, but                   a classification model. To this end, first, operators need to label
+can also specify their accuracy preference using them in the format                  the anomalies in the data. In the meanwhile, we use existing basic
+of “recall ≥ x and precision ≥ y ”. For example, the operators                       anomaly detectors to quantify anomalous level of the data from
+we worked with specified “recall ≥ 0.66 and precision ≥ 0.66” as                     their own perspectives, respectively. The results of the detectors are
+the accuracy preference, which is considered as the quantitative                     used as the features of the data. The features and operators’ labels
+goal of Opprentice in this paper. These values come from the                         together form the training set. Then a machine learning algorithm
+operators’ experience of using other detectors and their accuracy                    takes advantage of a certain technique to build a classification
+before. As anomalies are relatively few in the data, it is difficult for             model. For example, given the decision boundaries in Fig. 2, the
+those detectors to achieve both high recall and precision. In fact,                  point represented by the question mark is classified as an anomaly.
+precision and recall are often conflicting. The trade-off between                       In this way, operators’ only job in building an anomaly detection
+them is often adjusted according to real demands. For example,                       system is to label anomaly cases, which is much easier (§4.2)
+busy operators are more sensitive to precision, as they do not want                  and costs less time (§5.7). The rest would be handled by the
+to be frequently disturbed by many false alarms. On the other hand,                  machine learning based framework, including combining diverse
+operators would care more about recall if a KPI, e.g., revenue, is                   detectors and adjusting their thresholds. Note that, although
+critical, even at the cost of a little lower precision. We also evaluate             prior work has applied machine learning algorithms to anomaly
+Opprentice under different accuracy preference in §5.                                detection [16, 20, 32], they only deem machine learning algorithms
+   In addition to the above quantitative goal of accuracy, Opprentice                as basic detectors. To the best of our knowledge, Opprentice is the
+has one qualitative goal: being automatic enough so that the op-                     first framework that use machine learning to automatically combine
+erators would not be involved in selecting and combining suitable                    and tune existing detectors to satisfy operators’ detection require-
+detectors, or tuning them.                                                           ments (anomaly definitions and the detection accuracy preference).
+   In this paper, we focus on identifying anomalous behaviors in                     Furthermore, to the best of our knowledge, this is the first time that
+KPI time series. This is an important first step for monitoring                      different detectors are modeled as the feature extractors in machine
+the service performance. However, further investigation and                          learning (§4.3).
+troubleshooting of those anomalies are beyond the research scope
+of this paper.                                                                       3.2        Addressing Challenges in Machine Learn-
+                                                                                                ing
+                                                                                        Although the above machine learning based idea seems promis-
+3.     OPPRENTICE OVERVIEW                                                           ing, applying it in designing Opprentice poses a number of inter-
+                                                                                     esting and practical challenges.
+3.1      Core Ideas
+   Opprentice approaches the above problem through supervised                        • Labeling overhead. Labeling anomalies requires a lot of man-
+machine learning. Supervised machine learning can be used to                           ual efforts. To help operators label effectively, we developed a
+automatically build a classification model from historical data,                       dedicated labeling tool with a simple and convenient interaction
+and then classify future data based on the model. Because of                           interface. §5.7 shows that labeling time of our studied KPIs with
+the data-driven property, supervised machine learning has become                       our tool is less than 6 minutes for each month of data.
+                                                                                                            Operators
+• Incomplete anomaly cases. The performance of machine
+                                                                             Historical &                               specifies one time
+  learning algorithms can be affected by whether the training
+                                                                           Latest KPI Data
+  set contains enough anomaly cases. However, since anomalies
+  occur less frequently in practice, an arbitrary training set is            processed by     loaded into     use
+  unlikely to cover enough anomalies [16]. For example, new
+  types of anomalies might emerge in the future. To address                 Detectors                   Labeling Tool
+  this challenge, we incrementally retrain the classifier with newly
+  labeled data. Through this way, Opprentice is able to catch and            Features                       Labels          Accuracy Preference
+  learn new types of anomalies that do not show up in the initial
+  training set.
+                                                                                                                               cThld Prediction
+                                                                              Machine Learning
+• Class imbalance problem. Another effect of infrequent anoma-
+  lies is that the normal data always outnumber the anomalies in              （Random Forest））                                        cThld
+  the training set. When learning from such “imbalanced data”, the
+  classifier is biased towards the large (normal) class and ignores                               Latest Anomaly Classifier
+  the small (anomaly) class [31]. It results in low detection rate,                                 (a) Training classifier.
+  which may not satisfy operators’ accuracy preference. We solve
+  this problem in §4.5 through adjusting the machine learning
+  classification threshold (cThld henceforth).                                                                                  Latest
+                                                                           Incoming         Detectors        Features          Anomaly        Anomaly ？
+                                                                           KPI Data
+• Irrelevant and redundant features. To save manual efforts, we                                                                Classifier
+  neither select the most suitable detectors nor tune their internal                                (b) Detecting anomaly.
+  parameters. Instead, many detectors with different parameters
+  are used simultaneously to extract features (§4.3). In this case,
+                                                                                            Figure 3: Opprentice architecture.
+  some of the features would be either irrelevant to the anomalies
+  or redundant with each other. Prior work has demonstrated
+  that some learning algorithms would degrade in accuracy when
+                                                                          identifying anomalies, the data of the last day and the last week
+  handling such features. We solve this problem by using an
+                                                                          are also shown in light colors. The operators can use the arrow keys
+  ensemble learning algorithm, i.e., random forests [28], which is
+                                                                          on the keyboard to navigate (forward, backward, zoom in and zoom
+  relatively robust and works well for our problem (§5).
+                                                                          out) through the data. Once the operators have identified anomalies,
+                                                                          they can left click and drag the mouse to label the window of
+4.    DESIGN                                                              anomalies, or right click and drag to (partially) cancel previously
+   In this section we first present the architecture of Opprentice, and   labeled window. Besides, they can adjust the Y axis scale via the
+then describe the design details.                                         slider on the right side. The data navigator in the bottom panel
+                                                                          shows a zoom-out view of the data.
+4.1    Architecture
+   Fig. 3 illustrates the architecture of Opprentice. From the oper-
+ators’ view, they interact with Opprentice in two ways (Fig. 3(a)).
+First, before the system starts up, operators specify an accuracy
+preference (recall ≥ x and precision ≥ y), which we assume does
+not change in this paper. This preference is later used to guide
+the automatic adjustment of the cThld. Second, the operators use
+a convenient tool to label anomalies in the historical data at the
+beginning and label the incoming data periodically (e.g., weekly).
+All the data are labeled only once.
+   From the Opprentice-side view, first in Fig. 3(a), an anomaly
+classifier is trained as follows. Numerous detectors function as
+feature extractors for the data. Based on the features together with
+the operators’ labels, a machine learning algorithm (e.g., random
+forests used in this paper) incrementally retrains the anomaly
+classifier with both the historical and the latest labeled data. After                            Figure 4: Labeling tool.
+that, in Fig. 3(b), the same set of detectors extract the features of
+incoming data, and the classifier is used to detect/classify them.           The labeling tool is effective because operators do not have to
+Note that, unlike the traditional way, the detectors here only extract    label each time bin one by one. They first see a relatively zoomed-
+features rather than reporting anomalies by themselves. Next, we          out view of the KPI curve. In this view, we do not smooth the curve.
+introduce the design of each component in detail.                         Thus, even if one time bin is anomalous, it is visible to operators.
+                                                                          Then, operators can zoom in to locate the specific anomalous time
+4.2    Labeling Tool                                                      bin(s), and label them by a window. Labeling windows, as opposite
+   We developed a dedicated tool to help operators effectively label      to individual time bins, significantly reduces labeling overhead.
+anomalies in historical data. The user interface of the tool is shown     §5.7 shows that it only takes operators a few minutes to label a
+in the left part of Fig. 4, with a brief user manual on the right side.   month of data in our studied KPIs.
+The tool works as follows. First, it loads KPI data, and displays            One issue of labeling is that errors can be introduced, especially
+them with a line graph in the top panel. To assist operators in           that the boundaries of an anomalous window are often extended or
+narrowed when labeling. However, machine learning is well known            minute in our studied data. Besides, some detectors, such as those
+for being robust to noises. Our evaluation in §5 also attests that the     based on moving averages, need one window of data to warm up.
+real labels of operators are viable for learning.                          We cope with such detectors by skipping the detection of the data
+   Our labeling tool in spirit is similar to WebClass [27], a labeling     in the warm-up window, which has no influence on the detection of
+tool for NetFlow data. However, WebClass cannot be used directly           future data.
+in our problem because it only supports NetFlow data rather                   Since we intend to free operators from carefully selecting detec-
+than general time series data. More importantly, it only allows            tors, the detectors meeting the above requirements are used to work
+operators to label the anomalies already identified by detectors           with Opprentice without carefully evaluating their effectiveness.
+as false positives or unknown. In contrast, our labeling tool              Although some detectors might be inaccurate in detecting certain
+enables operators to freely label all the data rather than labeling        KPIs (§5.3.1), Opprentice can find suitable ones from broadly
+the detection results.                                                     selected detectors, and achieve a relatively high accuracy. In this
+                                                                           paper, we implement 14 widely-used detectors (introduced later in
+4.3     Detectors                                                          §5.2) in Opprentice as a case study.
+   We now describe how detectors function as extractors of anomaly
+features in Opprentice, and introduce the considerations when              4.3.3     Sampling Parameters
+choosing detectors to work with Opprentice.                                   We have two strategies to sample the parameters of detectors.
+                                                                           The first one is to sweep the parameter space. We observe that
+4.3.1     Detectors As Feature Extractors                                  the parameters of some detectors have intuitive meanings. For
+  Inspired by [21, 33], we represent different detectors with a            example, EWMA (Exponentially Weighted Moving Average) [11],
+unified model:                                                             a prediction based detector, has only one weight parameter ↵ 2
+                    a detector with parameters              sThld          [0, 1]. As ↵ goes up, the prediction relies more upon the recent
+        data point −−−−−−−−−−−−! severity −
+                                          −−! {1, 0}
+                                                                           data than the historical data. Consequently, we can sample ↵ 2
+First, when a detector receives an incoming data point, it internally      {0.1, 0.3, 0.5, 0.7, 0.9} to obtain 5 typical features from EWMA.
+produces a non-negative value, called severity, to measure how             As for the detectors with multiple parameters and a large parameter
+anomalous that point is. For example, Holt-Winters [6] uses                space, we can reduce the sampling granularity. For example,
+the residual error (i.e., the absolute difference between the actual       Holt-Winters has three [0,1] valued parameters ↵, β, and γ. To
+value and the forecast value of each data point) to measure the            limit the number of samples, we can choose {0.2, 0.4, 0.6, 0.8}
+severity; historical average [5] assumes the data follow Gaussian          for ↵, β, and γ, leading to 43 = 64 features. Other types of
+distribution, and uses how many times of standard deviation the            detectors may need window parameters, and we can adopt windows
+point is away from the mean as the severity. Most detectors are            of several points, days, or weeks according to the characteristics
+parameterized and have a set of internal parameters. For example,          of the detectors. For example, moving average based detectors
+Holt-Winters has three parameters {↵, β, γ}, and historical average        with a short window aim at identifying local anomalies, while
+has one parameter of window length. The severity of a given data           time series decomposition [1] usually uses a window of weeks to
+point depends on both the detector and its internal parameters.            capture long-term violations. Although such sampling strategies
+Afterwards, a detector further needs a threshold to translate the          do not guarantee that we can find the most suitable parameters (or
+severity into a binary output, i.e., anomaly (1) or not (0). We call       features) due to the relatively coarse sampling granularity, we only
+this threshold the severity threshold (sThld henceforth).                  need a set of good enough features, and Opprentice can achieve a
+   Since the severity describes the anomalous level of data, it            promising accuracy by combining them (§5).
+is natural to deem the severity as the anomaly feature. To                    On the other hand, the parameters of some complex detectors,
+produce features, for each parameterized detector, we sample their         e.g., ARIMA (Autoregressive Integrated Moving Average) [10],
+parameters [34] so that we can obtain several fixed detectors.             can be less intuitive. Worse, their parameter spaces can be too
+We call a detector with specific sampled parameters a (detector)           large even for sampling. To deal with such detectors, we estimate
+configuration. Thus a configuration acts as a feature extractor:           their “best” parameters from the data, and generate only one
+                                                                           set of parameters, or one configuration for each detector. The
+                    configuration (detector + sampled parameters)          estimation method is specifically designed for each such detector.
+        data point −−−−−−−−−−−−−−−−−−−−−−! feature                         For example, [35,36] provide the parameter estimation for ARIMA.
+  The feature extraction, training, and classification (detection) in      Besides, since the data characteristics can change over time, it is
+Opprentice are all designed to work with individual data points, not       also necessary to update the parameter estimates periodically.
+anomalous windows. This way, the machine learning algorithm can
+have enough training data, and the classifier can detect individual
+                                                                           4.4     Machine Learning Algorithm
+anomalous data point fast.
+                                                                           4.4.1     Considerations and Choices
+4.3.2     Choosing Detectors                                                  We need to be careful when choosing machine learning al-
+   When choosing detectors, we have two general requirements.              gorithms. This is because in our problem, there are redundant
+First, the detectors should fit the above model, or they should be         and irrelevant features, caused by using detectors without careful
+able to measure the severities of data. In fact, a lot of widely-          evaluation. Some learning algorithms such as naive Bayes, logistic
+used detectors all work in this way [1, 4–7, 10–12, 24]. Second,           regression, decision tree, and linear SVM, will perform badly
+since anomalies should be detected timely, we require that the             when coping with such training data (§5.3.2). Additionally, a
+detectors can be implemented in an online fashion. This requires           promising algorithm should be less-parametric and insensitive to
+that once a data point arrives, its severity should be calculated by       its parameters, so that Opprentice can be easily applied to different
+the detectors without waiting for any subsequent data. In addition,        data sets. In this paper, we choose random forests [28], which
+the calculation time should be less than the data interval, which is       has been proved to be robust to noisy features and work well
+not difficult to fulfill. For example, the shortest data interval is one   in practice [28, 37]. Furthermore, random forests have only two
+parameters and are not very sensitive to them [38]. Our evaluation              pruning. The random forest then combines those trees by majority
+results also show that the random forest algorithm perform better,              vote. That is, given a new data point, each of the trees gives its own
+and are more stable than other commonly-used algorithms.                        classification. For example, if 40 trees out of 100 classify the point
+   Note that we do understand that feature selection [39, 40] is a              into an anomaly, its anomaly probability is 40%. By default, the
+commonly used solution to mitigate the influences of irrelevant and             random forest uses 50% as the classification threshold (i.e., cThld).
+redundant features. However, we do not explore feature selection in                The above properties of randomness and ensemble make random
+this paper and consider it as future work, because it could introduce           forests more robust to noises and perform better when faced with
+extra computation overhead, and the random forest works well by                 irrelevant and redundant features than decision trees.
+itself (§5.3.2).
+                                                                                4.5     Configuring cThlds
+4.4.2     Random Forest
+   In the interest of space, we only introduce some basic ideas of              4.5.1     PC-Score: A Metric to Select Proper cThlds
+random forests. More details are in [28].                                          We need to configure cThlds rather than using the default one
+   Preliminaries: decision trees. A decision tree [41] is a popular             (e.g., 0.5) for two reasons. First, when faced with imbalanced data
+learning algorithm as it is simple to understand and interpret. It              (anomalous data points are much less frequent than normal ones
+has been used widely to uncover the relationships between features              in data sets), machine learning algorithms typically fail to identify
+and labels [42, 43]. At a high level, it provides a tree model with             the anomalies (low recall) if using the default cThlds [31]. Second,
+various if-then rules to classify data. Fig. 5 shows a compacted                operators have their own preference regarding the precision and re-
+decision tree learned from our SRT data set. The tree contains                  call of anomaly detection. Configuring cThlds is a general method
+three if-then rules on the features of three detectors, i.e., time series       to trade off between precision and recall [31]. In consequence, we
+decomposition, singular value decomposition, and diff (See §5.2                 should configure the cThld of random forests properly to satisfy the
+for the details of the detectors). The numbers on branches, e.g.,               operators’ preference.
+3 for time series decomposition, are the feature split points. The
+                                                                                                                 1
+tree is then used to classify incoming data. The tree is greedily
+built top-down. At each level, it determines the best feature and                                               0.8
+its split point to separate the data into distinct classes as much as
+
+
+
+
+                                                                                                    Precision
+possible, or produce the “purest” sub nodes. A goodness function,                                               0.6
+                                                                                                                             PR curve
+                                                                                                                             Default cThld
+e.g., information gain and gini index, is used for quantifying such                                             0.4          SD(1,1)
+                                                                                                                             F-Score
+an ability of each feature. The tree grows in this way until every leaf                                                      PC-Score
+node is pure (fully grown). In the decision tree, a feature is more                                             0.2
+                                                                                                                      0.2   0.4    0.6     0.8   1
+important for classification if it is closer to the root. For example,                                                            Recall
+in Fig. 5, the feature of time series decomposition is most effective
+to distinguish different data.                                                  Figure 6: PR curve of a random forest trained and tested on the
+   There are two major problems of decision tree. One is that the               PV data. Different methods select different cThlds and result
+greedy feature selection at each step may not lead to a good final              in different precision and recall. The two shaded rectangles
+classifier; the other is that the fully grown tree is very sensitive            represent two types of assumed operators’ preferences.
+to noisy data and features, and would not be general enough to
+classify future data, which is called overfitting. Some pruning                    Before describing how we configure the cThld, we first use
+solutions have been proposed to solve overfitting. For example,                 Precision-Recall (PR) curves to provide some intuitions. PR curves
+stop growing the tree earlier after it exceeds a threshold of depth.            is widely used to evaluate the accuracy of a binary classifier [45],
+However, it is still quite tricky to determine such a threshold.                especially when the data is imbalanced.3 A PR curve plots preci-
+                                                                                sion against recall for every possible cThld of a machine learning
+                        Severities measured by                                  algorithm (or for every sThld of a basic detector). Typically,
+        <3
+                      time series decomposition          >=3                    there is a trade-off between precision and recall. Fig. 6 shows
+        <3
+        Normal
+                                            Severities measured by              an exemplary PR curve derived from a random forest trained and
+                             < 64        singular value decomposition           tested on PV data. Two types of assumed operators’ preferences
+                                                                        >= 64
+                        Severities measured by
+                                                                    Anomaly     (1) “recall ≥ 0.75 and precision ≥ 0.6” and (2) “recall ≥ 0.5
+                                  Diff
+          < 61                                        >= 61                     and precision ≥ 0.9” are represented by the shaded rectangles.
+             Normal                               Anomaly                       Configuration of cThlds is to seek a proper point on the PR curve.
+                                                                                In Fig. 6, the triangle symbol is selected by the default cThld 0.5.
+Figure 5: Decision tree example. The rectangles represent the                   Besides, we also show the results of another two accurate metrics:
+features extracted by different detectors and the ellipses are the              a F-Score based method, which selects the point that maximizes
+classification results.                                                         F-Score = 2·precision·recall
+                                                                                               precision+recall
+                                                                                                                ; SD(1,1), a metric similar to that
+                                                                                in [46], which selects the point with the shortest Euclidean distance
+   A Random forest is an ensemble classifier using many decision
+                                                                                to the upper right corner where the precision and the recall are
+trees. Its main principle is that a group of weak learners (e.g.,
+                                                                                both perfect. We see that in Fig. 6, the PR curve has points inside
+individual decision trees) can together form a strong learner [44].
+                                                                                both the rectangles, however, the default threshold only satisfies
+To grow different trees, a random forest adds some elements or
+                                                                                the preference (2) but not (1); F-Score and SD(1,1) do not satisfy
+randomness. First, each tree is trained on subsets sampled from the
+original training set. Second, instead of evaluating all the features           3
+                                                                                  A similar method is Receiver Operator Characteristic (ROC)
+at each level, the trees only consider a random subset of the features          curves, which show the trade-off between the false positive rate
+each time. As a result, some trees may be not or less affected                  (FPR) and the true positive rate (TPR). However, when dealing
+by the irrelevant and redundant features if these features are not              with highly imbalanced data sets, PR curves can provide a more
+used by the trees. All the trees are fully grown in this way without            informative representation of the performance [45].
+either of the preferences. This is because these metrics select cThld               ith week (or the ith test set) based on the historical best cThlds.
+without considering operators’ preferences.                                         Specifically, EWMA works as follows:
+   Motivated by the above fact, we develop a simple but effective                                 (
+accuracy metric based on F-Score, namely PC-Score (preference-                                      ↵ · cThldbi−1 + (1 − ↵) · cThldpi−1 , i > 1
+                                                                                        cThldpi =
+centric score), to explicitly take operators’ preference into account                               5-fold prediction                       ,i = 1
+when deciding cThlds. First, for each point (r, p) on the PR curve,
+we calculate its PC-Score as follows:                                               cThldbi−1 is the best cThld of the (i − 1)th week. cThldpi is the
+                          ( 2·r·p                                                   predicted cThld of the ith week, and also the one used for detecting
+                                    + 1 , r ≥ R and p ≥ P
+      PC-Score(r, p) =         r+p
+                              2·r·p
+                                                                                    the ith -week data. ↵ 2 [0, 1] is the smoothing constant. For
+                               r+p
+                                          , otherwise                               the first week, we use 5-fold cross-validation to initialize cThldp1 .
+                                                                                    EWMA is simple but effective here as it does not require a lot of
+where R and P are from the operators’ preference “recall ≥ R and
+                                                                                    historical data to start. As ↵ increases, EWMA gives the recent
+precision ≥ P ”. Basically, the PC-Score measures the F-Score of
+                                                                                    best cThlds more influences in the prediction. We use ↵ = 0.8
+(r, p). In order to identify the point satisfying operators’ preference
+                                                                                    in this paper to quickly catch up with the cThld variation. Our
+(if one exists), we add an incentive constant of 1 to F-score if r  R
+                                                                                    results show that the EWMA based cThld prediction method gains
+and p  P . Since F-Score is no more than 1, this incentive constant
+                                                                                    a noticeable improvement when compared with the 5-fold cross-
+ensures that the points satisfying the preference must have the PC-
+                                                                                    validation (§5.6).
+Score larger than others that do not. Hence, we choose the cThld
+corresponding to the point with the largest PC-Score. In Fig. 6, we
+see that the two points selected based on the PC-Score are inside the               5.    EVALUATION
+two shaded recectangles, respectively. Note that, in the case when                     We implement Opprentice and 14 detectors with about 9500
+a PR curve has no points inside the preference region, the PC-Score                 lines of python, R, and C++ code. The machine learning block
+cannot find the desired points, but it can still choose approximate                 is based on the scikit-learn library [48]. In this section, we evaluate
+recall and precision.                                                               Opprentice using three kinds of KPI data from a top global search
+                                                                                    engine. These data are labeled by the operators using our labeling
+  4.5.2                EWMA Based cThld Prediction                                  tool.
+   The above describes how to configure cThlds based on the PC-                        Fig. 8 shows the evaluation flow. In the first four steps, we com-
+Score in an offline or “oracle” mode. That is, we configure cThlds                  pare the accuracy of each component of Opprentice with different
+after the data to be detected (also called a test set) have already                 approaches. The accuracy of Opprentice as a whole is shown in the
+arrived. These cThlds are the best ones we can configure for                        §5.6. In addition to the accuracy, the qualitative goal of Opprentice,
+detecting those data, and are called best cThlds. However, in online                i.e., being automatic, is also evaluated through directly applying
+detection, we need to predict cThlds for detecting future data.                     Opprentice to three different KPIs without tuning. The only manual
+   To this end, an alternative method is k-fold cross-validation [47].              effort is to label the KPI data. We also interviewed the operators
+First, a historical training set is divided into k subsets of the same              about their previous detector tuning time, and compare it with the
+length. In each test (k tests in total), a classifier is trained using k −          labeling time (§5.7). Last, we evaluate the online detecting lag
+1 of the subsets and tested on the rest one with a cThld candidate.                 and the offline training time of Opprentice (§5.8). Next we first
+The candidate that achieves the smallest average PC-Score across                    describe the data sets in §5.1 and the detectors we select in §5.2,
+the k tests is used for future detection. In this paper we use k = 5,               then we show the evaluation results.
+and sweep the space of cThld with a very fine granularity of 0.001,
+that is, we evaluate 1000 cThld candidates in a range of [0, 1].                          Opprentice                                 Data sets
+   However, we found that this cross-validation method does not                           Other approaches             1. PV         2. #SR      3. SRT
+work quite well in our problem (§5.6). A potential explanation is
+that, as shown in Fig. 7, the best cThlds can differ greatly over                            Detection       Random       Basic           Static    Other machine
+weeks. As a result, in the cross-validation, the cThld that achieves                       approaches         forest    detectors      combinations    learning
+the highest average performance over all the historical data might                               § 4.3
+not be similar to the best cThld of the future week.
+                                                                                          Training sets   All historical data        First 8-week    Recent 8-week
+             ���                                                                                  § 4.4   (Incremental retraining)       data            data
+             ���                                            PV      #SR   SRT
+Best cThld
+
+
+
+
+             ���
+             ���                                                                     Accuracy metrics
+             ���                                                                               § 4.5       PC-Score         SD(1,1)        F-Score    Default cThld
+             ���
+               �
+                   �    �   �   �   �    �   �    �   �   �� �� �� �� �� �� �� ��    cThld predictions        EWMA                         5-Fold cross-validation
+                                        ID of 1-week moving test sets                            § 4.6       (Opprentice as a whole)
+                                                                                                                     Labeling time vs. tuning time   § 4.7
+Figure 7: Best cThld of each week from the 9th week. The first                                                       Detecting lag and training time § 4.8
+8-week data are used as the initial training set.
+                                                                                                          Figure 8: Evaluation flow.
+   Our method is motivated by another observation in Fig. 7. That
+is, though the best cThlds changes over weeks, they can be more                     5.1     Data sets
+similar to the ones of the neighboring weeks. A possible explana-                      We collect three representative types of KPI data (i.e., PV, #SR,
+tion is that the underlying problems that cause KPI anomalies might                 and SRT) from a large search engine (§2.1). These data are
+last for some time before they are really fixed, so the neighboring                 labeled by the operators from the search engine using our labeling
+weeks are more likely to have similar anomalies and require similar                 tool. There are 7.8%, 2.8%, and 7.4% data points are labeled as
+cThlds. Hence, we adopt EWMA [11] to predict the cThld of the                       anomalies for PV, #SR, and SRT, respectively. Although the data
+we used are from the search engine, they are not special cases only        median, instead of the standard deviation around the mean, to
+for the search engine. For example, based on previous literature and       measure anomaly severities. This patch can improve the robustness
+our experience, the PV data we used are visually similar to other          to missing data and outliers [3, 15]. In the interest of space, the
+kinds of volume data. For example, the PV of other Web-based               details of these detectors and the ways they produce severities are
+services [1, 49], the RTT (round trip time) [6] and the aggregated         not introduced further, but can be found in the references in Table 3.
+traffic volume [5] of an ISP, and online shopping revenue. So we           The sampled parameters of each detector are also shown in Table 3.
+believe that these three KPIs are sufficient to evaluate the idea of       Here, the parameter of ARIMA is estimated from the data. For
+Opprentice, and we consider a more extensive evaluation with data          other detectors, we sweep their parameter space.
+from other domains beyond search as our future work. Table 2                  In total, we have 14 detectors and 133 configurations, or 133
+shows several ways to generate training sets and test sets from the        features for random forests. Note that, Opprentice is not limited to
+labeled data sets.                                                         the detectors we used, and can incorporate emerging detectors, as
+                                                                           long as they meet our detector requirements in §4.3.2.
+Table 2: Training sets and test sets. The test sets all start from
+the 9th week and move 1 week for each step. The training                   5.3     Accuracy of Random Forests
+sets use different data before the test sets. I1 is the fashion               Now we present the evaluation results. First, we compare the
+of Opprentice (incremental retraining). Others are used for                accuracy of random forests with other detection approaches in an
+evaluating different strategies of training sets.                          offline mode. Since we are not aware of the thresholds of other
+                                                                           approaches, we cannot compare specific recall and precision fairly.
+           Training set                Test set              ID            Alternatively, we use the area under the PR curve (AUCPR) [50]
+                                1-week moving window         I1            as the accuracy measure. The AUCPR is a single number summary
+        All historical data
+                                4-week moving window         I4            of the detection performance over all the possible thresholds. The
+       Recent 8-week data       4-week moving window         R4            AUCPR ranges from 0 to 1. Intuitively, a detection approach with
+        First 8-week data       4-week moving window         F4            a large AUCPR is more likely to achieve high recall and precision.
+                                                                           5.3.1     Random Forests vs. Basic Detectors and Static
+5.2     Detector and Parameter Choices                                               Combinations of Basic Detectors
+   According to the detector requirements (§4.3.2), in this proof             First, in Fig. 9, we would like to compare random forests
+of concept prototype, we evaluate Opprentice with 14 widely-used           with the 14 basic detectors with different parameter settings (133
+detectors (Table 3).                                                       configurations) in Table. 3. We also compare random forests with
+Table 3: Basic detectors and sampled parameters. Some                      two static combination methods: the normalization schema [21]
+abbreviations are MA (Moving Average), EWMA (Exponen-                      and the majority-vote [8]. These two methods are designed to
+tially Weighted MA), TSD (Time Series Decomposition), SVD                  combine different detectors, but they treat them equally no matter
+(Singular Value Decomposition), win(dow) and freq(uency).                  their accuracy. For comparison purposes, in this paper, we also use
+                                                                           these two methods to combine the 133 configurations as random
+  Detector / # of configurations     Sampled parameters                    forests do. All the above approaches detect the data starting from
+  Simple threshold [24] / 1          none                                  the 9th week. The first 8 weeks are used as the initial training set
+  Diff / 3                           last-slot, last-day, last-week        for random forests.
+  Simple MA [4] / 5                                                        Table 4: Maximum precision when recall ≥ 0.66. The precision
+                                     win = 10, 20, 30, 40, 50
+  Weighted MA [11] / 5                                                     greater than 0.66 is shown in bold. The top 3 basic detectors
+                                     points
+  MA of diff / 5                                                           are different for each KPI (see Fig. 9 for their names).
+  EWMA [11] / 5                      ↵ = 0.1, 0.3, 0.5, 0.7, 0.9
+  TSD [1] / 5                                                                                                           Precision
+                                                                                       Detection approach
+  TSD MAD / 5                                                                                                    PV        #SR SRT
+                                     win = 1, 2, 3, 4, 5 week(s)
+  Historical average [5] / 5                                                             Random forest           0.83     0.87 0.89
+  Historical MAD / 5                                                                  Normalization scheme       0.11     0.30 0.21
+  Holt-Winters [6] / 43 = 64       ↵, β, γ = 0.2, 0.4, 0.6, 0.8                           Majority-vote          0.12     0.32 0.19
+                                   row =10, 20, 30, 40, 50                              1st basic detector       0.67     0.71 0.92
+  SVD [7] / 5 ⇥ 3 = 15
+                                   points, column =3, 5, 7                             2nd basic detector        0.39     0.70 0.61
+                                   win = 3, 5 ,7 days,     freq =                      3rd basic detector        0.37     0.67 0.24
+  Wavelet [12] / 3 ⇥ 3 = 9
+                                   low, mid, high
+  ARIMA [10] / 1                   Estimation from data                       Focusing on the left side of Fig. 9, we see that for the AUCPR,
+                                                                           random forests rank the first in Fig. 9(a) and Fig. 9(b), and rank the
+        In total: 14 basic detectors / 133 configurations
+                                                                           second in Fig. 9(c), where the AUCPR of random forests is only
+   Two of the detectors were already used by the search engine we          0.01 less than the highest one. On the other hand, the AUCPR of
+studied before this study. One is namely “Diff”, which simply              the two static combination methods is always ranked low. This
+measures anomaly severities using the differences between the              is because most configurations are inaccurate (having very low
+current point and the point of last slot, the point of last day, and the   AUCPR in Fig. 9), as we do not manually select proper detectors
+point of last week. The other one, namely “MA of diff”, measures           or tune their parameters. However, the two static combination
+severities using the moving average of the difference between              methods treat all the configurations with the same priority (e.g.,
+current point and the point of last slot. This detector is designed        equally weighted vote). Thus, they can be significantly impacted
+to discover continuous jitters. The other 12 detectors come from           by inaccurate configurations.
+previous literatures. Among these detectors, there are two variants           The right side of Fig. 9 shows the PR curves of random forests,
+of detectors using MAD (Median Absolute Deviation) around the              two combination methods, and the top 3 highest-AUCPR basic
+         �                                                �                                                                         Decison trees            Logistic regression            Random forests
+                          Configurations                                                                                             Linear SVM                    Naive Bayes
+        ���
+                   Normalization schema
+                                                         ���
+                                                                                                                         �
+                           Majority-vote
+                          Random forest
+                                                                                                                       ���
+
+
+
+
+                                                                                                               AUCPR
+                                             ���������
+                                                                                                                       ���
+�����
+
+
+
+
+        ���                                              ���
+                                                                   1st
+                                                                                                                       ���
+        ���                                              ���       2nd                                                 ���
+                                                                   3rd                                                   �
+        ���                                              ���       Random forest
+                                                                                                                             �          ��             ��          ��            ��         ���          ���      ���
+                                                                   Majority-Vote
+                                                                   Normalization Scheme
+         �                                                �                                                                  ��� ���� ��        Number of features used for training
+              �   �� �� �� �� ���          ���                 �     ���        ���            ���   ���   �
+                     AUCPR ranking                                                    Recall                             �
+                                                                                                                       ���
+
+
+
+
+                                                                                                               AUCPR
+(a) KPI: PV. The basic detector ranking first in AUCPR is TSD                                                          ���
+MAD (win = 5 weeks), the 2nd one is historical MAD (win = 3                                                            ���
+weeks), and the third one is TSD (win = 5 weeks).                                                                      ���
+                                                                                                                         �
+                                                                                                                             �          ��             ��          ��            ��         ���          ���      ���
+         �                                                �
+                          Configurations
+                   Normalization schema
+                                                                                                                             ��� ���� ���       Number of features used for training
+        ���                Majority-vote
+                                                         ���
+                          Random forest                                                                                  �
+                                             ���������
+
+
+
+
+                                                                                                                       ���
+�����
+
+
+
+
+        ���                                              ���
+
+
+
+
+                                                                                                               AUCPR
+                                                                   1st                                                 ���
+        ���                                              ���       2nd                                                 ���
+                                                                   3rd
+                                                                                                                       ���
+        ���                                              ���       Random forest
+                                                                   Majority-Vote                                         �
+         �                                                �
+                                                                   Normalization Scheme                                      �          ��             ��          ��            ��         ���          ���      ���
+              �   �� �� �� �� ���          ���                 �     ���        ���            ���   ���   �
+                                                                                                                             ��� ���� ���       Number of features used for training
+                     AUCPR ranking                                                    Recall
+
+(b) KPI: #SR. The basic detector ranking first in AUCPR is simple
+threshold, the 2nd one is SVD (row = 50, column = 3), and the third                                            Figure 10: AUCPR of different machine learning algorithms as
+one is wavelet (win=3, freq=low).                                                                              more features are used.
+         �                                                �
+                          Configurations                                                                       used. The result demonstrates that random forests are quite robust
+        ���
+                   Normalization schema
+                           Majority-vote
+                                                         ���                                                   to irrelevant and redundant features in practice.
+                          Random forest
+                                             ���������
+�����
+
+
+
+
+        ���                                              ���
+
+        ���                                              ���
+                                                                   1st                                         5.4         Incremental Retraining
+                                                                   2nd
+                                                                   3rd                                            After demonstrating the accuracy and stability of random forests,
+        ���                                              ���       Random forest
+                                                                   Majority-Vote
+                                                                   Normalization Scheme
+                                                                                                               we want to show the effects of different training sets. We will
+         �                                                �
+              �   �� �� �� �� ���          ���                 �     ���        ���            ���   ���   �   focus only on random forests in this and the following evaluation
+                     AUCPR ranking                                                    Recall                   steps. We compare three methods of generating training sets: I4,
+(c) KPI: SRT. The basic detector ranking first in AUCPR is SVD                                                 F4, and R4 in Table 2. Fig. 11 shows the AUCPR of random forests
+(row = 20, column = 7), the 2nd one is TSD MAD (win = 3 weeks),                                                on different training sets. We see that I4 (also called incremental
+and the third one is TSD (win = 2 weeks).                                                                      retraining) outperforms the other two training sets in most cases.
+Figure 9: The left side is the AUCPR rankings of different                                                     This result is consistent with the challenge mentioned earlier that an
+detection approaches. The right side is the PR curves. Only                                                    arbitrary data set is unlikely to contain enough kinds of anomalies.
+the top 3 highest AUCPR ranking configurations from instinct                                                   In Fig. 11(b) we see that the three training sets result in similar
+detectors are shown in PR curves.                                                                              AUCPR. This implies that the anomaly types of #SR are relatively
+                                                                                                               simple and do not change much, so that they can be captured well
+detectors. We observe that the best basic detectors are different                                              by any of these training sets. Overall, since labeling anomalies does
+for each KPI, which indicates that the operators are interested                                                not cost much time (§5.7), we believe that incremental retraining is
+in different kinds of anomalies for each KPI. Table 4 shows the                                                a more general and accurate method to generate training sets.
+maximum precision of these approaches when their recall satisfies                                                      F4: first 8-week data           R4: recent 8-week data          I4: all historical data
+the operators’ preference (recall ≥ 0.66). We find that for all the                                                      �
+KPIs, random forests achieve a high precision (greater than 0.8).
+                                                                                                               AUCPR
+
+
+
+
+                                                                                                                       ���
+The result shows that random forests significantly outperforms the                                                     ���
+two static combination methods, and perform similarly to or even                                                       ���
+                                                                                                                             �     �       �   �         �     �     �       �     �   ��    ��     ��       ��   ��
+better than the most accurate basic detector for each KPI.
+                                                                                                                             ��� ���� ��                ID of 4-week moving test sets
+5.3.2               Random Forests vs. Other Algorithms                                                                  �
+                                                                                                               AUCPR
+
+
+
+
+                                                                                                                       ���
+   We also compare random forests with several other machine
+                                                                                                                       ���
+learning algorithms: decision trees, logistic regression, linear
+                                                                                                                       ���
+support vector machines (SVMs), and naive Bayes. All these                                                                   �         �           �          �          �         �        �            �         �
+algorithms are trained and tested on I1 in Table 2. To illustrate                                                            ��� ���� ���               ID of 4-week moving test sets
+the impact of irrelevant features (e.g., the configurations with low                                                     �
+AUCPR in Fig. 9) and redundant features (e.g., a detector with
+                                                                                                               AUCPR
+
+
+
+
+                                                                                                                       ���
+similar parameter settings), we train these learning algorithms by                                                     ���
+using one feature for the first time, and adding one more feature                                                      ���
+                                                                                                                             �                     �                     �                  �                      �
+each time. The features are added in the order of their mutual
+                                                                                                                             ��� ���� ���               ID of 4-week moving test sets
+information [51], a common metric of feature selection. In Fig. 10,
+we observe that, while the AUCPR of other learning algorithms
+is unstable and decreased as more features are used, the AUCPR                                                                   Figure 11: AUCPR of different training sets.
+of random forests is still high even when all the 133 features are
+                PC-Score       Default cThld                                PC-Score         Default cThld                           PC-Score       Default cThld                                PC-Score         Default cThld                           PC-Score       Default cThld                                PC-Score         Default cThld
+                 F-Score            SD(1,1)                                  F-Score              SD(1,1)                             F-Score            SD(1,1)                                  F-Score              SD(1,1)                             F-Score            SD(1,1)                                  F-Score              SD(1,1)
+
+
+            1                                         2                      100                                                 1                                         2                      100                                                 1                                         2                      100
+
+
+
+
+                                                                 Percentage(%)
+
+
+
+
+                                                                                                                                                                                      Percentage(%)
+
+
+
+
+                                                                                                                                                                                                                                                                                                           Percentage(%)
+        0.8                                           1                       80                                             0.8                                           1                       80                                             0.8                                           1                       80
+
+
+
+
+                                                      PC-Score
+
+
+
+
+                                                                                                                                                                           PC-Score
+
+
+
+
+                                                                                                                                                                                                                                                                                                PC-Score
+Precision
+
+
+
+
+                                                                                                                     Precision
+
+
+
+
+                                                                                                                                                                                                                                          Precision
+                                                      0                       60                                                                                           0                       60                                                                                           0                       60
+        0.6                                                                                                                  0.6                                                                                                                  0.6
+                                                     -1                       40                                                                                          -1                       40                                                                                          -1                       40
+        0.4                                          -2                       20                                             0.4                                          -2                       20                                             0.4                                          -2                       20
+        0.2                                          -3                        0                                             0.2                                          -3                        0                                             0.2                                          -3                        0
+                0.2      0.4    0.6   0.8        1                                 1      1.2 1.4 1.6 1.8 2                          0.2      0.4    0.6   0.8        1                                 1      1.2 1.4 1.6 1.8 2                          0.2     0.4     0.6   0.8        1                                 1      1.2 1.4 1.6 1.8 2
+                              Recall                                                    Preference scaling ratio                                   Recall                                                    Preference scaling ratio                                   Recall                                                    Preference scaling ratio
+                          (a1) Moderate                                                (a2) # of points in the box                             (b1) Moderate                                                (b2) # of points in the box                             (c1) Moderate                                                (c2) # of points in the box
+
+            1                                         2                      100                                                 1                                         2                      100                                                 1                                         2                      100
+
+                                                                 Percentage(%)
+
+
+
+
+                                                                                                                                                                                      Percentage(%)
+
+
+
+
+                                                                                                                                                                                                                                                                                                           Percentage(%)
+        0.8                                           1                       80                                             0.8                                           1                       80                                             0.8                                           1                       80
+                                                      PC-Score
+
+
+
+
+                                                                                                                                                                           PC-Score
+
+
+
+
+                                                                                                                                                                                                                                                                                                PC-Score
+Precision
+
+
+
+
+                                                                                                                     Precision
+
+
+
+
+                                                                                                                                                                                                                                          Precision
+                                                      0                       60                                                                                           0                       60                                                                                           0                       60
+        0.6                                                                                                                  0.6                                                                                                                  0.6
+                                                     -1                       40                                                                                          -1                       40                                                                                          -1                       40
+        0.4                                          -2                       20                                             0.4                                          -2                       20                                             0.4                                          -2                       20
+        0.2                                          -3                        0                                             0.2                                          -3                        0                                             0.2                                          -3                        0
+                0.2      0.4  0.6     0.8     1                                    1      1.2 1.4 1.6 1.8 2                          0.2      0.4  0.6     0.8     1                                    1      1.2 1.4 1.6 1.8 2                          0.2    0.4    0.6     0.8     1                                    1      1.2 1.4 1.6 1.8 2
+                           Recall                                                       Preference scaling ratio                                Recall                                                       Preference scaling ratio                                Recall                                                       Preference scaling ratio
+                  (a3) Sensitive to precision                                          (a4) # of points in the box                     (b3) Sensitive to precision                                          (b4) # of points in the box                     (c3) Sensitive to precision                                          (c4) # of points in the box
+
+            1                                         2                      100                                                 1                                         2                      100                                                 1                                         2                      100
+                                                                 Percentage(%)
+
+
+
+
+                                                                                                                                                                                      Percentage(%)
+
+
+
+
+                                                                                                                                                                                                                                                                                                           Percentage(%)
+        0.8                                           1                       80                                             0.8                                           1                       80                                             0.8                                           1                       80
+                                                      PC-Score
+
+
+
+
+                                                                                                                                                                           PC-Score
+
+
+
+
+                                                                                                                                                                                                                                                                                                PC-Score
+Precision
+
+
+
+
+                                                                                                                     Precision
+
+
+
+
+                                                                                                                                                                                                                                          Precision
+                                                      0                       60                                                                                           0                       60                                                                                           0                       60
+        0.6                                                                                                                  0.6                                                                                                                  0.6
+                                                     -1                       40                                                                                          -1                       40                                                                                          -1                       40
+        0.4                                          -2                       20                                             0.4                                          -2                       20                                             0.4                                          -2                       20
+        0.2                                          -3                        0                                             0.2                                          -3                        0                                             0.2                                          -3                        0
+                0.2      0.4   0.6      0.8      1                                 1      1.2 1.4 1.6 1.8 2                          0.2      0.4   0.6      0.8      1                                 1      1.2 1.4 1.6 1.8 2                          0.2      0.4   0.6      0.8      1                                 1      1.2 1.4 1.6 1.8 2
+                              Recall                                                    Preference scaling ratio                                   Recall                                                    Preference scaling ratio                                   Recall                                                    Preference scaling ratio
+                      (a5) Sensitive to recall                                         (a6) # of points in the box                         (b5) Sensitive to recall                                         (b6) # of points in the box                         (c5) Sensitive to recall                                         (c6) # of points in the box
+
+
+                                           (a) KPI: PV                                                                                                         (b) KPI: #SR                                                                                                         (c) KPI: SRT
+
+Figure 12: Offline-fashion evaluation for the four accuracy metrics. In each sub-figure, the left side heat maps show the points of
+(recall,precision) produced by the four accuracy metrics, respectively. Different rows show different kinds of operators’ preferences,
+represented by the boxes at the top-right corner. The right side line charts depict the percentage of points inside the boxes as the
+boxes scale up (starting from the original preferences, i.e., a scale ratio of 1).
+
+
+5.5                     PC-Score vs. Other Accuracy Metrics                                                                                                                                     anomalies can lead to an obvious degradation in recall. Fortunately,
+   So far, we have showed the offline AUCPR of random forests                                                                                                                                   as the anomalies are few in those weeks, relatively low precision or
+without a specific cThld. Next, we evaluate different accuracy                                                                                                                                  recall would not cause a large number of false positives or false
+metrics that are used to configure cThlds. We compare the PC-                                                                                                                                   negatives. For example, if there are ten anomalous data points
+Score we proposed against the default cThld, the F-Score, and                                                                                                                                   and we identify four of them (40% recall), we would miss only
+SD(1,1). Specifically, we train and test random forests on I1 in                                                                                                                                six anomalous data points; in such case, if we have 40% precision,
+Table 2, and let those four metrics determine the cThlds for each                                                                                                                               we would just identify six false positives. The operators we work
+one-week test set. Then, we measure their performance using recall                                                                                                                              with suggest that they are actually OK with this small number of
+and precision of each week. Notice that, this evaluation considers                                                                                                                              false positives or false negatives.
+an offline or oracle setting where we assume we have the test set
+when configuring the cThld. We will show the cThld prediction for                                                                                                                               5.6                EWMA vs. 5-Fold for cThld Prediction
+future test set (online detection) in §5.6.                                                                                                                                                        Previously, we show the offline evaluation of different metrics
+   Fig. 12 shows the results of the four metrics for three KPIs,                                                                                                                                for cThld configuration, and find that PC-Score outperforms the
+respectively. In the left-side heat maps, each point represents the                                                                                                                             other three. Now we evaluate the performance of online cThld
+recall and the precision of one week. The first row shows the results                                                                                                                           prediction based on the PC-Score, which is also the detection
+under the preference (recall≥0.66 and precision≥0.66), called a                                                                                                                                 accuracy of Opprentice as a whole. We compare the EWMA
+moderate preference. We also evaluate another two preferences:                                                                                                                                  based method used by Opprentice with 5-fold cross-validation. The
+sensitive-to-precision (recall≥0.6 and precision≥0.8) in the second                                                                                                                             evaluation is similar to §5.5 except that the cThld prediction only
+row and sensitive-to-recall (recall≥0.8 and precision≥0.6) in the                                                                                                                               uses the historical data (the training set) rather than the future data
+third row. The preferences are represented by the top-right boxes                                                                                                                               (the test set). As aforementioned, the result of each week can vary
+in the heat maps. The right-side line charts show the percentage of                                                                                                                             greatly because anomalies are quite rare in some weeks. To obtain
+the points inside the boxes (satisfying the preferences) if we use the                                                                                                                          a stable result, we calculate the average recall and precision of a
+original or lowered preferences, e.g., scaling the boxes up.                                                                                                                                    4-week moving window. The window moves one day for each
+   Focusing on the heat maps, we see that while the points ob-                                                                                                                                  step so that we can obtain a more fine-grained result. Here, we
+tained by the other three metrics remain unchanged for different                                                                                                                                show the result under the operators’ actual preference (recall≥0.66
+preferences, the PC-Score has the ability of adjusting the recall                                                                                                                               and precision≥0.66). The recall and precision of each window are
+and precision according to different preferences. Because of this                                                                                                                               shown in Fig. 13. The offline result (called the best case here) is
+advantage, we see in the line charts that PC-Score always achieve                                                                                                                               also shown as a baseline.
+the most points inside the boxes for both the original preference                                                                                                                                  The result shows that, for PV, #SR, and SRT, the EWMA
+and the scaled-up ones.                                                                                                                                                                         achieves 40%, 23%, and 110% more points inside the shaded
+   We also notice that it is not easy to satisfy the preference for                                                                                                                             regions, respectively, when compared with the 5-fold cross vali-
+all the weeks, because anomalies are very rare in some weeks.                                                                                                                                   dation. In total, 8403 (7.3%), 2544 (2.1%), and 86 (6.4%) data
+For example, we find that for the weeks where no point satisfies                                                                                                                                points are identified as anomalies by Opprentice in the test sets
+the moderate preference, anomalies are 73% and 78% fewer than                                                                                                                                   (after the 9th week) for the three KPIs, respectively (not shown).
+other weeks for PV and #SR, respectively. Thus it is inevitable                                                                                                                                 We notice that there are some points falling outside of the shaded
+to generate more false positives in order to identify those few                                                                                                                                 regions, such as the window between 58 and 70 in Fig. 13(a). It
+anomalies, leading to low precision. In addition, missing just a few                                                                                                                            is mainly because the anomalies during those weeks are quite rare.
+                                        Best case         EWMA          5-Fold                                          Best case         EWMA             5-Fold                                        Best case         EWMA          5-fold
+                    1.00                                                                                 1.00                                                                             1.00
+
+                    0.80                                                                                 0.80                                                                             0.80
+    Precision
+
+
+
+
+                                                                                             Precision
+
+
+
+
+                                                                                                                                                                              Precision
+                    0.60                                                                                 0.60                                                                             0.60
+
+                    0.40                                                                                 0.40                                                                             0.40
+
+                    0.20                                                                                 0.20                                                                             0.20
+
+                    1.00                                                                                 1.00                                                                             1.00
+
+                    0.80                                                                                 0.80                                                                             0.80
+    Recall
+
+
+
+
+                                                                                             Recall
+
+
+
+
+                                                                                                                                                                              Recall
+                    0.60                                                                                 0.60                                                                             0.60
+
+                    0.40                                                                                 0.40                                                                             0.40
+
+                    0.20                                                                                 0.20                                                                             0.20
+                           1       11      21        31   41     51   61      71   81                           1   6     11    16   21   26     31   36     41     46   51                      1   3   5   7       9   11 13 15 17 19 21 23 25 27
+                                                ID of 4-week moving windows                                                    ID of 4-week moving windows                                                       ID of 4-week moving windows
+
+                                                (a) KPI: PV                                                                    (b) KPI: #SR                                                                      (c) KPI: SRT
+
+Figure 13: Online detection accuracy of Opprentice as a whole. The best case is obtained from offline mode. The shaded regions
+represent to the operators’ accuracy preference (recall ≥ 0.66 and precision ≥0.66).
+For example, there are only on average 4% anomalous points in                                                                                  it further cost him about 10 days to test and tune the detector. In the
+the ground truth of PV data for the window between 58 and 70.                                                                                  above cases, after days of tuning, only the first operator’ detector
+However, as mentioned earlier in §5.5, in such case, a little low                                                                              works relatively well; yet, the other two operators are still not
+precision or recall would not generate many false positives or false                                                                           satisfied with the accuracy of their detectors, and finally abandon
+negatives for operators. In summary, Opprentice can automatically                                                                              them. We have compared the accuracy of Opprentice with these
+satisfy or approximate the operators’ accuracy preference.                                                                                     basic detectors in §5.3.1.
+                                                                                                                                                   Although the time reported above is not the exactly time used for
+5.7                           Labeling Time vs. Tuning Time                                                                                    tuning, it provides a basic idea of the overhead and the difficulty
+   Next, we show the time cost of labeling, the only manual job                                                                                of manually tuning detectors. The operators we interviewed
+required for operators when they use Opprentice. Fig. 14 shows                                                                                 confirmed that detector tuning is very time-consuming, and they
+the operators’ labeling time when they label the three types of KPI                                                                            are neither interested nor feel comfortable in doing so. In sum-
+data using our tool (§4.2). The result shows that the labeling time                                                                            mary, Opprentice can help replace the time-consuming and boring
+of one-month data basically increases as the number of anomalous                                                                               detector tuning with fast and convenient anomaly labeling.
+windows in that month. An anomalous window refers to a window
+of continuous anomalies derived from one label action. Among the                                                                               5.8            Detection Lag and Training Time
+three KPIs, SRT requires less labeling time for each month of data                                                                                The detection lag, in principle, consists of the feature extraction
+because it has less data points in a month as its data interval is 60                                                                          time and the classification time. We run Opprentice on the Dell
+minutes. Overall, the labeling time of one-month data is less than                                                                             PowerEdge R420 server with the Intel Xeon E5-2420 CPU and
+6 minutes. The total labeling time for PV, #SR, and SRT is 16,                                                                                 24GB memory. The total time of extracting 133 features is on
+17, and 6 minutes, respectively. One intuitive reason for the low                                                                              average 0.15 second for each data point. The classification takes
+labeling overhead is that the operators each time label a window                                                                               trivial time, which is on average less than 0.0001 second per data
+of anomalies rather than labeling individual anomalous data points                                                                             point. Besides, the offline training time is less than 5 minutes each
+one by one. The anomalous windows can be much fewer (Fig. 14)                                                                                  round. Since all the detectors can run in parallel, and training of
+than the anomalous points in the data.                                                                                                         random forests is also able to be parallelized, we believe that one
+                                                                                                                                               can get a better performance by taking advantage of multi-threaded
+                          �
+Labeling time (minutes)
+
+
+
+
+                                                                                                                                               techniques and distributed computing on server clusters.
+  for one-month data
+
+
+
+
+                          �
+                          �
+                          �
+                          �
+                                                                                                                                               6.          DISCUSSION
+                                                                                                                     PV
+                          �                                                                                         #SR                           Anomaly detection is complex in practice. In this section, we
+                                                                                                                    SRT
+                          �                                                                                                                    discuss some issues regarding anomaly detection and clarify the
+                               �                ��             ��             ��        ��                  ���                ���             scope of Opprentice.
+                                            Number of anomalous windows in one-month data                                                         Anomaly detection, not troubleshooting. Sometimes, although
+                                                                                                                                               the operators admit the anomalies in the KPI curve, they tend
+Figure 14: Operators’ labeling time vs. the number of                                                                                          to ignore them as they know that the anomalies are caused by
+anomalous windows for every month of data.                                                                                                     some normal activities as expected, such as service upgrades and
+                                                                                                                                               predictable social events. However, since our study focuses on
+   To show the value of how Opprentice help reduce operators’                                                                                  identifying abnormal behaviors of the KPI data (called anomaly
+manual efforts, we also present some anecdotal examples of op-                                                                                 detection in this paper), we ask the operators to label anomalies
+erators’ tuning time of detectors, including the time they learn the                                                                           based on the data curve itself without considering the reasons
+detectors and understand their parameters. We interviewed three                                                                                behind. Anomaly detection is a first important step of monitoring
+operators from the search engine, who have experienced tuning                                                                                  service performance. We believe that the detection results should
+detectors before. The first operator uses SVD, and he said it took                                                                             be reported to operators and let operators decide how to deal
+him about 8 days to tune the detector; the second operator uses                                                                                with them, or more ideally, input into a troubleshooting system
+Holt-winters and historical average, and he spent about 12 days                                                                                for analyzing the root causes and generating more actionable
+tuning these two detectors; the third operator applies time series                                                                             suggestions. For example, the troubleshooting system may find
+decomposition, and he said that after the detector was implemented,                                                                            that the anomalies are due to normal system upgrades and suggest
+operators to ignore them. However, troubleshooting anomalies             dirty data [3, 15]. We also implement two detectors with MAD.
+itself is outside our research scope.                                    (d) Some solutions attempt to statically combine different detectors
+   Anomaly duration. The duration of continuous anomalies                together [8, 21]. We compared Opprentice with them. (e) Machine
+could be another important consideration of raising alarms. In this      learning has also been applied in anomaly detection [16, 20, 32],
+paper, we do deliberately omit this factor. One reason is that it will   but it serves as basic detectors. On the contrary, we use machine
+make our model too complex to show the core idea. Another one            learning to combine different existing detectors.
+is that it is relative easy to implement a duration filter based upon       Another important challenge of anomaly detection is to obtain
+the point-level anomalies we detected. For example, if operators         the ground truth to evaluate detectors. Three commonly-used
+are only interested in continuous anomalies that last for more than      solutions are: (a) using the real anomalies identified or confirmed
+5 minutes, one can solve it through a simple threshold filter.           by domain operators [1, 4, 9, 12, 14, 17, 26]; (b) generating synthetic
+   Detection across the same types of KPIs. Some KPIs are of the         anomalies by injecting real or pre-defined anomalies into the
+same type and operators often care about similar types of anomalies      background data [9, 14, 18, 19]; (c) pair-wise comparisons, which
+for them [5]. For example, the PV originated from different ISPs.        treat the anomalies reported by other detectors as the ground
+When applying Opprentice to such case, operators only have to            truth [1, 8, 10, 17, 18]. Because our fundamental goal is to satisfy
+label one or just a few KPIs. Then the classifier trained upon those     operators’ demands, we believe that solution (a) makes more sense
+labeled data can be used to detect across the same type of KPIs.         in this paper.
+Note that, in order to reuse the classifier for the data of different
+scales, the anomaly features extracted by basic detectors should be      8.    CONCLUSION
+normalized. We plan to explore this direction in future work.
+   Dirty data. A well known problem is that detectors are often             Applying anomaly detection to an Internet-based service has
+affected by “dirty data”. Dirty data refer to anomalies or missing       been challenging in practice. This is because the anomalies
+points in data, and they can contaminate detectors and cause errors      are difficult to quantitatively define, and existing detectors have
+of detectors. We address this problem in three ways. (a) Some of         parameters and thresholds to tune before they can be deployed.
+our detectors, e.g., weighted MA and SVD, can generate anomaly           Our proposed framework, Opprentice, tackles the above challenges
+features only using recent data. Thus, they can quickly get rid of the   through a novel machine learning based approach. The unclear
+contamination of dirty data. (b) We take advantage of MAD [3, 15]        anomaly concepts are captured by machine learning from real data
+to make some detectors, such as TSD, more robust to dirty data; (c)      and operators’ labels, while numerous existing detectors can be
+Since Opprentice uses many detectors simultaneously, even if a few       automatically combined by machine learning to train a classifier
+detectors are contaminated, Opprentice could still automatically         to identify the anomalies. Our evaluation on real-world search
+select and work with the remaining detectors.                            KPIs show that Opprentice consistently performs similarly or even
+   Learning limitations. A supervised learning based approach            better than the best performing basic detectors which can change
+requires labeled data for initialization. This is an additional          for different data sets.
+overhead when compared with applying basic detectors directly.              To the best of our knowledge, Opprentice is the first detec-
+Fortunately, the KPI data, nowadays, are easy to obtain [1, 4, 9, 12,    tion framework to apply machine learning to acquiring practical
+14, 17, 26]. Meanwhile, labeling can also be effective and cost less     anomaly concepts and automatically combining and tuning diverse
+time as we demonstrated earlier with out labeling tool. Another          known detectors to satisfy operators’ accuracy preference. Emerg-
+issue is that a learning based approach is limited by the anomalies      ing detectors, instead of going through time-consuming and often
+within a training set. For example, anomalies can be rare, and new       frustrating parameter tuning, can be easily plugged into Opprentice,
+types of anomalies might appear in the future [16]. We solve this        making the former be deployed more easily and the latter more
+problem by incrementally retraining the classifier to gather more        accurate. In addition, although machine learning is a promising
+anomaly cases and learn emerging types of anomalies.                     solution, applying it in designing a practical system needs to
+   Detection accuracy. Because of the many practical challenges          be careful as it presents several interesting challenges, such as
+mentioned above, anomaly detection is a complex and challenging          imbalance class and irrelevant and redundant features. We explore
+task. It is intractable to achieve high precision and recall all the     and solve some of them in this paper. We believe that Opprentice
+time. We also cannot guarantee Opprentice to be able to always           provides a new schema to bridge the gap between practical opera-
+satisfy the operators’ accuracy preference. But our evaluation           tional demands and the state-of-art anomaly detectors. In our future
+shows that the accuracy of Opprentice is still promising, especially     work, we plan to work on the several issues mentioned in §6, and
+for the operators’ preference in the studied service.                    apply the idea of Opprentice to other network operation tasks such
+                                                                         as automating intrusion detection and network troubleshooting.
+7.    RELATED WORK
+   Many efforts have been put into the field of anomaly detection.       Acknowledgement
+Researchers have developed numerous detectors using different            We thank our shepherd, Renata Teixeira and the anonymous
+techniques [1–24]. In addition, researchers try to address several       reviewers for their thorough comments and valuable feedback.
+challenges of applying detectors in practice. (a) For auto-tuning        We also thank Jun Zhu for his knowledge of machine learning,
+the internal parameters of detectors, Krishnamurthy et al. [11]          and Kaixin Sui for her suggestion on the detection framework.
+proposes a multi-pass grid search to find appropriate parameters         At last, we thank Juexing Liao, Guo Chen, and Xiaohui Nie for
+from data. Himura et al. [23] searches for the parameters to             proofreading this paper.
+maximize the ratio of detected events. In comparison, beyond               This work was supported by the National Natural Science
+detector internal parameters, we also consider automatically se-         Foundation of China (NSFC) under Grant No. 61472214, the
+lecting detectors and their thresholds. (b) Some work uses ROC           National Key Basic Research Program of China (973 program)
+curves to evaluate the performance of different detectors regardless     under Grant No. 2013CB329105, the State Key Program of
+of their thresholds [9, 14, 26]. This technique is also used in our      National Science of China under Grant No. 61233007, the National
+work. (c) MAD is used to improve the robustness of detectors to          Natural Science Foundation of China (NSFC) under Grant No.
+61472210, the National High Technology Development Program               of the 2nd ACM SIGCOMM Workshop on Internet
+of China (863 program) under Grant No. 2013AA013302.                     measurment, pages 71–82. ACM, 2002.
+                                                                    [13] Jake D Brutlag. Aberrant behavior detection in time series
+                                                                         for network monitoring. In LISA, pages 139–146, 2000.
+9.   REFERENCES                                                     [14] Fernando Silveira, Christophe Diot, Nina Taft, and Ramesh
+ [1] Yingying Chen, Ratul Mahajan, Baskar Sridharan, and                 Govindan. Astute: Detecting a different class of traffic
+     Zhi-Li Zhang. A provider-side view of web search response           anomalies. In Proceedings of the ACM SIGCOMM 2010
+     time. In Proceedings of the ACM SIGCOMM 2013                        Conference, SIGCOMM ’10, pages 267–278. ACM, 2010.
+     conference on SIGCOMM, pages 243–254. ACM, 2013.               [15] Benjamin I.P. Rubinstein, Blaine Nelson, Ling Huang,
+ [2] Ajay Anil Mahimkar, Han Hee Song, Zihui Ge, Aman                    Anthony D. Joseph, Shing-hon Lau, Satish Rao, Nina Taft,
+     Shaikh, Jia Wang, Jennifer Yates, Yin Zhang, and Joanne             and J. D. Tygar. Antidote: Understanding and defending
+     Emmons. Detecting the performance impact of upgrades in             against poisoning of anomaly detectors. In Proceedings of
+     large operational networks. In Proceedings of the ACM               the 9th ACM SIGCOMM Conference on Internet
+     SIGCOMM 2010 Conference, SIGCOMM ’10, pages                         Measurement Conference, IMC ’09, pages 1–14, New York,
+     303–314. ACM, 2010.                                                 NY, USA, 2009. ACM.
+ [3] Ajay Mahimkar, Zihui Ge, Jia Wang, Jennifer Yates, Yin         [16] Varun Chandola, Arindam Banerjee, and Vipin Kumar.
+     Zhang, Joanne Emmons, Brian Huntley, and Mark Stockert.             Anomaly detection: A survey. ACM Comput. Surv.,
+     Rapid detection of maintenance induced changes in service           41(3):15:1–15:58, July 2009.
+     performance. In Co-NEXT, page 13. ACM, 2011.                   [17] Xin Li, Fang Bian, Mark Crovella, Christophe Diot, Ramesh
+ [4] David R. Choffnes, Fabián E. Bustamante, and Zihui Ge.              Govindan, Gianluca Iannaccone, and Anukool Lakhina.
+     Crowdsourcing service-level network event monitoring. In            Detection and identification of network anomalies using
+     Proceedings of the ACM SIGCOMM 2010 Conference,                     sketch subspaces. In Proceedings of the 6th ACM SIGCOMM
+     SIGCOMM ’10, pages 387–398. ACM, 2010.                              Conference on Internet Measurement, IMC ’06, pages
+ [5] Suk-Bok Lee, Dan Pei, M Hajiaghayi, Ioannis Pefkianakis,            147–152, New York, NY, USA, 2006. ACM.
+     Songwu Lu, He Yan, Zihui Ge, Jennifer Yates, and Mario         [18] Anukool Lakhina, Mark Crovella, and Christophe Diot.
+     Kosseifi. Threshold compression for 3g scalable monitoring.         Diagnosing network-wide traffic anomalies. In Proceedings
+     In INFOCOM, 2012 Proceedings IEEE, pages 1350–1358.                 of the 2004 Conference on Applications, Technologies,
+     IEEE, 2012.                                                         Architectures, and Protocols for Computer Communications,
+ [6] He Yan, Ashley Flavel, Zihui Ge, Alexandre Gerber, Daniel           SIGCOMM ’04, pages 219–230. ACM, 2004.
+     Massey, Christos Papadopoulos, Hiren Shah, and Jennifer        [19] Anukool Lakhina, Mark Crovella, and Christophe Diot.
+     Yates. Argus: End-to-end service anomaly detection and              Mining anomalies using traffic feature distributions. In
+     localization from an isp’s point of view. In INFOCOM, 2012          Proceedings of the 2005 Conference on Applications,
+     Proceedings IEEE, pages 2756–2760. IEEE, 2012.                      Technologies, Architectures, and Protocols for Computer
+ [7] Ajay Mahimkar, Zihui Ge, Jia Wang, Jennifer Yates, Yin              Communications, SIGCOMM ’05, pages 217–228. ACM,
+     Zhang, Joanne Emmons, Brian Huntley, and Mark Stockert.             2005.
+     Rapid detection of maintenance induced changes in service      [20] Makoto Yamada, Akisato Kimura, Futoshi Naya, and Hiroshi
+     performance. In Proceedings of the Seventh COnference on            Sawada. Change-point detection with feature selection in
+     Emerging Networking EXperiments and Technologies,                   high-dimensional time-series data. In Proceedings of the
+     CoNEXT ’11, pages 13:1–13:12, New York, NY, USA,                    Twenty-Third International Joint Conference on Artificial
+     2011. ACM.                                                          Intelligence, IJCAI ’13, pages 1827–1833. AAAI Press,
+ [8] Romain Fontugne, Pierre Borgnat, Patrice Abry, and                  2013.
+     Kensuke Fukuda. Mawilab: Combining diverse anomaly             [21] Shashank Shanbhag and Tilman Wolf. Accurate anomaly
+     detectors for automated anomaly labeling and performance            detection through parallelism. Network, IEEE, 23(1):22–28,
+     benchmarking. In Proceedings of the 6th International               2009.
+     COnference, Co-NEXT ’10, pages 8:1–8:12. ACM, 2010.            [22] Ayesha Binte Ashfaq, Mobin Javed, Syed Ali Khayam, and
+ [9] Augustin Soule, Kavé Salamatian, and Nina Taft. Combining           Hayder Radha. An information-theoretic combining method
+     filtering and statistical methods for anomaly detection. In         for multi-classifier anomaly detection systems. In
+     Proceedings of the 5th ACM SIGCOMM conference on                    Communications (ICC), 2010 IEEE international conference
+     Internet Measurement, pages 31–31. USENIX Association,              on, pages 1–5. IEEE, 2010.
+     2005.                                                          [23] Y. Himura, K. Fukuda, K. Cho, and H. Esaki. An automatic
+[10] Yin Zhang, Zihui Ge, Albert Greenberg, and Matthew                  and dynamic parameter tuning of a statistics-based anomaly
+     Roughan. Network anomography. In Proceedings of the 5th             detection algorithm. In Communications, 2009. ICC ’09.
+     ACM SIGCOMM Conference on Internet Measurement, IMC                 IEEE International Conference on, pages 1–6, June 2009.
+     ’05, pages 30–30, Berkeley, CA, USA, 2005. USENIX              [24] Amazon cloudwatch alarm.
+     Association.                                                        http://docs.aws.amazon.com/AmazonCloudWatch/latest/
+[11] Balachander Krishnamurthy, Subhabrata Sen, Yin Zhang,               DeveloperGuide/ConsoleAlarms.html.
+     and Yan Chen. Sketch-based change detection: methods,          [25] He Yan, Lee Breslau, Zihui Ge, Dan Massey, Dan Pei, and
+     evaluation, and applications. In Proceedings of the 3rd ACM         Jennifer Yates. G-rca: A generic root cause analysis platform
+     SIGCOMM conference on Internet measurement, pages                   for service quality management in large ip networks. In
+     234–247. ACM, 2003.                                                 Proceedings of the 6th International COnference, Co-NEXT
+[12] Paul Barford, Jeffery Kline, David Plonka, and Amos Ron. A          ’10, pages 5:1–5:12, New York, NY, USA, 2010. ACM.
+     signal analysis of network traffic anomalies. In Proceedings
+[26] Daniela Brauckhoff, Xenofontas Dimitropoulos, Arno                   Conference on Mobile Computing and Networking,
+     Wagner, and Kavè Salamatian. Anomaly extraction in                   MobiCom ’14, pages 213–224, New York, NY, USA, 2014.
+     backbone networks using association rules. In Proceedings            ACM.
+     of the 9th ACM SIGCOMM Conference on Internet                   [44] Yoav Freund, Robert Schapire, and N Abe. A short
+     Measurement Conference, IMC ’09, pages 28–34. ACM,                   introduction to boosting. Journal-Japanese Society For
+     2009.                                                                Artificial Intelligence, 14(771-780):1612, 1999.
+[27] Haakon Ringberg, Augustin Soule, and Jennifer Rexford.          [45] Jesse Davis and Mark Goadrich. The relationship between
+     Webclass: Adding rigor to manual labeling of traffic                 precision-recall and roc curves. In Proceedings of the 23rd
+     anomalies. SIGCOMM Comput. Commun. Rev., 38(1):35–38,                international conference on Machine learning, pages
+     January 2008.                                                        233–240. ACM, 2006.
+[28] Leo Breiman. Random Forests. Machine Learning,                  [46] Neil J Perkins and Enrique F Schisterman. The inconsistency
+     45(1):5–32, 2001.                                                    of "optimal" cutpoints obtained using two criteria based on
+[29] Ioannis Arapakis, Xiao Bai, and B. Barla Cambazoglu.                 the receiver operating characteristic curve. American journal
+     Impact of response latency on user behavior in web search.           of epidemiology, 163(7):670–675, 2006.
+     In Proceedings of the 37th International ACM SIGIR              [47] Ron Kohavi et al. A study of cross-validation and bootstrap
+     Conference on Research &#38; Development in Information              for accuracy estimation and model selection. In IJCAI,
+     Retrieval, SIGIR ’14, pages 103–112, New York, NY, USA,              volume 14, pages 1137–1145, 1995.
+     2014. ACM.                                                      [48] F. Pedregosa, G. Varoquaux, A. Gramfort, V. Michel,
+[30] Alexey Tsymbal. The problem of concept drift: definitions            B. Thirion, O. Grisel, M. Blondel, P. Prettenhofer, R. Weiss,
+     and related work. Computer Science Department, Trinity               V. Dubourg, J. Vanderplas, A. Passos, D. Cournapeau,
+     College Dublin, 2004.                                                M. Brucher, M. Perrot, and E. Duchesnay. Scikit-learn:
+[31] Haibo He, Edwardo Garcia, et al. Learning from imbalanced            Machine learning in Python. Journal of Machine Learning
+     data. Knowledge and Data Engineering, IEEE Transactions              Research, 12:2825–2830, 2011.
+     on, 21(9):1263–1284, 2009.                                      [49] Adam Lazur. Building a billion user load balancer. In
+[32] Taeshik Shon and Jongsub Moon. A hybrid machine learning             Velocity Web Perfomance and Operations Conference.
+     approach to network anomaly detection. Information                   O’REILLY, 2013.
+     Sciences, 177(18):3799 – 3821, 2007.                            [50] Kendrick Boyd, Kevin H Eng, and C David Page. Area under
+[33] F. Silveira and C. Diot. Urca: Pulling out anomalies by their        the precision-recall curve: Point estimates and confidence
+     root causes. In INFOCOM, 2010 Proceedings IEEE, pages                intervals. In Machine learning and knowledge discovery in
+     1–9, March 2010.                                                     databases, pages 451–466. Springer, 2013.
+[34] Øivind Due Trier, Anil K Jain, and Torfinn Taxt. Feature        [51] Hanchuan Peng, Fuhui Long, and Chris H Q Ding. Feature
+     extraction methods for character recognition-a survey.               Selection Based on Mutual Information: Criteria of
+     Pattern recognition, 29(4):641–662, 1996.                            Max-Dependency, Max-Relevance, and Min-Redundancy.
+[35] George EP Box, Gwilym M Jenkins, and Gregory C Reinsel.              IEEE Trans. Pattern Anal. Mach. Intell. (), 27(8):1226–1238,
+     Time series analysis: forecasting and control. John Wiley &          2005.
+     Sons, 2013.
+[36] Auto arima. http:
+     //www.inside-r.org/packages/cran/forecast/docs/auto.arima.
+[37] Ramón Díaz-Uriarte and Sara Alvarez De Andres. Gene
+     selection and classification of microarray data using random
+     forest. BMC bioinformatics, 7(1):3, 2006.
+[38] Andy Liaw and Matthew Wiener. Classification and
+     regression by randomforest. R news, 2(3):18–22, 2002.
+[39] Isabelle Guyon and André Elisseeff. An introduction to
+     variable and feature selection. J. Mach. Learn. Res.,
+     3:1157–1182, March 2003.
+[40] Ron Kohavi and George H. John. Wrappers for feature
+     subset selection. Artificial Intelligence, 97(1ÂĺC2):273 –
+     324, 1997. Relevance.
+[41] Leo Breiman, Jerome Friedman, Charles J Stone, and
+     Richard A Olshen. Classification and regression trees. CRC
+     press, 1984.
+[42] Athula Balachandran, Vyas Sekar, Aditya Akella, Srinivasan
+     Seshan, Ion Stoica, and Hui Zhang. Developing a predictive
+     model of quality of experience for internet video. In
+     Proceedings of the ACM SIGCOMM 2013 conference on
+     SIGCOMM, pages 339–350. ACM, 2013.
+[43] Athula Balachandran, Vaneet Aggarwal, Emir Halepovic,
+     Jeffrey Pang, Srinivasan Seshan, Shobha Venkataraman, and
+     He Yan. Modeling web quality-of-experience on cellular
+     networks. In Proceedings of the 20th Annual International
+

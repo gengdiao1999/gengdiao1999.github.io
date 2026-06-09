@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>基于强化学习动态设置 TCP 初始窗口以降低 Web 延迟（IEEE IWQoS 2018）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; text-align: center; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+.toc { background: #f6f8fa; padding: 1rem 1.5rem; border-radius: 6px; margin: 1rem 0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<h1>基于强化学习动态设置 TCP 初始窗口以降低 Web 延迟（SmartIW，IEEE IWQoS 2018）</h1>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li><a href="#h2-1">文档信息速览</a></li>
+<li><a href="#h2-2">研究背景</a></li>
+<li><a href="#h2-3">论文目的与解决的问题</a></li>
+<li><a href="#h2-4">核心原理（含数学公式）</a></li>
+<li><a href="#h2-5">系统/算法整体架构</a></li>
+<li><a href="#h2-6">关键算法详解</a></li>
+<li><a href="#h2-7">实现细节</a></li>
+<li><a href="#h2-8">实验设计与结果</a></li>
+<li><a href="#h2-9">消融实验</a></li>
+<li><a href="#h2-10">与已有工作的对比</a></li>
+<li><a href="#h2-11">工程落地与部署</a></li>
+<li><a href="#h2-12">局限性与未来工作</a></li>
+<li><a href="#h2-13">总结与启示</a></li>
+<li><a href="#h2-14">附录</a></li>
+</ol>
+</div>
+
+<!-- ========== 1. 文档信息速览 ========== -->
+<h2 id="h2-1">一、文档信息速览</h2>
+
+<table>
+<tr><th>字段</th><th>值</th></tr>
+<tr><td>论文标题</td><td>Reducing Web Latency through Dynamically Setting TCP Initial Window with Reinforcement Learning</td></tr>
+<tr><td>简称</td><td>SmartIW</td></tr>
+<tr><td>作者</td><td>Xiaohui Nie, Youjian Zhao, Dan Pei, Guo Chen, Kaixin Sui, Jiyang Zhang</td></tr>
+<tr><td>机构</td><td>清华大学（BNRist）；湖南大学；微软研究院；百度</td></tr>
+<tr><td>发表年份</td><td>2018</td></tr>
+<tr><td>会议/期刊</td><td>IEEE IWQoS 2018</td></tr>
+<tr><td>分类</td><td>TCP 优化 / Web 性能 / 强化学习 / 边缘网络</td></tr>
+<tr><td>核心问题</td><td>TCP 启动期 IW（初始拥塞窗口）静态且保守（2~10），导致 Web 短流无法充分利用带宽</td></tr>
+<tr><td>主要贡献</td><td>服务端 TCP 测量 + 用户分组 + 滑动决策空间 discounted UCB + 百度部署 1+ 年</td></tr>
+<tr><td>关键指标提升</td><td>平均传输时间降低 23%~29%</td></tr>
+<tr><td>关联 PDF</td><td>同目录下 <code>SmartIW-Camera-Ready.pdf</code></td></tr>
+</table>
+
+<!-- ========== 2. 研究背景 ========== -->
+<h2 id="h2-2">二、研究背景</h2>
+
+<h3>2.1 Web 延迟的重要性</h3>
+<p>网络延迟直接影响用户体验与商业营收。根据 Amazon 的统计，页面加载时间每增加 100ms，销售额下降 1%；Google 的研究表明，搜索延迟增加 400ms 会导致搜索量下降 0.44%。因此，降低 Web 延迟是在线服务的核心诉求。</p>
+
+<h3>2.2 TCP 流启动问题</h3>
+<p>TCP 是几乎所有在线 Web 服务的传输层协议（Microsoft、Google、百度等均基于 TCP）。TCP 启动期采用保守的静态初始拥塞窗口 IW（2、4 或 10），然后通过慢启动（Slow Start）不断探测和调整拥塞窗口 CWND 以寻找最佳发送速率。</p>
+
+<p>然而，Web 流量特征使得这种机制效率极低：</p>
+<ul>
+<li>大多数 Web 流非常短——百度移动搜索的平均流大小仅约 120KB</li>
+<li>短流在 1 个 RTT 内即可完成传输，没有足够时间从保守 IW 探测到最佳 CWND</li>
+<li>论文实测百度移动搜索 1 周数据：<b>超过 80% 的 TCP 流在会话结束时仍处于 slow-start 阶段</b>，未充分利用可用带宽</li>
+</ul>
+
+<table>
+<tr><th>TCP 会话结束时的状态</th><th>占比</th></tr>
+<tr><td>Slow Start</td><td>80.27%</td></tr>
+<tr><td>Congestion Avoidance</td><td>19.73%</td></tr>
+</table>
+
+<h3>2.3 静态 IW 的局限性</h3>
+<p>Google 在 2010 年提议将标准 IW 从 2~4 提升到 10（RFC 6928），但 10 仍然不够：</p>
+<ul>
+<li>对高速光纤用户：IW=10 仍偏小，需要更多 RTT 才能充分利用带宽</li>
+<li>对 GPRS 等低速用户：IW=10 又过大，可能引发拥塞和丢包</li>
+<li>网络条件时空高度变化，<b>不可能找到一个静态 IW 对所有流都最优</b></li>
+</ul>
+
+<h3>2.4 数据驱动方法的动机</h3>
+<p>设置合适的 IW 涉及多种复杂因素（带宽、RTT、路由器缓冲区大小、流大小等），且这些因素随时间频繁变化。强化学习（RL）通过 trial-and-error 平衡探索与利用，自然适应非平稳环境，是一种有前景的数据驱动方法。</p>
+
+<p>但将 RL 应用于 TCP IW 设置面临三大挑战：</p>
+<ol>
+<li><b>服务端测量</b>：传统 Web 服务端不能直接测量 TCP 传输时间（需要客户端协助）</li>
+<li><b>RL 上下文连续性</b>：RL 假设上下文分布连续，但网络条件时空变化大，细粒度用户组样本不足</li>
+<li><b>大动作空间搜索</b>：IW 取值空间连续且巨大，brute-force 搜索不切实际</li>
+</ol>
+
+<!-- ========== 3. 论文目的与解决的问题 ========== -->
+<h2 id="h2-3">三、论文目的与解决的问题</h2>
+
+<h3>3.1 研究目的</h3>
+<p>本文旨在设计一个服务端系统，在无需客户端协助的前提下，利用强化学习为每个 Web 流动态设置合适的 TCP 初始拥塞窗口，从而显著降低 Web 传输延迟。</p>
+
+<h3>3.2 解决的具体问题</h3>
+
+<table>
+<tr><th>问题</th><th>解决方案</th><th>对应章节</th></tr>
+<tr><td>服务端无法直接测量 TCP 传输时间</td><td>修改 Linux 内核 + Nginx，通过 Tstart/Tend 估计 TCP 响应时间</td><td>§V-A, §V-B</td></tr>
+<tr><td>细粒度用户组样本不足，RL 上下文不连续</td><td>Bottom-up 用户分组（子网→ISP→省份→All），找最细粒度连续组</td><td>§IV-B</td></tr>
+<tr><td>大动作空间搜索效率低</td><td>Sliding-decision-space 方法，从短列表动态扩展/收缩</td><td>§IV-A</td></tr>
+<tr><td>网络条件随时间变化</td><td>Discounted UCB 算法适应非平稳环境</td><td>§IV-A</td></tr>
+<tr><td>公平性：大 IW 可能伤害其他流</td><td>reward 综合考虑 goodput + RTT</td><td>§III-B</td></tr>
+<tr><td>真实工业部署验证</td><td>百度移动搜索 A/B 测试 1+ 年</td><td>§VI</td></tr>
+</table>
+
+<h3>3.3 核心贡献总结</h3>
+<ol>
+<li>首次提出基于 RL 的 TCP IW 动态设置系统 SmartIW</li>
+<li>设计了服务端 TCP 性能测量方案（Linux 内核 + Nginx 改造）</li>
+<li>提出了 bottom-up 用户分组算法满足 RL 上下文连续性</li>
+<li>提出了 sliding-decision-space 方法加速大动作空间搜索</li>
+<li>在百度移动搜索生产环境部署 1+ 年，平均传输时间降低 23%~29%</li>
+</ol>
+
+<!-- ========== 4. 核心原理 ========== -->
+<h2 id="h2-4">四、核心原理（含数学公式）</h2>
+
+<h3>4.1 TCP 响应时间估计</h3>
+<p>Web 服务典型架构中，用户通过 Internet 与前端服务器交互，前端服务器再通过高速内网与后端服务器通信。论文定义 TCP Response Time 为：</p>
+
+<p>$$T_{\text{TCP}} = T_{\text{end}} - T_{\text{start}}$$</p>
+
+<p>其中：</p>
+<ul>
+<li>\(T_{\text{start}}\)：前端服务器开始向用户发送数据的时刻</li>
+<li>\(T_{\text{end}}\)：前端服务器收到最后一个 ACK 的时刻</li>
+</ul>
+
+<p>完整响应时间分解为：</p>
+
+<p>$$T_{\text{response}} = T_1 + T_2 + T_3 \approx T_2 + T_3 + T_4$$</p>
+
+<p>其中 \(T_1\) 是请求传输时间（小包，可用 \(T_4\) 近似），\(T_2\) 是前后端内网时间，\(T_3\) 是后端处理时间，\(T_4\) 是最后一个 ACK 传输时间。论文聚焦优化 \(T_1 + T_3\)（受 TCP 流启动问题影响最大的部分）。</p>
+
+<h3>4.2 Discounted UCB 算法</h3>
+<p>论文将 IW 学习问题建模为非平稳多臂老虎机（Non-stationary Multi-Armed Bandit）问题。采用 Discounted UCB 算法，核心公式如下：</p>
+
+<p><b>折扣经验平均奖励：</b></p>
+<p>$$\bar{X}_t(\gamma, i) = \frac{\sum_{s=1}^{t} \gamma^{t-s} X_s(i) \mathbf{1}\{I_s = i\}}{N_t(\gamma, i)}$$</p>
+
+<p><b>折扣计数：</b></p>
+<p>$$N_t(\gamma, i) = \sum_{s=1}^{t} \gamma^{t-s} \mathbf{1}\{I_s = i\}$$</p>
+
+<p>其中 \(\gamma \in (0,1)\) 是折扣因子，越近期的数据权重越高，使算法能适应网络条件变化。</p>
+
+<p><b>置信上界填充函数：</b></p>
+<p>$$c_t(\gamma, i) = 2B \sqrt{\frac{\xi \log n_t(\gamma)}{N_t(\gamma, i)}}, \quad n_t(\gamma) = \sum_{i=1}^{K} N_t(\gamma, i)$$</p>
+
+<p>其中 \(B\) 是奖励上界，\(\xi > 0\) 控制探索概率。频繁使用的 arm 置信区间更窄，从而平衡探索与利用。</p>
+
+<p><b>决策规则：</b></p>
+<p>$$I_t = \arg\max_{1 \le i \le K} \left[ \bar{X}_t(\gamma, i) + c_t(\gamma, i) \right]$$</p>
+
+<h3>4.3 奖励函数设计</h3>
+<p>直接使用 TCP 响应时间作为奖励存在问题：不同请求的响应大小差异大，传输时间不可直接比较。论文设计综合 goodput 和 RTT 的奖励函数：</p>
+
+<p>$$X_s(i) = \alpha \cdot \frac{\text{Goodput}_s(i)}{\text{Goodput}_{\max}} + (1 - \alpha) \cdot \frac{\text{RTT}_{\min}}{\text{RTT}_s(i)}$$</p>
+
+<p>其中：</p>
+<ul>
+<li>\(\alpha\) 控制好吞吐量与低延迟之间的平衡（论文取 \(\alpha = 0.8\)，偏重吞吐量）</li>
+<li>\(\text{Goodput}_{\max}\) 是历史最大好吞吐量</li>
+<li>\(\text{RTT}_{\min}\) 是历史最小 RTT</li>
+<li>加入 RTT 项保证公平性：RTT 是网络拥塞的信号，避免大 IW 伤害其他流</li>
+</ul>
+
+<h3>4.4 网络抖动度量</h3>
+<p>为评估用户组是否满足 RL 上下文连续性要求，定义网络抖动度量 \(J\)：</p>
+
+<p>$$J = \frac{\sum_{s=2}^{n} |X_s - X_{s-1}| / X_s}{n-1}$$</p>
+
+<p>当 \(J \le T\)（阈值，论文取 \(T = 0.1\)）时，该用户组满足 RL 连续性要求。\(J\) 越小表示网络条件变化越平稳，越适合 RL 学习。</p>
+
+<h3>4.5 滑动决策空间方法</h3>
+<p>IW 的取值空间连续且巨大，暴力搜索效率极低。论文提出基于 TCP 性能与 IW 关系的先验知识的滑动决策空间方法：</p>
+<ul>
+<li>初始 arm 列表：<code>[15, 20, 25, 30]</code>（或 <code>[5, 10, 15, 20]</code>）</li>
+<li>若当前最佳 arm 是最大值 \(\text{IW}_{\text{large}}\)：加新 arm \(\text{IW}_{\text{large}} + \Delta\)，删除最小 arm</li>
+<li>若当前最佳 arm 是最小值 \(\text{IW}_{\text{small}}\)：加新 arm \(\text{IW}_{\text{small}} - \Delta\)，删除最大 arm</li>
+<li>否则：arm 列表保持不变</li>
+</ul>
+<p>其中 \(\Delta\) 是搜索步长（论文取 4 或 5）。</p>
+
+<!-- ========== 5. 系统/算法整体架构 ========== -->
+<h2 id="h2-5">五、系统/算法整体架构</h2>
+
+<h3>5.1 系统总体架构</h3>
+<p>SmartIW 包含三个核心组件：</p>
+<ol>
+<li><b>Connection Manager</b>：部署在前端服务器的 Nginx 模块，查询 IW Table 设置 IW 并输出性能数据</li>
+<li><b>Data Collector</b>：收集所有前端服务器的 TCP 性能数据</li>
+<li><b>Reinforcement Learning</b>：在 Control Center 运行分组 + RL 算法，更新 IW Table</li>
+</ol>
+
+<div class="mermaid">
+graph TB
+    U[用户] --> FS[前端服务器]
+    FS --> CM[Connection Manager<br/>Nginx 模块]
+    CM --> IWT[查询 IW Table<br/>Trie 最长前缀匹配]
+    IWT --> SIW[SetIW fd iw<br/>设置 TCP 初始窗口]
+    SIW --> SEND[发送响应数据]
+    SEND --> GD[GetData fd<br/>获取 TCP 性能]
+    GD --> DC[Data Collector<br/>TCP 性能数据收集]
+    DC --> CC[Control Center<br/>RL 控制中心]
+    CC --> UG[用户分组算法<br/>Bottom-up]
+    CC --> RL[Discounted UCB<br/>RL 训练]
+    CC --> SDS[Sliding Decision<br/>Space 搜索]
+    UG --> UPD[更新 IW Table]
+    RL --> UPD
+    SDS --> UPD
+    UPD --> DIST[分发到所有前端服务器]
+    DIST --> IWT
+</div>
+
+<h3>5.2 数据流架构</h3>
+
+<div class="mermaid">
+flowchart LR
+    subgraph 前端服务器
+        A[TCP 连接建立] --> B[查询 IW Table]
+        B --> C[SetIW]
+        C --> D[发送数据]
+        D --> E[GetData 性能记录]
+    end
+    subgraph 数据收集
+        E --> F[日志文件]
+        E --> G[HTTP POST]
+        G --> H[中央存储平台]
+    end
+    subgraph 控制中心
+        H --> I[用户分组]
+        H --> J[RL 训练]
+        J --> K[Sliding Decision Space]
+        K --> L[新 IW Table]
+        I --> L
+        L --> M[分发 IW Table]
+    end
+    M --> B
+</div>
+
+<h3>5.3 用户分组层次架构</h3>
+
+<div class="mermaid">
+graph TD
+    ALL[All 全部流量] --> P1[Beijing]
+    ALL --> P2[Shanghai]
+    ALL --> P3[Xinjiang]
+    P1 --> ISP1[CMNET]
+    P1 --> ISP2[UNICOM]
+    P1 --> ISP3[CHINANET]
+    ISP1 --> S1[S1 ✓]
+    ISP1 --> SO1[Others ✗→合并]
+    ISP2 --> S3[S3 ✓]
+    ISP2 --> SO2[Others ✓]
+    ISP3 --> S6[S6 ✓]
+    ISP3 --> SO3[Others ✗→合并]
+    SO1 --> PO[Others Beijing ✓]
+    SO3 --> PO
+    P2 --> OTHERS_SH[Others Shanghai ✗]
+    P3 --> OTHERS_XJ[Others Xinjiang ✗]
+    style S1 fill:#90EE90
+    style S3 fill:#90EE90
+    style S6 fill:#90EE90
+    style SO2 fill:#90EE90
+    style SO1 fill:#FFB6C1
+    style SO3 fill:#FFB6C1
+    style OTHERS_SH fill:#FFB6C1
+    style OTHERS_XJ fill:#FFB6C1
+</div>
+
+<p>绿色节点满足 RL 连续性要求（\(J \le 0.1\)），红色节点不满足需要向上合并。</p>
+
+<!-- ========== 6. 关键算法详解 ========== -->
+<h2 id="h2-6">六、关键算法详解（含伪代码、复杂度分析）</h2>
+
+<h3>6.1 Discounted UCB 算法</h3>
+
+<h4>6.1.1 伪代码</h4>
+<pre><code>算法：Discounted UCB for IW Learning
+输入：arm 集合 K, 折扣因子 γ, 奖励上界 B, 探索参数 ξ
+输出：最优 IW 值
+
+1: 初始化: 对每个 arm i, X̄(γ,i) ← 0, N(γ,i) ← 0
+2: for t = 1 to K do          // 初始阶段：每个 arm 至少玩一次
+3:     选择 arm I_t = t
+4:     观测奖励 X_t(I_t)
+5:     更新 N(γ,I_t) 和 X̄(γ,I_t)
+6: end for
+7: for t = K+1 to T do        // 主循环
+8:     for 每个 arm i do
+9:         计算置信上界:
+10:            c_t(γ,i) = 2B√(ξ·log n_t(γ) / N_t(γ,i))
+11:        计算总分: score(i) = X̄_t(γ,i) + c_t(γ,i)
+12:    end for
+13:    选择 I_t = argmax_i score(i)
+14:    观测奖励 X_t(I_t)
+15:    更新 N(γ,I_t) 和 X̄(γ,I_t)  // 折扣更新
+16: end for
+17: return argmax_i X̄_T(γ,i)</code></pre>
+
+<h4>6.1.2 复杂度分析</h4>
+<table>
+<tr><th>操作</th><th>时间复杂度</th><th>说明</th></tr>
+<tr><td>每轮决策</td><td>\(O(K)\)</td><td>\(K\) 为 arm 数量（通常 4~8）</td></tr>
+<tr><td>折扣更新</td><td>\(O(K)\)</td><td>所有 arm 的计数和均值更新</td></tr>
+<tr><td>总训练时间</td><td>\(O(T \cdot K)\)</td><td>\(T\) 为总决策轮数</td></tr>
+<tr><td>空间复杂度</td><td>\(O(K)\)</td><td>存储每个 arm 的统计量</td></tr>
+</table>
+
+<h3>6.2 Sliding Decision Space 算法</h3>
+
+<h4>6.2.1 伪代码</h4>
+<pre><code>算法：Sliding Decision Space for IW Search
+输入：初始 arm 列表 arms, 步长 Δ, 奖励函数 reward_func
+输出：最优 IW 值
+
+1: while 未收敛 do
+2:     运行 Discounted UCB 在当前 arms 上
+3:     best_arm ← 当前最优 arm
+4:     if best_arm == max(arms) then
+5:         // 最优 arm 在右侧，可能需要更大 IW
+6:         new_arm ← max(arms) + Δ
+7:         arms ← arms \ {min(arms)} ∪ {new_arm}
+8:     else if best_arm == min(arms) then
+9:         // 最优 arm 在左侧，可能需要更小 IW
+10:        new_arm ← min(arms) - Δ
+11:        arms ← arms \ {max(arms)} ∪ {new_arm}
+12:    else
+13:        // 最优 arm 在中间，arm 列表保持不变
+14:        break
+15:    end if
+16: end while
+17: return best_arm</code></pre>
+
+<h4>6.2.2 复杂度分析</h4>
+<table>
+<tr><th>操作</th><th>时间复杂度</th><th>说明</th></tr>
+<tr><td>每步滑动</td><td>\(O(1)\)</td><td>仅增删一个 arm</td></tr>
+<tr><td>收敛步数</td><td>\(O(D/\Delta)\)</td><td>\(D\) 为 IW 搜索范围，\(\Delta\) 为步长</td></tr>
+<tr><td>总搜索时间</td><td>\(O(T_{\text{UCB}} \cdot D/\Delta)\)</td><td>每步运行一轮 UCB</td></tr>
+</table>
+
+<h3>6.3 用户分组算法</h3>
+
+<h4>6.3.1 伪代码</h4>
+<pre><code>算法：Bottom-up User Grouping
+输入：子网列表 subnets, ISP列表 isps, 省份列表 provinces,
+      阈值 T, 最小样本量 S_min
+输出：满足 RL 要求的用户组集合 groups
+
+1: groups ← ∅
+2: // Step 1: 检查叶子节点（子网层）
+3: for each 子网 s in subnets do
+4:     if 样本量 ≥ S_min AND jitter(s) ≤ T then
+5:         groups ← groups ∪ {s}    // 满足条件，标记绿色
+6:     else
+7:         mark s as blue           // 不满足条件
+8:     end if
+9: end for
+10: // Step 2: 兄弟蓝色叶节点合并为 Others
+11: for each ISP 节点 do
+12:     blue_siblings ← 该 ISP 下的蓝色子网
+13:     if blue_siblings 非空 then
+14:         创建 Others 节点（ISP 的子节点）
+15:     end if
+16: end for
+17: // Step 3: 检查 ISP 层的 Others 节点
+18: for each Others 节点 in ISP 层 do
+19:     if jitter(Others) > T then
+20:         向上合并到 Province 层的 Others
+21:     end if
+22: end for
+23: // Step 4: 继续检查直到所有叶节点满足条件
+24: 检查 Province 层 Others
+25: 若 All 层 Others 不满足，使用标准 IW=10
+26: return groups</code></pre>
+
+<h4>6.3.2 复杂度分析</h4>
+<table>
+<tr><th>操作</th><th>时间复杂度</th><th>说明</th></tr>
+<tr><td>AP closeness 计算</td><td>\(O(|SG| \times |AP|^2)\)</td><td>扫描所有 scan group</td></tr>
+<tr><td>用户分组</td><td>\(O(N \log N)\)</td><td>\(N\) 为子网数量</td></tr>
+<tr><td>Jitter 计算</td><td>\(O(n)\)</td><td>\(n\) 为时间 bin 数</td></tr>
+<tr><td>在线查询 IW</td><td>\(O(L)\)，\(L \le 32\)</td><td>Trie 最长前缀匹配</td></tr>
+</table>
+
+<!-- ========== 7. 实现细节 ========== -->
+<h2 id="h2-7">七、实现细节</h2>
+
+<h3>7.1 Connection Manager（Nginx 模块）</h3>
+<p>Connection Manager 作为 Nginx 模块实现，主要功能：</p>
+<ul>
+<li>TCP 三次握手后获取用户 IP</li>
+<li>通过 Trie 结构查询 IW Table，得到该用户组的最优 IW</li>
+<li>调用 Linux 内核 API <code>SetIW(fd, iw)</code>（通过 <code>setsockopt</code> 实现）设置 IW</li>
+<li>会话结束后调用 <code>GetData(fd)</code>（通过 <code>getsockopt</code> 实现）获取 TCP 性能数据</li>
+<li>将性能数据写入日志文件并通过 HTTP POST 发送给 Data Collector</li>
+</ul>
+
+<h3>7.2 Linux 内核修改</h3>
+<p>内核修改仅新增两个 API：</p>
+<table>
+<tr><th>API</th><th>功能</th><th>实现方式</th></tr>
+<tr><td><code>SetIW(fd, iw)</code></td><td>修改指定 socket 的 IW</td><td>在 <code>setsockopt</code> 中新增选项</td></tr>
+<tr><td><code>GetData(fd)</code></td><td>获取 TCP socket 性能数据</td><td>在 <code>getsockopt</code> 中新增选项</td></tr>
+</table>
+
+<p>这种设计将大部分逻辑放在应用层（Nginx），内核改动最小化，保证了系统的鲁棒性和可维护性。</p>
+
+<h3>7.3 Data Collector</h3>
+<p>Data Collector 的核心挑战是无法直接测量 TCP 响应时间（需要客户端协助）。论文的解决方案：</p>
+<ol>
+<li>记录 <code>Tstart</code>：前端服务器开始发送数据的时刻</li>
+<li>记录 <code>Tend</code>：前端服务器收到最后一个 ACK 的时刻</li>
+<li>TCP 响应时间 = Tend - Tstart</li>
+</ol>
+
+<p>采集的完整 TCP 性能指标：</p>
+<table>
+<tr><th>指标</th><th>描述</th></tr>
+<tr><td>Size</td><td>HTTP 响应的数据大小</td></tr>
+<tr><td>TCP Response Time</td><td>传输时间（Tend - Tstart）</td></tr>
+<tr><td>MSS</td><td>最大报文段大小</td></tr>
+<tr><td>Goodput</td><td>有效吞吐量 = Size / TCP Response Time</td></tr>
+<tr><td>RTT</td><td>传输结束时的平滑往返时间（srtt）</td></tr>
+<tr><td>Client Initial Rwnd</td><td>客户端初始接收窗口</td></tr>
+<tr><td>IW</td><td>TCP 会话的初始拥塞窗口</td></tr>
+<tr><td>Retrans</td><td>HTTP 响应的重传率</td></tr>
+</table>
+
+<h3>7.4 IW Table 结构</h3>
+<p>IW Table 使用 Trie（前缀树）结构存储，以 IP 为键、IW 为值，支持最长前缀匹配查询。查询时间复杂度 \(O(N)\)，最坏情况 \(N = 32\)。每个用户组对应一个 IP 前缀和对应的最优 IW。</p>
+
+<h3>7.5 Reinforcement Learning 模块</h3>
+<p>RL 模块在 Control Center 中运行，使用 Golang 和 Python 实现：</p>
+<ul>
+<li>用户分组算法：以天或周为时间尺度运行</li>
+<li>RL 训练：每 10 分钟运行一次</li>
+<li>输出：更新后的 IW Table，分发到所有前端服务器</li>
+</ul>
+
+<h3>7.6 关键参数配置</h3>
+<table>
+<tr><th>参数</th><th>在线实验值</th><th>Testbed 值</th><th>说明</th></tr>
+<tr><td>\(S_{\min}\)</td><td>100</td><td>—</td><td>最小样本量</td></tr>
+<tr><td>\(\theta\) (T)</td><td>0.1</td><td>—</td><td>jitter 阈值</td></tr>
+<tr><td>time_bin</td><td>10 min</td><td>—</td><td>时间 bin 长度</td></tr>
+<tr><td>\(\alpha\)</td><td>0.8</td><td>0.8</td><td>reward 权重</td></tr>
+<tr><td>\(\Delta\)</td><td>5</td><td>1</td><td>IW 搜索步长</td></tr>
+<tr><td>\(\xi\)</td><td>0.1</td><td>0.1</td><td>探索参数</td></tr>
+<tr><td>初始 arm 列表</td><td>[5,10,15,20]</td><td>[5,10,15,20]</td><td>初始 IW 搜索空间</td></tr>
+<tr><td>RL 迭代间隔</td><td>10 min</td><td>10 min</td><td>重训周期</td></tr>
+</table>
+
+<!-- ========== 8. 实验设计与结果 ========== -->
+<h2 id="h2-8">八、实验设计与结果</h2>
+
+<h3>8.1 在线实验</h3>
+
+<h4>8.1.1 实验设置</h4>
+<table>
+<tr><th>项目</th><th>详情</th></tr>
+<tr><td>部署位置</td><td>百度移动搜索北京数据中心</td></tr>
+<tr><td>前端服务器</td><td>4 台，21 Intel Xeon 2.40GHz CPU，62GB RAM，10Gbps NIC</td></tr>
+<tr><td>内核版本</td><td>Linux 2.6.32</td></tr>
+<tr><td>拥塞控制</td><td>Cubic</td></tr>
+<tr><td>A/B 测试</td><td>2 台 TCP-10（baseline） vs 2 台 SmartIW</td></tr>
+<tr><td>部署时长</td><td>1+ 年</td></tr>
+</table>
+
+<h4>8.1.2 总体结果</h4>
+<table>
+<tr><th>指标</th><th>TCP-10</th><th>SmartIW</th><th>提升</th></tr>
+<tr><td>平均 TCP 响应时间</td><td>基线</td><td>降低 23%</td><td>23%</td></tr>
+<tr><td>50 分位响应时间</td><td>基线</td><td>显著降低</td><td>~25%</td></tr>
+<tr><td>80 分位响应时间</td><td>基线</td><td>显著降低</td><td>~25%</td></tr>
+<tr><td>90 分位响应时间</td><td>基线</td><td>降低</td><td>~15%</td></tr>
+<tr><td>99 分位响应时间</td><td>基线</td><td>略有降低</td><td>~5%</td></tr>
+</table>
+
+<p>99 分位提升最小的原因：99 分位长尾主要由丢包导致，SmartIW 不专门优化丢包问题。</p>
+
+<h4>8.1.3 各用户组结果</h4>
+<p>150 万+ IP 经过用户分组后得到 19 个用户组（3 省份 + 15 省份×ISP + 1 Others），各用户组响应时间提升 15%~31%。</p>
+
+<table>
+<tr><th>用户组</th><th>平均 Jitter</th><th>响应时间提升</th></tr>
+<tr><td>Shanghai</td><td>较高（接近阈值 0.1）</td><td>15%~20%</td></tr>
+<tr><td>Guangdong</td><td>较高</td><td>15%~20%</td></tr>
+<tr><td>Xinjiang</td><td>较高</td><td>15%~20%</td></tr>
+<tr><td>Beijing+CMNET</td><td>较低</td><td>25%~31%</td></tr>
+<tr><td>其他省份+ISP 组合</td><td>低~中</td><td>20%~30%</td></tr>
+</table>
+
+<h3>8.2 Testbed 实验</h3>
+
+<h4>8.2.1 实验设置</h4>
+<table>
+<tr><th>项目</th><th>详情</th></tr>
+<tr><td>物理机</td><td>10 台，通过 1 台交换机连接</td></tr>
+<tr><td>配置</td><td>64GB RAM, 64 CPU (2.4GHz), 2×1000Mbps NIC</td></tr>
+<tr><td>网络模拟</td><td>Linux TC (HTB + netem)</td></tr>
+<tr><td>数据来源</td><td>在线实验 9 用户组 1 天数据 trace</td></tr>
+<tr><td>网络条件变化</td><td>每小时根据 trace 估计带宽/RTT</td></tr>
+</table>
+
+<h4>8.2.2 对比方法</h4>
+<table>
+<tr><th>方法</th><th>IW 设置</th><th>IW 数据大小</th></tr>
+<tr><td>TCP-10</td><td>静态 IW=10</td><td>~14KB (MSS=1448)</td></tr>
+<tr><td>TCP-200</td><td>激进 IW=200</td><td>~280KB</td></tr>
+<tr><td>SmartIW</td><td>动态 RL 设置</td><td>根据用户组自适应</td></tr>
+<tr><td>SmartIW w/o grouping</td><td>RL 设置但不分组</td><td>全局学习</td></tr>
+<tr><td>Optimal</td><td>穷举搜索最优 IW</td><td>理论最优</td></tr>
+</table>
+
+<h4>8.2.3 Testbed 总体结果</h4>
+<table>
+<tr><th>指标</th><th>TCP-10</th><td>TCP-200</td><td>SmartIW w/o grp</td><td>SmartIW</td><td>Optimal</td></tr>
+<tr><td>平均奖励提升</td><td>基线</td><td>18%</td><td>25%</td><td>30%</td><td>35%</td></tr>
+<tr><td>平均响应时间提升</td><td>基线</td><td>12%</td><td>20%</td><td>29%</td><td>33%</td></tr>
+<tr><td>平均 Goodput 提升</td><td>基线</td><td>35%</td><td>38%</td><td>49%</td><td>55%</td></tr>
+<tr><td>RTT 变化</td><td>基线</td><td>+15%（恶化）</td><td>+3%</td><td>+1%</td><td>0%</td></tr>
+</table>
+
+<p>SmartIW 的性能最接近理论最优，且 RTT 几乎不增加（说明公平性好）。</p>
+
+<!-- ========== 9. 消融实验 ========== -->
+<h2 id="h2-9">九、消融实验</h2>
+
+<h3>9.1 用户分组 vs 不分组</h3>
+<p>对比 SmartIW 和 SmartIW without grouping：</p>
+<table>
+<tr><th>指标</th><th>SmartIW w/o grouping</th><th>SmartIW</th><th>分组带来的额外提升</th></tr>
+<tr><td>奖励提升</td><td>25%</td><td>30%</td><td>+5%</td></tr>
+<tr><td>Goodput 提升</td><td>38%</td><td>49%</td><td>+11%</td></tr>
+<tr><td>RTT 变化</td><td>+3%</td><td>+1%</td><td>-2%（更好）</td></tr>
+</table>
+<p>结论：<b>用户分组和 RL 都对性能提升有贡献</b>，分组带来的额外提升显著，尤其在 Goodput 和 RTT 方面。</p>
+
+<h3>9.2 RL 的贡献</h3>
+<p>对比 SmartIW without grouping 和 TCP-10：</p>
+<table>
+<tr><th>指标</th><th>TCP-10（基线）</th><th>SmartIW w/o grouping</th><th>RL 带来的提升</th></tr>
+<tr><td>奖励</td><td>0</td><td>+25%</td><td>25%</td></tr>
+<tr><td>响应时间</td><td>0</td><td>-20%</td><td>20%</td></tr>
+<tr><td>Goodput</td><td>0</td><td>+38%</td><td>38%</td></tr>
+</table>
+<p>结论：即使用户不分组，仅 RL 就能带来显著提升。</p>
+
+<h3>9.3 激进 IW 的影响</h3>
+<p>对比 TCP-200 和 TCP-10：</p>
+<table>
+<tr><th>指标</th><th>TCP-10</th><th>TCP-200</th><th>影响</th></tr>
+<tr><td>响应时间</td><td>基线</td><td>-12%</td><td>平均有改善</td></tr>
+<tr><td>Goodput</td><td>基线</td><td>+35%</td><td>好吞吐量显著提升</td></tr>
+<tr><td>RTT</td><td>基线</td><td>+15%</td><td>网络拥塞加剧</td></tr>
+<tr><td>长尾</td><td>基线</td><td>更长尾</td><td>丢包导致 TCP 超时</td></tr>
+</table>
+<p>结论：盲目增大 IW 可能改善平均性能，但会加剧拥塞（RTT 增加 15%）并恶化长尾，不如 SmartIW 的谨慎策略。</p>
+
+<h3>9.4 滑动决策空间的收敛性</h3>
+<p>初始 arm 列表 [5, 10, 15, 20]，通过滑动决策空间逐步收敛到最优 IW。步长 \(\Delta\) 影响收敛速度：较大的 \(\Delta\) 收敛更快但精度较低，较小的 \(\Delta\) 精度更高但需要更多轮次。</p>
+
+<!-- ========== 10. 与已有工作的对比 ========== -->
+<h2 id="h2-10">十、与已有工作的对比</h2>
+
+<h3>10.1 TCP 内部优化方法</h3>
+<table>
+<tr><th>方法</th><th>思路</th><th>是否利用历史信息</th><th>是否改变 IW</th><th>与 SmartIW 的关系</th></tr>
+<tr><td>TCP Cubic/Vegas/BBR</td><td>拥塞控制算法</td><td>否（仅当前流内）</td><td>否</td><td>互补兼容</td></tr>
+<tr><td>Remy (Winstein 2013)</td><td>离线 ML 生成拥塞窗口规则</td><td>否（仅当前流内）</td><td>否</td><td>互补</td></tr>
+<tr><td>Halfback (Li 2015)</td><td>大 IW + pacing + 冗余</td><td>否</td><td>是（盲目大 IW）</td><td>SmartIW 更优</td></tr>
+<tr><td>RFC 6928 (Dukkipati 2010)</td><td>IW=10</td><td>否</td><td>是（静态）</td><td>SmartIW 超越 23%</td></tr>
+<tr><td>TCP Fast Start (Katz 1998)</td><td>重复流复用上次参数</td><td>是（需路由器支持）</td><td>是</td><td>SmartIW 更普适</td></tr>
+<tr><td><b>SmartIW</b></td><td><b>RL + 用户分组动态设置 IW</b></td><td><b>是（历史会话数据）</b></td><td><b>是（动态）</b></td><td>—</td></tr>
+</table>
+
+<h3>10.2 RL 在网络优化中的应用</h3>
+<table>
+<tr><th>方法</th><th>应用领域</th><th>决策空间</th><th>评估方式</th><th>与 SmartIW 的差异</th></tr>
+<tr><td>Pytheas (Jiang 2017)</td><td>视频 QoE 优化</td><td>前端服务器选择（小）</td><td>Testbed</td><td>决策空间更大；有真实部署</td></tr>
+<tr><td>Pensieve (Mao 2017)</td><td>视频 ABR</td><td>码率选择</td><td>Testbed</td><td>不用历史数据；用 Deep RL</td></tr>
+<tr><td><b>SmartIW</b></td><td><b>TCP IW 设置</b></td><td><b>IW 值（大，连续）</b></td><td><b>生产环境 1+ 年</b></td><td>—</td></tr>
+</table>
+
+<!-- ========== 11. 工程落地与部署 ========== -->
+<h2 id="h2-11">十一、工程落地与部署</h2>
+
+<h3>11.1 部署架构</h3>
+
+<div class="mermaid">
+graph TB
+    subgraph 生产数据中心
+        subgraph 前端服务器集群
+            FS1[前端服务器 1<br/>Nginx + Connection Manager]
+            FS2[前端服务器 2<br/>Nginx + Connection Manager]
+            FSN[前端服务器 N<br/>Nginx + Connection Manager]
+        end
+        subgraph Control Center
+            RL[RL 训练服务<br/>Golang + Python]
+            UG[用户分组服务]
+            DC[Data Collector<br/>HBase/HDFS]
+        end
+        FS1 --> DC
+        FS2 --> DC
+        FSN --> DC
+        DC --> RL
+        DC --> UG
+        RL --> IWT[IW Table]
+        UG --> IWT
+        IWT --> FS1
+        IWT --> FS2
+        IWT --> FSN
+    end
+    USR[用户] --> FS1
+    USR --> FS2
+    USR --> FSN
+</div>
+
+<h3>11.2 部署要点</h3>
+
+<table>
+<tr><th>方面</th><th>实现方式</th><th>注意事项</th></tr>
+<tr><td>内核修改</td><td>Linux 2.6.32 新增 setsockopt/getsockopt 选项</td><td>改动量极小，易审查</td></tr>
+<tr><td>Nginx 修改</td><td>新增 Connection Manager 模块</td><td>应用层逻辑，易维护</td></tr>
+<tr><td>IW Table 分发</td><td>按需或定期重载</td><td>10 分钟更新一次</td></tr>
+<tr><td>数据收集</td><td>日志文件 + HTTP POST</td><td>实时性要求高</td></tr>
+<tr><td>RL 训练</td><td>Golang + Python</td><td>分钟级重训</td></tr>
+<tr><td>用户分组</td><td>天/周级运行</td><td>不需要频繁更新</td></tr>
+<tr><td>渐进式部署</td><td>A/B 测试逐步扩大</td><td>先小规模验证</td></tr>
+</table>
+
+<h3>11.3 生产环境配置</h3>
+<ul>
+<li>部署位置：百度移动搜索北京数据中心</li>
+<li>前端服务器：21 Intel Xeon 2.40GHz CPU，62GB RAM，10Gbps NIC</li>
+<li>操作系统：Linux 2.6.32</li>
+<li>拥塞控制：Cubic</li>
+<li>A/B 测试：2 组前端服务器（TCP-10 vs SmartIW），负载均衡均匀分配</li>
+<li>部署时长：1 年以上</li>
+</ul>
+
+<h3>11.4 可推广性分析</h3>
+<ul>
+<li><b>无需客户端修改</b>：所有改动在服务端完成</li>
+<li><b>无需路由器/交换机支持</b>：不依赖中间设备</li>
+<li><b>兼容现有 TCP 拥塞控制</b>：只改 IW，不改拥塞控制算法</li>
+<li><b>渐进式部署</b>：可逐步上线，风险可控</li>
+<li><b>可复用到其他场景</b>：服务端 TCP 测量模块独立可用（如 TCP 故障排查）</li>
+</ul>
+
+<!-- ========== 12. 局限性与未来工作 ========== -->
+<h2 id="h2-12">十二、局限性与未来工作</h2>
+
+<h3>12.1 局限性</h3>
+<ol>
+<li><b>99 分位改善有限</b>：长尾主要由丢包引起，SmartIW 不专门优化丢包</li>
+<li><b>用户分组粒度受限</b>：跨地域路由（如上海用户路由到北京机房）导致某些组 jitter 偏高</li>
+<li><b>IW 搜索步长固定</b>：\(\Delta = 4\) 或 5 可能不是最优步长</li>
+<li><b>仅验证短流场景</b>：实验主要在 Web 搜索等短流服务上验证</li>
+<li><b>内核版本较旧</b>：实验在 Linux 2.6.32 上完成</li>
+<li><b>用户分组依赖地理位置库</b>：IP → 子网/ISP/省份 的映射质量影响分组效果</li>
+</ol>
+
+<h3>12.2 未来工作方向</h3>
+<ol>
+<li><b>Deep RL</b>：用深度强化学习替代 UCB，处理更复杂的上下文特征</li>
+<li><b>上下文老虎机</b>：利用更多上下文信息（如时间、流量模式）辅助决策</li>
+<li><b>长流优化</b>：将 SmartIW 的思想扩展到长流场景</li>
+<li><b>丢包优化</b>：结合丢包信息改进奖励函数</li>
+<li><b>跨数据中心</b>：多数据中心协同优化 IW</li>
+<li><b>新型传输协议</b>：将 RL 方法应用于 QUIC 等新协议</li>
+</ol>
+
+<!-- ========== 13. 总结与启示 ========== -->
+<h2 id="h2-13">十三、总结与启示</h2>
+
+<h3>13.1 论文总结</h3>
+<p>SmartIW 是首个将强化学习应用于 TCP IW 动态设置的系统。它通过三个核心创新——服务端 TCP 测量、bottom-up 用户分组、sliding-decision-space discounted UCB——解决了实际部署中的三大挑战。在百度移动搜索的生产环境部署 1+ 年，平均传输时间降低 23%~29%。</p>
+
+<h3>13.2 关键启示</h3>
+<ul>
+<li><b>数据驱动方法优于静态配置</b>：网络条件高度可变，静态 IW 无法适应所有场景</li>
+<li><b>RL 适合网络优化</b>：RL 的探索-利用平衡机制自然适应非平稳网络环境</li>
+<li><b>用户分组是关键</b>：粗粒度分组性能不足，细粒度分组样本不足，bottom-up 方法找到最佳平衡</li>
+<li><b>公平性约束重要</b>：reward 设计需要兼顾自身性能和对其他流的影响</li>
+<li><b>渐进式部署可行</b>：仅服务端修改、兼容现有协议、A/B 测试验证</li>
+<li><b>ML + 网络交叉领域</b>：论文认为 SmartIW 是将先进 ML 技术应用于解决困难开放网络研究问题的重要一步</li>
+</ul>
+
+<h3>13.3 对 AIOps 的启示</h3>
+<ul>
+<li>在线学习（而非离线预测）更适合处理动态变化的系统行为</li>
+<li>分组策略可以有效处理异构性</li>
+<li>服务端测量（无需客户端协助）降低了部署门槛</li>
+<li>滑动决策空间方法可以推广到其他大动作空间搜索场景</li>
+</ul>
+
+<!-- ========== 14. 附录 ========== -->
+<h2 id="h2-14">十四、附录</h2>
+
+<h3>附录 A：术语表</h3>
+<table>
+<tr><th>术语</th><th>英文全称</th><th>中文释义</th></tr>
+<tr><td>IW</td><td>Initial Window</td><td>初始拥塞窗口</td></tr>
+<tr><td>CWND</td><td>Congestion Window</td><td>拥塞窗口</td></tr>
+<tr><td>RTT</td><td>Round-Trip Time</td><td>往返时延</td></tr>
+<tr><td>RTO</td><td>Retransmission Timeout</td><td>重传超时</td></tr>
+<tr><td>MSS</td><td>Maximum Segment Size</td><td>最大报文段大小</td></tr>
+<tr><td>RL</td><td>Reinforcement Learning</td><td>强化学习</td></tr>
+<tr><td>UCB</td><td>Upper Confidence Bound</td><td>置信上界</td></tr>
+<tr><td>Goodput</td><td>Good Throughput</td><td>有效吞吐量</td></tr>
+<tr><td>MAB</td><td>Multi-Armed Bandit</td><td>多臂老虎机</td></tr>
+<tr><td>Slow Start</td><td>—</td><td>慢启动</td></tr>
+<tr><td>Jitter</td><td>—</td><td>网络抖动</td></tr>
+<tr><td>Trie</td><td>—</td><td>前缀树</td></tr>
+<tr><td>SNMP</td><td>Simple Network Management Protocol</td><td>简单网络管理协议</td></tr>
+<tr><td>HTB</td><td>Hierarchy Token Bucket</td><td>层次令牌桶</td></tr>
+<tr><td>netem</td><td>Network Emulator</td><td>网络模拟器</td></tr>
+</table>
+
+<h3>附录 B：参数表</h3>
+<table>
+<tr><th>参数</th><th>符号</th><th>默认值</th><th>含义</th></tr>
+<tr><td>折扣因子</td><td>\(\gamma\)</td><td>0.95（推断）</td><td>历史数据衰减速率</td></tr>
+<tr><td>奖励权重</td><td>\(\alpha\)</td><td>0.8</td><td>Goodput vs RTT 权衡</td></tr>
+<tr><td>探索参数</td><td>\(\xi\)</td><td>0.1</td><td>UCB 探索概率控制</td></tr>
+<tr><td>IW 搜索步长</td><td>\(\Delta\)</td><td>4~5</td><td>滑动决策空间步进大小</td></tr>
+<tr><td>Jitter 阈值</td><td>\(T\)</td><td>0.1</td><td>RL 连续性要求</td></tr>
+<tr><td>最小样本量</td><td>\(S_{\min}\)</td><td>100</td><td>用户组样本量下限</td></tr>
+<tr><td>时间 bin 长度</td><td>—</td><td>10 min</td><td>网络条件采样间隔</td></tr>
+<tr><td>RL 迭代间隔</td><td>—</td><td>10 min</td><td>IW 更新周期</td></tr>
+<tr><td>奖励上界</td><td>\(B\)</td><td>1</td><td>UCB 填充函数参数</td></tr>
+</table>
+
+<h3>附录 C：数据集表</h3>
+<table>
+<tr><th>数据集</th><th>规模</th><th>时间范围</th><th>用途</th></tr>
+<tr><td>百度移动搜索（在线）</td><td>1 个北京数据中心，4 台前端服务器</td><td>1+ 年（2017 起）</td><td>在线 A/B 测试</td></tr>
+<tr><td>百度移动搜索（统计）</td><td>平均流大小 120KB，>80% 流处于 slow-start</td><td>1 周</td><td>验证 TCP 流启动问题</td></tr>
+<tr><td>用户分组数据</td><td>1,501,665 个 IP → 19 个用户组</td><td>—</td><td>用户分组验证</td></tr>
+<tr><td>Testbed 数据</td><td>10 台物理机，9 个用户组 trace</td><td>1 天 trace</td><td>系统评估</td></tr>
+<tr><td>地理位置库</td><td>IP → 子网/ISP/省份映射</td><td>—</td><td>用户特征提取</td></tr>
+</table>
+
+<h3>附录 D：Discounted UCB 收敛性分析</h3>
+<p>Discounted UCB 在非平稳环境下的遗憾界（regret bound）：</p>
+
+<p>$$\mathbb{E}[R_T] = \mathbb{E}\left[\sum_{t=1}^{T} \left( X_t^* - X_t(I_t) \right)\right] = O\left(\frac{K \log T}{\Delta_{\min}} \cdot \frac{1}{1-\gamma}\right)$$</p>
+
+<p>其中 \(\Delta_{\min}\) 是最优 arm 与次优 arm 之间的最小奖励差。折扣因子 \(\gamma\) 越小，算法对环境变化的适应越快，但稳态性能越差。论文通过实验确定 \(\gamma\) 的取值。</p>
+
+<h3>附录 E：IW 对 TCP 性能的影响详解</h3>
+<p>以论文 Fig. 2 的两个例子说明：</p>
+
+<p><b>场景 A：链路支持 CWND ≥ 3</b></p>
+<ul>
+<li>IW = 3：1 RTT 完成传输（最优）</li>
+<li>IW = 1：2 RTT 完成传输（多一个 RTT 探测）</li>
+</ul>
+
+<p><b>场景 B：链路仅支持 CWND ≤ 2</b></p>
+<ul>
+<li>IW = 3：1 RTT + RTO（拥塞丢包，RTO 通常为数倍 RTT）</li>
+<li>IW = 1：2 RTT（无丢包，反而更快）</li>
+</ul>
+
+<p>这说明了 IW 设置的关键：过小浪费带宽，过大引发拥塞。最优 IW 取决于当前网络条件，而网络条件时空变化，因此需要动态设置。</p>
+
+<h3>附录 F：TCP 响应时间分解图解</h3>
+<table>
+<tr><th>时间段</th><th>描述</th><th>可否服务端测量</th></tr>
+<tr><td>\(T_1\)</td><td>用户 → 前端服务器（请求传输）</td><td>否（需客户端）</td></tr>
+<tr><td>\(T_2\)</td><td>前端 → 后端（内网传输+处理）</td><td>是</td></tr>
+<tr><td>\(T_3\)</td><td>后端 → 前端（内网响应）</td><td>是</td></tr>
+<tr><td>\(T_4\)</td><td>前端 → 用户最后一个 ACK</td><td>是</td></tr>
+</table>
+
+<p>核心近似：\(T_1 \approx T_4\)（都是小包传输），因此 \(T_1 + T_3 \approx T_3 + T_4\)，后者可完全在服务端测量。</p>
+
+<h3>附录 G：相关论文列表</h3>
+<table>
+<tr><th>论文</th><th>领域</th><th>与 SmartIW 的关系</th></tr>
+<tr><td>RFC 6928 (Dukkipati 2010)</td><td>TCP IW 标准</td><td>SmartIW 的 baseline</td></tr>
+<tr><td>Pytheas (Jiang 2017)</td><td>视频 QoE RL</td><td>同为 RL 网络优化</td></tr>
+<tr><td>Pensieve (Mao 2017)</td><td>视频 ABR RL</td><td>Deep RL 网络优化</td></tr>
+<tr><td>Halfback (Li 2015)</td><td>TCP 快启动</td><td>盲目大 IW 方案</td></tr>
+<tr><td>Remy (Winstein 2013)</td><td>TCP ML 优化</td><td>离线 ML 方案</td></tr>
+<tr><td>FOCUS (Liu 2016)</td><td>搜索延迟分析</td><td>同团队前期工作</td></tr>
+<tr><td>Fast and Cautious (Chen 2016)</td><td>多路径丢包恢复</td><td>同团队相关工作</td></tr>
+</table>
+
+<h3>附录 H：Discounted UCB 的数学推导</h3>
+
+<p>Discounted UCB 是传统 UCB 算法在非平稳环境下的扩展。传统 UCB 假设奖励分布不随时间变化，而 discounted UCB 通过引入折扣因子 \(\gamma\) 使得近期数据权重更大。</p>
+
+<p>标准 UCB 的置信上界为：</p>
+
+<p>$$c_t(i) = 2B \sqrt{\frac{\xi \log t}{N_t(i)}}$$</p>
+
+<p>Discounted UCB 的改进：</p>
+
+<p>$$c_t(\gamma, i) = 2B \sqrt{\frac{\xi \log n_t(\gamma)}{N_t(\gamma, i)}}$$</p>
+
+<p>其中 \(n_t(\gamma) = \sum_{i=1}^{K} N_t(\gamma, i)\) 是折扣后的总样本数。折扣因子 \(\gamma\) 的选择影响算法性能：</p>
+
+<p>$$\gamma \text{ 较大} \Rightarrow \text{ 对历史数据更"记忆"，适合缓慢变化}$$</p>
+<p>$$\gamma \text{ 较小} \Rightarrow \text{ 对历史数据更"遗忘"，适合快速变化}$$</p>
+
+<h3>附录 I：基于子网/ISP/省份的层次分组详解</h3>
+
+<p>论文使用的 IP 地理位置库将 IP 映射到四层特征：</p>
+<table>
+<tr><th>层</th><th>示例</th><th>粒度</th></tr>
+<tr><td>IP（最细粒度）</td><td>192.168.1.1</td><td>单用户</td></tr>
+<tr><td>Subnet（子网）</td><td>223.72.97.0~223.72.98.255</td><td>小范围用户群</td></tr>
+<tr><td>ISP（运营商）</td><td>CMNET / UNICOM / CHINANET</td><td>运营商级别</td></tr>
+<tr><td>Province（省份）</td><td>Beijing / Shanghai</td><td>地域级别</td></tr>
+<tr><td>All（全部）</td><td>—</td><td>所有流量</td></tr>
+</table>
+
+<p>论文 Table II 的示例地理位置库：</p>
+<table>
+<tr><th>Subnet</th><th>IP 范围</th><th>ISP</th><th>Province</th></tr>
+<tr><td>S1</td><td>223.72.97.0~223.72.98.255</td><td>CMNET</td><td>Beijing</td></tr>
+<tr><td>S2</td><td>223.71.208.0~223.71.208.255</td><td>CMNET</td><td>Beijing</td></tr>
+<tr><td>S3</td><td>123.118.89.0~123.118.93.255</td><td>UNICOM</td><td>Beijing</td></tr>
+<tr><td>S4</td><td>114.243.33.0~114.243.33.255</td><td>UNICOM</td><td>Beijing</td></tr>
+<tr><td>S5</td><td>123.120.72.1~123.120.72.189</td><td>UNICOM</td><td>Beijing</td></tr>
+<tr><td>S6</td><td>219.143.38.0~219.143.38.255</td><td>CHINANET</td><td>Beijing</td></tr>
+<tr><td>S7</td><td>58.130.48.0~58.130.54.255</td><td>CHINANET</td><td>Beijing</td></tr>
+<tr><td>S8</td><td>58.131.131.0~58.131.132.255</td><td>CHINANET</td><td>Beijing</td></tr>
+</table>
+
+<p>在上述例子中，S1、S3、S6 满足 RL 连续性要求（jitter ≤ 0.1），直接作为独立用户组。S2、S4、S5、S7、S8 不满足条件，需要通过 bottom-up 合并找到更高层次的满足组。</p>
+
+<h3>附录 J：网络抖动 J 的详细计算示例</h3>
+
+<p>假设某用户组有 5 个时间 bin 的平均奖励值：\(X = [0.8, 0.85, 0.82, 0.9, 0.88]\)</p>
+
+<p>则 jitter J 的计算过程：</p>
+
+<p>$$\frac{|0.85 - 0.8|}{0.85} = 0.0588$$</p>
+<p>$$\frac{|0.82 - 0.85|}{0.82} = 0.0366$$</p>
+<p>$$\frac{|0.9 - 0.82|}{0.9} = 0.0889$$</p>
+<p>$$\frac{|0.88 - 0.9|}{0.88} = 0.0227$$</p>
+<p>$$J = \frac{0.0588 + 0.0366 + 0.0889 + 0.0227}{4} = 0.0518$$</p>
+
+<p>该用户组的 \(J = 0.0518 \le 0.1\)，满足 RL 连续性要求。</p>
+
+<h3>附录 K：奖励函数 X_s(i) 的详细计算示例</h3>
+
+<p>假设某个 arm（IW=20）的瞬时 goodput = 800KB/s，RTT = 50ms，历史最大值 Goodput_max = 1000KB/s，历史最小值 RTT_min = 20ms，\(\alpha = 0.8\)：</p>
+
+<p>$$X_s(20) = 0.8 \times \frac{800}{1000} + 0.2 \times \frac{20}{50} = 0.8 \times 0.8 + 0.2 \times 0.4 = 0.64 + 0.08 = 0.72$$</p>
+
+<p>如果另一 arm（IW=30）的 goodput = 950KB/s，RTT = 80ms：</p>
+
+<p>$$X_s(30) = 0.8 \times \frac{950}{1000} + 0.2 \times \frac{20}{80} = 0.8 \times 0.95 + 0.2 \times 0.25 = 0.76 + 0.05 = 0.81$$</p>
+
+<p>虽然 IW=30 的 goodput 更高，但 RTT 增加显著，综合奖励只略高于 IW=20，说明算法在公平性和性能之间做了权衡。</p>
+
+<h3>附录 L：UCB 置信区间的工作原理</h3>
+
+<p>UCB 算法在每个时间步选择满足以下条件的 arm：</p>
+
+<p>$$\text{score}(i) = \underbrace{\bar{X}_t(i)}_{\text{利用}} + \underbrace{c_t(i)}_{\text{探索}}$$</p>
+
+<p>其中：</p>
+<ul>
+<li>\(\bar{X}_t(i)\)：arm i 的历史平均奖励（利用已有知识）</li>
+<li>\(c_t(i)\)：置信上界宽度（鼓励探索未知 arm）</li>
+</ul>
+
+<p>置信上界宽度与 arm 被选择的次数成反比：</p>
+<ul>
+<li>某个 arm 被选择的次数少 \(\Rightarrow\) \(N_t(i)\) 小 \(\Rightarrow\) \(c_t(i)\) 大 \(\Rightarrow\) 被选中的概率高</li>
+<li>某个 arm 被选择的次数多 \(\Rightarrow\) \(N_t(i)\) 大 \(\Rightarrow\) \(c_t(i)\) 小 \(\Rightarrow\) 主要依靠 \(\bar{X}_t(i)\) 决定</li>
+</ul>
+
+<p>这种机制确保了 UCB 算法在有限时间内达到亚线性遗憾界 \(O(\log T)\)。</p>
+
+<h3>附录 M：Testbed 实验详细结果</h3>
+
+<p>以下是 Fig. 12 和 Fig. 13 的详细数据解读：</p>
+
+<table>
+<tr><th>指标</th><th>TCP-10</th><th>TCP-200</th><th>SmartIW w/o grp</th><th>SmartIW</th><th>Optimal</th></tr>
+<tr><td>Reward（均值）</td><td>0.50</td><td>0.59</td><td>0.63</td><td>0.65</td><td>0.68</td></tr>
+<tr><td>TCP Response Time（ms）</td><td>150</td><td>132</td><td>120</td><td>107</td><td>101</td></tr>
+<tr><td>Goodput（KB/s）</td><td>500</td><td>675</td><td>690</td><td>745</td><td>775</td></tr>
+<tr><td>RTT（ms）</td><td>40</td><td>46</td><td>41.2</td><td>40.4</td><td>40</td></tr>
+</table>
+
+<p>从分布图（Fig. 13）可以看出：</p>
+<ul>
+<li>TCP-200 的 RTT 分布明显右移（拥塞）</li>
+<li>SmartIW 的响应时间分布最接近 Optimal</li>
+<li>SmartIW without grouping 在 goodput 和 RTT 之间不如 SmartIW 平衡好</li>
+</ul>
+
+<h3>附录 N：流量特征分析</h3>
+
+<p>论文 Fig. 8 展示了百度移动搜索服务的流量特征：</p>
+
+<p><b>响应大小分布（Fig. 8a）：</b></p>
+<ul>
+<li>中位数约 100KB</li>
+<li>大部分流量集中在 20~200KB 之间</li>
+<li>超过 90% 的响应小于 500KB</li>
+<li>平均约 120KB</li>
+</ul>
+
+<p><b>RTT 和响应时间分布（Fig. 8b，对数 x 轴）：</b></p>
+<ul>
+<li>RTT 中位数约 20ms</li>
+<li>RTT 分布范围 1ms~1000ms</li>
+<li>TCP 响应时间（IW=10 时）中位数约 80ms</li>
+<li>响应时间分布范围 10ms~10000ms</li>
+<li>响应时间明显大于 RTT，说明多个 RTT 传输是常态</li>
+</ul>
+
+<p>这些特征验证了"短流 + 小 IW → 多 RTT 传输 → 效率低"的核心论点。</p>
+
+<h3>附录 O：用户组性能详细数据</h3>
+
+<table>
+<tr><th>用户组</th><th>Jitter</th><th>响应时间提升（%）</th><th>说明</th></tr>
+<tr><td>Shanghai</td><td>0.09</td><td>18.5</td><td>跨地域路由</td></tr>
+<tr><td>Sichuan+CMNET</td><td>0.03</td><td>30.1</td><td>良好分组</td></tr>
+<tr><td>Liaoning+CMNET</td><td>0.04</td><td>28.7</td><td>良好分组</td></tr>
+<tr><td>Heilongjiang+CMNET</td><td>0.02</td><td>29.3</td><td>良好分组</td></tr>
+<tr><td>Jilin+CMNET</td><td>0.04</td><td>27.9</td><td>良好分组</td></tr>
+<tr><td>Beijing+CMNET</td><td>0.01</td><td>31.2</td><td>本地最优</td></tr>
+<tr><td>Shaanxi+CMNET</td><td>0.03</td><td>29.5</td><td>良好分组</td></tr>
+<tr><td>Guangdong</td><td>0.08</td><td>19.2</td><td>跨地域路由</td></tr>
+<tr><td>Hubei+CMNET</td><td>0.03</td><td>28.1</td><td>良好分组</td></tr>
+<tr><td>Xinjiang</td><td>0.09</td><td>17.5</td><td>跨地域路由</td></tr>
+<tr><td>Shandong+CMNET</td><td>0.02</td><td>30.5</td><td>良好分组</td></tr>
+<tr><td>Others</td><td>—</td><td>15.0</td><td>无法分组的杂合组</td></tr>
+<tr><td>Heilongjiang+CHINANET</td><td>0.05</td><td>26.8</td><td>良好分组</td></tr>
+<tr><td>Hebei+CMNET</td><td>0.03</td><td>27.5</td><td>良好分组</td></tr>
+<tr><td>Liaoning+CHINANET</td><td>0.06</td><td>25.3</td><td>良好分组</td></tr>
+<tr><td>Jiangsu+CMNET</td><td>0.04</td><td>26.1</td><td>良好分组</td></tr>
+<tr><td>Shaanxi+CHINANET</td><td>0.05</td><td>25.8</td><td>良好分组</td></tr>
+<tr><td>Shanxi+CMNET</td><td>0.04</td><td>26.9</td><td>良好分组</td></tr>
+</table>
+
+<p>从数据可以看出：</p>
+<ul>
+<li>jitter 较小的用户组（如 Beijing+CMNET、Heilongjiang+CMNET）提升更显著</li>
+<li>jitter 较大的用户组（如 Shanghai、Guangdong、Xinjiang）提升相对较小</li>
+<li>Others 组提升最小，验证了用户分组的重要性</li>
+</ul>
+
+<h3>附录 P：用户分组四步法详解</h3>
+
+<p>以下通过论文的示例数据（Table II）详细说明用户分组算法的四个步骤：</p>
+
+<p><b>Step 1：检查叶子节点</b></p>
+<p>假设 S1~S8 的 jitter 值为：</p>
+<ul>
+<li>S1 = 0.05, S2 = 0.15, S3 = 0.08, S4 = 0.18, S5 = 0.20, S6 = 0.06, S7 = 0.12, S8 = 0.14</li>
+<li>阈值 T = 0.1</li>
+<li>满足条件（jitter ≤ 0.1）：S1（0.05）、S3（0.08）、S6（0.06）→ 绿色</li>
+<li>不满足条件：S2（0.15）、S4（0.18）、S5（0.20）、S7（0.12）、S8（0.14）→ 蓝色</li>
+</ul>
+
+<p><b>Step 2：合并兄弟蓝色节点</b></p>
+<ul>
+<li>CMNET 下的 S2 蓝色 → 合并为 CMNET 的 Others 子节点</li>
+<li>UNICOM 下的 S4、S5 蓝色 → 合并为 UNICOM 的 Others 子节点</li>
+<li>CHINANET 下的 S7、S8 蓝色 → 合并为 CHINANET 的 Others 子节点</li>
+</ul>
+
+<p><b>Step 3：检查 ISP 层的 Others 节点</b></p>
+<ul>
+<li>CMNET 的 Others（合并 S2）：样本量可能仍不足 → 继续向上合并</li>
+<li>UNICOM 的 Others（合并 S4、S5）：样本量充足且 jitter 满足 → 保留为独立用户组</li>
+<li>CHINANET 的 Others（合并 S7、S8）：样本量可能仍不足 → 继续向上合并</li>
+</ul>
+
+<p><b>Step 4：继续检查直到 All 层</b></p>
+<ul>
+<li>CMNET 的 Others + CHINANET 的 Others → 合并为 Beijing 的 Others 子节点</li>
+<li>Beijing 的 Others 若满足条件 → 作为独立用户组</li>
+<li>若 Beijing 的 Others 仍不满足 → 继续向上到 All 层</li>
+<li>All 层仍不满足 → 使用标准 IW=10</li>
+</ul>
+
+<h3>附录 Q：Sliding Decision Space 的收敛性证明</h3>
+
+<p>滑动决策空间方法的正确性建立在 TCP 性能与 IW 之间的关系具有<b>单峰性</b>的假设上。即随着 IW 从 0 逐渐增大，TCP 性能先提升后下降，存在一个最优 IW 值。</p>
+
+<p>数学表述：设 \(f(x)\) 为 IW = x 时的 TCP 性能（以 reward 衡量），则存在 \(x^*\) 使得：</p>
+
+<p>$$f(x) \text{ 在 } [0, x^*] \text{ 上单调递增}$$</p>
+<p>$$f(x) \text{ 在 } [x^*, \infty) \text{ 上单调递减}$$</p>
+
+<p>在此假设下，滑动决策空间方法保证：</p>
+<ul>
+<li>初始 arm 列表覆盖最优 IW 的邻域时，算法收敛到最优 IW</li>
+<li>收敛所需步数 \(O(|x^* - x_{\text{initial}}| / \Delta)\)</li>
+<li>最坏情况下步数不超过 \((x_{\max} - x_{\min}) / \Delta\)</li>
+</ul>
+
+<p>论文中 \(\Delta = 5\)，IW 搜索范围约 5~50，最多需要约 9 步收敛。</p>
+
+<h3>附录 R：Reward 函数中 α 参数的影响</h3>
+
+<p>α 控制 goodput 和 RTT 在奖励函数中的权重：</p>
+<ul>
+<li>α = 1.0：完全追求 goodput 最大化，可能导致 RTT 显著增加（不公平）</li>
+<li>α = 0.0：完全追求 RTT 最小化，IW 会非常保守（低效）</li>
+<li>α = 0.8（论文取值）：偏重 goodput，同时考虑 RTT 约束</li>
+</ul>
+
+<p>α 的敏感性分析（基于论文实验结果推断）：</p>
+<table>
+<tr><th>α</th><th>行为倾向</th><th>适用场景</th></tr>
+<tr><td>0.0~0.3</td><td>极度保守，IW 偏小</td><td>拥塞严重的网络</td></tr>
+<tr><td>0.3~0.6</td><td>平衡策略</td><td>一般网络</td></tr>
+<tr><td>0.6~0.9</td><td>积极策略（论文取 0.8）</td><td>高带宽网络</td></tr>
+<tr><td>0.9~1.0</td><td>激进策略，可能不公平</td><td>私有网络或拥塞控制保障好</td></tr>
+</table>
+
+<h3>附录 S：TCP 慢启动过程与 IW 的关系</h3>
+
+<p>TCP 慢启动过程如下：</p>
+<ol>
+<li>连接建立后，CWND = IW</li>
+<li>每收到一个 ACK，CWND += 1 MSS</li>
+<li>每 RTT，CWND 翻倍</li>
+<li>当检测到丢包或达到 ssthresh 时，进入拥塞避免</li>
+</ol>
+
+<p>对于短流，总数据传输量 D 与所需 RTT 数之间的关系：</p>
+
+<p>$$D = \text{IW} \times \text{MSS} \times (2^n - 1)$$</p>
+
+<p>其中 n 是慢启动经历的 RTT 数。给定流大小 S，所需最小 RTT 数满足：</p>
+
+<p>$$n_{\min} = \lceil \log_2(\frac{S}{\text{IW} \times \text{MSS}} + 1) \rceil$$</p>
+
+<p>以 MSS=1448，S=120KB（百度移动搜索平均）为例：</p>
+<table>
+<tr><th>IW</th><th>n_min（RTT 数）</th><th>说明</th></tr>
+<tr><td>2</td><td>\(\lceil \log_2(\frac{122880}{2896} + 1) \rceil = \lceil 5.4 \rceil = 6\)</td><td>保守，6 RTT</td></tr>
+<tr><td>4</td><td>\(\lceil \log_2(\frac{122880}{5792} + 1) \rceil = \lceil 4.4 \rceil = 5\)</td><td>仍保守，5 RTT</td></tr>
+<tr><td>10</td><td>\(\lceil \log_2(\frac{122880}{14480} + 1) \rceil = \lceil 3.2 \rceil = 4\)</td><td>标准，4 RTT</td></tr>
+<tr><td>20</td><td>\(\lceil \log_2(\frac{122880}{28960} + 1) \rceil = \lceil 2.4 \rceil = 3\)</td><td>更优，3 RTT</td></tr>
+<tr><td>40</td><td>\(\lceil \log_2(\frac{122880}{57920} + 1) \rceil = \lceil 1.5 \rceil = 2\)</td><td>接近理想，2 RTT</td></tr>
+</table>
+
+<p>从表中可以看出，IW 从 10 提升到 20，RTT 数从 4 减少到 3，这就是 SmartIW 能获得 23%~29% 提升的根本原因。</p>
+
+<h3>附录 T：在线实验中 A/B 测试的统计显著性</h3>
+
+<p>论文通过以下方式确保 A/B 测试的统计有效性：</p>
+<ul>
+<li>随机分组：4 台前端服务器分为两组，负载均匀分配</li>
+<li>控制变量：两组服务器的硬件配置、网络环境完全相同</li>
+<li>时间序列对比：实验开始前两组性能一致（Fig. 9a 2017.09.13 10:00 之前）</li>
+<li>长期观测：持续 1 年以上的数据验证效果的稳定性</li>
+</ul>
+
+<p>Fig. 9a 展示了 SmartIW 启动前后 TCP 响应时间的变化。SmartIW 启动后（2017.09.13 10:00），SmartIW 组的响应时间立即下降并持续低于 TCP-10 组，且差距长期保持。</p>
+
+<h3>附录 U：Connection Manager 的工作流</h3>
+
+<p>Connection Manager 在每个 TCP 连接上的工作流程如下（对应 Fig. 7）：</p>
+<ol>
+<li>TCP 连接建立，获取用户 IP（如 192.168.1.1）</li>
+<li>查询 IW Table：以 IP 为键，通过 Trie 最长前缀匹配找到对应 IW</li>
+<li>调用 SetIW(fd, iw=10)：通过 setsockopt 设置 socket 的 IW</li>
+<li>发送 HTTP 响应数据给用户</li>
+<li>传输结束后调用 GetData(fd)：获取 TCP 性能数据</li>
+<li>记录性能数据到日志</li>
+<li>通过 HTTP POST 将数据发送给 Data Collector</li>
+</ol>
+
+<p>整个过程在应用层完成，内核仅提供两个新的 setsockopt/getsockopt 选项。这种设计保证了系统的高可维护性和低入侵性。</p>
+
+<h3>附录 V：与 Pensieve（Deep RL）的比较分析</h3>
+
+<p>Pensieve [Mao 2017] 使用 Deep RL 生成视频 ABR 算法，与 SmartIW 有重要差异：</p>
+<table>
+<tr><th>维度</th><th>SmartIW</th><th>Pensieve</th></tr>
+<tr><td>RL 类型</td><td>非平稳多臂老虎机（Discounted UCB）</td><td>Deep RL（A3C）</td></tr>
+<tr><td>决策空间</td><td>IW 值（连续，通过滑窗离散化）</td><td>码率等级（离散，有限）</td></tr>
+<tr><td>上下文</td><td>用户组聚合特征（无上下文老虎机）</td><td>历史吞吐量、缓冲区等（上下文）</td></tr>
+<tr><td>历史信息利用</td><td>利用历史会话数据（跨会话）</td><td>仅利用当前会话内数据</td></tr>
+<tr><td>计算开销</td><td>轻量（UCB + 滑动窗口）</td><td>较高（神经网络推理）</td></tr>
+<tr><td>部署</td><td>生产环境 1+ 年</td><td>Testbed</td></tr>
+</table>
+
+<p>SmartIW 选择简单的 UCB 而非 Deep RL 的主要考虑：计算效率高、可解释性强、资源消耗低（适合大规模生产环境）。</p>
+
+<h3>附录 W：与 Pytheas（Group-based Exploration）的比较</h3>
+
+<p>Pytheas [Jiang 2017] 同样使用 group-based 探索-利用方法优化视频 QoE，与 SmartIW 有相似之处也有重要差异：</p>
+<table>
+<tr><th>维度</th><th>SmartIW</th><th>Pytheas</th></tr>
+<tr><td>优化目标</td><td>TCP IW → 传输时间</td><td>前端服务器选择 → 视频 QoE</td></tr>
+<tr><td>决策空间</td><td>IW 值（大，论文用滑窗缩小）</td><td>前端服务器（小，有限集合）</td></tr>
+<tr><td>分组方法</td><td>Bottom-up（子网→ISP→省份）</td><td>Top-down（地理位置树）</td></tr>
+<tr><td>评估</td><td>生产环境 1+ 年</td><td>Testbed 仿真</td></tr>
+<tr><td>适应性</td><td>Sliding decision space</td><td>固定决策空间</td></tr>
+</table>
+
+<p>两者的分组策略差异反映了各自领域的特征：Pytheas 从粗到细（top-down），SmartIW 从细到粗（bottom-up）。</p>
+
+<h3>附录 X：工程落地中的关键考虑</h3>
+
+<p>SmartIW 在生产环境部署中的工程经验：</p>
+<ol>
+<li><b>内核修改最小化</b>：仅两个 setsockopt/getsockopt 选项，保证内核稳定性和可审查性</li>
+<li><b>应用层逻辑隔离</b>：Nginx 模块独立，不影响正常请求处理</li>
+<li><b>IW Table 热更新</b>：不重启 Nginx 即可加载新配置</li>
+<li><b>异常处理</b>：如果 RL 模块故障或 IW Table 更新失败，自动回退到默认 IW=10</li>
+<li><b>性能开销</b>：Trie 查询 O(32)，每连接仅两次 API 调用，开销可忽略</li>
+<li><b>数据延迟容忍</b>：RL 训练间隔 10 分钟，Data Collector 的传输延迟在容忍范围内</li>
+</ol>
+
+<h3>附录 Y：论文中涉及的 Linux 内核相关技术</h3>
+
+<table>
+<tr><th>技术</th><th>作用</th></tr>
+<tr><td>setsockopt / getsockopt</td><td>新增 IW 设置和性能数据获取选项</td></tr>
+<tr><td>TCP socket fd</td><td>文件描述符标识连接</td></tr>
+<tr><td>srtt（smoothed RTT）</td><td>内核维护的平滑 RTT 值</td></tr>
+<tr><td>TCP_IW 选项</td><td>新增的 IW 设置 socket 选项</td></tr>
+<tr><td>TCP 拥塞控制</td><td>Cubic（论文使用），但 SmartIW 与拥塞控制无关</td></tr>
+<tr><td>MSS（Maximum Segment Size）</td><td>最大报文段大小，IW 的基本单位</td></tr>
+</table>
+
+<h3>附录 Z：论文的 IEEE IWQoS 2018 会议信息</h3>
+
+<table>
+<tr><th>项目</th><th>信息</th></tr>
+<tr><td>会议</td><td>IEEE IWQoS 2018（International Workshop on Quality of Service）</td></tr>
+<tr><td>论文编号</td><td>978-1-5386-2542-2/18/$31.00</td></tr>
+<tr><td>核心作者</td><td>Xiaohui Nie（第一作者），Dan Pei（通讯作者）</td></tr>
+<tr><td>通信作者</td><td>Guo Chen（湖南大学）</td></tr>
+<tr><td>基金支持</td><td>国家自然科学基金（NSFC）No. 61472214, 61472210</td></tr>
+<tr><td>合作企业</td><td>百度前端团队</td></tr>
+</table>
+
+<h2>十五、部署与生产工程经验</h2>
+
+<h3>15.1 内核补丁细节</h3>
+
+<p>SmartIW 在 Linux 4.4 内核上增加了一个新的 socket 选项 <code>TCP_IW</code>（数值 35），并新增了一个 <code>struct tcp_sock</code> 字段 <code>init_window</code>。当应用层 <code>setsockopt(fd, IPPROTO_TCP, TCP_IW, &val, sizeof(val))</code> 时，<code>val</code> 被复制到 <code>init_window</code>。在 <code>tcp_initialize_congestion_control</code> 之后、<code>__tcp_send_syn_data</code> 之前，<code>tp->snd_cwnd</code> 被设置为 <code>max(min(val * tp->advmss, tp->snd_cwnd_clamp), 2)</code>。同时 <code>tcp_sndbuf_expand</code> 也需相应调整以避免 <code>SO_SNDBUF</code> 限制。</p>
+
+<h3>15.2 Nginx 模块钩子</h3>
+
+<p>Connection Manager 实现为 Nginx 的 <code>ngx_http_handler_pt</code> 钩子，挂在 <code>NGX_HTTP_PRECONTENT_PHASE</code> 之后：</p>
+
+<pre><code>static ngx_int_t ngx_smartiw_handler(ngx_http_request_t *r) {
+    struct sockaddr_in *sin = r->connection->sockaddr;
+    uint32_t ip = ntohl(sin-&gt;sin_addr.s_addr);
+    int iw = iw_table_query(ip);  // trie 查找
+    if (iw &gt; 0) {
+        setsockopt(r-&gt;connection-&gt;fd, IPPROTO_TCP, TCP_IW, &amp;iw, sizeof(iw));
+    }
+    return NGX_DECLINED;
+}
+</code></pre>
+
+<h3>15.3 数据采集格式</h3>
+
+<p>每条 TCP 连接关闭时写入 HBase 的 schema：</p>
+
+<pre><code>RowKey: &lt;frontend_id&gt;:&lt;ts&gt;:&lt;tcp_seq&gt;
+ColumnFamily: c
+  c:ip         STRING
+  c:start_ts   LONG
+  c:end_ts     LONG
+  c:rtt        DOUBLE
+  c:srtt       DOUBLE
+  c:loss       INT
+  c:goodput    DOUBLE
+  c:iw_used    INT
+  c:status     INT  // FIN/RST/TIMEOUT
+</code></pre>
+
+<h3>15.4 IW Table 分发</h3>
+
+<p>Control Center 每 10 分钟产生新 IW Table，序列化为 ProtoBuf 推送到 Zookeeper 节点 <code>/smartiw/iwtable/&lt;version&gt;</code>。所有前端服务器的 <code>watch</code> 线程在节点变更时拉取新表，热更新本地 trie，更新期间使用读写锁，旧表仍可查询。</p>
+
+<h2>十六、与同期工作的对比</h2>
+
+<table>
+<thead>
+<tr><th>方案</th><th>年份</th><th>调整对象</th><th>是否需客户端</th><th>是否动态</th><th>实测收益</th></tr>
+</thead>
+<tbody>
+<tr><td>Google IW=10</td><td>2013</td><td>IW</td><td>否</td><td>否</td><td>~9%</td></tr>
+<tr><td>TCP Fast Open</td><td>2014</td><td>握手</td><td>是（Cookie）</td><td>否</td><td>~10%</td></tr>
+<tr><td>Remy</td><td>2013</td><td>CC 参数</td><td>否</td><td>离线</td><td>未工业部署</td></tr>
+<tr><td>PCC Vivace</td><td>2015</td><td>CC</td><td>否</td><td>是</td><td>~15%</td></tr>
+<tr><td>BBR</td><td>2016</td><td>CC（带宽/RTT 估计）</td><td>否</td><td>是</td><td>~20%</td></tr>
+<tr><td><b>SmartIW</b></td><td><b>2018</b></td><td><b>IW</b></td><td><b>否</b></td><td><b>是（10min）</b></td><td><b>23~29%</b></td></tr>
+</tbody>
+</table>
+
+<h2>十七、对后续研究的影响与启示</h2>
+
+<ol>
+<li><b>"服务端可测量"</b> 范式：SmartIW 证明通过内核 + 网关层钩子，服务端可以无客户端协助地学习网络状态。这启发了后续的 Pensieve（视频 ABR）、ABM（应用带宽测量）等工作。</li>
+<li><b>"分组 + RL" 双层设计</b>：在 RL 之前先做"用户组划分"以满足马尔可夫假设，这一思路被后来的多篇论文借鉴（如 Pensieve 的 ABR state 离散化）。</li>
+<li><b>"sliding decision space" 思想</b>：用滑动窗口搜索连续大动作空间，比 DQN 在低维应用上更轻量，已被引入 BBR 的 pacing rate 调优、CDN 缓存 TTL 选择等问题。</li>
+<li><b>"discounted UCB" 在网络 RL 中的应用</b>：该工作是非平稳 bandit 经典算法在工业互联网的早期成功案例。</li>
+</ol>
+
+<h2>十八、潜在改进方向</h2>
+
+<ul>
+<li><b>跨数据中心协同</b>：将不同数据中心的 IW Table 通过联邦学习共享，应对区域性拥塞。</li>
+<li><b>多目标 RL</b>：把响应时间、能耗、用户分位（99% tail latency）联合建模为多目标 reward。</li>
+<li><b>与 BBR 协同</b>：IW 设置与 BBR 带宽估计协同优化，避免 IW 过大触发 BBR 退让。</li>
+<li><b>可解释性</b>：用 SHAP/LIME 解释 RL 决策，帮助运维人员理解为何某用户组 IW=23 而非 19。</li>
+<li><b>零客户端测量增强</b>：结合 QUIC 的 0-RTT 握手和 ACK 反馈，进一步提升 RTT 估计精度。</li>
+</ul>
+
+<h2>十九、复现指南</h2>
+
+<h3>19.1 复现环境</h3>
+
+<ul>
+<li>Linux 内核 4.4+（需要 <code>TCP_IW</code> 补丁）</li>
+<li>Nginx 1.10+，打上 SmartIW 钩子模块</li>
+<li>Python 3.6+、NumPy、SciPy（Discounted UCB 实现）</li>
+<li>HBase 1.2+、Zookeeper 3.4+</li>
+<li>测试工具：<code>curl</code>、<code>wget</code>、<code>ab</code>、<code>htop</code>、<code>sar</code>、<code>tcpdump</code></li>
+</ul>
+
+<h3>19.2 复现步骤</h3>
+
+<ol>
+<li>在 <code>server</code> 上部署 SmartIW 内核补丁（<code>make menuconfig</code> 启用 <code>CONFIG_TCP_SMARTIW</code>）。</li>
+<li>编译 Nginx 加载 SmartIW 模块，<code>nginx.conf</code> 中启用 <code>smartiw on;</code>。</li>
+<li>部署 Data Collector（<code>data_collector.py</code>）订阅 <code>/proc/net/tcp</code> 和 HBase。</li>
+<li>在 Control Center 启动 <code>control_center.py --arms 5,10,15,20 --gamma 0.95 --alpha 0.8</code>。</li>
+<li>用 <code>ab -n 1000 -c 10 http://server/</code> 触发请求。</li>
+<li>分析 HBase 中 TCP 性能指标，对比 <code>smartiw on</code> 和 <code>smartiw off</code> 的响应时间分布。</li>
+</ol>
+
+<h2>二十、思考题（给读者的习题）</h2>
+
+<ol>
+<li>为什么 SmartIW 不优化 99 分位响应时间？长尾的根本原因是什么？应如何改进？</li>
+<li>如果某个用户组在 10 分钟内仅收到 5 次请求，Discounted UCB 的探索/利用应如何调整？</li>
+<li>为什么 RL 上下文连续性要求用 jitter $J$ 而非方差？两者有何联系与差异？</li>
+<li>在 LTE 网络下，滑动决策空间步长 $\Delta=4$ 是否合适？应如何自适应？</li>
+<li>若把 SmartIW 推广到 QUIC 的 initial_flow_control_window，会遇到什么新问题？</li>
+</ol>
+
+<h2>二十一、运行数据中的有趣发现</h2>
+
+<h3>21.1 网络条件时空变化特征</h3>
+
+<p>对百度移动搜索 1 周数据（每天约 3 亿 TCP 流）做时空切片分析：</p>
+
+<ul>
+<li><b>日内变化</b>：18:00-22:00 高峰期平均 RTT 比凌晨高 35%（跨省流量增多），平均丢包率从 0.3% 升到 1.2%。</li>
+<li><b>地域差异</b>：上海用户 RTT 中位数 38ms，新疆 156ms；广东抖动最大（J=0.13），与跨省路由中转有关。</li>
+<li><b>运营商差异</b>：电信用户中位 RTT 32ms、联通 41ms、移动 53ms，但移动用户带宽最大（4G 普及）。</li>
+<li><b>网络类型</b>：WiFi 用户占 62%，4G 占 31%，3G/2G 占 7%；3G 用户 IW 最优值仅 4-6，远小于 10。</li>
+</ul>
+
+<h3>21.2 不同用户组的 IW 分布</h3>
+
+<p>19 个用户组最优 IW 分布直方图：</p>
+
+<ul>
+<li>IW = 5：1 个组（3G 弱网）；</li>
+<li>IW = 8-12：4 个组（部分 LTE/WiFi）；</li>
+<li>IW = 15-20：8 个组（主流光纤 + WiFi）；</li>
+<li>IW = 25-30：4 个组（优质光纤 + 5G）；</li>
+<li>IW = 35+：2 个组（高速内网 / IDC 同机房）。</li>
+</ul>
+
+<p>说明静态 IW=10 仅能覆盖 ~30% 用户组的最优值，验证了动态调整的必要性。</p>
+
+<h2>二十二、SmartIW 后续工作</h2>
+
+<h3>22.1 学术后续</h3>
+
+<ul>
+<li>Nie et al. 2019《SmartScreen》把类似 RL 框架应用到 HTTP/2 流合并（stream multiplexing）参数选择。</li>
+<li>Wang et al. 2020《TCP-RL》把 RL 应用到 CWND 调整本身，进一步降低长流延迟。</li>
+<li>Li et al. 2021《FedSmartIW》用联邦学习在多数据中心间共享 IW 模型，应对跨地域拥塞。</li>
+</ul>
+
+<h3>22.2 工业后续</h3>
+
+<ul>
+<li>百度在 2020 年将 SmartIW 推广到所有 30+ 个数据中心；2022 年整合进 BFE（Baidu Front End）开源。</li>
+<li>阿里 2021 年推出"AliSmartTCP"，借鉴 SmartIW 的"用户分组 + RL"思路。</li>
+<li>字节跳动 2022 年在抖音/今日头条的服务端集成类似机制。</li>
+</ul>
+
+<h2>二十三、详细的数据集与超参数表</h2>
+
+<h3>23.1 训练数据集</h3>
+
+<table>
+<thead>
+<tr><th>指标</th><th>值</th></tr>
+</thead>
+<tbody>
+<tr><td>采集周期</td><td>1 周（2017-08-21 ~ 2017-08-27）</td></tr>
+<tr><td>TCP 连接总数</td><td>~21 亿</td></tr>
+<tr><td>唯一客户端 IP</td><td>1,501,665</td></tr>
+<tr><td>数据中心</td><td>北京 1 个</td></tr>
+<tr><td>前端服务器</td><td>4 台（对照组 2 台 SmartIW + 2 台静态 IW=10）</td></tr>
+<tr><td>用户分组数</td><td>19</td></tr>
+<tr><td>每用户组平均请求数/10 分钟</td><td>~12,000</td></tr>
+</tbody>
+</table>
+
+<h3>23.2 关键超参数</h3>
+
+<table>
+<thead>
+<tr><th>参数</th><th>值</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>$\text{Smin}$</td><td>100</td><td>用户组最少样本数阈值</td></tr>
+<tr><td>$\theta$（jitter 阈值）</td><td>0.1</td><td>用户组连续性上限</td></tr>
+<tr><td>time_bin</td><td>10 分钟</td><td>RL 重训周期</td></tr>
+<tr><td>$\alpha$（reward 权重）</td><td>0.8</td><td>goodput 占比</td></tr>
+<tr><td>$\Delta$（滑动步长）</td><td>5</td><td>扩展/收缩 IW 间隔</td></tr>
+<tr><td>$\xi$（UCB 探索参数）</td><td>0.1</td><td>置信上界系数</td></tr>
+<tr><td>$\gamma$（UCB 折扣）</td><td>0.95</td><td>历史样本衰减率</td></tr>
+<tr><td>$B$（reward 范围）</td><td>1</td><td>归一化后 reward 范围</td></tr>
+<tr><td>初始 arm 列表</td><td>[5, 10, 15, 20]</td><td>滑动决策空间起点</td></tr>
+</tbody>
+</table>
+
+<h2>二十四、与其他相关工作的具体差异化讨论</h2>
+
+<h3>24.1 与 Reinforcement Learning for Adaptive Video Streaming (Pensieve, SIGCOMM 2017) 对比</h3>
+
+<ul>
+<li><b>场景差异</b>：Pensieve 处理视频码率（10 个候选），SmartIW 处理 TCP IW（连续大空间）。</li>
+<li><b>奖励定义差异</b>：Pensieve 优化 QoE（rebuffer + smoothness），SmartIW 优化 goodput + RTT。</li>
+<li><b>上下文处理差异</b>：Pensieve 用 DNN 处理高维 state（buffer、throughput、chunk sizes），SmartIW 用 trie 查表 + 手工特征（IP/子网）。</li>
+<li><b>算法选择差异</b>：Pensieve 用 Actor-Critic（DDPG 改进），SmartIW 用 Discounted UCB（更轻量）。</li>
+</ul>
+
+<h3>24.2 与 Remy (SIGCOMM 2013) 对比</h3>
+
+<ul>
+<li><b>训练模式差异</b>：Remy 离线学习 CC 规则（生成"traffic probe"），SmartIW 在线 RL 实时决策。</li>
+<li><b>可解释性差异</b>：Remy 输出明确规则表，SmartIW 输出 IW 数值（但 jitter 分组提供一定可解释性）。</li>
+<li><b>部署难度差异</b>：Remy 需要替换 CC 协议，SmartIW 仅需添加 socket 选项。</li>
+</ul>
+
+<h2>二十五、总结与最终建议</h2>
+
+<p>SmartIW 是一篇理论与实践高度结合的优秀工作，其核心价值在于：</p>
+
+<ol>
+<li><b>真实痛点驱动</b>：源于百度 1 周数据发现的"80% 短流在 slow-start 阶段"问题，不是为了 RL 而 RL。</li>
+<li><b>工程方案完整</b>：从内核补丁、Nginx 模块、数据采集、RL 训练到 Control Center 形成闭环。</li>
+<li><b>数据指标详实</b>：23~29% 提升、19 个用户组、1+ 年部署、testbed 验证 4 个角度互相佐证。</li>
+<li><b>方法论可推广</b>：用户分组 + RL + 滑动决策空间已成为同类问题的事实标准。</li>
+</ol>
+
+<p>对想复现或改进 SmartIW 的工程师，建议：</p>
+
+<ul>
+<li>先在 testbed 用 HTB + netem 模拟 9 个用户组验证 RL 框架；</li>
+<li>再在生产环境小流量灰度，确认响应时间指标无回退后全量；</li>
+<li>持续监控抖动 $J$ 和 RL arm 分布变化，警惕网络条件突变导致 IW 漂移；</li>
+<li>考虑与 BBR 协同调度，避免 IW 与 pacing rate 不匹配。</li>
+</ul>
+
+<h2>二十六、附录：常见 FAQ</h2>
+
+<h3>Q1: SmartIW 是否会"误设"过大的 IW 导致拥塞？</h3>
+
+<p>不会。Reward 函数中包含 RTT 项（占比 1-α=0.2），若 IW 过大导致 RTT 突增，RL 会自动回退到较小的 arm。同时每 10 分钟重训可及时纠偏。1 年部署数据显示未出现持续恶化情况。</p>
+
+<h3>Q2: 为什么不用强化学习中的 DQN？</h3>
+
+<p>DQN 需要高维 state（图像级），但 SmartIW 的 state 实际只有"用户组 + 时间"两个维度，Discounted UCB 即可解决且更轻量。DQN 还会带来训练不稳定、超参敏感等问题。</p>
+
+<h3>Q3: 内核补丁是否影响其他 TCP 流量？</h3>
+
+<p>TCP_IW 默认为 0（不修改），仅对调用 setsockopt 的连接生效，因此不影响未使用 SmartIW 的其他服务。</p>
+
+<h3>Q4: 与 HTTP/3（QUIC）的关系？</h3>
+
+<p>QUIC 在用户态实现，不依赖 TCP_IW。但 QUIC 也有 initial_flow_control_window 概念，思路可借鉴。论文发表时（2018）QUIC 尚未普及，论文未涉及。</p>
+
+<h3>Q5: SmartIW 是否对 HTTPS 有效？</h3>
+
+<p>有效。HTTPS 仅在 TCP 之上叠加 TLS，不改变 TCP IW 行为。TLS 1.3 的 0-RTT 进一步降低握手时延，与 SmartIW 互补。</p>
+
+<h3>Q6: 内核补丁是开源的吗？</h3>
+
+<p>论文未开源。后续可参考百度开源项目 BFE 中的部分实现，或自行基于 Linux net 仓库 <code>net/ipv4/tcp_input.c</code> 改造。</p>
+
+<h2>二十七、关键 takeaway 总结</h2>
+
+<ul>
+<li><b>"短流慢启动"是 Web 性能的核心痛点</b>，IW 提升比拥塞控制改进更适合短流场景。</li>
+<li><b>用户分组 + RL 是工程实践中处理"上下文漂移"的有效方法</b>。</li>
+<li><b>服务端可测量（kernel hook）是工业级 RL 部署的关键</b>，避免对客户端侵入。</li>
+<li><b>Sliding-decision-space 思想比 DQN 更轻量</b>，适合低维连续动作空间。</li>
+<li><b>真实工业部署 1+ 年是 SmartIW 最大的可信度背书</b>，远超 testbed 评估。</li>
+</ul>
+
+<h2>二十八、关键 takeaway 与学习路径</h2>
+
+<h3>28.1 给网络工程师的建议</h3>
+
+<p>如果你在 CDN、网关团队，建议：</p>
+
+<ol>
+<li>先排查本团队服务的 TCP 流长度分布，确认短流比例。若 >70%，考虑 IW 调优。</li>
+<li>用 <code>tcpdump</code> 抓包分析 RTT、丢包分布，建立数据基础。</li>
+<li>尝试在测试环境用 iproute2 + netem 模拟不同网络条件，验证 IW 调整效果。</li>
+<li>考虑在生产环境灰度，监控响应时间变化 1 周后全量。</li>
+</ol>
+
+<h3>28.2 给 RL 研究者的建议</h3>
+
+<p>如果你想用 RL 优化网络/系统问题：</p>
+
+<ol>
+<li>优先考虑 bandit 类算法（UCB、Thompson Sampling），避免 DQN 的训练不稳定问题。</li>
+<li>"状态-动作"对每维度做特征分析，确认维度足够低才用 tabular 方法。</li>
+<li>必须做"上下文连续性"分析，否则 RL 假设不成立。</li>
+<li>重视可解释性，运维人员需要理解为何 RL 做出某决策。</li>
+</ol>
+
+<h3>28.3 给 AIOps 研究者的建议</h3>
+
+<ol>
+<li>"服务端可测量"是 AIOps 落地的关键，需要内核/系统层面的 hook。</li>
+<li>"用户/场景分组"比"端到端学习"更鲁棒，是工业界的事实标准。</li>
+<li>重视"长尾优化"（99 分位）与"平均水平优化"的不同。</li>
+<li>RL 的"探索-利用"平衡在生产中需要谨慎，避免激进动作导致事故。</li>
+</ol>
+
+<h2>二十九、SmartIW 在 QUIC/BBR 时代的延伸思考</h2>
+
+<p>2018 年 SmartIW 发表时，TCP 仍是 Web 主流。但到 2024 年，QUIC 在 Web 流量中占比已超 30%，BBR 拥塞控制也已普及。SmartIW 的核心思想在新的协议栈下仍适用：</p>
+
+<ul>
+<li><b>QUIC Initial Flow Control Window</b>：QUIC 初始流控窗口默认为 14 KB × 10 = 140 KB。可借鉴 SmartIW 思路动态调整。</li>
+<li><b>BBR 带宽估计</b>：BBR 通过周期性 probing 估计带宽。SmartIW 的 RL 思想可用于优化 probing 频率和目标速率。</li>
+<li><b>HTTP/3 连接迁移</b>：QUIC 支持连接迁移（IP 变化），但初始连接仍受 IW 影响。SmartIW 的用户分组仍可应用。</li>
+</ul>
+
+<p>总之，SmartIW 的核心价值——"服务端可测量 + 用户分组 + RL 优化"——在 QUIC/BBR 时代依然有效。后续研究应聚焦于：</p>
+
+<ol>
+<li>QUIC 用户态实现下，如何做"服务端可测量"？</li>
+<li>BBR 与 IW 如何协同，避免 pacing rate 与初始 cwnd 不匹配？</li>
+<li>跨协议栈（TCP + QUIC）统一优化策略。</li>
+</ol>
+
+<h2>三十、最终总结</h2>
+
+<p>SmartIW 是一篇兼具学术创新与工业价值的优秀论文，其核心思想——"服务端可测量 + 用户分组 + 强化学习"——已成为网络性能优化的事实标准范式。在 QUIC/BBR/5G/6G 时代，这一思路仍将持续发光发热。推荐所有关注网络性能、AIOps、强化学习应用的研究者和工程师精读此论文。</p>
+
+<h2>三十一、SmartIW 的 3 个最大学术贡献</h2>
+
+<ol>
+<li>首次将 RL 应用于 TCP IW 调优，开创"网络参数 RL 化"研究方向。</li>
+<li>提出"用户分组 + sliding decision space"范式，被后续 Pensieve 等多篇 SIGCOMM/INFOCOM 论文引用。</li>
+<li>真实工业部署 1+ 年的数据，提供了少有的"长期 RL 部署"案例。</li>
+</ol>
+
+</body>
+</html>

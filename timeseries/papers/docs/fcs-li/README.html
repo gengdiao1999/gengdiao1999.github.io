@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Interest-Suppression-based NDN Live Video Broadcasting over Wireless LAN（NLB）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>Interest-Suppression-based NDN Live Video Broadcasting over Wireless LAN（NLB）</h1>
+
+<blockquote>作者：Menghan Li、Dan Pei、Xiaoping Zhang、Beichuan Zhang、Ke Xu</blockquote>
+<blockquote>机构：清华大学（TNList）；亚利桑那大学</blockquote>
+<blockquote>发表年份：约 2015-2016</blockquote>
+<blockquote>会议/期刊：Frontiers of Computer Science</blockquote>
+<blockquote>关联 PDF：同目录下 <code>fcs-li.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Interest-Suppression-based NDN Live Video Broadcasting over Wireless LAN（NLB）</td></tr>
+<tr><td>作者</td><td>Menghan Li、Dan Pei、Xiaoping Zhang、Beichuan Zhang、Ke Xu</td></tr>
+<tr><td>机构</td><td>清华大学 TNList；亚利桑那大学</td></tr>
+<tr><td>发表年份</td><td>约 2015-2016</td></tr>
+<tr><td>会议/期刊</td><td>Frontiers of Computer Science</td></tr>
+<tr><td>分类</td><td>NDN / 视频广播 / WLAN / 兴趣包抑制</td></tr>
+<tr><td>核心问题</td><td>在 WiFi 上 NDN 视频广播存在重复 Interest 与无 MAC ACK 丢包，无法支持 20+ 并发客户端</td></tr>
+<tr><td>主要贡献</td><td>(1) NLB 跨层设计：Leader/Follower 机制 + Interest ACK；(2) Interest pipeline + 延迟发送；(3) 1Mbps 视频支持 20+ 客户端</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>NDN（Named Data Networking）是一种以"内容"为中心的新型 Internet 架构，通过 Interest/Data 包 + 路由器内置缓存（Content Store）实现天然的多播与缓存支持，适用于视频直播等大流量场景。但在最后一段无线 WiFi 链路上，NDN 现有实现仍把"对同一内容的多次请求"当作多个单播会话处理，导致重复包与带宽浪费。WiFi 802.11 的 broadcast 模式没有 MAC 层 ACK，因此丢包率较高，影响流媒体质量。</p>
+
+<p>校园网 / 体育馆 / 公共演讲等场景下，1Mbps 直播视频的并发观看者可能达 10k–100k。已有的 WiFi 直播工作（如 Medusa、Dircast、Flexcast）需要修改 802.11 MAC 层，难以在商用 AP 上部署。本文目标是在不修改 MAC 层的前提下，基于 NDN 跨层（应用层 + NDN 层）实现可扩展的 WiFi 直播。系统名为 NLB（NDN Live video Broadcasting），已在 1 软件 AP + 20 Raspberry Pi 客户端的物理测试床上实现与评估。</p>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<ul>
+<li><b>WiFi 重复 Interest 浪费带宽</b>：20+ 客户端对同一段内容各自发 Interest，AP 上有 20 份重复请求。</li>
+<li><b>WiFi 广播无 ACK 丢包率高</b>：现有 NDN 视频在 broadcast 上跑不通。</li>
+<li><b>修改 802.11 MAC 不现实</b>：商用 AP 不允许修改驱动。</li>
+<li><b>Live 视频对时延敏感</b>：相比 VoD 不能大幅预取，需要实时保证。</li>
+<li><b>Leader/Follower 切换鲁棒</b>：客户端随时加入/离开，需要稳定 Leader。</li>
+<li><b>Interest/Data 冗余控制</b>：避免在无 Loss recovery 的 broadcast 上泛滥重传。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>系统总览</b>：NLB 跨层分 NDN 层 + 应用层。（1）NDN 层：AP 改造为标准 NDN 路由器但向 WLAN broadcast；首次请求的客户端被选为 Leader，AP 通过 Interest ACK 周期广播告知 Follower 当前 Leader 与客户端数 N；Follower 收到与自己 Interest nonce 不匹配的 ACK 即转为 Follower 模式；（2）应用层：Streamer 用 Interest pipeline（类似 TCP SACK）控制发送速率；Follower 收到 Leader 已发的 Interest 即抑制重复；为避免 CS 命中后 RTT 估为 0 导致疯狂重传，使用 min_timer 下限。</p>
+
+<p><b>关键概念</b>：</p>
+
+<ul>
+<li><b>NDN</b>：Named Data Networking。</li>
+<li><b>Interest / Data Packet</b>：请求包 / 数据包。</li>
+<li><b>PIT (Pending Interest Table)</b>：路由器未决 Interest 表。</li>
+<li><b>Content Store (CS)</b>：NDN 路由器内容缓存。</li>
+<li><b>Leader / Follower</b>：NLB 中首个发 Interest 的客户端 vs 其他客户端。</li>
+<li><b>Interest ACK</b>：AP 周期性广播的特殊 Data 包，含 Leader 标识与客户端数 N。</li>
+<li><b>Delayed Interest Table (DIT)</b>：Follower 维护的延迟发送 Interest 表。</li>
+<li><b>Interest Pipeline</b>：基于 pending Interest 数量限制发送速率。</li>
+<li><b>Playout Delay (Tpd)</b>：客户端在解码前的缓冲时间。</li>
+<li><b>NSVP</b>：NDN Simulative Video Player 仿真器。</li>
+<li><b>min_timer</b>：Interest 重传定时器下限。</li>
+</ul>
+
+<p><b>数学原理</b>：</p>
+
+<ul>
+<li><b>Data Rate</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>DR = N_{pi} · L / T_r</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>初始 Npi</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>N_{pi} = VR · T_r / L</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>每 T_s 秒更新 Npi</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>N_{pi} = (S₂ − S₁) · T_r / T_s</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>SRTT 平滑 RTT</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>SRTT = (1 − α) · SRTT + α · RTT</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>RTTVAR</b>（TCP 公式）：</li>
+</ul>
+
+<br>\[\]<br>
+<p>RTTVAR = (1 − β) · RTTVAR + β · |SRTT − RTT|</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>重传定时器</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>T_i = max(min_timer, SRTT + K · RTTVAR)</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>Follower 抑制重传概率</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>p_send = 1 / (N − R)</p>
+<br>\[\]<br>
+
+<p>其中 N 为客户端数，R 为重传次数。</p>
+
+<p><b>与现有技术的差异</b>：与 Medusa / Dircast / Flexcast 不同，NLB 不修改 802.11 MAC；与 NDN 默认多单播不同，NLB 在 NDN 层用 Leader/Follower 机制；与 TCP 拥塞控制不同，NLB 用基于 pending Interest 的"类 SACK"控制。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：1Mbps 直播视频流 + N 个客户端 + 1 个 AP。</li>
+<li>输出：每个客户端的 Buffering Rate、Buffering Ratio、Interest/Data Redundancy。</li>
+</ul>
+
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>NDNVideo Streamer</b>：发布等长 segment 到 NDN repo。</li>
+<li><b>NSVP (NDN Simulative Video Player)</b>：在客户端模拟解码 + 缓冲。</li>
+<li><b>Streamer/Tracer/SDecoder</b>：三层应用模块。</li>
+<li><b>AP ccnd</b>：标准 NDN 路由器 + broadcast 改造。</li>
+<li><b>Leader ccnd</b>：维护 DIT、转发 Leader Interest。</li>
+<li><b>Follower ccnd</b>：维护 DIT、按概率抑制重传。</li>
+<li><b>Interest Pipeline</b>：控制 Npi。</li>
+<li><b>Interest Retransmission Timer</b>：min_timer + SRTT + K·RTTVAR。</li>
+</ul>
+
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+# 启动：AP 选第一个 Interest 发送者为 Leader
+def ap_on_interest(client, stream):
+    if stream not in streams:
+        streams[stream] = {'leader': client, 'N': 0}
+    streams[stream]['N'] += 1
+    if every_pack_interests():
+        broadcast_interest_ack(streams[stream])
+
+# Leader ccnd
+def leader_on_data(data):
+    sn = data.match_interest_sn()
+    dit.update(sn)  # 移除 SN 较小的 Interest
+    dit.delayed_retransmit()  # 按 best-effort 重传 DIT 中 Interest
+
+# Follower ccnd
+def follower_on_interest(interest):
+    if cs.match(interest):
+        return data
+    dit.add(interest)
+    if retransmit_needed(interest):
+        if random() < 1 / (N - R):
+            send(interest)
+            dit.remove(interest)
+
+# Streamer Interest pipeline
+def request_more_data():
+    while len(p_ints) < Npi and left > 0:
+        requested += 1
+        p_ints.add(requested)
+        send_interest(requested)
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四。</li>
+</ol>
+
+<ol>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>Interest 处理：$O(1)$ 每个 Interest；</li>
+<li>DIT 更新：$O(|DIT|)$；</li>
+<li>端到端延迟：$O(T_r)$。</li>
+</ul>
+
+<ol>
+<li><b>训练与推理</b>：</li>
+</ol>
+<ul>
+<li>训练：无（纯协议设计）；</li>
+<li>推理：实时按 802.11 broadcast 周期运行。</li>
+</ul>
+
+<ol>
+<li><b>示例</b>：1Mbps 直播视频，AP 频道 1（2.4GHz），6Mbps broadcast 带宽；20 个 Raspberry Pi 客户端订阅。NLB 支持 20 个客户端无卡顿播放，UCast 仅支持 10 个，BCast 仅支持 5 个。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[NDNVideo Publisher] --> B[AP ccnd + broadcast 改造]
+    B --> C[WiFi broadcast]
+    C --> D[Leader ccnd]
+    C --> E[Follower ccnd #1]
+    C --> F[Follower ccnd #N]
+    D --> G[Interest Pipeline + DIT]
+    E --> G
+    F --> G
+    B --> H[Interest ACK 周期广播]
+    H --> D
+    H --> E
+    H --> F
+    D --> I[Streamer -> SDecoder]
+    E --> I
+    F --> I
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[视频服务器发布 segment] --> S2[AP 收到 Interest]
+    S2 --> S3[AP 选 Leader]
+    S3 --> S4[AP 周期广播 Interest ACK]
+    S4 --> S5[Follower 收到 ACK 进入 Follower 模式]
+    S5 --> S6[Leader 转发 Interest]
+    S6 --> S7[AP broadcast Data]
+    S7 --> S8[所有客户端收到]
+    S8 --> S9[Follower 抑制重复 Interest]
+    S8 --> S10[SDecoder 解码 + Tracer 缓冲]
+    S10 --> S11[播放]
+    S9 --> S6
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ 不修改 802.11 MAC</b>：可部署在所有商用 AP。</li>
+<li><b>+ Leader/Follower 机制 + Interest ACK</b>：用 NDN 层信令抑制重复 Interest。</li>
+<li><b>+ Interest Pipeline 基于 pending Interests</b>：类似 TCP SACK 的可靠传输。</li>
+<li><b>+ Delayed Interest Table (DIT)</b>：Follower 维护已发 Interest 表，避免重复重传。</li>
+<li><b>+ min_timer 防止 CS 命中后 RTT 估为 0</b>：避免爆发式重传。</li>
+<li><b>+ 物理测试床验证</b>：1 AP + 20 Raspberry Pi 验证可扩展性。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集 / 实验设置</b>：</li>
+<li>1 软件 AP（Ubuntu + hostapd 802.11n 2.4GHz 6Mbps broadcast）；</li>
+<li>20 个 Raspberry Pi 客户端；</li>
+<li>1Mbps Mobile calendar 测试视频（H.264/FFmpeg）；</li>
+<li>实验时间 0am–6am 低背景干扰；</li>
+<li>实验时长 120s × 5 runs。</li>
+<li><b>Baseline</b>：UCast（NDN 单播）、BCast（NDN broadcast + 单播 Interest）。</li>
+<li><b>主要指标</b>：Buffering Rate、Buffering Ratio、Interest Redundancy、Data Redundancy。</li>
+<li><b>关键结果数字</b>：</li>
+<li>20 客户端时 NLB buffering rate 接近 0、buffering ratio 接近 0、redundancy 接近 100%；</li>
+<li>UCast 仅支持 10 客户端（&gt;10 出现严重卡顿）；</li>
+<li>BCast 仅支持 5 客户端（&gt;5 buffering ratio &gt; 50%）；</li>
+<li>NLB 在 scalability 上比 UCast 优 2×、比 BCast 优 4×；</li>
+<li>选定参数：min_timer=0.05s、(α,β,K)=(1/16, 1/8, 3)、Rmax=25、Pack=30；</li>
+<li>12 个参数组合测试中，min_timer=0.05s 与 0.10s 表现最稳。</li>
+<li><b>消融实验</b>：min_timer 从 0 增至 0.20s 时 packet redundancy 降低但 buffering 上升；min_timer=0.05s 是 robustness / timeliness 的折中。</li>
+<li><b>效率分析</b>：20 客户端同时播放 1Mbps 视频，AP 资源充足，Streamer 帧率稳定。</li>
+<li><b>可视化</b>：Fig.1/2/3 给出 scalability、参数 sensitivity 曲线。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>校园网 / 公司内直播讲座</b>：NLB 可在普通 AP 上支持 20+ 客户端。</li>
+<li><b>大型赛事直播</b>（SuperBowl / NBA / 奥运开幕式）：1Mbps × 数千用户。</li>
+<li><b>总统演讲直播</b>：突发性大量用户。</li>
+<li><b>企业内网培训直播</b>：无需特殊硬件。</li>
+<li><b>教育 / 远程会议</b>：低带宽视频直播。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>iwqos16-li</code>、<code>conext15-final2</code>、<code>NLB-ICCCN2015-paper</code>、<code>pch-infocom2017</code></li>
+<li><code>BAPL_publish_version</code></li>
+<li><code>icccn2017-pch</code></li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>NDN</b>：Named Data Networking。</li>
+<li><b>Interest / Data Packet</b>：请求/数据包。</li>
+<li><b>PIT (Pending Interest Table)</b>：未决 Interest 表。</li>
+<li><b>Content Store (CS)</b>：路由器缓存。</li>
+<li><b>Leader / Follower</b>：NLB 中的角色。</li>
+<li><b>Interest ACK</b>：AP 广播的 Leader 标识包。</li>
+<li><b>DIT (Delayed Interest Table)</b>：延迟 Interest 表。</li>
+<li><b>Interest Pipeline</b>：pending Interest 数量控制。</li>
+<li><b>SRTT / RTTVAR</b>：平滑 RTT 与 RTT 方差。</li>
+<li><b>min_timer</b>：重传定时器下限。</li>
+<li><b>NSVP</b>：NDN Simulative Video Player。</li>
+<li><b>Tpd</b>：Playout Delay。</li>
+<li><b>TNList</b>：清华大学信息技术国家实验室。</li>
+<li><b>CCNx</b>：NDN 早期开源实现。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: NDN（Zhang et al., ACM SIGCOMM 2006 / NDN Project）。</li>
+<li>Paper: NDNVideo（NDN Project technical report）。</li>
+<li>Paper: Medusa（Dang et al., NSDI 2008）。</li>
+<li>Paper: Dircast（Park et al., INFOCOM 2010）。</li>
+<li>Paper: Flexcast（Chandra et al., NSDI 2008）。</li>
+<li>Paper: 802.11n（IEEE 802.11 标准）。</li>
+<li>Paper: TCP SACK（RFC 2018）。</li>
+<li>工具：CCNx 0.8.1、hostapd、Raspberry Pi、FFmpeg、OpenWrt。</li>
+<li>相关论文：<code>iwqos16-li</code>、<code>conext15-final2</code>、<code>BAPL_publish_version</code>。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

@@ -1,0 +1,1066 @@
+   HotSpot: Anomaly Localization for Additive KPIs
+          with Multi-Dimensional Attributes
+             Yongqian Sun† , Youjian Zhao† , Ya Su† , Dapeng Liu§ , Xiaohui Nie† , Yuan Meng† ,
+                Shiwen Cheng† , Dan Pei†∗ , Shenglin Zhang‡ , Xianping Qu§ , Xuanyou Guo§
+  † Tsinghua National Laboratory for Information Science and Technology (TNList) & Tsinghua University
+                                         ‡ Nankai University, § Baidu
+
+                     {sunyq12, sy-16, nxh15, meng-y16, csw14}@mails.tsinghua.edu.cn,
+                      {zhaoyoujian, peidan}@tsinghua.edu.cn, zhangsl@nankai.edu.cn,
+                          {liudapeng01, quxianping, guoxuanyou01}@baidu.com
+
+
+
+   Abstract—Additive key performance indicators (KPIs, such               ISP (user’s access ISP), DC (the data center where the
+as page view, revenue, error count) with multi-dimensional                request is served). Each attribute has a range of distinct
+attributes (such as ISP, Province, DataCenter) are common                 values. Generally, we record the KPI values in every time
+and important monitoring metrics in Internet companies.
+When an anomaly happens to an overall KPI, it is critical                 interval (e.g., every minute) for each distinct combination
+but challenging to localize the root cause, which is one (or              of the attribute values, e.g., (Bei jing,ChinaTelecom, DC1).
+more) combination of attribute values in multiple dimensions.             These most fine-grained KPI records, thanks to the
+For example, is the total page view (PV) decrease caused                  KPI’s additive nature, can be naturally summed up into
+by the PV decrease from “Beijing” or “China Mobile in                     more coarse-grained KPIs. For example, all the KPI
+Beijing”, or “Beijing and Shanghai”? However, this task is very
+challenging for two major reasons. First, the PVs of different            records with Province = Bei jing and ISP = ChinaTelecom
+combinations are interdependent, thus the PV anomalies at the             regardless of DataCenter can be summed up into
+root cause can cause the changes of many other PVs at different           (Bei jing,ChinaTelecom, ∗), where ∗ is a wildcard.
+aggregation levels. Second, there could be tens of thousands                 When an anomaly, e.g., a sudden increase or decrease,
+of combinations to investigate in multi-dimensional attribute             happens to a total KPI (i.e., for (*,*,*)), it is critical
+space. It is a difficulty to find the root cause from a huge search
+space.                                                                    but challenging to quickly localize the root cause, i.e., the
+   To address the first challenge, our approach HotSpot uses              elements which have the most potential to have caused
+a novel potential score based on the ripple effect for anomaly            the total KPI anomaly, so that operators can take actions
+propagation that we reveal. To address the second challenge,              to mitigate the problem. Note that in this paper we only
+HotSpot adopts the Monte Carlo Tree Search (MCTS) al-                     deal with the case where the total KPI value is anomalous.
+gorithm and a hierarchical pruning strategy. Using the real-
+world data from a top global search engine, we show that                     The root cause can be one (or more) combination of
+HotSpot achieves a great improvement on effectiveness and                 attribute values in multiple dimensions. Thus, the major
+robustness, i.e., 95% of all types of root cause cases using              challenge for root cause localization is the huge search
+HotSpot (compared to only 15% using existing approaches)                  space for potential root causes. First, the changes in the
+achieves a F-score over 90%. Operational experiences show that            root cause, e.g., (Bei jing,ChinaTelecom, ∗), can propagate
+HotSpot can reduce the localization time from more than 1
+hour in manual efforts to less than 20 seconds.                           to more coarse-grained combinations, e.g., (Bei jing, ∗, ∗),
+                                                                          (∗, ChinaTelecom, ∗), more fine-grained combinations, e.g.,
+   Index Terms—Anomaly localization, multi-dimensional at-                (Bei jing,ChinaTelecom, DC1), through which other related
+tributes, huge search space, potential score, Monte Carlo Tree
+Search (MTCS), hierarchical pruning.                                      combinations, e.g., (∗, ∗, DC1) are also impacted. Second,
+                                                                          the root cause can be a set of multiple values of the same
+                                                                          attribute e.g., (Bei jing and Tian jin and Hebei, ∗, ∗) (where
+                        I. Introduction                                   these three geographically adjacent provinces are impacted
+
+T     O provide good quality of service, Internet companies               by a same failure). The number of such combinations is
+      all monitor a collection of key performance indicators              huge, e.g., the number of combinations of various province
+(KPIs), among which additive KPIs (such as page view,                     values in China is 236 − 1.
+revenue, traffic volume) with multi-dimensional attributes                   While the attribute combinations of real-world root
+are common and important ones. For example, page view                     cause cases can be very complex, existing works such as
+(PV) of a website (the number of user accesses per time                   Adtributor [1] and iDice [2] can only deal with simple
+interval) is closely related to the website’s revenue, thus               cases with much smaller search space (see §V-F for
+should be closely monitored                                               more details). This paper proposes an approach, called
+  The KPI records can have several attributes, such as                    HotSpot, to automatically localize the root cause, one (or
+Province (the geo-region mapped from the user’s IP),                      more) combination of attribute values, that has made the
+                                                                          total value anomalous for an additive KPI with multi-
+  Dan Pei†∗ is the corresponding author.                                  dimensional attributes. The main contributions of this
+
+                                                                      1
+                                                            TABLE I: Terms
+      Term                                   Definition                           Notation                               Example
+ Attributes         The categories of the information of each PV record              —             Province(P), ISP(I), DC(D), Channel(C)
+ Attribute values   The candidate values of each attribute                           —             {Beijing, Shanghai, Guangdong} for Province(P)
+ Element            A combination vector of distinct values of each attribute   e = (p, i, d, c)   (Beijing,*,*,*), (*,Mobile,*,*), (Beijing, Mobile,*,*)
+ PV value           The number of access logs according to an element               v(ei )         v(Beijing,*,*,*)
+                    Forecast PV value of an element using the
+ Forecast value                                                                      f (ei )        f (Beijing,*,*,*)
+                    historical values
+ Data cube          A data structure of multi-dimensional data                     n-d cube        A 4-d data cube with the dimensions {P,I,D,C}
+                    A cuboid is a data cube whose dimensions are                                   {BP , BP,I , BP,I,D ,...} for the 4-d data cube with
+ Cuboids                                                                              Bi
+                    in a subset of all given dimensions                                            the dimensions {P,I,D,C}
+                    A concept of measuring the potential of a set of
+ Potential Score                                                                      ps           ps(S), S={(Beijing,*,*,*), (*,Mobile,*,*)}
+                    elements to be the root cause
+
+
+
+paper are summarized as bellow:                                           A. Important terms
+   • To deal with the huge search space of root causes,                     A PV record at the website can have several attributes.
+     HotSpot adopts the MCTS approach (the first time                     For example, “10:00:01 (Timestamp); Bei jing, Mobile, DC1 ,
+     in anomaly localization literature).                                 Channel1 ” is a record, and Beijing, Mobile, DC1 and
+   • The action value in adopting MCTS is our novel                       Channel1 are the candidate values according to four
+     potential score based on the “ripple effect”, which                  attributes respectively, i.e., Province (P), ISP (I), Data
+     captures how the change of the KPI value for one                     Center (D) and Channel (C), where P = {p}, I = {i},
+     attribute combination (as a cause) can cause other                   D = {d}, C = {c} are the set of 36, 10, 6, 10 distinct
+     attribute combinations’ KPI values change (as effects)               values of province, ISP, data center, and ads channel,
+     for multi-dimensional additive KPIs.                                 respectively. The values of P and I are based on the client
+   • We propose a hierarchical pruning approach (similar                  IP and resolved by using a IP-to-geolocation database
+     to the Apriori Principle in spirit) to further reduce                and BGP table, respectively. Each ISP at each province
+     the search space.                                                    is a standalone company, thus the same ISP names
+   • Using the real-world data from a top global search                   at different provinces often behave differently. Channels
+     engine, we show that HotSpot achieves a great                        are the labels for different ad markets, e.g., medical or
+     improvement when compared with two existing ap-                      education. Table II shows some examples of PV records.
+     proaches both on effectiveness and robustness, i.e.,
+     HotSpot achieves F-score over 90% for 95% of all                                              TABLE II: PV records
+     types of cases, while for existing approaches only less                                  Timestamp; P,I,D,C
+     than 15% of all types of cases have a F-score over                            10:00:01; Beijing, Mobile, DC1 , Channel1
+     90%.                                                                          10:00:01; Beijing, Mobile, DC1 , Channel2
+   • Our operational experiences show that HotSpot can
+                                                                                   10:00:12; Beijing, Unicom, DC1 , Channel2
+     reduce the localization time from more than 1 hour                            10:00:30; Beijing, Unicom, DC1 , Channel2
+     in manual efforts to less than 20 seconds.                                    10:00:45; Beijing, Mobile, DC1 , Channel1
+   The rest of this paper is organized as follows. In Section                      10:00:59; Beijing, Unicom, DC1 , Channel2
+2, we present the problem statement of anomaly localiza-                           10:01:03; Beijing, Mobile, DC1 , Channel1
+tion. We show the core idea and the overview of HotSpot in                                             ...
+Section 3, and then present the design of HotSpot in
+Section 4. In Section 5, we evaluate the performance of
+HotSpot using experiments driven by real-world data.                                  TABLE III: Elements and PV values
+In Section 6, we present the operational experience of                     Time               element (p, i, d, c)                       PV Value
+HotSpot. Discussion, related work and conclusions are                      10:00     (Beijing, Mobile, DC1 , Channel1 )                      2
+presented in Sections 7, 8 and 9, respectively.
+                                                                           10:00     (Beijing, Mobile, DC1 , Channel2 )                      1
+                                                                           10:00     (Beijing, Unicom, DC1 , Channel2 )                      3
+                    II. Problem definition                                 10:01     (Beijing, Mobile, DC1 , Channel1 )                      1
+  We first introduce some terminologies (summarized in                      ...                      ...                                    ...
+Table I) in our paper, and then present the problem
+statement of anomaly localization and its challenges.                        A vector of the distinct attribute value combination is
+Without loss of generality, throughout the paper, we will                 called an element in this paper, denoted as e = (p, i, d, c),
+use PV as our primary example of additive KPI, and                        where (p ∈ P or p = ∗), (i ∈ I or i = ∗), (d ∈ D or d =
+Province, ISP, Data Center, Ad Channel (An ad attribute                   ∗), and (c ∈ C or c = ∗), ∗ is the wildcard. When e =
+that reflecting the positions), including cardinalities, as               (p, i, d, c), (p ̸= ∗, i ̸= ∗, d ̸= ∗, c ̸= ∗), we count the number
+example attributes. Note that these are examples for                      of the PV records according to an element e in every time
+better presentation clarity.                                              scale (e.g., the scale is each minute in this paper), and call
+
+                                                                      2
+this number PV value of the element, denoted by v(e), i.e.,               We denote e′ = (p′ , i′ , d ′ , c′ ) as a descendant of e =
+v(e) = # records f or e at a speci f ic time scale. Table III           (p, i, d, c) iff (e ̸= e′ ) and (p′ = p or p = ∗) and (i′ = i
+shows the PV values corresponding to the PV records in                  or i = ∗) and (d ′ = d or d = ∗) and (c′ = c or c = ∗).
+Table II.                                                               Desc(e) = {e′ |e′ is a descendant of e}. Desc′ (e) = {e′ |e′ =
+   The collection of all these most fine-grained elements,              (p′ , i′ , d ′ , c′ ) ∈ LEAF, e′ ∈ Desc(e)}. If e ∈ LEAF, then PV
+like the ones in Table III, are denoted by LEAF= {e|e =                 value v(e) is directly measured. Otherwise,
+(p, i, d, c), p ̸= ∗, i ̸= ∗, d ̸= ∗ c ̸= ∗}. The other elements,
+when one or more attribute value is ∗, can all be summed
+                                                                                                     v(e) =        ∑           v(e′ )                (1)
+                                                                                                               e′ ∈Desc′ (e)
+up based on the elements in LEAF. For instance, for the
+three elements at 10:00 (from 10:00:00 to 10:00:59) as in               e.g.,
+Table III, we can obtain the values of more coarse-grained                              v(Bei jing, ∗, ∗, ∗) = ∑ v(Bei jing, i j , dk , ch ),        (2)
+elements, e.g.,                                                                                                  j,k,h
+
+            v(Bei jing, Mobile, DC1 , ∗) = 2 + 1 = 3,                                  Total PV = v(∗, ∗, ∗, ∗) = ∑ v(pi , i j , dk , ch ).          (3)
+              v(Bei jing, ∗, ∗, ∗) = 2 + 1 + 3 = 6.                                                                      i, j,k,h
+
+
+                                                                        B. Problem Statement
+                                                                          The additive KPI (with multi-dimensional attributes)
+                                                                        anomaly localization problem is to identify the cuboid
+                                                                        and its elements that most potentially have caused the
+                                                                        anomalous change of the total KPI value.
+
+                                                                                            TABLE IV: A simple PV structure
+                                                                                                                    Province(p)
+                                                                                       v(p, i)
+                                                                                                   Beijing    Shanghai Guangdong             *
+                                                                                         Mobile      20          15         10              45
+                                                                                ISP
+                                                                                         Unicom      10          25         20              55
+Fig. 1: A PV system of a 4-d data cube, represented as a                         (i)
+                                                                                           *         30          40         30          100(Total)
+series of 3-d data cubes
+
+   Based on the different degree of aggregation, we cat-                           TABLE V: Example for problem statement
+egorize the elements into different sets, and each set                                                              Province(p)
+corresponds to a cuboid. A cuboid is a sub-cube of a                        f (p, i) → v(p, i)
+                                                                                                    Beijing    Shanghai Guangdong            *
+data cube which is a data structure that allows data to                     ISP
+                                                                                         Mobile     20→14        15→9      10→10          45→33
+be modeled and viewed in multiple dimensions [3], e.g., the                              Unicom     10→7        25→15      20→20          55→42
+                                                                             (i)
+                                                                                           *        30→21       40→24      30→30          100→75
+elements of LEAF constitute a 4-d data cube, as shown in
+Fig. 1. The cuboid is denoted as Bi (i can be an arbitrary
+                                                                           To clarify the problem, we take a simple example in
+combination of P, I, D and C), e.g., BP is a 1-d cuboid and
+                                                                        Table IV and Table V. Table IV shows a 2-d attributes
+BP,I,D is a 3-d cuboid. The element set of a cuboid Bi is
+                                                                        PV structure. There exist two 1-d cuboids, BP and BI ,
+denoted as E(Bi), e.g., E(BP ) = {e|e = (p, ∗, ∗, ∗), p ̸= ∗},
+                                                                        and one 2-d cuboid BP,I . Each cuboid contains a set
+E(BP,I,D ) = {e|e = (p, i, d, ∗), p ̸= ∗, i ̸= ∗, d ̸= ∗}, LEAF =
+                                                                        of elements, i.e., E(BP ) = {(Bei jing, ∗), (Shanghai, ∗),
+E(BP,I,D,C ).
+                                                                        (Guangdong, ∗)}, E(BI ) = {(∗, Mobile), (∗,Unicom)},
+                                                                        LEAF = E(BP,I ) = {(Bei jing, Mobile), (Shanghai, Mobile),
+                                                                        (Guangdong, Mobile), (Bei jing,Unicom), (Shanghai,Unicom),
+                                                                        (Guangdong,Unicom)}. v(p, i) are shown in the cells of
+                                                                        the table, e.g., v(Bei jing, Mobile) = 20, v(Bei jing, ∗) = 30.
+                                                                           When the total PV is anomalous, the PV changes are
+                                                                        shown in Table V. In each cell, the first number is the
+                                                                        forecast PV value f (p, i), and the second is the actual PV
+                                                                        value v(p, i) (how to detect the total PV and calculate the
+                                                                        elements’ forecast values will be introduced in §IV-A). The
+               Fig. 2: Cuboids in a 4-d data                            forecast value of total PV is 100, while its actual PV value
+                                                                        is only 75 (the bottom right corner of Table V). Hence an
+  Moreover, we structure the cuboids and label layer IDs                alert is generated because of the anomalous change of the
+for them, as shown in Fig. 2. In addition, we say BP or                 total PV (v(∗, ∗)=75 is much smaller than f (∗, ∗)=100)
+BI is a father cuboid of BP,I , and BP,I is a child cuboid of           that triggers anomaly localization.
+BP or BI . Accordingly, the elements of the cuboids, such                  Regarding the three cuboids, BP , BI and BP,I , they can
+as (p, ∗, ∗, ∗)(∈ E(BP )) and (p, i, ∗, ∗)(∈ E(BP,I )), also have       express the PV KPI from different perspectives. When
+the father-and-child relationships.                                     the total PV is changed anomalously, each of these three
+
+                                                                    3
+cuboids is impacted. As shown in Table V, there are some                to list all the subsets exhaustively and calculate their
+anomaly elements in each cuboid (the shaded cells). In                  potential scores. Here “to list all the subsets exhaustively”
+reality, operators need to determine which cuboid and                   is rather complicated. E.g., in Table V the cuboid BI has
+which elements of this cuboid are the most potential                    two elements, i.e., E(BI ) = {(∗, Mobile)}, {(∗,Unicom)}, so
+root cause for this anomaly. Then they can initiate the                 three sets can be listed, {(∗, Mobile)}, {(∗,Unicom)} and
+attempt to fix the anomaly and mitigate loss. Therefore,                {(∗, Mobile), (∗,Unicom)}. Actually, if a cuboid has n
+the problem of anomaly localization for additive KPIs can               elements, the number of all possible subsets will be 2n − 1,
+be restated as follows:                                                 except ∅. In practice, n can be very large, even more than
+   Effectively and efficiently identify the most potential              tens of thousands. For instance, let n be 100, then the set
+root cause, i.e., a subset of elements of one specific cuboid           number will be 2100 − 1. Thus it is too large of a set space
+Bi , for a total KPI value anomaly. The root cause set                  to be able to search and calculate each potential score.
+RSet ⊆ E(Bi ).
+   Note that this definition allows the multiple elements                              III. Core idea and overview
+within the same cuboid as the root cause set. For                          To tackle the two challenges mentioned in Section II-C,
+instance, the root cause set of the example in Table                    we need to do: 1) Propose an function to measure the
+V is RSet = {(Bei jing, ∗), (Shanghai, ∗)}. However, this               potential of element sets to be the root cause; 2) Find
+definition excludes the cases where there are simultaneous              an efficient method to search all possible sets (to be
+root causes in multiple cuboids, which is extremely rare in             the root cause). In this paper, we propose Potential
+reality. Also note that we only deal with the case where                Score as the metrical function, and apply Monte Carlo
+total KPI value is anomalous.                                           Tree Search (MCTS) algorithm and hierarchical pruning
+                                                                        strategy to overcome the huge search space problem. We
+C. Challenges                                                           briefly introduce them next.
+   There are mainly two challenges for our anomaly
+localization problem.
+                                                                        A. Potential Score for measuring the potential of sets
+   How to measure the potential of an element set to be
+the root cause is not easy. To localize the most potential                 In our anomaly localization problem, a metric that can
+set to be the root cause, we have to define a value                     be used to “globally” compare the root cause “potential”
+function to measure the potential of each set. However,                 of different element sets. However, as shown in the first
+some intuitive metrics, e.g., change or change proportion,              challenge, such a metric is not easy to develop and naive
+do not work well. We denote the change of the PV                        metrics do not work.
+value of an element by h(e), and it can be calculated by                   Our idea for this Potential Score is based on the
+h(e) = f (e) − v(e). The change of a set S of elements is               following intuition: when the KPI value at a root cause
+h(S) = ∑ h(e), e ∈ S. Now consider the example in Table V.              element changes, all its descendant LEAF elements’ KPI
+The total PV is changed by h(total) = f (total)−v(total) =              values also change accordingly. Thus the “potential score”
+100 − 75 = 25. The shaded cells are the changed elements.               of a candidate root cause element is then to gauge the
+Consider the two sets, S1 = {(Bei jing, ∗), (Shanghai, ∗)}              difference between the expected and actual changes of this
+and S2 = {(∗, Mobile), (∗,Unicom)}, in cuboids BP and                   element’s descendant LEAF elements. See more details in
+BI respectively. We find that the changes of the two                    §IV-B2. In addition, MCTS needs Potential Score as a
+sets are equal, i.e., h(S1) = h(S2) = 25, and this change               value function to guide the searching.
+can cover the total PV change 100%. So the change or
+change proportion (change proportion, denoted as r, i.e.,               B. MCTS and Hierarchical Pruning for efficiently search-
+         h(e)
+r(e) = h(total) , here means 100%) cannot distinguish which             ing
+set is more potential to be the root cause, but in reality S1              The huge search space in our problem requires an
+is the true root cause that should be more “potential” than             effective and efficient searching algorithm. Our intuition
+S2. Hence, it is not easy to find an appropriate approach               in this paper is to adopt some advanced algorithm that
+to measure the potential of an element set. For this reason,            are known to be good at searching in huge space, instead
+we need to define a potential score (ps) that can measure               of developing organic heuristic algorithm as previous
+the potential degree of a set, which will be elaborated in              works did with their simpler anomaly localization within
+Section III and IV.                                                     much smaller search space [1], [2]. Inspired by AlphaGo’s
+   There are too many sets that need be compared.                       successful adoption of MCTS in Go game [4], [5], the core
+As mentioned above, we will define a potential score                    idea of this paper is thus to adopt MCTS as the base
+to measure how potential an element set is to be the                    algorithm in our anomaly localization solution. However,
+root cause. We aim to find the subset of each cuboid                    there are still a remaining challenge in adopting MCTS
+with the largest potential score. In addition, we can                   and we now summarize our core ideas to address them.
+tell that in advance, the potential score of elements are                  From Fig. 2 we can see that as we go from lower layer to
+non-additive, i.e., ps({e1 , e2 }) ̸= ps({e1 }) + ps({e2 }). Thus       higher layer, the number of elements n in a cuboid becomes
+we need to calculate and compare all subsets for each                   larger and larger. For example, there are 36 elements in
+cuboid in principle. That is, for each cuboid, we need                  BP , 36*10 in BP,I , and 36*10*6*10 for BP,I,D,C . Recall that
+
+                                                                    4
+the root cause set is one of the (2n − 1) subsets of a               algorithm. Next we describe a method to detect the total
+cuboid. Searching such a huge space is no easy task even             KPI and forecast the elements in this section. Then we
+for MCTS.                                                            present each component of HotSpot, i.e., potential score,
+   To future reduce the search space, HotSpot applies a              MCTS and hierarchical pruning.
+hierarchical pruning strategy. The basic idea is that, after
+searching lower layers, HotSpot prunes some elements (in             A. Anomaly Detection and Forecast
+higher layers) that is unlikely to be root cause elements.
+                                                                       HotSpot needs an anomaly detection algorithm 1) to
+The intuition is that if a father element has a very low
+                                                                     detect anomalies in the total KPI, and 2) to calculate
+potential score, each of the children elements is unlikely
+                                                                     the forecast values of other elements (see §IV-B for more
+to be a root cause element , and, thus can be pruned. This
+                                                                     details).
+approach in spirit is very similar to the Apriori Principle in
+                                                                       We adopt a statistical algorithm which has been widely
+Association Rule Mining [3]. We call our pruning approach
+                                                                     used in the industry for anomaly detection [6] on the total
+hierarchical pruning because its pruning policy utilizes
+                                                                     KPI. The mean (µ ) and the standard deviation (σ ) are
+layer hierarchy information. See more details in §IV-D.
+                                                                     calculated for each time interval (in our case, each minute)
+                                                                     of the week, where µ is regarded as the forecast value.
+C. Overall Approach                                                  The thresholds (Tl and Tu stand for the lower and upper
+   The core ideas of HotSpot are summarized as follows.              thresholds, respectively) are defined as follows:
+We consider this anomaly localization as a search problem
+with a huge space; Adopt MCTS as our base searching                                 Tl = µ − c × σ , Tu = µ + c × σ            (4)
+algorithm; Propose a potential score metric (with physical           where c is a parameter that determines the degree of the
+significance in anomaly localization) as the potential               upper and lower thresholds (usually set as 2.0) [6]. Note
+measure for each set and the value function in MCTS;                 that the thresholds are updated periodically. An anomaly
+Apply a hierarchical pruning approach (similar to the                is detected if the actual value is beyond the thresholds.
+Apriori Principle in spirit) to future reduce the search             This algorithm is suitable in our scenario because 1) it fits
+space. Searching starts from layer 1 and is done layer by            very well with additive KPI data for most of additive KPI
+layer, and MCTS is applied within each cuboid, as shown              data is periodic, and 2) it is computationally efficient.
+in Fig. 3.
+                                                                     B. Potential Score
+
+                                                                      TABLE VI: An anomalous element (Bei jing, ∗) for PV
+
+
+
+
+                                                                        1) Ripple effect: We use a new anomaly case in
+                                                                     Table VI to illustrate how the KPI change at the root
+                                                                     cause element is propagated to other elements according
+                                                                     to the “ripple effect” that we summarize. The PV of
+             Fig. 3: The overview of HotSpot                         (Bei jing, ∗) is decreased from 30 ( f (Bei jing, ∗)) to 12
+                                                                     (v(Bei jing, ∗)), and (Bei jing, ∗) is the only root cause
+                                                                     element in this case. Since v(Bei jing, ∗) is aggregated by
+                   IV. Design of HotSpot
+                                                                     its descendant elements, v(Bei jing, Mobile) and v(Bei jing,
+   This section presents the detailed design of HotSpot.             Unicom), they must have changed correspondingly. Note
+HotSpot searches the sets of cuboids layer by layer, i.e.,           the change value of them, h(Bei jing, ∗) = 18, h(Bei jing,
+from layer 1 to layer L (L is the number of layers). For             Mobile) = 12 and h(Bei jing, Unicom) = 6. We can get that
+each cuboid of a given layer, HotSpot applies MCTS to                the actual value v(Bei jing, Mobile) = 8 equals to its propor-
+find its subset with the largest potential score (ps), which         tional share according to the formula f (Bei jing, Mobile) −
+is called best set (abbreviated Bset) of this cuboid. When                             f (Bei jing, Mobile)            20
+going from a layer to the next layer, hierarchical pruning           h(Bei jing, ∗) ×                       = 20 − 18 ∗ . In addi-
+                                                                                           f (Bei jing, ∗)             30
+is used. We repeat this process until layer L is searched,           tion, h(Bei jing, Mobile) in turn contributes to the change
+or the root cause set RSet (ps(RSet) > PT ) is obtained,             in v(∗, Mobile).
+where PT (ps Threshold) is a threshold that we think                    The above example illustrates how a root cause element
+it is large enough to be regarded as the root cause set              affects its descendant elements (in LEAF) and other
+when a set with a ps > PT . The final output RSet is the             elements which share a common descendant element with
+BSet with the largest ps among all BSets generated by the            it. Generally, when the value of a root cause element
+
+                                                                 5
+increases or decreases, it obeys the ripple effect property                            the case in Table V. The cuboids are BP , BI and
+as follows:                                                                            BP,I . The best set of each cuboid (the subset with
+   Let x denote an element that is not in LEAF, i.e., x ∈       /                      the largest potential score of this cuboid) will be
+LEAF. Let xi′ denote the descendant elements of x in LEAF,                             found at first. Next we choose the root cause set
+i.e., xi′ ∈ Desc′ (x). When the PV value of x changes by h(x),                         by comparing the best sets. ⃗y is denoted in this order
+i.e., h(x) = f (x)−v(x), xi′ will get its share of h(x) according                      [(Bei jing, Mobile), (Shanghai, Mobile), (Guangdong, Mobile),
+to the proportions of their forecast values, i.e.,                                     (Bei jing,Unicom), (Shanghai,Unicom), (Guangdong,Uni-
+                                            f (xi′ )                                   com)]. Then ⃗f = (20, 15, 10, 10, 25, 20), ⃗v = (14, 9, 10, 7,
+             v(xi′ ) = f (xi′ ) − h(x) ×             , ( f (x) ̸= 0).     (5)          15, 20). For the cuboid BP , it contains three elements
+                                            f (x)
+                                                                                       (Bei jing, ∗), (Shanghai, ∗) and (Guangdong, ∗), so all the
+Then all other elements e who are ancestors of xi′ are                                 subsets are S p1 = {(Bei jing, ∗)}, S p2 = {(Shanghai, ∗)},
+updated using Eq. 1.                                                                   S p3 = {(Guangdong, ∗)}, S p4 = {(Bei jing, ∗), (Shanghai, ∗)},
+   The above ripple effect describes the situation that the                            S p5 = {(Bei jing, ∗), (Guangdong, ∗)}, S p6 = {(Shanghai, ∗),
+root cause contains just one element. When it comes to a                               (Guangdong, ∗)} and S p7 = {(Bei jing, ∗), (Shanghai, ∗),
+set (two or more elements), we can reuse the property for                              (Guangdong, ∗)}. Take the set S p1 as an example,
+each element.                                                                          using Eq. (5), we can get the deduced PV values,
+   2) Potential Score: The ripple effect reveals how a root                           ⃗a(S p1 ) = (14, 15, 10, 7, 25, 20). Then the ps can be
+cause set affects many other elements’ values. Therefore,                              obtained, ps(S p1 ) = 0.13. Actually, we can find that both
+to measure the potential of a set to be the root cause,                                S p4 and S p7 have the largest ps, ps(S p4 ) = ps(S p7 ) = 1.
+we propose to 1) assume that the set S is the root cause,                              Considering the goal of succinctness, S p4 is the best
+2) deduce new PV values of the descendant elements in                                  set in BP . Similarly, we can obtain two other best sets
+LEAF based on the ripple effect, and 3) compare all the                                for BI and BP,I , Si3 = {(∗, Mobile), (∗,Unicom)} with
+actual PV values with the newly deduced PV values of                                   ps(Si3 ) = 0.47 (⃗a(Si3 ) = (14.67, 11, 7.33, 7.64, 19.09, 15.27))
+LEAF elements. The closer the two kinds of values are,                                 and         S pi1 = {(Bei jing, Mobile),      (Bei jing,Unicom),
+the more potential the set has to be the root cause set.                               (Shanghai, Mobile), (Shanghai,Unicom)} with ps(S pi1 ) = 1
+   Let y1 , y2 , y3 , ..., yn express all the elements of LEAF.                        (⃗a(S pi1 ) = (14, 9, 10, 7, 15, 20)). Comparing the three best
+We denote the newly deduced PV values of an assumed                                    sets, S p4 is the result set with the largest ps and the most
+root cause set S with a(yi ). We compute a(yi ) in two                                 succinctness.
+situations: a) S * LEAF: i f yi ∈                / Desc′ (S), a(yi ) = f (yi ),           The example above illustrates our core idea of using
+else a(yi ) is computed using Eq. (5); b) S ⊆ LEAF:                                    potential score to identify the root cause set. Actually, the
+i f yi ∈/ S, a(yi ) = f (yi ), else a(yi ) = v(yi ). Let ⃗a be the                     elements are too many so that the number of possible sets
+vector of a(yi ), i.e., ⃗a = [a(y1 ), a(y2 ), a(y3 ), ..., a(yn )].                    is extremely massive, especially in the cuboids of higher
+Similarly,            let         ⃗v = [v(y1 ), v(y2 ), v(y3 ), ..., v(yn )],          layers. To handle this problem, we apply MCTS algorithm
+⃗f = [ f (y1 ), f (y2 ), f (y3 ), ..., f (yn )].                                       and hierarchical pruning strategy which will be introduced
+   Then we define the Potential Score (ps) of a set S:                                 next. At the same time, using the two methods can help
+                                                    d(⃗v,⃗a)                           in finding the succinct result.
+               Potential Score = max(1 −                       , 0)       (6)
+                                                    d(⃗v, ⃗f )
+                                                                                      C. MCTS Algorithm
+ where d(⃗u,⃗w) represents the distance of the vectors ⃗u and
+⃗w. Here we adopt the Euclidean distance:                                                For a given cuboid B, we want to obtain the best set
+                             √                                                        (the subset with the largest potential score of this cuboid).
+                   d(⃗u,⃗w) = ∑(ui − wi )2 .               (7)                        Suppose there are n elements in E(B). The search space
+                                        i
+                                                                                      within B for the root cause set is 2n − 1, which apparently
+The potential score of a set ranges from 0 to 1, i.e., [0,1].                         can be very large for a large n. HotSpot adopts MCTS
+If a set has a higher score, it will be considered to have                            mainly to tackle this challenge of search space explosion.
+higher potential to be the root cause.                                                   MCTS is a heuristic method for searching optimal
+   Above definition of potential score is “global” in the                             decisions in a given domain by taking random samples in
+sense that any two element sets can compare their                                     the decision space and building a search tree according
+potential scores to see which one has more potential. This                            to the results from existing random examples. At the
+serves a good value function necessary in MCTS.                                       very high-level, MCTS tries to balance the exploitation
+   When two element sets have the same potential score,                               along those promising branches and the exploration along
+we follow a “succinctness” principle. i.e., the one with                              those unexplored branches. It has been widely used in the
+less number of element wins, either following the Occam’s                             Artificial Intelligence (AI) field for domains that can be
+razor principle [1] or because the elements of one set are                            represented as trees of sequential decisions, particularly
+collectively the ancestors (preferred as root cause) of those                         games and planning problems [4], such as AlphaGo [5].
+in the other.                                                                            In MCTS, each node represents a state s (the root can
+   3) An illustrating example: Now we illustrate how                                  be regarded as ∅). An action space A(s) contains all the
+to find the root cause based on potential score for                                   legal actions that can be taken at s. The algorithm can
+
+                                                                                  6
+move from one state s to another by taking a legal action,                 unvisited action is selected. E.g., in Fig. 4(a) along with
+named a ∈ A(s), via the edge (s, a). There can be variables                the bold edges, the selection step stops when the leaf state
+associated with an edge, used by the algorithm to indicate                 {e1 , e3 } is selected.
+the “value” of taking action a at state s.                                    b) Expansion. After a state s is selected in the se-
+   We adopt MCTS to our anomaly localization problem                       lection step, we then expand the Monte Carlo Tree by
+in a cuboid as follows. We first calculate ps(e) for each e in             adding a new node s′ , where S(s′ ) = S(s) ∪ {e∗ } and
+this cuboid, and rank all e according to ps(e). Each state                 e∗ = arg maxe∈{e1 ,e2 ,...,en }−S(s) ps(e). We choose e∗ to have
+s corresponds to the candidate root cause set S(s) that is                 the largest ps(S) value of the remaining elements rather
+currently being explored. N(s) is the number of times s has                than choosing e∗ randomly. For example, in Fig. 4(b),
+been visited. We setup three variables for each edge (s, a).               s (where S(s) = {e1 , e3 }) is selected, and then e∗ = e4 is
+N(s, a) is visit count, i.e., the number of times that edge                added to get s′ where S(s′ ) = {e1 , e3 , e4 }.
+(s, a) has been visited. ps(S(s)) is the potential score of set               c) Evaluation. To initialize the new node after expansion
+S(s). Suppose s transitions to s′ following (s, a). Then edge              (e.g., {e1 , e3 , e4 } in Fig. 4(c)), we calculate its ps, Q and
+(s, a)’s action value Q(s, a) = maxu∈{s′ }∪descendent(s′ ) ps(S(u)),       N.
+which equals the maximum potential score of s′ and its                        d) Backup. Action values Q and visit count N on all
+descendant nodes in the tree. Q(s, a) is initialized to be                 nodes along path from s′ to the root are updated, as
+ps(S(s)) for each s.                                                       illustrated by the bold arrows in Fig. 4(d). Recall the
+                                                                           definition of Q, along the path, we update the Q of a father
+                                                                           only when the child’s Q is greater than the father’s.
+                                                                              Localizing the root cause set in a cuboid. We apply
+                                                                           MTCS in each cuboid, for which we iteratively perform
+                                                                           the above four steps until at least one of the following
+                                                                           three conditions occur:
+                                                                              1) A best set is found, i.e., BSet = S if ps(S) ⩾ PT ;
+       Fig. 4: Monte Carlo Tree Search in HotSpot                             2) All the available nodes of the set are expanded;
+                                                                              3) The iteration time is greater than a maximum
+   Now we illustrate the four steps of a MCTS iteration in                         number M, which is configured empirically.
+our anomaly localization. Suppose that at the beginning of                    Under both the second and third terminating condi-
+the current iteration, the state tree is as shown in Fig. 4(a).            tions, if we have not obtained a set whose ps is greater
+   a) Selection. The goal of this step is to select a node                 than PT , we will return the BSet with the greatest ps as
+from the current state tree to be expanded. Each time                      the RSet.
+when this step is executed, the tree traversal always starts
+with the root state. Assume that we have advanced to the                   D. Hierarchical Pruning
+current state s in this selection step. If all the actions
+                                                                              In order to further reduce the search space for the
+in A(s) have been visited in previous iterations, then an
+                                                                           cuboids in higher layers, HotSpot applies a hierarchical
+action a is selected from the set of available actions A(s) by
+                                                                           pruning strategy. The basic idea is that, HotSpot searches
+using the Upper Confidence thresholds (UCB) algorithm
+                                                                           the cuboids layer by layer, i.e., from layer 1 to layer L.
+[7], shown as Eq. 8.
+                                      √                                    After searching a lower layer, it prunes some elements in
+                                         ln N(s)                           the higher layers that is unlikely to be root cause elements.
+              a = arg max {Q(s, a) +C            }.         (8)               For each cuboid B of layer l (1 ⩽ l < L), we can obtain the
+                   a∈A(s)                N(s, a)
+                                                                           best sets (the subset with the largest potential score of this
+   Q(s, a) is the value of taking the move a. The higher the               cuboid) BSetl,B using the MCTS algorithm. Our intuition
+value of Q(s, a), the larger the chance of move a is selected              is as follows. If an element (p1 , i1 , ∗, ∗) in layer l + 1
+in this selection step, which is the exploitation mechanism                has a high potential score, its father elements (p1 , ∗, ∗, ∗)
+in MCTS. The second part of the equation is just the                       and (∗, i1 , ∗, ∗) in layer l will also have a relatively high
+standard UCB mechanism for exploration. The balance                        potential score. Therefore, if a father element has a very
+between exploitation and exploration can be√changed by                     low potential score, each of the children elements is
+modifying C. A commonly used value of C is 2 [8], which                    unlikely to be a root cause element, although there can
+we choose in this paper, or it can be chosen empirically                   be rare cases where a children element a does have a
+in practice.                                                               potential score higher than its father element’s but some
+   In case there is an action a ∈ A(s) that has not                        other children element b ’s PV changes cancel off a’s effect
+been explored at all, Eq. 8 cannot be applied since                        on the father’s potential score. As a result, if an element
+N(s, a) = 0. Instead, we assign a probability of taking                    in layer l is not in BSetl,B , HotSpot chooses to prune all its
+unvisited actions to be R = (1 − Q(s, amax )), where amax =                children elements. This approach in spirit is very similar to
+arg maxa∈A(s)∩N(s,a)=0 Q(s, a).                                            the Apriori Principle in Association Rule Mining [3]. We
+   The selection step starts at the root of the tree, and                  call our pruning approach hierarchical pruning because its
+stops when a leaf state is chosen according to Eq. 8 or an                 pruning policy utilizes layer hierarchy information.
+
+                                                                       7
+     TABLE VII: Example for hierarchical pruning                    Algorithm 1 HotSpot
+                                        Province(p)                 Input:
+      f (p, i) → v(p, i)                                              All the PV values of elements
+                           Fujian   Jiangsu Zhejiang      *
+              Mobile        20→5    15→15     10→10    45→30          PT: Potential Threshold
+     ISP                                                              M: Maximum number of Iteration
+              Unicom       10→10    25→13     20→20    55→43
+      (i)                                                           Output:
+                *          30→15    40→28     30→30    100→73
+                                                                      RSet: Root cause set
+                                                                      procedure Anomaly localization:
+                                                                          The total PV is found anomalous.
+                                                                          // The strategy of hierarchical pruning
+   We take an example in Table VII and illustrate our                     for layer l in [1,L] do // L is maximum ID of Layer
+hierarchical pruning approach in Fig. 5. Suppose                              // Parallel Execution in each cuboid
+we are in layer 1, and the best sets obtained                                 for each cuboid B j of current layer l do
+                                                                                  Calculate Potential Scores ps(ek ) of each element ek
+using MCTS are BSet1,BP = {(Fu jian, ∗),(Jiangsu, ∗)}                             Sort ek in a descending order of ps(ek )
+with ps(BSet1,BP ) = 0.50, and BSet1,BI = {(∗, Mobile),                           // i is the number of iteration now, and be initialed 0
+(∗,Unicom)} with ps(BSet1,BI ) = 0.32. When searching                             i=0
+                                                                                  // E is the list of sorted elements
+cuboids in layer 2, we prune the elements (Zhe jiang,                             // BSetl, j is the best set of B j in layer l
+Unicom) and (Zhe jiang,Unicom) because their father                               To find BSetl, j of E by MCTS:
+element (Zhe jiang, ∗) is not in the BSets of layer 1.                            while True do
+                                                                                      Choose a set use UCB algorithm
+Therefore, we only need to search the remaining four                                  if i ⩾ M then
+elements for BP,I . This way, the number of potential                                      break
+sets will be reduced from 63 to 15 (26 − 1 to 24 − 1).                                end if
+                                                                                      if ps(set) ⩾ PT then
+Then using MCTS again in layer 2, we obtain the                                            RSet = set
+RSet = BSet2,BP,I = {(Fujian, Mobile), (Jiangsu, Unicom)},                                 return (RSet)
+where ps(BSet2,BP,I ) = 1.                                                            end if
+                                                                                      i = i+1
+                                                                                  end while
+                                                                                  Obtain BSetl, j
+                                                                                  Prune ec in layer l + 1 whose father e f are not
+                                                                                  in BSetl, j
+                                                                                  if All the ec in layer l + 1 are pruned then
+                                                                                      break
+                                                                                  end if
+                                                                              end for
+                                                                          end for
+                                                                          // Choose RSet form BSetl, j with the largest ps
+                                                                          ps(RSet) = Max{ps(BSetl, j )}
+                                                                          return (RSet)
+                                                                      end procedure
+
+
+
+ Fig. 5: Hierarchical pruning for example in Table VII.             A. Dataset
+                                                                       Now we introduce the dataset in our evaluation. We
+                                                                    collect the PV records from a top global search engine for
+E. The Overall Algorithm                                            nine weeks. The data has a periodicity of one week. The
+   We now summarize our overall HotSpot algorithm,                  last week data is used for injecting anomalies and testing,
+whose pseudo code is shown in Algorithm 1. HotSpot takes            and the former eight weeks data is used as historical data
+the PV values of elements, a potential threshold PT and             for calculating the mean (µ ) and the standard deviation
+a maximum iteration number M as inputs. It starts with              (σ ) (mentioned in §IV-A). The number of PV records is
+layer 1. For each cuboid of a given layer, HotSpot applies          about 10.8 billion everyday. As aforementioned, a record
+MCTS to find its best set. When going from a layer to               can be “10:00:01; Bei jing, Mobile, DC1 , Channel1 ”, and
+the next layer, hierarchical pruning is used. We repeat this        the granularity of a timestamp is second. Each record has
+process until layer L is searched, or the root cause set RSet       four attributes, which are P, I, D and Channel C. Recall
+(ps(RSet) > PT ) is obtained. The final output RSet is the          that we can calculate the PV values of LEAF elements by
+the BSet with the greatest ps among all BSet generated by           counting the corresponding records for each time interval
+the algorithm.                                                      (the interval is one minute here). Then the PV values
+                                                                    of each cuboid’s elements can be aggregated using Eq. 1.
+                                                                    Table VIII shows all the 15 cuboids in this dataset and the
+                             V. Evaluation                          number of elements in each cuboid (in the parenthesis).
+  In this section, we evaluate the performance of
+HotSpot using comparison experiments driven by                      B. Injecting Synthetic Anomalies
+synthetically injected anomalies on top of real-world PV              To thoroughly evaluate HotSpot and compare it with
+data.                                                               other approaches, ideally we would like to use the set of
+
+                                                                8
+      TABLE VIII: The cuboids across four layers.                                                                       C. Injecting Root Cause Cases
+  Layer ID   15 cuboids. The no. of elements in a cuboid is shown in parenthesis.                                          A root cause case, i.e., a root cause set, can be in any
+  Layer 1      BP (36)                                 BI (10)                 BD (6)                BC (10)            layer, and it usually contains a certain number of elements.
+  Layer 2    BP,I (360)                 BP,D (216)        BP,C (360)       BI,D (60)    BI,C (100)      BD,C (60)       Obviously, the number of elements and the position (i.e., in
+  Layer 3    BP,I,D (2160)                       BP,I,C (3600)             BP,D,C (2160)         BI,D,C (600)
+                                                                                                                        which layer) of the anomaly case can significantly impact
+  Layer 4                                                        BP,I,D,C (21600)
+                                                                                                                        the computational cost and the accuracy of the anomaly
+                                                 Total number of elements: 31338
+                                                                                                                        localization methods. As aforementioned, there are four
+                                                                                                                        layers in our dataset. While HotSpot can handle root cause
+anomalies that cover the entire parameter space. For this                                                               set of n elements, in the following evaluation we limit n to
+purpose, the anomalies in the real data set is often too few                                                            be up to 5, which is sufficient to show the improvement
+and the root causes of them are often not comprehensive                                                                 over previous work. Hence there are 20 different types of
+(coverage of various layer IDs and the number of elements                                                               cases, i.e., type 1: “layer 1 and 1 element in each case”,
+in the root cause set). Instead, similar to many previous                                                               type 2: “layer 2 and 1 element in each case”, ..., type 20:
+works (e.g., [9]), we smooth the data to get ride of the                                                                “layer 4 and 5 elements in each case”. Then, how many
+major fluctuations in the existing data of the elements,                                                                cases should be assigned to each type? Obviously, the
+and then inject synthetic anomalies into the last week’s                                                                actual case distribution can vary for different application
+data. There are four steps in anomaly injection.                                                                        scenarios. In our scenario, the number of actual cases is too
+                                                                                                                        few to help answer this question. We opt to equally inject a
+   First, for each LEAF element, we smooth the data
+                                                                                                                        number of cases for the 20 types (400 cases for each type),
+using moving average method Second, we add Gaussian
+                                                                                                                        thus the results here show HotSpot’s performance under
+noises onto the smoothed LEAF elements’ data using the
+                                                                                                                        various conditions rather than the performance under the
+following equation v∗ = v + α ∗ N(0, σ 2 ), where σ is the
+                                                                                                                        realistic anomaly distribution (which unfortunately is hard
+standard deviation value and α is chosen to make the
+                                                                                                                        to get).
+anomalies obvious. All the other elements can then be
+calculated using Eq. 1. Fig. 6 shows the original and the
+smoothed values of an example element. Third, for an                                                                    D. Metrics and Experimental Hardware
+injected anomaly at a specific element (at the last week),                                                                 We use Precision, Recall and F-score metrics to evaluate
+we use the ripple effect to “distribute” the difference                                                                 the accuracy of HotSpot. The F-score is defined as F −
+between the forecast value and the anomalous value to its                                                                        2 ∗ Precision ∗ Recall                          TP
+                                                                                                                        score =                         , where Precision =
+descendant LEAF elements, with Gaussian noises added.                                                                             Precision + Recall                          T P + FP
+The anomalies injected are spikes of multiple minutes                                                                                     TP
+                                                                                                                        and Recall =             . TP (true positive) is the number of
+(considering the monitoring interval is minute), during                                                                                T P + FN
+                                                                                                                        root cause elements correctly reported. FP (false positive)
+which anomalies are detected and the anomaly localization
+                                                                                                                        is the number of the root cause elements wrongly reported.
+are conducted. Fourth, we use Eq. 1 to aggregate the
+                                                                                                                        FN (false negative) is the number of anomaly elements
+LEAF elements to obtain all other elements’ PV values.
+                                                                                                                        that is not reported. The higher the metric is (Precision,
+Fig. 7 shows the values after injecting anomalies and
+                                                                                                                        Recall or F-score), the better the approach performs.
+noises.
+                                                                                                                           The experiments were run on a server with (24-core
+                                 3     Original data                                                                    Intel(R) Xeon(R) CPU E5-2620 v3 @ 2.40GHz with 64GB
+                                     Smoothed data
+                                                                                                                        RAM).
+                                 2
+                     Page View
+
+
+
+
+                                 1
+                                                                                                                        E. Parameter Determination
+                                                                                                                          There are two parameters that need to be pre-configured
+                                 0
+                                         200    400     600     800
+                                                              Time
+                                                                      1000 1200 1400                                    in HotSpot, i.e., the potential threshold PT and the
+                                                                                                                        maximum iteration number M of MCTS. PT is a stopping
+                      Fig. 6: The original and                                                                          condition of the HotSpot procedure. It can be tuned by
+                      smoothed values of an ele-                                                                        operators according to the specific requirement in practice.
+                      ment                                                                                              Specifically, the closer a PT value is to 1, the more precise
+                              3
+                                                                                                                        the algorithm is. The operators we worked with would like
+                              2                                                                                         to have very accurate results if possible, we thus set PT
+                  Page View
+
+
+
+
+                                                                                                                        as 0.99, which means that if we find a set with ps > 0.99,
+                              1                                                                                         we will stop searching and regard it as the root cause.
+                                                                                                                          The maximum iteration number M of MCTS can
+                              0
+                                        200    400     600      800
+                                                              Time
+                                                                      1000 1200 1400                                    greatly affect the effectiveness and efficiency of HotSpot.
+                                                                                                                        To improve computational efficiency, MCTS conducts a
+                   Fig. 7: Smoothed values                                                                              technically local search instead of traversing the entire
+                   with synthetic anomalies                                                                             search space. Qualitatively speaking, the more times the
+                   and noises                                                                                           MCTS iterates, the more accurate the result will be, but
+
+                                                                                                                    9
+the cost time will be longer. However, M cannot be set by                                   The default parameters in the original iDice paper [2]
+operators due to the lack of physical significance to them,                                 performed poorly in our experiments. As such, we swept
+and we run HotSpot using various M values, i.e., from 5                                     iDice’s parameter space, and eventually settled with the
+to 15, and empirically select a rather reasonable M value                                   combination of iDice’s parameters which achieved the best
+by balancing effectiveness and efficiency.                                                  accuracy.
+                                                                                               Fig. 9 shows the comparison of the F-scores of the
+          1.1                                         90                                    three algorithms. Compared with iDice and Adtributor,
+          1.0                                         80
+                                                      70                                    HotSpot achieved higher F-scores across all the 20 types
+          0.9                                         60                                    of cases (differentiated by layer ID and the number of ele-
+
+                                            Time(s)
+F-score
+
+
+
+
+          0.8                                         50
+                                                      40
+                                                                                            ments in each case). The F-score of iDice decreased sharply
+          0.7
+                                                      30                                    as the number of elements increases. Although Adtributor
+          0.6                                         20                                    achieved excellent accuracy in layer one anomaly cases, its
+          0.5 5 6 7 8 9 10 11 12 13 14 15             10 5 6 7 8 9 10 11 12 13 14 15
+                          M                                          M                      accuracy dropped to zero when the cases were in higher
+(a) The box-plots of F-scores of (b) The box-plots of running
+                                                                                            layers. In contrast, HotSpot performed quite robust across
+various M values                 time of various M values                                   different number of elements in each case, and different
+                                                                                            layers.
+Fig. 8: The performance of HotSpot under various
+maximum iteration numbers (M). The bottom and top
+of the box are the first and third quartiles (Q1 and Q3),
+and the band inside the box is the median (Q2). The
+lower whisker is the minimum value within Q1 − 1.5 ∗ IQR,
+and the upper whisker is the maximum value within
+Q3 + 1.5 ∗ IQR, where IQR = Q3 − Q1.
+
+  For each of the 20 case types, we injected 400 cases.
+M is ranged from 5 to 15. Hence for each M value, we
+can calculate the average F-score for each case type. In
+Fig. 8(a) and 8(b), we show the box-plots of F-scores
+and those of the running time for the 20 anomaly case
+types under different M values. Fig. 8(a) shows that the
+F-score of HotSpot increases with M. We observe that
+when M > 10, the F-score becomes stable and the first                                       Fig. 9: The F-score comparison of the three algorithms
+quantile is larger than 90%, which empirically meet our
+demand. Fig. 8(b) shows that the running time linearly
+increases with M. When M = 10, the third quantile is about                                                       1.0
+54s, which is acceptable by operators based on real-world
+investigation. Consequently, we set M = 10 for HotSpot in                                                        0.8
+the studied company.                                                                                             0.6
+                                                                                                     Precision
+
+
+
+
+                                                                                                                 0.4
+F. The Effectiveness of HotSpot                                                                                                             iDice
+  To evaluate the accuracy of HotSpot, we injected                                                               0.2                        Adtributor
+anomaly cases using the methods in §V-C, we set M = 10                                                                                      HotSpot
+as aforementioned. We compare it with two previously                                                             0.00.0   0.2   0.4   0.6      0.8       1.0
+proposed approaches, i.e., Adtributor [1] and iDice [2].                                                                         Recall
+  Adtributor focuses on the revenue debugging problem,                                      Fig. 10: The precision-recalls of three algorithms (Note
+which is similar to HotSpot. However, it only deals                                         that we add jitters to the overlap points for clearer
+with the root cause set in the layer 1 cuboids, while                                       display.)
+HotSpot takes all the cuboids (especially the multiple
+dimensional cuboids) into account.                                                            The average precision and recall (over 400 cases) of
+  iDice identifies the effective attribute combinations                                     each of 20 case types for three algorithms are shown in
+of an emerging issue for a large-scale software system.                                     Table IX. Fig. 10 shows the distribution of the precision-
+The multi-dimensional attribute space in iDice is very                                      recalls of the three algorithms across the 20 case types.
+similar with that of HotSpot. In addition, an attribute                                     In this figure, the precision-recall points of HotSpot are
+combination is similar to an element in our system.                                         centralized in the upper right corner, demonstrating
+However, iDice is tailored to the simpler cases where there                                 HotSpot’s robustness in accuracy. However, the precision-
+are fewer “elements” in a “root cause set” in iDice (usually                                recall points of iDice in Fig. 10 are much more scattered
+there are only one or two “elements” in a “root cause                                       than HotSpot, demonstrating that the accuracy of iDice
+set”). Three parameters should be pre-configured in iDice.                                  are not robust against different types of anomaly cases.
+
+                                                                                       10
+                                       TABLE IX: The comparison of three algorithms’ precision and recall
+                                    Single RC element                     Two RC elements                        Three RC elements                        Four RC elements                         Five RC elements
+  Algorithms   Avg. over
+               400 runs    layer1    layer2   layer3    layer4   layer1    layer2   layer3   layer4   layer1       layer2    layer3    layer4    layer1     layer2    layer3    layer4    layer1     layer2   layer3   layer4
+               Precision   0.991      0.995   0.983     0.958    0.988     0.965    0.973      1      0.964        0.958     0.968      0.955     0.905      0.929    0.960      0.940     0.943     0.944    0.970    0.905
+   HotSpot
+                Recall     0.995      0.995   0.983     0.958      1       0.961    0.973      1      0.968        0.957     0.968      0.916     0.908      0.923    0.937      0.831     0.928     0.925    0.895    0.704
+               Precision   0.955      0.928   0.966     0.985    0.91       0.82    0.82     0.888        0.84     0.75      0.758      0.87       0.8       0.735    0.77       0.867     0.72      0.67     0.65     0.803
+    iDice
+                Recall     0.955      0.935   0.975     0.985    0.455     0.418    0.423    0.475    0.282        0.252     0.258      0.317      0.2       0.185    0.193      0.228     0.145     0.134    0.132    0.171
+               Precision     1         0        0         0        1         0        0        0      0.807          0         0         0        0.739        0         0         0       0.764       0         0       0
+  Adtributor
+                Recall       1         0        0         0        1         0        0        0      0.881          0         0         0        0.844        0         0         0       0.849       0         0       0
+
+
+
+
+Most of the precision-recall points of Adtributor are                                                     one with the largest ps as RSet. We do not consider the
+centralized in the bottom left corner except for the five                                                 “full search method” (use neither MCTS nor hierarchical
+precision-recall points of anomaly cases in layer one. In                                                 pruning) for it takes too long to run.
+short, Fig. 9 and 10 both show that HotSpot is more
+accurate and robust than iDice and Adtributor.                                                            TABLE X: The number of elements for each cuboid when
+   Now we try to give some qualitative analyses on                                                        n = 2, where n is the number of distinct values in each
+the above results. HotSpot missed the root causes of                                                      dimension.
+some anomaly cases (see the precision-recall points of                                                             Layer ID                     Cuboid (the number of elements in it)
+HotSpot in Fig. 10) because: a) HotSpot can not calculate                                                          Layer 1            BP (2)              BI (2)               BD (2)              BC (2)
+the forecast values absolutely accurate due to the inherent                                                        Layer 2         BP,I (4)     BP,D (4)      BP,C (4)       BP,D (4)     BP,C (4)    BD,C (4)
+limitations of the forecast algorithms and the noises in the                                                       Layer 3         BP,I,D (8)            BP,I,C (8)          BP,D,C (8)        BP,D,C (8)
+dataset; b) we set the potential threshold to control the                                                          Layer 4                                         BP,I,D,C (16)
+exit of HotSpot to balance accuracy and computational                                                                Total                                               80
+cost, which may cause the method to miss some real
+root causes, especially when the anomaly cases are in                                                        Because of the low computational efficiency of “HotSpot
+higher layers or they contain more elements. In addition,                                                 minus MCTS” and “HotSpot minus hierarchical pruning”
+the reasons why iDice’s performance decreases with the                                                    methods, it is prohibitive to evaluate either of the above
+increase of the number of anomaly elements is that: a)                                                    methods based on the large-scale dataset described in
+the first step of iDice, i.e., Impact-based pruning may                                                   §V-A (hereafter, we collectively refer to this dataset as
+mistakenly prune some elements; b) the isolation power                                                    original dataset). Therefore, we sample the original dataset
+in iDice may not work well for anomaly cases with more                                                    to obtain new datasets with smaller scale (hereafter,
+elements. While Adtributor is designed for exploring root                                                 we collectively refer to this dataset as new dataset).
+causes for anomaly cases in layer one, it did not find root                                               Specifically, the new datasets have four dimensions, and
+causes for anomaly cases in higher layers in our scenario.                                                for each dimension, there are n distinct values (e.g.,
+   Summary of effectiveness comparison. In summary,                                                       Beijing, Shanghai, ..., of BP ) sampled from the original
+Adtributor can only handle anomaly cases in layer one                                                     dataset. n can be 1, 2, ..., 8. E.g., if n = 2, the number of
+(with a run time of 10 seconds) and iDice can only handle                                                 elements for each cuboid is shown in Table X.
+the anomaly cases which have 1 or 2 elements (with a                                                         We injected 20 types of anomaly cases to the new
+run time of 20 seconds), while HotSpot can handle higher                                                  dataset following §V-C. Note that not all the 20 types of
+layers and larger number of root cause elements (with                                                     anomaly cases exist for every new dataset. For example,
+a run time of 50 seconds). In reality, the number of                                                      when n = 2, the anomaly case type “layer one and three
+elements and the layer of anomaly cases are almost always                                                 elements in each case” does not exist since there are only
+unpredictable, thus HotSpot is a much better choice than                                                  two elements in each cuboid of layer one. For a new
+Adtributor and iDice.                                                                                     dataset, we injected 400 anomaly cases for each type of
+                                                                                                          anomaly cases, and applied the above three methods to
+G. The Efficiency of HotSpot                                                                              localize anomalies, respectively. We calculated the average
+  In this section, we evaluate the benefits of MCTS and                                                   running time for each method, and each type of anomaly
+hierarchical pruning in HotSpot in terms of reducing                                                      case. Each method achieved an averaged F-score over 90%
+the computational complexity when facing the huge                                                         in this experiment. Similarly, all the three methods are
+search space. We compare HotSpot versus “HotSpot                                                          running on the same server as mentioned in §V-D.
+minus MCTS” and “HotSpot minus hierarchical pruning”                                                         Fig.11 compares the CDFs of the running time of the
+methods. The “HotSpot minus MCTS” method means                                                            three methods under different values of n. A point in Fig.11
+that we employ the hierarchical pruning strategy to search                                                is the average running time for a specific anomaly case
+the cuboids layer by layer (from layer one to layer four) and                                             type and a specific value of n. Please note that the x-axis
+conduct hierarchical pruning. For each cuboid, the method                                                 scale is log(2) scale. For each value of n, the running time
+employs the full search method other than MCTS. The                                                       in Fig. 11 (a) is much smaller than that in Fig. 11 (b)
+“HotSpot minus hierarchical pruning” method employs                                                       and Fig. 11 (c), which demonstrates that HotSpot is much
+MCTS for each cuboid to obtain the BSets, and selects the                                                 more computationally efficient than other two methods.
+
+                                                                                                     11
+          100                                                                                            15                                                                  3
+                                                                                                                         Real data                                                    (tc,map,*,*)
+                                                                                                         12              Forcast data                                                 (nj02,map,*,*)
+           80                                                                                                            Thresholds                                                   (gz,map,*,*)
+                                                                            n=1                                                                                              2
+                                                                            n=2                                   9
+           60
+
+
+
+
+                                                                                           Traffic
+
+
+
+
+                                                                                                                                                        Traffic
+ CDF(%)
+
+
+                                                                            n=3
+                                                                            n=4                                   6
+           40                                                               n=5                                                                                              1
+                                                                            n=6                                   3
+           20                                                               n=7
+                                                                            n=8                                   00   200 400 600 800 1000 1200 1400                        00     200 400 600 800 1000 1200 1400
+            0                                                                                                                           Time                                                          Time
+                0   1   2    4   8   16   32   64   128 256 512 1024 2048 4096 8192
+                                      Running Time (s)
+                                          (a) HotSpot                                                                          (a) Total                                          (b) Root cause elements
+          100
+
+           80                                                                                                                            Fig. 12: Case 1: Page View
+                                                                            n=1
+                                                                            n=2
+           60
+ CDF(%)
+
+
+
+
+                                                                            n=3
+                                                                            n=4
+           40                                                               n=5            shows the actual total traffic values and the forecast
+                                                                            n=6            ones within some day (the real magnitude is normal-
+           20                                                               n=7
+                                                                            n=8            ized for confidentiality, and case 2 is the same). The
+            0
+             0      1   2    4   8   16   32   64   128 256 512 1024 2048 4096 8192        measurement interval is one minute, and, thus, there
+                                      Running Time (s)
+                                 (b) "HotSpot minus MCTS"                                  are 1440 intervals for one day. An anomalous sudden
+          100
+                                                                                           increase occurred at the 1223th interval. Fig. 12(b) shows
+           80                                                         n=1                  the root cause set which was localized by HotSpot, i.e.,
+                                                                      n=2
+           60                                                                              {(tc, map, ∗, ∗); (n j02, map, ∗, ∗); (gz, map, ∗, ∗)}. This result
+ CDF(%)
+
+
+
+
+                                                                      n=3
+                                                                      n=4                  is correct that have been confirmed by operators. The
+           40                                                         n=5
+                                                                      n=6                  truth of this case is that a faulty configuration of map
+           20                                                         n=7
+                                                                      n=8                  is updated on the three DCs (tc, n j02, gz). This case
+            00      1   2    4   8   16 32 64 128 256 512 1024 2048 4096 8192              further confirms that a root cause set can include multiple
+                        (c) "HotSpot Running Time (s)
+                                     minus Hierarchical pruning"                           elements in the same cuboid. As shown in §V, [1] cannot
+                                                                                           deal with such cases, and [2] is not as accurate as
+Fig. 11: Comparison of running time of HotSpot,                                            HotSpot when tackling such cases.
+“HotSpot minus MCTS” and “HotSpot minus hierarchical
+pruning”                                                                                                          10
+                                                                                                                        Real data
+                                                                                                                                                                             5
+                                                                                                                                                                                    (hz,map,other,cluster_map03)
+                                                                                                                        Forcast data
+                                                                                                                  8                                                          4
+                                                                                             Number of Http 4xx
+
+
+
+
+                                                                                                                                                        Number of Http 4xx
+                                                                                                                        Thresholds
+
+                                                                                                                  6                                                          3
+Additionally, the running time for different values of n
+                                                                                                                  4                                                          2
+in Fig. 11 (a) is more centralized than that for different
+                                                                                                                   2                                                         1
+values of n in Fig. 11 (b) and Fig. 11 (c), demonstrating
+                                                                                                                  00                                                         00
+HotSpot’s good robustness in computational efficiency.                                                                 200 400 600 800 1000 1200 1400
+                                                                                                                                       Time
+                                                                                                                                                                                   200 400 600 800 1000 1200 1400
+                                                                                                                                                                                                    Time
+                                                                                                                               (a) Total                                     (b) Root cause elements
+                            VI. Operational Experience
+   We have implemented and deployed HotSpot in a top                                                                      Fig. 13: Case 2: HTTP Error 4xx Count
+global search engine company. We applied HotSpot on var-
+ious additive KPIs, such as PV, traffic volume, number of                                     Case 2: The measure in case 2 is the number of “HTTP
+online users, and ads revenue. HotSpot has demonstrated                                    4xx” errors, e.g., “HTTP 403” and “HTTP 404”, and
+its ability to quickly localize the root cause for additive                                more details about HTTP status codes can be found in
+KPIs.                                                                                      [10]. Fig. 13(a) shows an anomaly of the total number
+   Due to space limitation, we present two operational                                     of “HTTP 4xx” occurs at the 1220th point on a day
+cases. The data set has four dimensions: DC (11 values),                                   different from case 1.
+Product (182 values), ISP (7 values) and Server Cluster                                       HotSpot localizes the root cause set to be
+Name (480 values), and the additive KPIs are Page                                          {(hz, map, other, cluster_map03)}, shown in Fig. 13(b). We
+View and Error Count, respectively. HotSpot spent 10                                       can see that the element (hz, map, other, cluster_map03)
+to 20 seconds in anomaly localization for both cases. For                                  usually has few “HTTP 4xx” errors, but the error count
+comparison purpose, we asked the operators to manually                                     suddenly increased at the 1220th point that caused the
+localize the root causes, and it took operators 1 to 2 hours                               total error count to increase as well. Operators have
+to do so. That is, HotSpot is about 300 times faster than                                  confirmed that a new application version with a wrong
+manual localization, which is typical in our HotSpot vs.                                   configuration was deployed at the 1220th point, which
+manual comparisons. Please note that we anonymously                                        led to this anomaly.
+the magnitude of the data for privacy, so the value of the
+data in the following figures are not real.                                                                    VII. Discussion
+   Case 1: The KPI in this case is the volume of traffic                                     Anomaly localization of multi-dimensional indicator
+flow of the search engine from the clients. Fig. 12(a)                                     systems is complicated in practice. In this section, we
+
+                                                                                      12
+discuss some issues regarding anomaly localization and                 a very high complexity) at first, then we employ MCTS
+clarify the scope of HotSpot.                                          and hierarchical pruning strategies to realize the idea in
+   Anomaly detection. As in previous work [1], in HotSpot              a very reasonable time, and this effectively balances the
+we assume that anomaly localization is triggered by                    efficiency and effectiveness.
+anomaly detection, and the forecast values output by                      There are three previous works that are closely related
+the anomaly detection is used as input. The selection of               to our work. iDice [2] and Adtributor [1] tackle a similar
+anomaly detection algorithms is a problem by itself and                problem. They are compared with our approach and
+is beyond our scope.                                                   discussed in detail in Section V-F. [19] tackling the
+   Ripple effect has limitations. We propose the potential             anomaly detection and localization in a ISP setting, and its
+score based on Ripple effect, but there exist some rare                concept of E2E instance is similar to the element. However,
+cases that cannot be handled by ripple effect, e.g., if f (x) =        the paper is mainly focused on anomaly detection. For
+0 in Eq. (5). If so, we can extract these elements and                 anomaly localization, they only sketched an idea (applying
+analyze them manually, and the remaining ones can still                association rule mining algorithm) in three short para-
+use HotSpot.                                                           graphs without sufficient algorithm details. Nonetheless,
+   HotSpot does not guarantee optimal results. Since both              this method requires different set of parameters (minimum
+MCTS and hierarchical pruning are heuristic algorithms,                support and minimum confidence) for different types of
+HotSpot does not guarantee that it can always find the                 cases defined in V-C. However, it is impossible to know
+global optimal result. Even so, it can greatly narrow down             in advance which type the case belongs to. Due to this
+the root cause scope and give operators timely advices.                shortcoming and lack of algorithm details, we conclude
+Note that, instead of providing just one candidate root                that it is infeasible to do a fair comparison with [19] in
+cause, HotSpot can provide a ranked list of n candidate                the evaluation section.
+root causes to increase the chance that the true root cause
+is included in the list.                                                                     IX. Conclusion
+                    VIII. Related Work                                    For an additive KPI with multi-dimensional attributes,
+                                                                       it is a hard problem to localize the overall KPI’s anomaly
+   There are many previous works in root cause local-
+                                                                       to the root cause, which is one (or more) combination
+ization in various contexts. Pinpoint [11] diagnoses the
+                                                                       of attribute values in multiple dimensions. Firstly, we
+root causes of large, dynamic Internet services (e.g.,
+                                                                       consider this anomaly localization as a search problem
+TCP and HTTP failures) employing clustering analysis.
+                                                                       with a huge space. To deal with the huge search space,
+SCORE [12], Shrink [13], and [14] focus on localizing
+                                                                       our proposed framework, HotSpot, adopts the MCTS
+IP network failures in an IP-over-optical tier-1 backbone
+                                                                       approach (the first time in anomaly localization literature)
+using a Shared Risk Link Group (SRLG) model. They
+                                                                       whose action value is our novel potential score based on the
+try to identify a smallest set of risk groups that can
+                                                                       “ripple effect”, which captures how anomalies propagate
+explain the failures, which actually used the succinctness
+                                                                       from the root cause throughout the aggregation hierarchy.
+concept. Sherlock [15] focuses on localizing the root causes
+                                                                       In addition, we propose a hierarchical pruning approach
+of performance problems among numerous dependencies
+                                                                       to further reduce the search space. Our experiments
+of network elements in large enterprise networks, using
+                                                                       based on the data from a real-world search engine
+packet traces, traceroute measurements, and network
+                                                                       show that HotSpot achieves much better accuracy than
+configuration files. Argus [16] detects services anomalies
+                                                                       previous approaches. Our operational experiences show
+from an ISP’s perspective, aiming to localize the users
+                                                                       that HotSpot can reduce the localization time from about
+with bad performance. It uses a hierarchical data structure
+                                                                       more than 1 hour in manual efforts to less than 20 seconds,
+to aggregate users with common attributes and localize
+                                                                       and that HotSpot is an approach generally applicable to
+each user groups’ performance. ABSENCE [17] detects
+                                                                       the anomaly localization for additive KPI metrics.
+service disruptions in mobile networks using aggregated
+customer usage data. Its hierarchization is also a tree
+structure, which is different from our work. FOCUS [18]                               X. ACKNOWLEDGMENT
+is an approach on determining the long-term bottlenecks                  This work is supported by the State Key Program of
+in multi-dimensional logs.                                             National Science of China under grant No. 61233007, the
+   Our work is different from all the above studies in                 National Natural Science Foundation of China (NSFC)
+terms of both the problem definition and the solution                  under grant NO. 61472214, 61472210, the National High
+being used. On the one hand, our problem is focused                    Technology Development Program of China (863 program)
+on fine-grained anomaly localization on multi-dimensional              under grant No. 2013AA013302, the National Key Basic
+systems. The data values of the system are additive and                Research Program of China (973 program) under grant
+the demand of the result is succinctness. None of the above            No. 2013CB329105, the Tsinghua National Laboratory
+studies is similar with this. On the other hand, most                  for Information Science and Technology key projects,
+of previous works apply intuitive experienced empirical                the Global Talent Recruitment (Youth) Program, and
+methods to simplify the complex problems, while in our                 the Cross-disciplinary Collaborative Teams Program for
+paper, we propose an innovative fundamental idea (with                 Science & Technology & Innovation of Chinese Academy
+
+                                                                  13
+of Sciences-Network and system technologies for security                                    References
+monitoring and information interaction in smart grid.
+                                                                 [1] R. Bhagwan, R. Kumar, R. Ramjee, G. Varghese, S. Mohapatra,
+                                                                     H. Manoharan, and P. Shah, “Adtributor: Revenue debugging
+                                                                     in advertising systems,” in 11th USENIX Symposium on
+                                                                     Networked Systems Design and Implementation (NSDI 14),
+                                                                     2014, pp. 43–55.
+                                                                 [2] Q. Lin, J. Lou, H. Zhang, and D. Zhang, “idice: problem
+                                                                     identification for emerging issues,” Proceedings of the 38th
+                                                                     International Conference on Software Engineering. ACM,, pp.
+                                                                     214–224, 2016.
+                                                                 [3] J. Han, J. Pei, and M. Kamber, Data mining: concepts and
+                                                                     techniques. Elsevier, 2011.
+                                                                 [4] C. B. Browne, E. Powley, D. Whitehouse, S. M. Lucas, P. I.
+                                                                     Cowling, P. Rohlfshagen, S. Tavener, D. Perez, S. Samothrakis,
+                                                                     and S. Colton, “A survey of monte carlo tree search methods,”
+                                                                     IEEE Transactions on Computational Intelligence and AI in
+                                                                     Games, vol. 4, no. 1, pp. 1–43, 2012.
+                                                                 [5] D. Silver, A. Huang, C. J. Maddison, A. Guez, L. Sifre,
+                                                                     G. Van Den Driessche, J. Schrittwieser, I. Antonoglou,
+                                                                     V. Panneershelvam, M. Lanctot et al., “Mastering the game
+                                                                     of go with deep neural networks and tree search,” Nature, vol.
+                                                                     529, no. 7587, pp. 484–489, 2016.
+                                                                 [6] S.-B. Lee, D. Pei, M. Hajiaghayi, I. Pefkianakis, S. Lu, H. Yan,
+                                                                     Z. Ge, J. Yates, and M. Kosseifi, “Threshold compression for 3g
+                                                                     scalable monitoring,” in INFOCOM, 2012 Proceedings IEEE.
+                                                                     IEEE, 2012, pp. 1350–1358.
+                                                                 [7] L. Kocsis and C. Szepesvári, “Bandit based monte-carlo
+                                                                     planning,” in European conference on machine learning.
+                                                                     Springer, 2006, pp. 282–293.
+                                                                 [8] P. Auer, N. Cesa-Bianchi, and P. Fischer, “Finite-time analysis
+                                                                     of the multiarmed bandit problem,” Machine learning, vol. 47,
+                                                                     no. 2-3, pp. 235–256, 2002.
+                                                                 [9] A. Soule, K. Salamatian, and N. Taft, “Combining filtering and
+                                                                     statistical methods for anomaly detection,” in Proceedings of
+                                                                     the 5th ACM SIGCOMM conference on Internet Measurement.
+                                                                     USENIX Association, 2005, pp. 31–31.
+                                                                [10] https://en.wikipedia.org/wiki/List_of_HTTP_status_
+                                                                     codes#4xx_Client_errors.
+                                                                [11] M. Y. Chen, E. Kiciman, E. Fratkin, A. Fox, and E. Brewer,
+                                                                     “Pinpoint: Problem determination in large, dynamic internet
+                                                                     services,” in Dependable Systems and Networks, 2002. DSN
+                                                                     2002. Proceedings. International Conference on. IEEE, 2002,
+                                                                     pp. 595–604.
+                                                                [12] R. R. Kompella, J. Yates, A. Greenberg, and A. C. Snoeren,
+                                                                     “Ip fault localization via risk modeling,” in Proceedings of the
+                                                                     2nd conference on Symposium on Networked Systems Design
+                                                                     & Implementation-Volume 2. USENIX Association, 2005, pp.
+                                                                     57–70.
+                                                                [13] S. Kandula, D. Katabi, and J.-P. Vasseur, “Shrink: A tool for
+                                                                     failure diagnosis in ip networks,” in Proceedings of the 2005
+                                                                     ACM SIGCOMM workshop on Mining network data. ACM,
+                                                                     2005, pp. 173–178.
+                                                                [14] R. R. Kompella, J. Yates, A. Greenberg, and A. C. Snoeren,
+                                                                     “Detection and localization of network black holes,” in
+                                                                     INFOCOM 2007. 26th IEEE International Conference on
+                                                                     Computer Communications. IEEE. IEEE, 2007, pp. 2180–2188.
+                                                                [15] P. Bahl, R. Chandra, A. Greenberg, S. Kandula, D. A. Maltz,
+                                                                     and M. Zhang, “Towards highly reliable enterprise network
+                                                                     services via inference of multi-level dependencies,” in ACM
+                                                                     SIGCOMM Computer Communication Review, vol. 37, no. 4.
+                                                                     ACM, 2007, pp. 13–24.
+                                                                [16] H. Yan, A. Flavel, Z. Ge, A. Gerber, D. Massey, C. Papadopou-
+                                                                     los, H. Shah, and J. Yates, “Argus: End-to-end service anomaly
+                                                                     detection and localization from an isp’s point of view,” in
+                                                                     INFOCOM, 2012 Proceedings IEEE. IEEE, 2012, pp. 2756–
+                                                                     2760.
+                                                                [17] B. Nguyen, Z. Ge, J. Van der Merwe, H. Yan, and J. Yates,
+                                                                     “Absence: Usage-based failure detection in mobile networks,”
+                                                                     in Proceedings of the 21st Annual International Conference on
+                                                                     Mobile Computing and Networking. ACM, 2015, pp. 464–476.
+                                                                [18] D. Liu, Y. Zhao, K. Sui, L. Zou, D. Pei, Q. Tao, X. Chen, and
+                                                                     D. Tan, “Focus: Shedding light on the high search response time
+                                                                     in the wild,” in INFOCOM, 2016 Proceedings IEEE. IEEE,
+                                                                     2016.
+
+
+                                                           14
+[19] F. Ahmed, J. Erman, Z. Ge, A. X. Liu, J. Wang, and H. Yan,
+     “Detecting and localizing end-to-end performance degradation
+     for cellular data services,” in INFOCOM, 2016 Proceedings
+     IEEE. IEEE, 2016.
+
+
+
+
+                                                                    15
+

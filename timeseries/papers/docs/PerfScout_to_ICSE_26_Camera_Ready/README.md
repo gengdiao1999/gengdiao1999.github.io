@@ -1,0 +1,222 @@
+# PerfScout：基于强化学习的自适应性能测试工作负载生成器（ICSE-SEIP 2026）
+
+> 作者：Yongqian Sun、Qingliang Zhang、Xiao Xiong、Mengyao Li、Yimin Zuo、Shenglin Zhang、Xidao Wen、Wenwei Gu、Huandong Zhuang、Bowen Deng、Ruiyuan Wan、Dan Pei
+> 机构：南开大学、BizSeer、华为云、清华大学
+> 发表年份：2026
+> 会议/期刊：IEEE/ACM 48th International Conference on Software Engineering, Software Engineering in Practice (ICSE-SEIP '26), Rio de Janeiro, Brazil
+> 关联 PDF：同目录下 `PerfScout_to_ICSE_26_Camera_Ready.pdf`
+
+## 一、文档信息速览
+
+| 字段 | 值 |
+|---|---|
+| 标题 | PerfScout: An Adaptive Workload Generator in Software Performance Testing |
+| 作者 | Yongqian Sun, Qingliang Zhang, Xiao Xiong, Mengyao Li, Yimin Zuo, Shenglin Zhang, Xidao Wen, Wenwei Gu, Huandong Zhuang, Bowen Deng, Ruiyuan Wan, Dan Pei |
+| 机构 | 南开大学、BizSeer、华为云、清华大学 |
+| 发表年份 | 2026 |
+| 会议/期刊 | ICSE-SEIP 2026 |
+| 分类 | 性能测试 / 强化学习 / 工作负载生成 |
+| 核心问题 | 性能测试中如何在不同 SUT（被测系统）上自适应、自动化地探测系统 breaking point（性能拐点）？ |
+| 主要贡献 | 1) SPOT 动态阈值生成；2) ADF+KPSS 局部平稳性评估；3) PPO 策略优化；4) 华为云 9 个月落地 |
+
+## 二、背景（Background）
+
+随着互联网业务规模扩大，用户对软件性能的期待急剧提升——Costco 在感恩节因流量激增 16.5 小时宕机，损失约 1100 万美元；HealthCare.gov 上线初期实际流量（25 万）远超预期（5 万）导致重大崩溃。在高峰负载下保持稳定是现代软件系统的关键需求。
+
+性能测试是发布前发现容量上限的标准手段：逐步提升并发负载（QPS），观察吞吐量、响应时间、错误率等 KPI 的拐点（breaking point）——当系统过载时，响应时间飙升、错误率上升、吞吐量下降。该点对应系统的"最大可持续负载"，是限流、降级、扩容等策略的依据。
+
+但工业实践长期依赖人工脚本与静态阈值：工程师凭经验设定若干 QPS 等级与响应时间阈值，反复执行"加压-观察-判断-再加压"的循环。这一方法存在三大顽疾：
+
+- **劳动密集、易出错**：每个新 SUT 都需要重新调阈值；
+- **跨系统不可移植**：固定阈值在异构系统上要么过保守、要么过激进；
+- **系统抖动干扰**：吞吐量瞬时抖动会让自动化代理误判，提前/延迟识别拐点；
+- **KPI 反馈异构**：不同 SUT 的 KPI 模式差异大，难以用统一规则建模。
+
+近期工作（DBWGM、RL-based 工具）尝试用强化学习做工作负载决策，但依然受制于固定 KPI 阈值、缺乏对系统抖动的鲁棒处理。本文通过在华为云真实数据集（200+ 测试用例）上做 3D 散点分析证实：breaking point 处 workload 跨 1k-8k、response time 跨 3k-30k ms、error rate 跨 0.01-0.2——这意味着**任何固定阈值都注定失败**。
+
+## 三、目的（Problems Solved）
+
+- **痛点 1：手动阈值不可扩展。** 异构 SUT 在 breaking point 处的 KPI 分布极广，固定阈值要么过早要么过晚。
+- **痛点 2：系统抖动影响判定。** throughput 抖动的瞬时尖峰会让 RL agent 做出错误决策（提前加压或提前停止），收敛慢、误判多。
+- **痛点 3：不同 SUT 性能反馈模式差异大。** KPI 形态多样，跨系统难以用统一规则建模，需要动态适应。
+- **解决方案**：构建 PerfScout 框架，将（i）基于 SPOT（极值理论）动态生成 KPI 阈值；（ii）基于 ADF/KPSS 单位根与平稳性测试过滤瞬态抖动；（iii）基于 PPO 的工作负载决策，三者耦合在一起。
+
+## 四、核心原理（Principles）
+
+**总览**：PerfScout 是一个非侵入式、基于强化学习的性能测试工作负载生成器。系统以 KPI 时序为状态、负载调整为动作、SPOT 阈值为奖励信号，循环往复地"加压-观测-判断"。
+
+**三大模块**：
+
+- **SPOT-Based Breaking Point Identification（动态阈值生成）**：极值理论（EVT）+ 概率尾部分布拟合（Generalized Pareto Distribution），根据历史 KPI 序列自适应估计异常阈值。KPI 偏离该阈值即视为系统进入性能退化。
+- **ADF + KPSS 局部平稳性识别**：ADF（Augmented Dickey-Fuller）单位根检验与 KPSS 平稳性检验组合判断当前窗口是否处于"局部平稳"状态——只有平稳才能信任当前 KPI 观测值，从而继续做工作负载决策；非平稳说明系统还在抖动期，agent 应当"等待"以避免误判。
+- **PPO 策略优化**：Proximal Policy Optimization 做连续动作空间的负载控制；奖励信号同时考虑"是否逼近 breaking point"、"是否触发 SPOT 异常"、"是否处于平稳态"等。
+
+**为什么这么做**：
+- SPOT 自动生成阈值，避免人工配置；EVT 在数据非高斯场景下比简单 3σ 更鲁棒。
+- ADF/KPSS 是经典时间序列分析工具，能在无需训练的前提下量化"当前是否可信任"。
+- PPO 是工业 RL 中最成熟稳定的算法之一，与离散/连续动作空间都兼容，适合工作负载调整的连续控制。
+
+**与现有方法的差异**：
+- vs. JMeter 等静态工具：PerfScout 自动探索、不依赖专家经验。
+- vs. DBWGM（动态黑盒工作负载生成）：DBWGM 仍依赖手工规则与阈值，PerfScout 端到端自适应。
+- vs. 既有 RL 方案：把"阈值"和"平稳性"作为可学习/可推理的两个独立信号，避免 RL 自身在非平稳环境中收敛困难。
+
+## 五、算法详解（Algorithm）
+
+### 1. 输入 / 输出
+- **输入**：SUT 当前 KPI（响应时间、错误率、吞吐量）滑动窗口；可选历史 KPI 用于初始化 SPOT。
+- **输出**：下一轮并发负载 QPS（连续动作）。
+
+### 2. 核心模块
+- **SPOT Threshold Generator**：用历史正常 KPI 拟合 GPD 尾部，得到 q-分位阈值 τ。
+- **Stationarity Gate**：对当前 KPI 窗口做 ADF + KPSS 双检验；若两者结论一致（都平稳 / 都非平稳），输出布尔位 `is_stationary`。
+- **Reward Shaper**：
+  $$r_t = r_{\text{approach}} \cdot \mathbb{1}[\text{is\_stationary}] - \lambda \cdot \text{KPI\_violation}(\tau)$$
+  即只在平稳时给予"逼近 breaking point"的正向奖励，异常时扣分。
+- **PPO Actor-Critic**：策略网络 π_θ(a|s) 与价值网络 V_φ(s)，clip 目标函数更新。
+
+### 3. 伪代码
+
+```python
+def perfscout_loop(sut, baseline_kpis, init_qps, max_iters):
+    state = init_state(baseline_kpis)
+    policy, value = init_ppo()
+    spot = SPOT(baseline_kpis)            # 训练 EVT 尾部
+    qps = init_qps
+    for t in range(max_iters):
+        # 1) 加压
+        sut.set_concurrent(qps)
+        kpis = sut.collect_kpis(window=W)
+        # 2) 平稳性判定
+        is_stat = adf_test(kpis) and kpss_test(kpis)
+        # 3) 异常判定（动态阈值）
+        anomaly = spot.is_anomalous(kpis)
+        # 4) 状态构造
+        state_t = build_state(kpis, qps, is_stat, anomaly)
+        # 5) PPO 决策
+        action = policy.act(state_t)
+        qps_next = qps + clip(action, -delta_max, delta_max)
+        # 6) 奖励
+        reward = reward_fn(qps_next, kpis, anomaly, is_stat)
+        # 7) 更新 PPO
+        policy.update(state_t, action, reward, value)
+        value.update(state_t, reward)
+        if anomaly and is_stat:
+            return qps, "breaking point found"
+        qps = qps_next
+```
+
+### 4. 关键数学
+- **SPOT 的尾部概率**：
+  $$P(X > u + q \mid X > u) \approx \left(1 + \frac{\xi q}{\sigma}\right)^{-1/\xi}$$
+  其中 u 为高阈值、q 为超出量、σ、ξ 为 GPD 形状与尺度参数。
+- **ADF 检验**：单位根存在 ⇒ 非平稳；KPSS 检验：平稳为零假设。两者联合可降低误判。
+- **PPO Clip Objective**：
+  $$L^{\text{CLIP}}(\theta) = \mathbb{E}_t \big[ \min(r_t(\theta) A_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) A_t) \big]$$
+  其中 $r_t(\theta) = \pi_\theta(a_t|s_t)/\pi_{\theta_{\text{old}}}(a_t|s_t)$。
+
+### 5. 复杂度分析
+- 每次决策：KPI 收集 O(1) + 平稳性检验 O(W) + SPOT 推断 O(1) + PPO 前向 O(d²)；总体线性于窗口与状态维度。
+- 总迭代次数：通常 20-50 步内找到 breaking point。
+
+### 6. 训练与推理
+- SPOT 离线用历史正常 KPI 拟合一次，部署时无需再训。
+- PPO 在测试运行中在线学习（每轮收集 transition 更新），亦可提前用仿真器预训练。
+- 推理：在线循环执行 `policy.act(state)`，毫秒级。
+
+### 7. 示例
+- D1 数据集（华为云 100+ 用例）：初始 QPS=1000，PerfScout 用 ~30 步在 6500 QPS 处识别出 throughput 突降与响应时间飙升；同条件下静态步长方案要么过早触发（QPS=3000）要么过晚（>8000）。
+
+## 六、系统架构图（Architecture）
+
+```mermaid
+graph TB
+    A[被测系统 SUT] --> B[负载生成器: 调整 QPS]
+    B --> A
+    A --> C[KPI 采集: 响应时间/错误率/吞吐量]
+    C --> D[SPOT 动态阈值 τ]
+    C --> E[ADF + KPSS 平稳性判定]
+    D --> F[异常检测]
+    E --> G[状态构造器]
+    F --> G
+    G --> H[PPO Actor]
+    H --> I[连续动作: 下一轮 QPS 增量]
+    I --> B
+    H --> J[PPO Critic]
+    J --> K[优势函数 A_t]
+    H --> L[PPO 损失]
+    J --> L
+    L --> M[梯度回传更新策略]
+```
+
+## 七、流程图（Process Flow）
+
+```mermaid
+flowchart TD
+    S1[初始化: 拟合 SPOT] --> S2[初始 QPS]
+    S2 --> S3[加压并采集 KPI]
+    S3 --> S4{ADF+KPSS<br/>是否平稳?}
+    S4 -- 否 --> S5[延迟决策, 等待 KPI 收敛]
+    S5 --> S3
+    S4 -- 是 --> S6[SPOT 异常检测]
+    S6 -- 异常 --> S7[报告 breaking point]
+    S6 -- 正常 --> S8[PPO 决策新 QPS]
+    S8 --> S9[计算奖励 r_t]
+    S9 --> S10[更新 PPO 策略]
+    S10 --> S3
+```
+
+## 八、关键创新点（Key Innovations）
+
+- **+ EVT 驱动的动态 KPI 阈值**：用 SPOT 替代人工阈值，自动适应不同 SUT 的 KPI 分布（异构系统不再需要分别调参）。
+- **+ 平稳性门控的 RL 决策**：把 ADF+KPSS 双检验作为 PPO 的"前置门"，仅在 KPI 平稳时给奖励，从根本上避免瞬态抖动下的误判与震荡。
+- **+ 三模块协同的统一框架**：SPOT 解决阈值、平稳性测试解决抖动、PPO 解决连续决策，三者解耦耦合，调试与扩展方便。
+- **+ 真实生产环境长期落地**：已在华为云 9 个月生产部署，非简单 benchmark 验证。
+
+## 九、实验与结果（Experiments）
+
+- **数据集**：D1（华为云测试环境 200+ 用例，含响应时间、错误率、throughput 三维 KPI），D2（华为云生产环境脱敏数据集）。
+- **Baseline**：固定步长（5/10/20 QPS/轮）、DBWGM 启发式、传统 PPO（无 SPOT + 平稳性门控）。
+- **主要指标**：breaking point 识别准确率、测试效率（达到 breaking point 所需时间/负载步数）、谐波均值（综合指标）。
+- **关键结果**：
+  - Breaking point 识别准确率 > 82%；
+  - 测试效率提升最高 90%；
+  - 谐波均值（综合）> 86%；
+  - 显著优于固定步长与静态启发式 baseline。
+- **消融实验**：移除 SPOT 模块 → 阈值需人工设置，跨系统性能下降明显；移除 ADF/KPSS → 在抖动期出现误判，效率下降 30%+；移除 PPO 改用规则策略 → 步长僵化，无法自适应。
+- **效率分析**：单轮决策 < 10ms；200+ 测试用例单次全跑 < 1h；部署到华为云实际测试周期从 1 天压缩到 ~3 小时。
+
+## 十、应用场景（Use Cases）
+
+- **云服务上线前压测**：弹性云数据库、缓存、API 网关等组件 capacity planning。
+- **重大活动压测**：电商大促、票务秒杀、节日活动前的容量评估。
+- **CI/CD 集成**：每次重大版本发布自动跑一轮 PerfScout，回归性能基线。
+- **多租户 SaaS 性能评估**：对不同租户配置自动找到 breaking point，辅助 SLA 制定。
+- **混合云/异构系统评估**：跨私有云、公有云、边缘节点的统一性能基线建立。
+
+## 十一、相关论文（Related Papers in this set）
+
+- 同为 NetMan Lab 的 **AIOpsArena** 同样关注微服务场景下的算法评估与可重复性，PerfScout 可作为 AIOps 评测平台上的一个算法接入。
+- **LogEval** 提供 LLM 在日志分析任务上的评测，PerfScout 在压力测试阶段生成的日志可以用 LogEval 评估异常检测 LLM 的稳健性。
+- **TixFusion（3696630.3728547）** 与 PerfScout 同为 ICSE/FSE 系列工业实践论文，均关注自动化效率提升。
+
+## 十二、术语表（Glossary）
+
+- **SUT (System Under Test)**：被测系统。
+- **Breaking Point**：性能拐点，即系统进入响应时间飙升、错误率上升、吞吐量下降的临界负载。
+- **SPOT (Statistical Process control for Online Troubleshooting)**：基于极值理论的在线异常检测算法。
+- **EVT (Extreme Value Theory)**：极值理论，研究分布尾部的统计理论。
+- **GPD (Generalized Pareto Distribution)**：广义帕累托分布，描述超出阈值的尾部。
+- **ADF (Augmented Dickey-Fuller)**：单位根检验。
+- **KPSS (Kwiatkowski–Phillips–Schmidt–Shin)**：平稳性检验。
+- **PPO (Proximal Policy Optimization)**：近端策略优化，强化学习算法。
+- **DBWGM**：Dynamic Black-box Workload Generation Method，动态黑盒工作负载生成方法。
+- **KPI (Key Performance Indicator)**：关键性能指标。
+
+## 十三、参考与延伸阅读
+
+- Siffer et al., **Anomaly Detection with SPOT**。
+- Brockman & Sutcliffe, **ADF Test**；Kwiatkowski et al., **KPSS Test**。
+- Schulman et al., **Proximal Policy Optimization**。
+- 华为云性能测试团队、JMeter / wrk / Locust 等开源压测工具的官方文档。
+- 相关同期工作：DBWGM、ART、BarO 等。

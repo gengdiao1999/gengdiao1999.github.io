@@ -1,0 +1,959 @@
+    CoFlux: Robustly Correlating KPIs by Fluctuations for Service
+                         Troubleshooting
+             Ya Su16 , Youjian Zhao16 , Wentao Xia16 , Rong Liu2 , Jiahao Bu16 , Jing Zhu16 , Yuanpu Cao3 ,
+                      Haibin Li146 , Chenhao Niu16 , Yiyin Zhang5 , Zhaogang Wang5 , Dan Pei16∗
+    1 Tsinghua University, 2 Stevens Institute of Technology, 3 Nankai University, 4 National University of Defense Technology,
+                  5 Alibaba Group, 6 Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+ABSTRACT                                                                                        1                                        INTRODUCTION
+Internet-based service companies monitor a large number of KPIs                                Large-scale Internet-based service companies provide a large
+(Key Performance Indicators) to ensure their service quality and                               number of services and applications through thousands of servers
+reliability. Correlating KPIs by fluctuations reveals interactions                             [1, 2]. However, service interruptions are inevitable due to many
+between KPIs under anomalous situations and can be extremely                                   reasons, such as network outages, server breakdown and malicious
+useful for service troubleshooting. However, such a KPI flux-                                  attacks [3, 4]. To stay competitive, operators in these companies
+correlation has been little studied so far in the domain of Internet                           take great efforts to keep their services reliable. They constantly
+service operations management. A major challenge is how to                                     monitor KPIs (Key Performance Indicators), time series that contain
+automatically and accurately separate fluctuations from normal                                 service quality measures (such as success ratio and number of
+variations in KPIs with different structural characteristics (such                             requests [5]). An incident can trigger fluctuations in some KPIs,
+as seasonal, trend and stationary) for a large number of KPIs.                                 and the fluctuations may propagate to more related KPIs to form
+In this paper, we propose CoFlux, an unsupervised approach, to                                 interweaved fluctuations, which complicate incident resolution and
+automatically (without manual selection of algorithm fitting and                               root cause analysis [6]. Without understanding their relationships,
+parameter tuning) determine whether two KPIs are correlated by                                 it is challenging for operators to prioritize alerts triggered by
+fluctuations, in what temporal order they fluctuate, and whether                               interweaved fluctuations and identify possible incident impact.
+they fluctuate in the same direction. CoFlux’s robust feature                                     In this paper, we focus on analyzing the correlation between KPI
+engineering and robust correlation score computation enable it                                 fluctuations. Fluctuations are deviations from expected values in
+to work well against the diverse KPI characteristics. Our extensive                            a KPI. Large fluctuations likely are anomalies and often presented
+experiments have demonstrated that CoFlux achieves the best F1-                                as sudden spikes or dips [3]. We define that two KPIs are flux-
+Scores of 0.84 (0.90), 0.92 (0.95), 0.95 (0.99), in answering these three                      correlated if fluctuations in one KPI are correlated with those in
+questions, in the two real datasets from a top global Internet com-                            the other over a period of time. Note that flux-correlation is different
+pany, respectively. Moreover, we showed that CoFlux is effective                               from KPI correlation which is often calculated using the raw values of
+in assisting service troubleshooting through the applications of                               KPI. Two flux-correlated KPIs may be uncorrelated when their raw
+alert compression, recommending Top N causes, and constructing                                 values are considered. For example, as shown in Fig. 1(a), the raw
+fluctuation propagation chains.                                                                values of K 1 and K 2 (or K 1 and K 3 ) are not correlated by algorithms,
+                                                                                               for example, Pearson Correlation [7]. However, the fluctuations of
+CCS CONCEPTS                                                                                   these two KPIs, as shown in Fig. 1(b), are highly correlated since
+                                                                                               they often happen synchronously or in sequence. As a result, flux-
+• Networks → Network monitoring; • Social and professional
+                                                                                               correlation should be analyzed based on fluctuations rather than
+topics → Software maintenance.
+                                                                                               raw KPIs.
+
+KEYWORDS
+                                                                                              Value Value Value Value Value Value
+
+
+
+
+                                                                                                                                                                  Value Value Value Value Value Value
+
+
+
+
+                                                                                                                                    K1                                                                  K1
+key performance indicator, service operation and management,                                                                        K2                                                                  K2
+time series, fluctuation correlation, service troubleshooting                                                                       K3                                                                  K3
+
+                                                                                                                                    K4                                                                  K4
+
+∗ Dan Pei is the corresponding author.                                                                                              K5                                                                  K5
+
+                                                                                                                                    K6                                                                  K6
+                                                                                                                           0                     24          48                                0                 24        48
+                                                                                                                                             Time (hour)                                                     Time (hour)
+Permission to make digital or hard copies of all or part of this work for personal or
+                                                                                                                                            (a) Six KPIs           (b) Fluctuations (Flux-feature) of the KPIs
+classroom use is granted without fee provided that copies are not made or distributed
+                                                                                                                                                                   in (a), obtained by methods in Section 4.1.1
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,                                                     Figure 1: Examples of Flux-correlation.
+to post on servers or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from permissions@acm.org.                                                 Flux-correlation can assist operators in service troubleshooting
+IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA                                                   in many aspects. An Internet-based service often consists of a
+© 2019 Association for Computing Machinery.
+ACM ISBN 978-1-4503-6778-3/19/06. . . $15.00                                                    stack of software modules deployed on multiple machines [1]. The
+https://doi.org/10.1145/3326285.3329048                                                         service is monitored by a number of KPIs at different levels, such
+IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA                                                                                        Ya Su, et al.
+
+
+as machine-level and module-level [2]. When a failure happens,                   detection models and determining their thresholds often
+excessive and often correlated alerts are generated from these KPIs.             highly depend on specific characteristics of KPIs and users’
+These redundant alerts compete for operators’ attention and distract             sensitivity preferences [16]. Thus, flux-correlation should
+them from diagnosis. With flux-correlation, first, we can cluster                not be based on anomaly detection.
+KPIs based on their flux-correlation results for alert compression             • Two flux-correlated KPIs may present different interaction
+[8]. If two or more KPIs are flux-correlated, they can be grouped                patterns. In practice, KPIs may fluctuate synchronously
+into a cluster, alerts are raised based on the cluster as a whole as             or in sequence with a delay. Also, sometimes, when one
+opposed to individual KPIs, greatly reducing operators’ workload.                KPI plunges, some KPIs follow with a big dip, while other
+For example, in Fig. 1(a), K 1 , K 2 and K 3 can be grouped into one             KPIs respond with a spike. These patterns complicate flux-
+cluster, while K 4 , K 5 and K 6 form another cluster. Second, when              correlation analysis.
+anomalies occur at a KPI, operators can check the fluctuations of            We make the following contributions in this paper when
+its Top N flux-correlated KPIs to narrow down their analysis scope.        addressing the above challenges:
+Third, in order to infer root causes, we can construct a fluctuation
+propagation chain by the temporal order in which KPIs fluctuate                • To the best of our knowledge, this paper is the first attempt to
+(e.g., first K 4 , then K 5 and finally K 6 , as shown in Fig. 1(a)). As         formulate flux-correlation and study it in detail in the domain
+suggested by [6], within a service, KPIs with the earliest anomalous             of Internet service operations management. We propose
+changes can better reflect actual root causes.                                   a novel unsupervised algorithm, CoFlux, to automatically
+    The idea of flux-correlation has also attracted interest from                and accurately measure the flux-correlation between KPIs
+other fields such as system modeling [9] and stock market [10].                  based on their flux-features, without the need for anomaly
+[9] aims at characterizing the anomalous interactions among KPIs                 detection. CoFlux can answer three questions. (1) Are two
+in a system and constructing Structure-of-Influence Graphs (SIG).                KPIs flux-correlated? If flux-correlated, (2) in what temporal
+The anomaly signals of a KPI are computed by KL divergence                       order they fluctuate? (3) are they positively or negatively
+between the distribution of data in a sliding window and the entire              correlated?
+distribution of the KPI. As a result, [9] focuses on the outliers              • CoFlux includes a robust set of flux-features extracted
+[11] (or novelty anomalies) and cannot identify anomalies that are               from forecast errors of well-accepted time series models.
+mainly judged by partial history data. The statistical models ARCH               Our intuition is that, at least one of these flux-features
+[10], VARMA [12], and CoIntegration [13] have been developed                     is capable of capturing a given KPI’s fluctuations in a
+to analyze correlations in stock price changes, or study volatility              sufficiently accurate way, although we do not know which
+across stock markets, etc. However, these models cannot solve                    one beforehand. This makes our feature extraction robust
+the flux-correlation problem well in our scenario because they                   against diverse KPI characteristics, and can work with a large
+cannot accurately identify fluctuations of KPIs. Another related                 number of KPIs without algorithm fitting and parameter
+area is the correlation analysis between raw time series. Pearson                tuning.
+[7] and Spearman Correlation focus on linear and rank correlation              • CoFlux computes two KPIs’ flux-correlation score by using
+between raw KPIs respectively. They cannot work well with                        the best Cross-correlation [17] score among different flux-
+fluctuations, especially when two KPIs have different patterns, such             features of two KPIs. Intuitively, if two KPIs X and Y are
+as seasonality and phase shift. Granger causality [14] identifies                flux-correlated, then the best flux-features from X and Y are
+the correlation between two KPIs by whether one KPI is useful                    also correlated. There is no need to identify this best flux-
+for forecasting another. However, in our context, fluctuations are               feature pair beforehand or manually, making CoFlux robust
+usually caused by unexpected accidents and may not be predicted                  against diverse KPI characteristics.
+by regression. Therefore, these methods cannot solve our flux-                 • Our extensive experiments have demonstrated that CoFlux
+correlation problem well.                                                        achieves the best F1-Scores of 0.84 (0.90), 0.92 (0.95), 0.95
+    This paper fills the gap by focusing on KPI flux-correlation anal-           (0.99), in answering the three questions in flux-correlation
+ysis. The major challenges are as follows.                                       analysis, in the two real datasets from a top global Internet
+                                                                                 company, respectively, significantly outperforming the base-
+    • There is no generic mechanism for fluctuation extraction.                  line algorithms and their variants. Moreover, we showed
+      Different KPIs often have different time series characteristics            that CoFlux is effective in assisting service troubleshooting
+      (such as seasonal, stationary and trend) [15] and need specific            through the applications of alert compression, recommend-
+      models to capture their fluctuations [3]. Typically 10k to 1               ing Top N causes, and constructing fluctuation propagation
+      million KPIs exist in Internet companies, it would be time-                chains.
+      consuming and unrealistic to manually search for a suitable
+      fluctuation extraction model for each of them. Thus, it is           2   PROBLEM STATEMENT
+      challenging to design a generic fluctuation (i.e., flux-feature)     In this section, we first define several key terms, including KPIs,
+      extraction mechanism that is robust against diverse KPI              flux-feature, flux-correlation, and two flux-Correlation patterns,
+      characteristics.                                                     and then describe our objective in this study.
+    • Flux-correlation should not be based on anomaly detection.              KPIs and flux-features. A KPI is a series of successive ob-
+      One might be tempted to apply J-measure [2] to the binary            servations collected at equal-spaced timestamps [2], denoted as
+      results of anomaly detection. However, selecting anomaly             S = [s 1, s 2, ..., sm ], where s i is the observation corresponding to
+CoFlux: Robustly Correlating KPIs by Fluctuations for Service Troubleshooting                               IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA
+
+                                                                                          +
+time index i for i ∈ 1, 2, ..., m , and m is the length of the KPI. If two     (or X −→Y ). In Fig. 1(a), K 2 and K 3 have positive flux-Correlation,
+KPIs have different sampling intervals, when considering their flux-           but K 1 is negatively flux-correlated with K 2 and K 3 .
+correlation, we resample them using the Lowest Common Multiple                    With these definitions, we state that our objective is to solve the
+of their intervals as the final interval. We define a predicted KPI as         following problems, denoted as questions Q1∼3:
+a sequence of predicted values produced by a time series forecast                  (1) determining the existence of flux-correlation between two
+model, denoted as P = [p1, p2, ..., pm ], where pi is the predicted                    KPIs (Q1),
+value of si . The prediction errors are denoted as F = [f 1, f 2, ..., fm ],       (2) for flux-correlated KPIs, understanding the temporal order
+where fi = si − pi . While normal observations can be well predicted,                  of their fluctuations (Q2), and,
+fluctuations often generate prediction errors. Thus, prediction                    (3) determining the direction of flux-correlation(Q3).
+errors can be very useful in analyzing fluctuations. In this work,
+the prediction errors are treated as fluctuation features, referred to         3      CORE IDEA
+as flux-features. Accordingly, the time series model with specific
+                                                                               To solve the problems mentioned above, we designed an unsuper-
+parameters used for prediction is a feature detector. We can create
+                                                                               vised approach, called CoFlux, as shown in Fig. 3. The input to
+many flux-features for a KPI through different time series forecast
+                                                                               CoFlux is two KPIs. We first extract their flux-features through
+models.
+                                                                               feature engineering, and then measure the correlation of these
+   Fig. 2 shows an example of a real KPI, its predicted values by
+                                                                               flux-features. In the end, we provide answers to questions Q1∼3.
+Historical Average [18], and the corresponding flux-feature. Since
+                                                                               Note that, CoFlux aims at determining the flux-correlation of KPIs
+flux-features are generated by time series forecast models, the model
+                                                                               over a long period, so it is an offline model and the timeliness is
+selection is critical to the flux-feature extraction. If a model can
+                                                                               not our goal. Moreover, the flux-correlation results can be updated
+predict normal values precisely, then prediction errors can capture
+                                                                               routinely (e.g., once per week or month) in consideration of the
+fluctuations well. We will discuss the model selection in detail later.
+                                                                               current data.
+        5
+        4                                                                                                      KPI1’s amplified                     Existence of
+                                                                                   KPI1                         flux-features                     flux-correlation
+        3                                                                                       Feature                            Correlation
+                                                                                                                                                            If yes
+        2                                                                                     engineering      KPI2’s amplified   measurement
+                                                                                                                                                 • Temporal order
+                                                                                   KPI2
+Value
+
+
+
+
+        1                                                                                                       flux-features                    • Direction
+        0
+        1     Real KPI                                                                                 Figure 3: CoFlux architecture.
+              Predicted KPI
+        2     Flux-feature                                                        Feature engineering, as a key component in this architecture, is
+        30                            24                              48
+                                 Time (hour)                                   to find suitable time series models as our flux-feature detectors.
+        Figure 2: A real KPI, predicted KPI and flux-feature.                  Although many models have been proposed to forecast time
+                                                                               series, for example, MA (Moving average), TSD (Time Series
+    Flux-correlation. In this study, for a KPI pair, X and Y , we              Decomposition) [19], each model only fits well with some types of
+first determine whether their fluctuations are correlated, i.e., flux-         characteristics of time series. For example, for the two KPIs shown
+correlated. We define that X and Y are flux-correlated, denoted as             in Fig. 1(a), K 4 has strong seasonality while K 5 is stable. For seasonal
+X ∽Y , if their flux-features are correlated. X ≁Y if X and Y are not          KPIs, models like TSD and Historical Average may be appropriate.
+flux-correlated. For example, Fig. 1 shows six KPIs and their flux-            Stable KPIs can be better predicted by MA or weighted MA because
+features. The flux-features of K 1 and K 2 look highly correlated, so          their prediction mainly relies on recent values [20]. Certainly, there
+they are flux-correlated, i.e., K 1 ∽K 2 . However, K 1 and K 4 are not        are no generic models that can predict any type of KPIs accurately.
+flux-correlated, i.e., K 1 ≁K 4 .                                              As mentioned in Section 1, the challenge is that we have a large
+    When two KPIs are flux-correlated, we continue to understand               number of KPIs with different characteristics. It would be very
+their temporal order and whether they fluctuate in the same                    time-consuming and unrealistic to manually search for a suitable
+direction, as described below.                                                 forecast model for each of them.
+    Temporal order of flux-correlation. The fluctuations from                     Therefore, we cannot rely on a single time series model to extract
+two KPIs may be synchronized or shifted by some intervals.                     flux-features. Instead, to make CoFlux as versatile as possible, we
+Specifically, we use X →Y to denote the case that X fluctuates before          adopt several well-accepted models with corresponding parameters
+Y . If their fluctuations happen simultaneously, we denote it as X ↔Y .        as flux-feature detectors. This design is based on the following two
+As is shown in Fig. 1(a), the fluctuations of K 2 and K 3 happen at the        intuitions:
+same time, i.e., K 2 ↔K 3 , while K 1 fluctuates before K 2 and K 3 , i.e.,         • For any given KPI, if we survey a wide range of models, there
+K 1 →K 2 , K 1 →K 3 .                                                                  will be one or more of them that are capable of predicting
+    Direction of flux-correlation. When the fluctuations of X and                      its normal observations precisely enough and producing a
+Y are correlated, the correlation can be positive or negative. If the                  close-to-truth flux-feature.
+fluctuation of X is an increase but the corresponding fluctuation of Y              • If two KPIs, X and Y , are flux-correlated, then at least one
+                                                                 −
+is a decrease, their flux-correlation is negative, denoted as X ←
+                                                                →Y (or                 flux-feature of X and one flux-feature of Y are correlated.
+   −
+X− →Y ). On the other hand, if the fluctuation of X is an increase (or            We will use extensive experiments to validate these two intu-
+decrease) and the corresponding fluctuation of Y is also an increase           itions in Section 5.4. With flux-features extracted, we continue to
+                                                                      +
+(or decrease), their flux-correlation is positive, denoted as X ←    →Y        improve them through denoising and amplification.
+IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA                                                                                                          Ya Su, et al.
+
+
+   To determine flux-correlation, for each pair of KPIs, we cal-               possible values empirically. For example, the parameter of Wavelet
+culate the pairwise correlation over their flux-features by Cross-             can take several possible values. With each parameter configuration
+correlation [17], a widely-accepted time series similarity measure-            (e.g., win=1 day), Wavelet model can produce one predicted KPI,
+ment. Then, the maximum one is used to determine whether the                   and then one flux-feature. We view a time series model with a specific
+two KPIs are flux-correlated. Since we have included many flux-                parameter configuration as a flux-feature detector. In total, We get
+feature detectors in CoFlux, some may be able to extract close-                86 detectors from the models and parameter configurations shown
+to-truth flux-features, while others may generate misleading flux-             in Table 1. Accordingly, for each KPI, they produce 86 flux-features.
+features due to the inaccurate forecast. Averaging over all flux-                 Certainly, our flux-feature extraction module in CoFlux can be
+features or decision by majority vote would produce false negatives.           configured with other models or parameter values if needed. Note
+Certainly, our approach of only considering the maximum one                    that we have carefully evaluated most widely-used time series
+may cause potential false positives. We will use experiments in                models. Through our experiments, we found some of them, such as
+Section 5.4.1 to demonstrate that with good flux-feature detectors,            MA (Moving average) [20], WMA (weighted MA) and Exponentially
+false positives are very few.                                                  WMA, did not perform well in extracting flux-features from our
+                                                                               testing KPIs, because the prediction of these models mainly rely
+4     DESIGN                                                                   on recent data and cannot handle seasonal KPIs. Fig. 4 shows an
+In this section, we describe the details of the two components of              example that MA mistakenly captures the seasonality in KPI’s main
+CoFlux: feature engineering and correlation measurement. We start              patterns as flux-features, causing false positives.
+with feature engineering.
+
+4.1      Feature engineering
+             Table 1: Prediction models and detectors.
+      Prediction models / # of detectors    Parameter Configurations
+                    Diff / 2                     last-day, last-week
+              Holt-Winters / 64             α , β , γ = {0.2, 0.4, 0.6, 0.8}
+            Historical average / 4
+            Historical median / 4
+                                           window = 1, 2, 3, 4 week(s)
+                   TSD / 4
+               TSD median / 4
+                  Wavelet / 4               window = 1, 3, 5 ,7 day(s)         Figure 4: Two KPIs which are not flux-correlated and their
+                 In total: 7 prediction models / 86 detectors                  flux-features extracted by Moving average; The circles mark
+                                                                               the large fluctuations.
+4.1.1 Feature extraction. As discussed before, KPIs often have                 4.1.2 Feature amplification. After feature extraction, we get 86 raw
+different shapes and time series characteristics. To understand their          flux-features for each KPI. The raw flux-features of different KPIs
+flux-correlation, we need to use different suitable time series models         usually have values in different scales and units. We apply z-score
+to generate flux-features. We carefully selected 7 widely-used                 to normalize each flux-feature. The closer to zero a value is in the
+models, as listed in Table 1. Diff [3] simply uses the value of last day       normalized flux-feature, the less the KPI fluctuates.
+or last week separately to predict the current one. Holt-Winters [21]             In general, most values in a KPI look quite normal and they
+calculates forecast values using three smoothing equations (level,             slightly deviate from forecast values mainly due to noises. To reduce
+trend and seasonal components) with three parameters ranged from               the influence of noises, we use modified exponential activation
+0 to 1. Historical Average/Median [18] calculates the average/median           (Eq. 1) to strengthen large fluctuations. Eq. 1 amplifies values
+of the historical data within a window as a prediction. TSD (Time              that significantly deviate from zero, while having little impact on
+Series Decomposition) [19] extracts four components from a KPI:                those close to zero. This amplification can make flux-feature more
+level, trend, seasonality, noise, and then makes predictions using             distinguishable and help flux-correlation identification. In CoFlux,
+the sum of the first three components. TSD Median is similar to                we set α = 0.5 (the degree of growth, the larger the value, the faster
+TSD, but it uses median value instead of mean when calculating                 the growth) and β = 10 (if |x | > β, f value will not grow). The
+that three components. Wavelet decomposition [22] can cover the                effectiveness of modified exponential activation will be evaluated
+entire frequency domain of a KPI and we set the high-frequency                 by experiments and discussed later in Section 5.4.3.
+part as predictions.
+                                                                                                                   e min(x, β )×α − 1 , f or x ≥ 0
+                                                                                                             (
+   Most time series models have one or more parameters, and                                 f (α, β, x ) =                                                       (1)
+their parameters have to be tuned to fit a KPI the best. However,                                                −e min(|x |, β )×α + 1 , f or x < 0
+parameter tuning can be time-consuming and often requires domain
+knowledge. In our study, our ultimate goal is to determine flux-               4.2    Correlation measurement
+correlation. As long as a model can make sufficiently accurate                 Cross-correlation [17], a similarity measurement for time-lagged
+forecast such that the obtained flux-features capture real fluctuation         time series, has been widely used in signal and image processing.
+patterns, it is not necessary to strive for the best fitting parameters.       Cross-correlation can determine the shape similarity of two time
+Thus, in CoFlux, for each model parameter, we enumerate a list of              series well with considering their distortions in amplitude and
+CoFlux: Robustly Correlating KPIs by Fluctuations for Service Troubleshooting                           IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA
+
+
+ Algorithm 1: Correlation measurement                                                From Eq. 3, we know that F CC ∈ [−1, 1]. The closer to 1 or -1
+   Input: af x Set : Set of amplified flux-features of KPI X                      F CC lies, the stronger the correlation between G and H . Moreover,
+         af ySet : Set of amplified flux-features of KPI Y                        positive F CC means they move in the same direction, while negative
+         coT H R : Threshold of existence of flux-correlation
+                                                                                  F CC indicates that one flux-feature increases while the other
+ 1 r esul t Set ← [ ]
+   // Set of candidate flux-correlation results                                   decreases and vice versa. The effectiveness of Cross-correlation
+ 2 for afx in afxSet do                                                           can be seen in Section 5.4.4.
+ 3      for afy in afySet do                                                          As shown in Algorithm 1, with amplified flux-features, we can
+ 4           r esul t Set ← F CC(af x, af y) // Eq. 4
+                                                                                  then analyze flux-correlation for two KPIs easily. We enumerate
+ 5   if abs(max(resultSet[:,0])) > abs(min(resultSet[:,0])) then                  all amplified flux-feature pairs to calculate their Cross-correlation
+         [ccV, shiftV] = max(resultSet) /* ccV: correlation value about the
+                                                                                  values. Among these values, the one with the maximum absolute
+ 6
+             existence of flux-correlation; shiftV: shifted value of X
+             when get ccV                                                 */      value is selected as the final score and compared with a threshold to
+ 7 else [ccV, shiftV] = min(resultSet);                                           determine the existence of flux-correlation between the KPIs. This
+ 8 if abs(ccV) ≥ coTHR then                                                       threshold can be decided by practical requirements, or by precision-
+        if shiftV = 0 then
+ 9
+                                   +                                              recall curves, as discussed in Section 5.4.1. If the absolute value
+             if ccV ≥ 0 then X ←
+                               → Y;
+10
+                      −                                                           of the final score is below the threshold, X ≁Y ; otherwise X ∽Y . If
+             else X ←
+                    → Y;
+                                                                                  X ∽Y , we continue to find out the temporal order and direction. The
+11
+
+         if shiftV < 0 then
+12
+                                  +                                               temporal order can be determined by the shifted value of X . If it is
+             if ccV ≥ 0 then X −
+                               → Y;
+                                                                                  zero (i.e., no shift) then X ↔Y ; if it is negative (i.e., X shift to left)
+13
+                      −
+14           else X −
+                    → Y;
+                                                                                  then X →Y ; otherwise, Y →X . This flux-correlation can be positive
+         if shiftV > 0 then
+                                                                                  or negative, as indicated by the final score.
+15
+                                  +
+16           if ccV ≥ 0 then Y −
+                               → X;
+                     −
+17           else Y −
+                    → X;
+                                                                                  5      EVALUATION
+18   else X ≁ Y ;
+                                                                                  In this section, we evaluate the performance of CoFlux using two
+                                                                                  real-world datasets.
+phase, which is suitable for judging the three questions in CoFlux.
+Thus, we choose Cross-correlation to measure the correlation
+between flux-features in CoFlux. For two amplified flux-features
+                                                                                  5.1      Data sets
+G = [д1, · · · , дl ] and H = [h 1, · · · , hl ], considering the shift between   We collected two datasets, named Dataset I and II, from a top global
+G and H along the time axis, Cross-correlation always keeps one                   Internet company. Each dataset contains a number of KPIs, and their
+vector (e.g., H ) static and makes another one (e.g., G ) slide over H            flux-correlations have been labeled by domain experts to provide
+to calculate the inner product for each shift s of G (where s ∈ (−l, l ),         us the ground truth for evaluation.
+l is the length of amplified flux-feature). G s , the vector with shifted         Table 2: Dataset I: “Ground truth” column lists the number
+value s (especially G 0 = G ), can be denoted as:                                 of intra-category flux-correlated KPI pairs.
+                           |s |
+                                                                                      Cate                                                       #   Ground
+                    
+                    
+                                                                                           KPI ID, name, characteristics
+                    
+                     z }| {
+                    
+                     [0, · · · , 0, д1, · · · , дl −s ] , f or s ≥ 0
+                                                                                     gory                                                      KPIs truth
+               Gs =                                                   (2)
+                    
+                     [д1−s , · · · , дl , 0, · · · , 0] , f or s < 0                      1.1 Success rate of requests per cluster (stable)    21
+                                                                                       1   1.2 Count of HTTP error code per cluster                    33
+                    
+                    
+                                          | {z }
+                                                                                                                                                21
+                    
+                                                |s |
+                    
+                                                                                          (seasonal)
+     The inner product of G s and H , and their Cross-correlation value                    2.1 Error count of request per data center
+can be calculated as follows:                                                                                                                   14
+                                                                                           (seasonal)
+                                                                                       2                                                              38
+                                           l −1                                            2.2 Error rate (Error count/ Total count) per data
+                                                                                                                                                14
+                                           Õ
+                          R(G s , H ) =              G s [i] × H [i]      (3a)             center (stable)
+                                          i =−l +1                                         3.1 Java Garbage Collection overhead per ma-
+                                                  R(G s , H )                                                                                   11
+                     CC(G s , H ) = p                                     (3b)         3   chine (no clear pattern)                                   11
+                               R(G, G) × R(H, H )                                          3.2 JVM CPU usage per machine (no clear pattern)     11
+   Enumerating all possible values of s , we can obtain a Cross-                           4.1 CPU Idle per machine (no clear pattern)          26
+                                                                                       4                                                              26
+correlation value vector of length 2l − 1. Let the minimum and                             4.2 Memory usage per machine (no clear pattern)      26
+maximum of the vector be minCC and maxCC , corresponding                                   5.1 Success rate of requests per product (stable)    16
+                                                                                       5                                                              20
+                                                                                           5.2 CPU Idle per product (seasonal)                  16
+to shifted values s1 and s2 respectively. Then the final Cross-
+correlation value of G and H can be denoted as F CC :                                Dataset I: Flux-correlated KPIs with different time series charac-
+                                             
+        minCC = min CC(G s , H ) , s1 = arg min CC(G s , H )
+                                                             
+                                                                                  teristics. As shown in Table 2, Dataset I contains 5 categories and
+                                                               (4a)
+                   s                                           s                  each category has two types of KPIs collected from different server
+                                                         
+                                                                                  clusters, machines or products. The two flux-correlated KPIs often
+       maxCC = max CC(G s , H ) , s2 = arg max CC(G s , H )               (4b)
+                      s                                    s                      have different time series characteristics (e.g., seasonal, stable). For
+                                                                                  example, in Category 1, a fluctuation in “success rate of request” is
+                            [minCC, s1], f or maxCC < minCC
+                           
+                           
+         F CC(G, H ) =                                                    (4c)    often accompanied by a sudden change in “count of HTTP error
+                           
+                            [maxCC, s2], f or maxCC ≥ minCC                                                            −
+                                                                                  code”, i.e., “success rate of request”←
+                                                                                                                        →“count of HTTP error code”.
+                           
+                           
+IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA                                                                                           Ya Su, et al.
+
+
+   Dataset II: Flux-correlated KPIs with homogeneous time series          5.2.3 Pearson Correlation. a popular technique for investigating
+characteristics. Dataset II contains KPIs that are collected from         the correlation between two variables, say X and Y , [2]. The
+services used by 10 software modules, from which customers can            threshold is T H , If ρ > T H , then X and Y are correlated with
+request services from providers on demand. The details are shown          positive direction; and if ρ < −1 ∗ T H , two KPIs are correlated and
+in Table 3. All KPIs are heavily influenced by the count of customer      the direction is negative. If not, X ≁Y . This method does not consider
+requests, thus they are all seasonal. In each module, the services        the temporal order of correlation. Here we calculate Pearson
+are called in a chain, and therefore the corresponding KPIs are           Correlation for each pair of raw KPIs (denoted as Pearson○),    1 and
+flux-correlated with each other with temporal orders. For example,        for each pair of amplified flux-features (denoted as Pearson○),  2 for
+in Module 1, there are 9 of 20 KPIs are flux-correlated. When a           fair comparison.
+fluctuation happens in “#customers request for providers”, after a
+                                                                          5.2.4 Granger causality. Granger causality [14] captures the linear
+while, the fluctuation propagates to “#providers accept and manage
+                                                                          interdependencies among time series using VAR (Vector autoregres-
+the orders” and then to “#customers pay for the orders”, etc.
+                                                                          sive). Specifically, Y Granger-causes X if and only if at least one of
+Table 3: Dataset II: KPIs collected in 10 software modules. All           the corresponding coefficients of Y is non-zero. If Y Granger-causes
+KPIs are seasonal. “Ground truth” column lists the number                 X and X Granger-causes Y , X and Y occur simultaneously. Note
+of intra-module flux-correlated KPI pairs.                                that, Granger causality cannot indicate whether the correlation
+  Module ID           Module Name            # KPIs   Ground truth        is positive or negative. Similar to Pearson Correlation, we calcu-
+     1                  T services             20         36              late Granger causality of raw KPIs (denoted as Granger○)       1 and
+     2           Order creation services       26         66              Granger causality of flux-features (denoted as Granger○),  2 for fair
+     3                  H services             19         21              comparison.
+     4          Payment actions services       15          6
+     5         Customer support services       36         171             5.2.5 Cross-correlation. We apply Cross-correlation, which is also
+     6         Quality monitoring services     16         15              part of our CoFlux, to calculate the correlations between two KPIs
+     7          Provider support services      16         10              using its raw values instead of the flux-features.
+     8           Location-based services       18         21
+     9             H5 support services         22         45
+                                                                          5.3    Evaluation Metric
+     10          Public platform services      18         21              Table 4: Descriptions for FP and FN about three questions of
+                                                                          flux-correlation.
+   Note that only intra-category and intra-module flux-correlations
+are measured in our experiments. For example, in Dataset II, pair-                                 FP/FN      Ground Truth       Output
+wise flux-correlations are done among 20 KPIs within Module 1.                                      FP           X ≁Y            X ∽Y
+                                                                                      Existence
+                                                                                                    FN           X ∽Y            X ≁Y
+5.2    Baseline algorithms                                                            Temporal      FP       X →Y or Y →X        X ↔Y
+                                                                                        order       FN       Y →X or X ↔Y        X →Y
+There exist no special methods designed to calculate the flux-
+                                                                                                    FP          negative        positive
+correlations of KPIs. In order to show the effectiveness of CoFlux,                   Direction
+                                                                                                    FN          positive        negative
+we carefully choose seven baseline algorithms.
+5.2.1 J-measure. a widely used event correlation method [2] which            We use F1-Score to evaluate the effectiveness of CoFlux and base-
+calculates the correlation as the average information content of          line algorithms, which is defined as: F1-Score = 2 ×P rPecision
+                                                                                                                                   r ecision × Recall
+                                                                                                                                           + Recall
+                                                                                                                                                      ,
+a probabilistic classification rule. J-measure is designed for event      where Precision = T PT+PF P , Recall = T PT+PF N . Table 4 describes the
+correlation and cannot be used here directly. Thus, we need to            FP (false positive) and FN (false negative) about the three questions
+detect anomalies first. Recall that flux-features are forecast errors.    of flux-correlation.
+We define anomalies as the values that differ from the mean by               Because the thresholds for J-measure, SIG, Pearson Correlation,
+more than 2 standard deviations [18] in the flux-features, and the        Cross-correlation and CoFlux are usually determined based on
+selection of flux-features will be described in a short while. As a       actual requirements for precision and recall, we apply PRC (Pre-
+result, a KPI is transformed to a binary sequence. For two binary         cision Recall Curve) to show their performance by varying the
+variables X and Y , if the correlation of J-Measure is larger than some   threshold value from 0 to 1. A PRC close to the upper right has
+threshold, then X ∽Y . Otherwise, X ≁Y . Neither the temporal order       better performance than one close to the bottom left. Moreover, the
+nor direction of correlation can be determined by this approach.          best F1-Score can be selected using PRC.
+   For fair comparison, for the anomaly detection in J-measure, we
+enumerated all detectors in Table 1 and selected one detector for         5.4    Result and Observations
+each dataset which can provide the best F1-score (see Section 5.3).
+                                                                          5.4.1 CoFlux vs baseline algorithms. We compare CoFlux with
+The same method has been used to choose the best performing
+                                                                          seven algorithms using the two datasets described before.
+detectors for the other two algorithms, Pearson○     2 and Granger○, 2
+                                                                             Table 5 lists the best F1-Scores of eight algorithms according to
+too.
+                                                                          PRC. CoFlux outperforms the other seven algorithms significantly
+5.2.2 SIG [9]. [9] computes the anomaly signal of time series using       for both two datasets. The overall best F1-Scores of CoFlux for
+KL divergence and then get the correlation results using Cross-           the two datasets are over 0.84, 0.92, 0.95 for Q1∼3, respectively.
+correlation. However, its anomaly signal is relative entropy and          Moreover, PRCs shown in Fig. 5 indicates CoFlux has overall better
+non-negative so SIG cannot judge the direction of correlation.            performance in terms of all precision and recall combinations.
+CoFlux: Robustly Correlating KPIs by Fluctuations for Service Troubleshooting                                                                      IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA
+
+Table 5: Best F1-Scores of eight algorithms; for J-measure,                                                          J-measure achieves the second best performance in our experi-
+the best performing detector for Dataset I is Wavelet(win=1                                                      ments. The best performing detector by F1-Score for Dataset I is
+day), for Dataset II is TSD(win=2 weeks); for Pearson○,
+                                                      2 the                                                      Wavelet(win=1 day). This detector decomposes a KPI into a set
+best performing detector for Dataset I is Wavelet(win=1 day),                                                    of hierarchical structure series [22]. However, some KPIs have no
+for Dataset II is diff(win=1 day); for Granger○, 2 the best                                                      strong structural characteristics and are hard to be predicted. Thus
+performing detector for Dataset I is Wavelet(win=1 day), for                                                     J-measure performs moderately. For Dataset II, TSD(win=2 weeks)
+Dataset II is TSD(win=2 weeks). (‘N/A’ denotes no results).                                                      is the best detector and it fits well with the seasonal structure of
+  Data                                                                   Best F1-Score                           KPIs in this dataset. For SIG, its anomaly signal is computed by KL
+                         Algorithms
+   set                                           Existence              Temporal order              Direction    divergence, so it works well with the outliers and is not suitable for
+                            CoFlux                0.8412                    0.9608                   0.9579      the anomalies that are mainly judged by partial history data. As a
+                          J-measure               0.7213                      N/A                     N/A        result, SIG does not perform well on Dataset I, because the various
+                             SIG                  0.5381                      1.0                     N/A
+                                                                                                                 types of KPIs make its anomalies also complex.
+                          Pearson○ 1              0.3106                      N/A                    0.6127
+      I                                                                                                                                CoFlux            SIG                         Pearson            Granger
+                          Pearson○ 2              0.5909                      N/A                    0.6945                                              Pearson
+                                                                                                                                       J-measure                                     Granger            Cross-correlation
+                          Granger○ 1              0.2864                    0.9009                    N/A
+                          Granger○ 2              0.4128                    0.8952                    N/A                       1.0           (a) Precision                    1.0                 (b) Recall
+                       Cross-correlation          0.3613                    0.9320                   0.9814                     0.8                                            0.8
+
+
+
+
+                                                                                                                    Precision
+                                                                                                                                0.6                                            0.6
+
+
+
+
+                                                                                                                                                                      Recall
+                            CoFlux                0.9026                    0.9206                   0.9987
+                          J-measure               0.8462                      N/A                     N/A                       0.4                                            0.4
+                             SIG                  0.7706                    0.8012                    N/A                       0.2                                            0.2
+                                   1                                                                                            0.0                                            0.0
+                          Pearson○                0.7193                      N/A                    0.9845                           Dataset I          Dataset II                    Dataset I                Dataset II
+     II                                                                                                                        Two datasets             Two datasets
+                          Pearson○ 2              0.7828                      N/A                      1.0
+                          Granger○ 1              0.4533                    0.9025                    N/A        Figure 6: Precision and recall with best F1-Score about the
+                          Granger○ 2              0.6732                    0.9141                    N/A        existence of flux-correlation among eight algorithms.
+                       Cross-correlation          0.7494                    0.7781                     1.0
+                                                                                                                     For Pearson○, 1 the recall of Dataset I drops dramatically com-
+                    CoFlux      J-measure      SIG     Pearson            Pearson            Cross-correlation   pared to Dataset II, because two flux-correlated KPIs in different
+              1.0              (a) Dataset I                      1.0          (b) Dataset II                    shapes often have weak linear association. Pearson○     2 performs
+              0.8                                                 0.8                                            better than Pearson○  1 because it uses flux-features which remove
+                                                                                                                 most inherent characteristics of KPI. Granger○    1 tries to predict
+  Precision
+
+
+
+
+                                                      Precision
+
+
+
+
+              0.6                                                 0.6
+              0.4                                                 0.4
+                                                                                                                 one KPI using another one, and its prediction performance mostly
+                                                                                                                 depends on the raw KPI instead of the fluctuation part, thus it
+              0.2                                                 0.2
+                                                                                                                 performs not well. Granger○    2 works better than Granger○,  1 but
+              0.00.0                                 1.0 0.00.0
+                         0.2    0.4    0.6     0.8                       0.2    0.4      0.6       0.8     1.0   it cannot achieve satisfactory performance either, because in our
+                                  Recall                                            Recall
+                                                                                                                 scenario, flux-features are usually created by unexpected accidents
+Figure 5: PRCs about the existence of flux-                                                                      and it is not promising to predict them using regression. Cross-
+correlation among CoFlux and five baseline algorithms.                                                           correlation with raw KPIs does not work well for flux-correlation,
+Granger causality is not shown here because it has no                                                            because flux-correlation mainly cares about the fluctuations instead
+thresholds thus no PRC.                                                                                          of raw KPIs. It performs poorer on Dataset I than Dataset II because
+   Another observation is that these algorithms all perform better                                               the KPIs of Dataset I are with different characteristics, which also
+in Dataset II than in Dataset I, because the KPIs in Dataset II are                                              demonstrates the effectiveness of flux-features.
+homogeneous in nature (they are all part of service call graph,                                                      Now we turn to Q2. Note that, only after an algorithm correctly
+heavily influenced by the patterns of customer requests) and                                                     recognizes Q1 of flux-correlation for a KPI pair, the test on Q2
+fluctuations follow the same pattern, while those in Dataset I                                                   and Q3 will continue for this pair. Although Granger causality
+vary by their time series characteristics. As a result, it is relatively                                         has about 0.90 F1-Score in recognizing the temporal order, it has
+easier to extract fluctuations from Dataset II. Next, we analyze each                                            difficulties in identifying Q1 of flux-correlation. As a result, its
+algorithm’s performance in answering Q1∼3.                                                                       overall performance is unsatisfactory. The temporal order of flux-
+   With respect to Q1, our CoFlux excels the others in many                                                      correlation cannot be calculated by Pearson Correlation and J-
+aspects. Particularly, its performance in Dataset I only drops                                                   measure. On the other hand, CoFlux and SIG perform very well in
+slightly compared to Dataset II, while other algorithms have more                                                identifying the temporal order due to the use of Cross-correlation.
+significant changes. This indicates CoFlux is very robust and                                                        Finally, regarding Q3, Pearson Correlation can indicate positive
+can handle heterogeneous KPIs due to its rich detector library.                                                  or negative flux-correlation. The direction cannot be obtained by
+The precision and recall with best F1-score shown in Fig. 6                                                      SIG, J-measure and Granger causality. Again, CoFlux has excellent
+provides more details about the performance difference among                                                     performance in this regard.
+these algorithms. Particularly, the high precision of CoFlux indicates                                               Summary. CoFlux performs better than J-measure, an algorithm
+a small false positive rate in identifying flux-correlation. This                                                based on anomaly detection, because CoFlux does not need to define
+demonstrates that it is appropriate to determine the final flux-                                                 anomalies and the flux-features have more information than the
+correlation by the maximum absolute Cross-correlation value, as                                                  binary results of anomaly detection. For SIG, it computes anomaly
+described in Section 3.                                                                                          signal of KPIs using KL divergence, thus it focuses on the outliers
+IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA                                                                                                                                                                                     Ya Su, et al.
+
+                                                                                                                                                                                                            180
+                  (a) Dataset I                  (b) Dataset II               CoFlux   CoFlux minus amplification    CoFlux with J-measure       CoFlux with Pearson Correlation
+         20                              15
+                                                                                             (a) Dataset I                                       (b) Dataset II
+
+
+
+
+                                                                                                                                                                                   CPU execution time (s)
+                                         12                                   1.0                                                   1.0
+         15
+                                                                              0.8                                                   0.8                                                                     120
+  Rate (%)
+
+
+
+
+                                  Rate (%)
+                                             9
+         10
+
+
+
+
+                                                                  Precision
+
+
+
+
+                                                                                                                        Precision
+                                             6                                0.6                                                   0.6
+             5                               3                                                                                                                                                               60
+                                                                              0.4                                                   0.4
+             0                               0
+                                                                              0.2                                                   0.2
+                 Wavelet
+                Historical
+
+
+                (1 week)
+             TSD median
+
+                (1 week)
+
+
+                                                (2 weeks)
+
+                                                   (1 day)
+
+                                                (3 weeks)
+                                             Holt-Winters
+
+                                             Holt-Winters
+                                             (0.2,0.4,0.8)
+
+                                             (0.2,0.8,0.8)
+                                                Historical
+                (1 week)
+                 (1 day)
+                average
+
+
+
+
+                                                 median
+              (2 weeks)
+
+
+
+
+                                                     Diff
+                   TSD
+
+
+
+                   Diff
+
+
+                                                   TSD
+
+                                                                                                                                                                                                              0
+                                                                              0.00.0   0.2    0.4      0.6     0.8     1.0 0.00.0          0.2     0.4    0.6      0.8     1.0                                    1     2     3      4    5
+                 Detector name                   Detector name
+                                                     Recall                     Recall                                                                                                                                KPI data length    1e4
+
+
+  Figure 7: Top 5 detectors which give Figure 8: PRCs about the existence                                                                                         of       flux- Figure 9: Efficiency by
+  the flux-correlation results.        correlation among CoFlux and its variants.                                                                                                varying data length.
+
+and cannot identify anomalies that are mainly judged by partial                                                       J-measure cannot appropriately handle fluctuation similarity and
+history data. Compared with SIG, we includes a robust set of flux-                                                    the situation where there is a delay between the fluctuations in two
+features, so CoFlux is robust against diverse anomalies and KPI                                                       KPIs. We can also learn that Pearson Correlation performs better
+characteristics. CoFlux performs better than Pearson○,1 Granger○  1                                                   than J-measure because of the difficulty of anomaly definition for J-
+and Cross-correlation, because raw KPIs can not reflect the flux-                                                     measure. Therefore it is a good choice to apply the Cross-correlation
+correlation well. Unlike Pearson○ 2 and Granger○,   2 CoFlux uses                                                     for the flux-correlation measurement.
+Cross-correlation which can work well with the shape similarity
+of flux-features in consideration of the distortions in amplitude                                                     5.4.5 The efficiency study of CoFlux. The experiments about the
+and phase. Moreover, in practice, for J-measure, Pearson○    2 and                                                    efficiency of CoFlux were run on a server with 24-core Intel(R)
+Granger○,2 the anomaly detector selection for different KPIs is also                                                  Xeon(R) CPU E5-2620 v3 @ 2.40GHz with 64GB RAM. The flux-
+very challenging, while the detector selection for different KPIs in                                                  features of one KPI are calculated only once and used repeatedly
+CoFlux is determined automatically.                                                                                   in the Cross-correlation measurement with other KPIs. Execution
+                                                                                                                      time of Dataset I and II are shown in Table 6 and 7. Data length is
+5.4.2 Analysis of detectors in CoFlux. Since CoFlux uses a number
+                                                                                                                      the number of data points in a KPI. The execution time of all KPI
+of time series models with different parameters as its flux-feature de-
+                                                                                                                      categories and modules are less than 25 minutes. Certainly, longer
+tectors, a natural question is whether so many detectors are needed
+                                                                                                                      or more KPIs can increase execution time. Also, execution time can
+and what detectors are the most useful. We analyzed the detectors
+                                                                                                                      be significantly reduced by using more computation resources.
+that are used to produce the final flux-correlation for all the KPIs
+pairs in each dataset. Fig. 7 shows Top 5 detectors used in the two                                                   Table 6: Execution time Table 7: Execution time (seconds)
+datasets. Wavelet is the most popular one in Dataset I, but TSD                                                       (seconds) on Dataset I. on Dataset II (Length: 6720).
+takes the lead in Dataset II. This can be explained by the fact that                                                       Cate           #   Data                           Mod              #        Mod                        #
+many KPIs in Dataset I have no fixed structural characteristics, and                                                                                 Time                                         Time                                Time
+                                                                                                                           gory           KPI length                         ule              KPI      ule                        KPI
+Wavelet fits better with this kind of KPIs. Most KPIs in Dataset II                                                         1             42   6720 1014                      1               20 174    6                         16 176
+present seasonal characteristics, which can be handled by TSD very                                                          2             28   3024  462                      2               26 334    7                         16 181
+well. In either case, the proportion of Top 1 detector is no more than                                                      3             22   5040  304                      3               19 242    8                         18 234
+20%, and the total proportion of Top 5 detectors in each dataset is                                                         4             52   5040 1478                      4               15 153    9                         22 314
+less than 50%. Therefore, we can conclude that it is necessary to                                                           5             32   5040  584                      5               36 770   10                         18 232
+include a variety of detectors in Table 1, to boost the robustness of
+                                                                                                                         Furthermore, we test the impact of KPI length on execution
+CoFlux.
+                                                                                                                      time. In order to obtain KPIs in different lengths, we use two
+5.4.3 The effectiveness of feature amplification in CoFlux. In this
+                                                                                                                      synthetic KPIs and vary their lengths. As shown in Fig. 9, the
+section, we evaluate whether feature amplification can indeed
+                                                                                                                      execution time increases with the KPI length almost in a linear
+improve the performance of CoFlux. Fig. 8 shows the PRCs obtained
+                                                                                                                      fashion. It ranges from 15 to 180 seconds as the data length
+by two versions of CoFlux: with and without amplification. Without
+                                                                                                                      increases from 5k to 50k, while it is less than 20 seconds for baseline
+amplification, the performance of CoFlux degrades significantly.
+                                                                                                                      algorithms. Considering CoFlux is offline, the time is acceptable.
+Feature amplification can boost the performance, because it makes
+                                                                                                                      The time of feature engineering is sensitive to data length, and
+large fluctuation larger and then reduces the impact of noises on
+                                                                                                                      the computational cost is O (n), where n is the KPI length. When
+flux-features.
+                                                                                                                      the number of detectors is fixed, the time complexity of Cross-
+5.4.4 The effectiveness of Cross-correlation in CoFlux. In this
+                                                                                                                      correlation is affected by data length. We use Fast Fourier Transform
+section, we evaluate the benefits of Cross-correlation in terms of
+                                                                                                                      to accelerate Cross-correlation and its computation complexity is
+measuring the existence of flux-correlation in CoFlux. Because
+                                                                                                                      O (nloд(n)).
+Granger causality works worse than the other algorithms, we use
+Pearson Correlation and J-measure to replace Cross-correlation
+separately in CoFlux, denoted as CoFlux with Pearson Correlation                                                      6             APPLICATIONS OF COFLUX
+and CoFlux with J-measure. Fig. 8 shows their PRCs, which indicates                                                   In this section, we demonstrate how CoFlux can be used to assist
+that CoFlux achieves a much better performance with Cross-                                                            operators in assisting service troubleshooting in a top online
+correlation. The main reason is that both Pearson Correlation and                                                     shopping service company.
+CoFlux: Robustly Correlating KPIs by Fluctuations for Service Troubleshooting                                                                                                                               IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA
+
+
+6.1       Clustering KPIs for alert compression                                                                                           Motivated by the idea of HitRate@K for recommender systems
+We evaluated CoFlux’s effectiveness in alert compression on 118                                                                           [24], we calculate the recommendation accuracy using the KPIs in
+KPIs provided by the company. Operators manually analyzed the                                                                             Section 6.1, and the result is 0.8051 for HitRate@5. In comparison,
+699 alerts generated during a month by anomaly detection on                                                                               recommendation based on Cross-correlation of raw KPIs achieved
+individual KPIs. They concluded that only 184 alerts should be                                                                            only 0.5594 for HitRate@5.
+raised (served as the ground truth in our evaluation), and all other                                                                                                               KPI X
+
+
+
+
+                                                                                                                                             Value Value Value Value Value Value
+alerts are correlated with the ones in the ground truth.
+                                                                                                                                                                                   1st flux-correlated KPI of X
+   To demonstrate how CoFlux can be used to compress alerts
+[8] and reduce operators’ workload, we group these KPIs into 23                                                                                                                    2nd flux-correlated KPI of X
+clusters by K-Means based on the absolute flux-Correlation values
+of KPIs. K is determined by silhouette coefficient [23] which has                                                                                                                  3rd flux-correlated KPI of X
+
+shown good performance in experiments, and the largest silhouette                                                                                                                  4th flux-correlated KPI of X
+coefficient over different clustering number indicates the best K
+for clustering. Fig. 10 shows 3 of the clusters composed of 24                                                                                                                     5th flux-correlated KPI of X
+KPIs. Apparently, KPI pairs within a cluster have stronger flux-
+Correlation than those outside it.                                                                                                                                        0             1       2       3         4     5       6   7       8      9           10       11        12      13       14
+                                                                                                                                    1.0                                                                                         Time (day)
+   KPI1   1.00 0.98 1.00 0.95 0.93 0.99 0.99 0.99 0.99 0.98 0.87 0.91 0.94 0.60 0.51 0.57 0.55 0.55 0.58 0.81 0.81 0.78 0.81 0.81
+
+   KPI2   0.98 1.00 0.99 0.99 0.95 1.00 0.98 0.96 0.99 0.99 0.91 0.93 0.97 0.64 0.57 0.64 0.62 0.61 0.63 0.73 0.73 0.69 0.73 0.73
+                                                                                                                                            Figure 11: Top 5 flux-correlated KPIs for a given KPI X.
+   KPI3   1.00 0.99 1.00 0.96 0.93 0.99 0.99 0.99 0.98 0.98 0.88 0.91 0.94 0.61 0.53 0.59 0.57 0.57 0.60 0.78 0.79 0.75 0.79 0.79
+
+   KPI4   0.95 0.99 0.96 1.00 0.94 0.98 0.95 0.93 0.96 0.98 0.90 0.93 0.96 0.67 0.62 0.69 0.66 0.65 0.66 0.67 0.68 0.64 0.67 0.67
+
+   KPI5   0.93 0.95 0.93 0.94 1.00 0.95 0.94 0.90 0.94 0.96 0.87 0.94 0.94 0.69 0.62 0.66 0.65 0.63 0.67 0.75 0.75 0.72 0.75 0.75
+                                                                                                                                    0.9
+   KPI6
+   KPI7
+          0.99 1.00 0.99 0.98 0.95 1.00 0.99 0.97 0.99 0.99 0.89 0.93 0.97 0.64 0.56 0.64 0.62 0.61 0.63 0.74 0.74 0.71 0.74 0.74
+          0.99 0.98 0.99 0.95 0.94 0.99 1.00 0.97 0.99 0.98 0.90 0.92 0.95 0.63 0.55 0.61 0.59 0.58 0.62 0.81 0.81 0.78 0.81 0.81
+                                                                                                                                          6.3                                      Constructing fluctuation propagation
+   KPI8   0.99 0.96 0.99 0.93 0.90 0.97 0.97 1.00 0.96 0.96 0.86 0.88 0.91 0.60 0.52 0.57 0.55 0.55 0.58 0.83 0.83 0.79 0.83 0.83
+
+   KPI9   0.99 0.99 0.98 0.96 0.94 0.99 0.99 0.96 1.00 0.98 0.87 0.93 0.98 0.64 0.56 0.64 0.61 0.60 0.63 0.76 0.76 0.73 0.76 0.76
+                                                                                                                                    0.8                                            chains
+  KPI10   0.98 0.99 0.98 0.98 0.96 0.99 0.98 0.96 0.98 1.00 0.92 0.94 0.97 0.61 0.54 0.61 0.58 0.58 0.59 0.73 0.73 0.69 0.73 0.73
+
+  KPI11   0.87 0.91 0.88 0.90 0.87 0.89 0.90 0.86 0.87 0.92 1.00 0.89 0.90 0.47 0.42 0.45 0.45 0.48 0.45 0.61 0.61 0.54 0.61 0.61
+                                                                                                                                                                                                                                        Mysql.innodb_data_reads
+  KPI12   0.91 0.93 0.91 0.93 0.94 0.93 0.92 0.88 0.93 0.94 0.89 1.00 0.94 0.57 0.49 0.55 0.54 0.55 0.56 0.67 0.68 0.64 0.68 0.68          Mysql.innodb_data_reads
+  KPI13   0.94 0.97 0.94 0.96 0.94 0.97 0.95 0.91 0.98 0.97 0.90 0.94 1.00 0.61 0.53 0.63 0.60 0.60 0.60 0.63 0.64 0.61 0.64 0.64
+                                                                                                                                    0.7                 +
+                                                                                                                                                                                                         -
+                                                                                                                                                                                                             Mysql.innodb_bp_free
+  KPI14   0.60 0.64 0.61 0.67 0.69 0.64 0.63 0.60 0.64 0.61 0.47 0.57 0.61 1.00 0.93 0.95 0.96 0.90 1.00 0.46 0.46 0.51 0.46 0.46
+                                                                                                                                           Mysql.innodb_data_writes                                                                                                          -
+  KPI15   0.51 0.57 0.53 0.62 0.62 0.56 0.55 0.52 0.56 0.54 0.42 0.49 0.53 0.93 1.00 0.91 0.97 0.86 0.91 0.43 0.44 0.44 0.44 0.44
+                                                                                                                                                                                                                            -           Mysql.innodb_data_writes                 Mysql.innodb_bp_free
+  KPI16   0.57 0.64 0.59 0.69 0.66 0.64 0.61 0.57 0.64 0.61 0.45 0.55 0.63 0.95 0.91 1.00 0.98 0.93 0.96 0.37 0.37 0.41 0.37 0.37                                                                                                                          +                                -
+  KPI17   0.55 0.62 0.57 0.66 0.65 0.62 0.59 0.55 0.61 0.58 0.45 0.54 0.60 0.96 0.97 0.98 1.00 0.92 0.96 0.41 0.41 0.43 0.41 0.41
+                                                                                                                                    0.6                                                     +
+                                                                                                                                                                                                                  +
+  KPI18   0.55 0.61 0.57 0.65 0.63 0.61 0.58 0.55 0.60 0.58 0.48 0.55 0.60 0.90 0.86 0.93 0.92 1.00 0.92 0.35 0.35 0.39 0.35 0.35             Mysql.threads_connected                                                  Mysql.qps                           Mysql.threads_connected
+  KPI19   0.58 0.63 0.60 0.66 0.67 0.63 0.62 0.58 0.63 0.59 0.45 0.56 0.60 1.00 0.91 0.96 0.96 0.92 1.00 0.42 0.42 0.47 0.42 0.42                                                          +                     + +         +                             +                                +
+  KPI20   0.81 0.73 0.78 0.67 0.75 0.74 0.81 0.83 0.76 0.73 0.61 0.67 0.63 0.46 0.43 0.37 0.41 0.35 0.42 1.00 1.00 0.97 1.00 1.00                                                                            +         Mysql.tps                                            +
+  KPI21   0.81 0.73 0.79 0.68 0.75 0.74 0.81 0.83 0.76 0.73 0.61 0.68 0.64 0.46 0.44 0.37 0.41 0.35 0.42 1.00 1.00 0.97 1.00 1.00
+                                                                                                                                    0.5     Mysql.active_session                                                                                 Mysql.qps                             Mysql.tps
+
+  KPI22   0.78 0.69 0.75 0.64 0.72 0.71 0.78 0.79 0.73 0.69 0.54 0.64 0.61 0.51 0.44 0.41 0.43 0.39 0.47 0.97 0.97 1.00 0.97 0.97                                                                                      +
+                                                                                                                                                                                                                                                       +
+                                                                                                                                                                                                                                                                                            +
+  KPI23   0.81 0.73 0.79 0.67 0.75 0.74 0.81 0.83 0.76 0.73 0.61 0.68 0.64 0.46 0.44 0.37 0.41 0.35 0.42 1.00 1.00 0.97 1.00 1.00
+                                                                                                                                                                                                             Mysql.bytes_send                                                     Mysql.bytes_send
+  KPI24   0.81 0.73 0.79 0.67 0.75 0.74 0.81 0.83 0.76 0.73 0.61 0.68 0.64 0.46 0.44 0.37 0.41 0.35 0.42 1.00 1.00 0.97 1.00 1.00                                                                                                        Mysql.active_session
+                                                                                                                                    0.4                                                     +                         +                                                 +                   +
+                                                                                                                                                                                                            Mysql. bytes_received
+           KPI1
+           KPI2
+           KPI3
+           KPI4
+           KPI5
+           KPI6
+           KPI7
+           KPI8
+           KPI9
+          KPI10
+          KPI11
+          KPI12
+          KPI13
+          KPI14
+          KPI15
+          KPI16
+          KPI17
+          KPI18
+          KPI19
+          KPI20
+          KPI21
+          KPI22
+          KPI23
+          KPI24
+
+
+
+
+                                                                                                                                                                                                                                                       +                         Mysql. bytes_received
+                                                                                                                                                                                                                       +                                                                       +
+Figure 10: Heat map visualization for clustering results                                                                                     TCP.response_time
+                                                                                                                                                                                                    +
+                                                                                                                                                                                                        TCP.max_response_time             TCP.response_time
+                                                                                                                                                                                                                                                                    +
+                                                                                                                                                                                                                                                                            TCP.max_response_time
+of 24 KPIs. The value at (x, y) means the absolute flux-
+correlation value between KPI x and y. Cluster1: KPI1 ∼                                                                                   (a) Fluctuation propagation chain of a (b) Fluctuation propagation chain of
+                                                                                                                                          database service manually constructed by the database service generated by
+KPI13; Cluster2: KPI14 ∼ KPI19; Cluster3: KPI20 ∼ KPI24.                                                                                  the operators.                           CoFlux with threshold = 0.65.
+   Then we can monitor all KPIs within a cluster as a whole,
+                                                                                                                                          Figure 12: Fluctuation propagation chains of a database
+and raise only one alert when one or more anomalies occurred
+                                                                                                                                          service constructed by the operators and CoFlux. → and ↔
+at these KPIs, resulting in only 208 alerts, achieving 70.24% (1-
+                                                                                                                                          denote the temporal order of flux-correlation, + and - denote
+208/699) compression ratio. We calculate compression accuracy by
+                                                                                                                                          the direction.
+comparing the compressed alerts with the alerts in the ground truth,
+and CoFlux obtained 0.9748 compression F1-Score. For comparison,                                                                             Understanding how fluctuations are propagated through KPIs
+we conduct another experiment where raw KPIs were clustered                                                                               is extremely useful in root cause analysis, but this requires deep
+based on their Cross-correlation, and achieved 70.67% compression                                                                         domain knowledge of the KPIs. Intuitively, fluctuation propagation
+ratio and 0.8322 compression F1-Score. In practice, it is critical for                                                                    chains can be constructed based on flux-correlation. Fig. 12 shows
+alert clustering to maintain a high compression F1-Score (i.e., close                                                                     such chains of a database service in the Internet company, where
+to 1). Although these two experiments gave similar compression                                                                            each node denotes a KPI and each edge denotes the flux-correlation
+ratios, clustering by CoFlux leads to far fewer compression errors                                                                        between KPIs. To make the figures less crowded, an edge ended
+than by Cross-correlation of raw KPIs, demonstrating its excellent                                                                        at a dashed box means the originating KPI of this edge is flux-
+capability in alert compression.                                                                                                          correlated with every KPI inside this box. Fig. 12(a) presents the
+                                                                                                                                          fluctuation propagation chain manually constructed by operators
+6.2       Recommending Top N flux-correlated KPIs                                                                                         based on their deep domain knowledge, which serves as the ground
+Fig. 11 shows a given KPI, say X, and its Top 5 flux-correlated KPIs                                                                      truth in our comparison. When there happens a fluctuation for
+out of the remaining 117 KPIs ranked by flux-correlation. Clearly,                                                                        SQL Execution in a storage engine, it first propagates to the
+these KPIs are highly flux-correlated with KPI X. Thus, when KPI X                                                                        connection/thread module and then to the network interface card
+suffers from an anomaly, operators can narrow down their analysis                                                                         which provides the hosting service for database. Fig. 12(b) shows
+scope to the Top N flux-correlated KPIs for more efficient diagnosis.                                                                     the fluctuation propagation chain generated by CoFlux. Apparently,
+IWQoS ’19, June 24–25, 2019, Phoenix, AZ, USA                                                                                                      Ya Su, et al.
+
+
+Fig. 12(b) can almost replicate Fig. 12(a), with high F1-scores,           work has been supported by the Beijing National Research Center
+0.8684, 0.9524, 1.0 for Q1∼3 respectively. Thus, operators can             for Information Science and Technology (BNRist) key projects, and
+apply CoFlux to automatically construct fluctuation propagation            the Okawa Research Grant.
+chains even without deep domain knowledge. In comparison, Cross-
+correlation of raw KPIs achieves inferior F1-scores: 0.5455, 0.9412,       REFERENCES
+1.0 for Q1∼3 respectively.                                                  [1] Mike P Papazoglou and Willem-Jan Van Den Heuvel. Service oriented
+                                                                                architectures: approaches, technologies and research issues. The VLDB journal,
+                                                                                16(3):389–415, 2007.
+7    RELATED WORK                                                           [2] Chen Luo, Jian-Guang Lou, Qingwei Lin, Qiang Fu, Rui Ding, Dongmei Zhang,
+Over the years, a substantial body of research has been conducted               and Zhe Wang. Correlating events with time series for incident diagnosis. In
+                                                                                Proceedings of the 20th ACM SIGKDD international conference on Knowledge
+to analyze different types of correlations which can be divided into            discovery and data mining, pages 1583–1592. ACM, 2014.
+three categories: correlation between KPIs [14, 17, 25], correlation        [3] Dapeng Liu, Youjian Zhao, Haowen Xu, Yongqian Sun, Dan Pei, Jiao Luo,
+between events [6], correlation between event and KPI [2]. Those                Xiaowei Jing, and Mei Feng. Opprentice: Towards practical and automatic
+                                                                                anomaly detection through machine learning. In Proceedings of the 2015 Internet
+correlating algorithms mainly analyze the correlation of raw KPIs,              Measurement Conference, pages 211–224. ACM, 2015.
+or turn the KPIs into events and analyze the correlation using events.      [4] Shenglin Zhang, Ying Liu, Dan Pei, Yu Chen, Xianping Qu, Shimin Tao, Zhi Zang,
+                                                                                Xiaowei Jing, and Mei Feng. Funnel: Assessing software changes in web-based
+According to the analysis in Section 5.4.1, these algorithms cannot             services. IEEE Transactions on Service Computing, 2016.
+accurately analyze flux-correlation.                                        [5] Yongqian Sun, Youjian Zhao, Ya Su, Dapeng Liu, Xiaohui Nie, Yuan Meng, Shiwen
+   Besides our baseline algorithms, there are other generic methods             Cheng, Dan Pei, Shenglin Zhang, Xianping Qu, and Xuanyou Guo. Hotspot:
+                                                                                Anomaly localization for additive kpis with multi-dimensional attributes. IEEE
+that aim to find relationships among KPIs. CoIntegration [13]                   Access, 6:10909–10923, 2018.
+transforms a collection of non-stationary KPIs to be stationary by a        [6] Xiaohui Nie, Youjian Zhao, Kaixin Sui, Dan Pei, Yu Chen, and Xianping Qu.
+linear combination. However, flux-correlated KPIs may have similar              Mining causality graph for automatic web-based service diagnosis. In Performance
+                                                                                Computing and Communications Conference (IPCCC), 2016 IEEE 35th International,
+fluctuations but different seasonal and trend components. As a                  pages 1–8. IEEE, 2016.
+result, they cannot be made stationary easily through CoIntegration.        [7] Jacob Cohen. Statistical power analysis for the behavioural sciences, 1988.
+                                                                            [8] Jingmin Xu, Yuan Wang, Pengfei Chen, and Ping Wang. Lightweight and adaptive
+VARMA [12] is a model for producing linear forecasts of many KPI                service api performance monitoring in highly dynamic cloud environment. In
+variables, and provides an intuitive explanation for the correlations           2017 IEEE International Conference on Services Computing (SCC), pages 35–43.
+of KPIs. However, through the experiments with Granger causality                IEEE, 2017.
+                                                                            [9] Adam J Oliner, Ashutosh V Kulkarni, and Alex Aiken. Using correlated surprise to
+in Section 5.4.1, we found that it is difficult to model the correlation        infer shared influence. In Dependable Systems and Networks (DSN), 2010 IEEE/IFIP
+between flux-features through regression. [10] uses ARCH models                 International Conference on, pages 191–200. IEEE, 2010.
+to predict the volatility of stock market and learn their correlations,    [10] Yasushi Hamao, Ronald W Masulis, and Victor Ng. Correlations in price changes
+                                                                                and volatility across international stock markets. The review of financial studies,
+but volatility, measured by the standard deviation of a time series,            3(2):281–307, 1990.
+is conceptually different from fluctuations in our context.                [11] Maurizio Filippone and Guido Sanguinetti. Information theoretic novelty
+                                                                                detection. Pattern Recognition, 43(3):805–814, 2010.
+   In summary, all these methods cannot work well in identifying           [12] Helmut Lütkepohl. Forecasting with varma models. Handbook of economic
+flux-correlation. Our work differs from them in that we extract                 forecasting, 1:287–325, 2006.
+features capturing fluctuations by time series models, and focus on        [13] Richard ID Harris. Using cointegration analysis in econometric modelling. 1995.
+                                                                           [14] Huida Qiu, Yan Liu, Niranjan A Subrahmanya, and Weichang Li. Granger
+flux-features instead of raw KPIs.                                              causality for time-series anomaly detection. In Data Mining (ICDM), 2012 IEEE
+                                                                                12th International Conference on, pages 1074–1079. IEEE, 2012.
+8    CONCLUSION                                                            [15] Jianqing Fan and Qiwei Yao. Nonlinear time series: nonparametric and parametric
+                                                                                methods. Springer Science &amp; Business Media, 2008.
+Correlating KPIs by fluctuations is extremely useful for service           [16] Shashank Shanbhag and Tilman Wolf. Accurate anomaly detection through
+troubleshooting in many respects such as alert compression, recom-              parallelism. IEEE network, 23(1):22–28, 2009.
+                                                                           [17] Yasushi Sakurai, Spiros Papadimitriou, and Christos Faloutsos. Braid: Stream
+mending Top N flux-correlated KPIs and constructing fluctuation                 mining through group lag correlations. In Proceedings of the 2005 ACM SIGMOD
+propagation chains. However, such a KPI flux-correlation has                    international conference on Management of data, pages 599–610. ACM, 2005.
+been little studied in the domain of Internet service operations           [18] Suk-Bok Lee, Dan Pei, MohammadTaghi Hajiaghayi, Ioannis Pefkianakis, Songwu
+                                                                                Lu, He Yan, Zihui Ge, Jennifer Yates, and Mario Kosseifi. Threshold compression
+management. To the best of our knowledge, this paper is the first               for 3g scalable monitoring. In INFOCOM, 2012 Proceedings IEEE, pages 1350–1358.
+attempt to formulate flux-correlation and study it in detail. For               IEEE, 2012.
+the large number and diverse characteristics of KPIs, with CoFlux,         [19] Yingying Chen, Ratul Mahajan, Baskar Sridharan, and Zhi-Li Zhang. A
+                                                                                provider-side view of web search response time. In ACM SIGCOMM Computer
+we can measure their flux-correlations automatically and robustly.              Communication Review, volume 43, pages 243–254. ACM, 2013.
+Our experiments have demonstrated that CoFlux significantly                [20] David R Choffnes, Fabián E Bustamante, and Zihui Ge. Crowdsourcing service-
+                                                                                level network event monitoring. ACM SIGCOMM Computer Communication
+outperforms baseline algorithms by a large margin, and the                      Review, 41(4):387–398, 2011.
+applications of CoFlux in a top global Internet company also               [21] He Yan, Ashley Flavel, Zihui Ge, Alexandre Gerber, Dan Massey, Christos
+demonstrated its effectiveness in assisting service troubleshooting.            Papadopoulos, Hiren Shah, and Jennifer Yates. Argus: End-to-end service anomaly
+                                                                                detection and localization from an isp’s point of view. In INFOCOM, 2012
+   As our future work, we will explore deep learning as flux-                   Proceedings IEEE, pages 2756–2760. IEEE, 2012.
+correlation algorithm and possible models to fit flux-features to          [22] Keyi Zhang, Ramazan Gençay, and M Ege Yazgan. Application of wavelet
+further understand the nature of flux-correlation.                              decomposition in time-series forecasting. Economics Letters, 158:41–46, 2017.
+                                                                           [23] Katherine S Pollard and Mark J Van Der Laan. A method to identify significant
+                                                                                clusters in gene expression data. 2002.
+9    ACKNOWLEDGMENT                                                        [24] Xiwang Yang, Harald Steck, Yang Guo, and Yong Liu. On top-k recommendation
+                                                                                using social networks. In Proceedings of the sixth ACM conference on Recommender
+We thank Weibin Meng, Ping Liu, Nengwen Zhao, Shenglin Zhang,                   systems, pages 67–74. ACM, 2012.
+Yongqian Sun and Yu Sun for their helpful discussions on this              [25] William A Gardner, Antonio Napolitano, and Luigi Paura. Cyclostationarity:
+work. We thank Juexing Liao for proofreading this paper. This                   Half a century of research. Signal processing, 86(4):639–697, 2006.
+

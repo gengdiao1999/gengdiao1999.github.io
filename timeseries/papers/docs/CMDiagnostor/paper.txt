@@ -1,0 +1,885 @@
+   CMDiagnostor: An Ambiguity-Aware Root Cause Localization
+             Approach Based on Call Metric Data
+                   Qingyang Yu                                             Changhua Pei∗                                  Bowen Hao
+          Tsinghua University; BNRist                         Computer Network Information                             Nankai University
+                Beijing, China                              Center, Chinese Academy of Sciences                         Tianjin, China
+                                                                       Beijing, China
+
+                     Mingjie Li                                              Zeyan Li                                 Shenglin Zhang†
+          Tsinghua University; BNRist                              Tsinghua University; BNRist                    Nankai University; HL-IT
+                Beijing, China                                           Beijing, China                               Tianjin, China
+
+                    Xianglin Lu                                              Rui Wang                                       Dan Pei
+          Tsinghua University; BNRist                                         Jiaqi Li                           Tsinghua University; BNRist
+                Beijing, China                                              Zhenyu Wu                                  Beijing, China
+                                                                               Tencent
+                                                                            Beijing, China
+
+ABSTRACT                                                                             CCS CONCEPTS
+The availability of online services is vital as its strong relevance to              • Software and its engineering → Cloud computing; • General
+revenue and user experience. To ensure online services’ availabil-                   and reference → Reliability; Performance.
+ity, quickly localizing the root causes of system failures is crucial.
+Given the high resource consumption of traces, call metric data                      KEYWORDS
+are widely used by existing approaches to construct call graphs                      online service, root cause localization, call metric data, ambiguity
+in practice. However, ambiguous correspondences between up-
+                                                                                     ACM Reference Format:
+stream and downstream calls may exist and result in exploring
+                                                                                     Qingyang Yu, Changhua Pei, Bowen Hao, Mingjie Li, Zeyan Li, Shenglin
+unexpected edges in the constructed call graph. Conducting root                      Zhang, Xianglin Lu, Rui Wang, Jiaqi Li, Zhenyu Wu, and Dan Pei. 2023.
+cause localization on this graph may lead to misjudgments of real                    CMDiagnostor: An Ambiguity-Aware Root Cause Localization Approach
+root causes. To the best of our knowledge, we are the first to investi-              Based on Call Metric Data. In Proceedings of the ACM Web Conference 2023
+gate such ambiguity, which is overlooked in the existing literature.                 (WWW ’23), April 30–May 04, 2023, Austin, TX, USA. ACM, New York, NY,
+Inspired by the law of large numbers and the Markov properties                       USA, 11 pages. https://doi.org/10.1145/3543507.3583302
+of network traffic, we propose a regression-based method (named
+AmSitor) to address this problem effectively. Based on AmSitor,                      1    INTRODUCTION
+we propose an ambiguity-aware root cause localization approach                       Recent years have witnessed the booming of online services, e.g.,
+based on Call Metric Data named CMDiagnostor, containing metric                      online shopping websites like Amazon, short-video platforms like
+anomaly detection, ambiguity-free call graph construction, root                      Tiktok, and social media networks like Instagram. The availability
+cause exploration, and candidate root cause ranking modules. The                     of online services is crucial as its strong relevance to revenue and
+comprehensive experimental evaluations conducted on real-world                       user experiences. For example, Amazon’s one-hour downtime on
+datasets show that our CMDiagnostor can outperform the state-of-                     Prime Day may lead to the loss of up to $100 million in sales [26].
+the-art approaches by 14% on the top-5 hit rate. Moreover, AmSitor                   How to quickly locate the root causes of system failures has become
+can also be applied to existing baseline approaches separately to                    an active research topic these years. This paper mainly focuses on
+improve their performances one step further. The source code is                      root cause localization (RCL) based on call metric data.
+released at https://github.com/NetManAIOps/CMDiagnostor.                                Among different kinds of system data used for RCL, Call Metric
+∗ Changhua Pei is the corresponding author. Email: chpei@cnic.cn                     Data (CMD) are widely used [16] as the reasonable trade-off be-
+† HL-IT is short for Haihe Laboratory of Information Technology Application          tween information capacity and system collection burden. Some
+Innovation.                                                                          leading internet companies like Alibaba [16] and Tencent (this pa-
+                                                                                     per) use CMD for RCL. Table 1 gives an example record of CMD.
+                                                                                     Each piece of CMD indicates the call events between two nodes
+                                                                                     which are labeled as caller and callee according to the call direc-
+This work is licensed under a Creative Commons Attribution International
+4.0 License.                                                                         tion. The node can be any system entity, ranging from fine-grained
+                                                                                     method level (this paper) to coarse-grained service level. For each
+WWW ’23, April 30–May 04, 2023, Austin, TX, USA                                      call event with the same caller and callee, CMD records its statistical
+© 2023 Copyright held by the owner/author(s).
+ACM ISBN 978-1-4503-9416-1/23/04.                                                    information, which is shown as metric in Table 1. Compared with
+https://doi.org/10.1145/3543507.3583302                                              traditional single-node KPI time series data [21], CMD provides real
+WWW ’23, April 30–May 04, 2023, Austin, TX, USA                                                                                       Qingyang Yu et al.
+
+
+  Table 1: The fields and the meanings of call metric data.                                                                   Request 1
+                                                                              Caller Callee
+                                                                                                                A   B   D      A B      Request 2
+    Category          Field            Meaning                                 A          B            Case 1
+                                                                                                                C   B          B D       C B
+    Caller            Caller_service   Service name of the caller              C          B
+                                                                                                  ？                                          Request 2
+                      Caller_method    Method name of the caller               B          D                     A   B          Request 1
+                                                                                                       Case 2                                 C B
+                                                                                 (a) CMD                        C   B   D       A B
+    Callee            Callee_service   Service name of the callee                                                                             B D
+                      Callee_method    Method name of the callee
+                                                                                                                A   B   D      Request 1 Request 2
+                                                                                A                      Case 3
+    Metric            RC               Request count per minute
+                                                                                                                C   B   D       A B       C B
+                      RT               Average response time per minute               B     D
+                                                                                C                                               B D       B D
+                      EC               Error count per minute
+                                                                            (b) Intuitive call graph            (c) Possible control flows
+                                                                          Figure 2: Illustration of the ambiguity faced by existing root
+               Request (Trace ID = 2ed48f08)                              cause localization methods when constructing the call graph
+                       Span 1                                             from call metric data. (a) shows the snapshot of call metric
+                                       Field          Value
+                 Node                                                     data. (b) shows the call graph constructed by existing meth-
+                  1                    Trace ID       2ed48f08
+                                                                          ods like MicroHECL [16], which is one of the three possible
+                       Span 2          Span ID        Span 4
+                                                                          control flows shown in (c). In this paper, we try to identify
+                                       Node name      Node 4
+                 Node
+                                                                          the right one to eliminate the negative impact of ambiguity.
+                                       Parent ID      Span 2
+                  2
+                                       Start time     12:28:05.219        correct control flow should be case 2, which is different from Fig-
+             Span 3           Span 4
+                                       End time       12:28:05.431        ure 2(b). The core idea of this work is to benefit RCL by identifying
+                 Node           Node   Response status Success            the actual call graph from all possible cases.
+                  3              4
+                                                                             In this paper, we propose an ambiguity-aware RCL approach
+Figure 1: The call path of an user request and the snapshot               called CMDiagnostor. First, we conduct theoretical analyses to re-
+of one piece of trace data.                                               veal the feasibility of eliminating ambiguity without the help of
+                                                                          resource-consuming trace data. Based on the analyses, a disam-
+                                                                          biguation algorithm called AmSitor is proposed and integrated into
+call relationships between two nodes, which are more friendly for         CMDiagnostor to construct the ambiguity-free call graph. Unsu-
+RCL. Compared with the pure call graph, CMD provides statistical          pervised anomaly detection methods are proposed to identify the
+results for various call metrics, which help identify the anomalous       anomaly calls in the graph. Then, an explainable root cause explo-
+status of call events.                                                    ration method is proposed to identify the potential root causes based
+   Detailed trace data [5, 8, 24] are prevalent these years, which        on the ambiguity-free call graph. At last, we rank the candidate
+provide more information than CMD. Figure 1 shows a trace record-         root causes based on our proposed key indicators. To summarize,
+ing example. A unique trace ID is generated for each user request.        we make the following contributions.
+A complete trace consists of multiple calls (shown as Span in Fig-         • To the best of our knowledge, we are the first to investigate the
+ure 1). CMD can be considered the aggregations of spans with the              ambiguity in the call graph. Based on the law of large numbers
+same caller and callee but ignoring different requests. Although              and the Markov properties of network traffic, a simple but ef-
+trace data distinguish among different requests, they are challeng-           fective regression-based method called AmSitor is proposed to
+ing for large-scale real-world online services to use. First, the high        eliminate ambiguity. Evaluation results show that AmSitor can
+transmission cost and storage burden should be considered. The                improve existing RCL methods.
+extra transmission bandwidth and storage are 103 × to 104 × larger         • CMDiagnostor, a four-stage (i.e., detection, construction, explo-
+compared with CMD under different compression rates (e.g., a real-            ration, and ranking) based framework, is designed to identify
+world trace dataset D𝑅𝑇 used in Section 5.2.2 converted to CMD                the root causes in an efficient and explainable way. The eval-
+achieves 2500× compression). There are huge resource wastes be-               uation results show that our CMDiagnostor outperforms the
+cause the majority of traces are normal, which are useless for RCL.           state-of-the-art algorithms by 14% on the top-5 hit rate.
+Second, the massive trace data bring extra computation costs for           • In this paper, we conduct comprehensive experimental evalu-
+RCL algorithms, e.g., parsing, reconstruction, and analyzing. Hence,          ations based on real-world datasets. Detailed case studies are
+this paper mainly focuses on RCL based on CMD.                                provided with practical experiences. Our code has been released.
+   Though widely usage of CMD, the threat of “ambiguity” is over-
+looked in existing RCL algorithms. The ambiguity arises when a            2 SYSTEM OVERVIEW
+node is called by multiple nodes and calls at least one node. We
+give a toy example of the ambiguity in Figure 2, where node 𝐵 has         2.1 Problem Statement
+two callers (𝐴 and 𝐶) and one callee 𝐷. Figure 2(a) shows three           In this section, we first introduce the essential notations. Then we
+pieces of CMD data. Based on Figure 2(a), existing methods like           give the formal definition of our problem in this paper.
+MicroHECL[16] construct a call graph, as shown in Figure 2(b).               SLO: Service Level Objectives (SLOs) are adopted by the system
+Unfortunately, the call graph in Figure 2(b) may be inaccurate. Ac-       we studied to measure customer satisfaction [1]. Once SLOs are
+tually, three possible control flows are shown in Figure 2(c). If the     violated, alerts covering information, such as alerting services, will
+calls 𝐴 → 𝐵 and 𝐵 → 𝐷 belong to different user requests, the              be generated to notify operators.
+CMDiagnostor: An Ambiguity-Aware Root Cause Localization Approach Based on Call Metric Data                                 WWW ’23, April 30–May 04, 2023, Austin, TX, USA
+
+
+   Node: A node represents a virtual entity belonging to some online                                          Metric Anomaly                                                    OUTPUT:
+                                                                                                                Detection                                                     Ranked list of
+service, which can be method-level, service-level, etc. A service                                                                       Detection results                   root cause services
+                                                                                          Alerting services          Abnormal
+consists of multiple methods. Our root cause algorithm is built                               & CMD                                     of relevant calls
+                                                                                                                     entry calls
+on a method-level dataset (shown in Table 1) because it provides                        INPUT:           Ambiguity-free
+                                                                                                                                                 Root Cause             Candidate Root
+                                                                                    Alerting services      Call Graph
+finer-grained information. We output the service-level root causes                                   CMD                                         Exploration Root cause Cause Ranking
+                                                                                        & CMD             Construction Ambiguity-
+as the operators usually focus on root cause services rather than                                                                     free                      node list
+                                                                                                                                   call graph
+a mass of methods. It is noteworthy that the method-level causes
+                                                                                              C1      C2    C4                           C1      C2     C4
+can also be provided to operators for further failure recovery.                           A        B      C
+                                                                                                    C3:{C6}
+                                                                                                               D                    A         B      C      ×D MSP :
+                                                                                                                                                          Pearsonr(MC2, MC4)
+   Call: A call refers to that a service node (𝐴) invokes another                                                                              C3:{C6}
+                                                                                                                                               C3
+                                                                                                                                                               < threshold
+service node (𝐵) with corresponding minute-granularity metrics,                           E
+                                                                                            eC0:
+                                                                                                 F
+                                                                                                    C5
+                                                                                                       G                             E
+                                                                                                                                        eC0:
+                                                                                                                                              F   ×
+                                                                                                                                                 C5
+                                                                                                                                                     G
+                                                                                          {C5,C6}                                                    ASP : C3⥇C5
+as the record in Table 1. The call here can be represented as 𝐴 → 𝐵.                              C6
+                                                                                                     H
+                                                                                                                                     {C5,C6}
+                                                                                                                                               C6 ×
+                                                                                                                                             ADP : H
+                                                                                                                                                                            C1 : Entry Call
+                                                                                                                                                                  C1 ~ C5 : Abnormal Calls
+A service node in this paper refers to a method. If there are a call                                                                Stop exploring     D, G, H : Filtered Root Cause Nodes
+                                                                                        C1 : Entry Call                                normal calls       C, F : Selected Root Cause Nodes
+(𝐴 → 𝐵) invokes a node (𝐵) and a call (𝐵 → 𝐶) invoked by the same
+node (𝐵), we call the former call the upstream call and the latter call                         Figure 3: Design overview of CMDiagnostor.
+the downstream call. The calls whose caller or callee service reports
+a SLO violation alert are called entry calls.                                       the abnormal entry calls to improve efficiency. Moreover, it also
+   The main objective of our paper is: Once the system alert                        identifies the relevant abnormal calls for the root cause exploration
+for SLO violation is reported, we need to identify the most-                        stage. More details can be found in Section 4.1.
+possible cause services as soon as possible based on previ-                            Ambiguity-free Call Graph Construction: This part aims to
+ously collected method-level call metric data.                                      construct the call graph for each abnormal entry call given by the
+                                                                                    previous module. However, the ambiguity, as shown in Figure 2,
+2.2    Challenges                                                                   results in multiple possible control flows, which may reduce the RCL
+                                                                                    performance (challenge of ambiguity). Based on the theoretical
+To achieve the above goal, there are three main challenges.
+                                                                                    analyses, we propose a traffic regression method (called AmSitor)
+ • Ambiguity: As illustrated in Figure 2, the ambiguity may cause
+                                                                                    to handle the ambiguity and construct the ambiguity-free call graph.
+   a wrongly constructed graph which may reduce the performance
+                                                                                    More detailed information can be found in Section 3 and Section 4.2.
+   of RCL. Eliminating the negative effects without the need to
+                                                                                       Root Cause Exploration and Candidate Root Cause Rank-
+   collect more detailed trace data is challenging.
+                                                                                    ing: Based on the ambiguity-free call graphs and anomaly detec-
+ • Efficiency: We aim to design a RCL algorithm for one top-tier
+                                                                                    tion results provided by the previous two modules, we propose a
+   online service provider. Once an alert is reported, hundreds
+                                                                                    pruning-based exploration method to exclude those false-positive
+   of thousands of methods are potential causes. How efficiently
+                                                                                    root causes. The detailed pruning strategies can be found in Sec-
+   identifying the top causes is challenging.
+                                                                                    tion 4.3. To further pick the most likely root causes, we rank the
+ • Explainability: Root cause localization is not the final stop for
+                                                                                    remaining root causes after the exploration process based on the
+   operators. They need to take action to eliminate failures. An
+                                                                                    carefully designed key indicators. More details about the rank-
+   explainable algorithm can provide more detailed information,
+                                                                                    ing algorithm can be found in Section 4.4. Instead of model-based
+   friendly to the following failure-eliminating process.
+                                                                                    methods [22], we adopt rule-based methods in the exploration and
+                                                                                    ranking stages for the sake of explainability and efficiency.
+2.3    Design Overview of CMDiagnostor
+To address the above challenges, we propose CMDiagnostor, an                        3     AMBIGUITY AND SOLUTION
+ambiguity-aware RCL approach. The overview is shown in Figure 3.
+                                                                                    In this section, we first summarize the Ambiguous Situation (short
+CMDiagnostor inputs alerting services and CMD, and outputs the
+                                                                                    as AmSit hereinafter) where the ambiguity arises. Then we give the
+ranked root cause service list. The entire process includes four mod-
+                                                                                    theoretical analyses of the traffic in AmSit and propose an algorithm
+ules: Metric Anomaly Detection, Ambiguity-free Call Graph
+                                                                                    called AmSitor to solve the AmSit. It is noteworthy that AmSitor
+Construction, Root Cause Exploration, and Candidate Root
+                                                                                    can not only be applied in call graph construction by CMD but also
+Cause Ranking. Once a service alert arises, CMDiagnostor first
+                                                                                    work well for other call graph construction scenarios.
+detects anomalies of entry calls and constructs the call graph with
+AmSitor. Next, CMDiagnostor traverses the calls from abnormal
+entry calls in the graph using three pruning strategies and ranks                   3.1       AmSit
+the potential root causes based on our proposed key indicators.                     Ambiguity arises in the situation where a node has at least two
+   Metric Anomaly Detection. This part identifies the abnormal                      upstream calls and at least one downstream call. Figure 2 gives
+calls from CMD for the subsequent two modules. First, it finds the                  a simple example of the situation, which has two upstream calls
+abnormal entry calls for the ambiguity-free call graph construction                 (𝐴 → 𝐵, 𝐶 → 𝐵) and one downstream call (𝐵 → 𝐷). From the
+stage. The entry call refers to the call whose caller or callee service             three calls in Figure 2(a), existing methods like MicroHECL [16]
+violates the SLO requirements. It is time-consuming to conduct                      construct the call graph shown in Figure 2(b). However, the graph is
+RCL for all entry calls (challenge of efficiency) as numerous entry                 ambiguous because the actual control flow may be one of the three
+calls can be found for an alerting service. Based on the observation                cases in Figure 2(c). For the convenience of description, we call such
+that the root causes are also anomalous, this module identifies                     a situation AmSit. AmSit can be solved by complete trace data that
+WWW ’23, April 30–May 04, 2023, Austin, TX, USA                                                                                     Qingyang Yu et al.
+
+
+are expensive to record and rarely available in large service systems.        4.1    Metric Anomaly Detection
+Therefore we focus on solving AmSit using easily acquired CMD.                The purpose of this module is to detect anomalous calls in CMD
+                                                                              using metrics that are attached to these calls. As shown in Table 1,
+3.2     Theoretical Analyses of Traffic                                       three types of metrics can be used, i.e., request count per minute
+For readability, we give the following corollaries based on the law           (RC), average response time per minute (RT), and error count per
+of large numbers and the Markov properties of network traffic. The            minute (EC). The detection results are used in the two following
+detailed mathematical derivation is provided in Appendix A.                   modules. In the ambiguity-free call graph construction stage, the
+                                                                              anomalous calls which contain alerting service nodes are used as
+   Corollary 3.1. For each time slicing 𝑡, the overall number of calls        the entry calls for graph construction. In the root cause exploration,
+from node A to its downstream node B can be approximated as the               only the anomalous calls are traversed because of the common
+weighted sum of call numbers from A’s one-hop upstream nodes.                 knowledge that the normal call can not become the root cause.
+
+   Corollary 3.2. The weight in Corollary 3.1 is the expected number          4.1.1 Anomaly Propagation Directions. Once a service alert is re-
+of 𝐴’s calling 𝐵 per 𝑈 ’s calling 𝐴, represented as E (𝑛𝐴→𝐵 |𝑈 → 𝐴).          ported, the straightforward way is to detect the anomalous calls
+                                                                              in both directions, i.e., upstream and downstream. However, the
+3.3     Algorithm for Solving the AmSit                                       anomaly propagation directions are different for different metrics.
+                                                                              According to [16], the call metrics can be divided into three cate-
+According to Corollary 3.1 and Corollary 3.2, from the CMD dataset,
+                                                                              gories: traffic-related metrics (like RC), performance-related met-
+we can get the number of calls from 𝐴 to 𝐵 at the time 𝑡 and the
+                                                                              rics (like RT), and reliability-related metrics (like EC). For traffic-
+number of each kind of upstream call at the time 𝑡. The only thing
+                                                                              related metrics, the increase/decrease in upstream calls leads to
+we want is the “weight” mentioned in Corollary 3.2, i.e., the expected
+                                                                              an increase/decrease in downstream calls. Thus the propagation
+number of 𝐴’s calling 𝐵 per 𝑈 ’s calling 𝐴. We naturally think of
+                                                                              direction of traffic-related metrics is from upstream to downstream.
+linearly regressing one downstream traffic on its possible upstream
+                                                                              Contrary to the above analysis, the propagation direction is from
+traffic. Time series with the same start and end times are used for
+                                                                              downstream to upstream for the other two kinds of metrics.
+the regression. The regression coefficient of each upstream traffic
+can be considered as its expectation. Upstream calls with a low               4.1.2 Anomaly Metric Selection. Among the three metrics shown in
+coefficient, e.g., less than or equal to a threshold (e.g., 0.005), will be   Table 1, we choose RT and EC instead of RC for anomaly detection
+dropped. Notice that we should keep the coefficient non-negative              and root cause localization for two reasons. First, the majority of
+during the linear regression analysis, as E (𝑛𝐴→𝐵 |𝑈 → 𝐴) means               RC anomalies can be attributed to RT and EC anomalies. Second,
+the expectation of the number of the calls under the given condition.         RT and EC anomalies provide more clues for failure elimination.
+   Based on the analyses above, we propose AmSitor to determine               For example, for RT anomalies, the service operators can deploy
+the correspondences of upstream and downstream calls in AmSits                more machines. But for RC anomalies, no clear instructions can be
+based on their traffic. The pseudo-code is shown in Algorithm 1.              provided. A more detailed analysis is provided in Appendix B.
+We use scipy.optimize.dual_annealing [4], a python-based global
+optimization function, to implement linear regression.                        4.1.3 Anomaly Comparison Window. Given the alerting time 𝑡, data
+                                                                              within (𝑡 − 10𝑚𝑖𝑛, 𝑡] are considered to sculpture the failure, named
+                                                                              a detection window. Besides, a comparison window is needed to learn
+Algorithm 1 (AmSitor): Determine correspondences of upstream                  the metrics’ normal patterns. Considering the periodicity of metrics,
+and downstream calls in the AmSit based on traffic regression                 we also select those time windows at the same period of the previous
+Input: Upstream calls C𝑈 , |C𝑈 | ≥ 2 and their traffic T𝑈 = {T𝑈 ,𝑗 |          day and on the same day of the previous week. In other words, we
+    𝑗 = 1, 2, · · · , |C𝑈 |}; Downstream calls C𝐷 , |C𝐷 | ≥ 1 and their       consider three windows for comparison, i.e., (𝑡 − 70𝑚𝑖𝑛, 𝑡 − 10𝑚𝑖𝑛],
+    traffic T𝐷 = {T𝐷,𝑖 | 𝑖 = 1, 2, · · · , |C𝐷 |};                            (𝑡 − 60𝑚𝑖𝑛 − 24ℎ, 𝑡 − 24ℎ], (𝑡 − 60𝑚𝑖𝑛 − 7 ∗ 24ℎ, 𝑡 − 7 ∗ 24ℎ].
+Output: A mapping from C𝐷 to their upstream calls;
+                                                                              4.1.4 Anomaly Detection. Performance Anomaly Detection:
+ 1: 𝑟𝑒𝑠𝑢𝑙𝑡𝑠 ← A mapping from C𝐷 to their upstream calls
+                                                                              We choose the isolated forest (iForest) [18] to detect abnormal
+ 2: for all C𝑖 ∈ C𝐷 do
+                                 Í                                            RT fluctuations. iForest identifies anomalies by explicitly isolating
+ 3:    linear regress T𝐷,𝑖 = C𝑈 r 𝑗 T𝑈 ,𝑗 while keeping r 𝑗 ≥ 0
+                                                   Ó                          anomalies instead of normal instance profiling. Besides, it works
+ 4:    𝑟𝑒𝑠𝑢𝑙𝑡𝑠 [C𝑖 ] ← {𝐶𝑈 ,𝑗 | 𝑟 𝑗 > 𝑡ℎ𝑟𝑒𝑠ℎ𝑜𝑙𝑑 𝐶𝑈 ,𝑗 ∈ C𝑈 }
+                                                                              well in high-dimensional problems and works in an unsupervised
+ 5: end for
+                                                                              way. We use the same method as [16] to extract four features for
+ 6: return 𝑟𝑒𝑠𝑢𝑙𝑡𝑠
+                                                                              RT fluctuations. The first two are computed by comparing the
+                                                                              values in the detection window with the maximum value in the
+                                                                              comparison window. Specifically, they are the value count in the
+                                                                              detection window exceeding the maximum value in the comparison
+4     METHODOLOGY                                                             window and the difference between the maximum values of the
+In this section, we introduce the details of CMDiagnostor, i.e., the          two windows. The last two are computed by comparing the values
+four stages of Metric Anomaly Detection, Ambiguity-free Call                  in the detection window with the maximum moving average value
+Graph Construction, Root Cause Exploration, and Candidate                     in the comparison window. Specifically, they are the value count
+Root Cause Ranking, as shown in Figure 3.                                     in the detection window exceeding the maximum moving average
+CMDiagnostor: An Ambiguity-Aware Root Cause Localization Approach Based on Call Metric Data                     WWW ’23, April 30–May 04, 2023, Austin, TX, USA
+
+
+value in the comparison window and the proportion of the mean                       minutes before the alert. If the coefficient is lower than a threshold
+in the detection window to the maximum moving average value                         (e.g., 0.7), the call and its downstream will be pruned by MSP.
+in the comparison window. At last, we combine four features with                        Anomaly Detection-based Pruning (ADP). There is a general
+three comparison windows to get 12 features for model training.                     consensus [16]: if the metric of one call on the exploration path is
+Implementation details can be found in Appendix C.1.                                normal, then it and its subsequent calls will not be the root causes
+   Reliability Anomaly Detection: We propose a simple method                        and can be dropped. Specifically, for a current call, perform anomaly
+to detect EC anomalies. The 95𝑡ℎ percentile of EC in the comparison                 detection for the corresponding metric. If the metric is normal, the
+period is used as the splitting point of the normal and abnormal val-               call and its downstream will be pruned by ADP.
+ues. We calculate the 95𝑡ℎ quantiles of three comparison windows                        After the DFS exploration, CMDiagnostor adds the end-most
+and take their minimum 𝑚𝑖𝑛 95 . We compare each of the 10 values                    nodes on all paths in the pruned graph to the root cause list, e.g.,
+in the detection window with 𝑚𝑖𝑛 95 . The EC metric is considered                   node C and node F in the figure. The root cause node lists from RT
+abnormal if there is more than one value greater than 𝑚𝑖𝑛 95 .                      and EC are merged to obtain the final candidate root cause node
+   It is noteworthy that other existing anomaly detection algo-                     list. In addition, as required for subsequent ranking, we also store
+rithms [2, 23] can also be used in this stage as needed.                            the calls corresponding to these end-most nodes (e.g., C2 and C3)
+                                                                                    and their three types of metrics (RC, RT, EC).
+4.2    Ambiguity-free Call Graph Construction
+This module aims to build the ambiguity-free call graph for ab-
+                                                                                    4.4       Candidate Root Cause Ranking
+normal entry calls provided by the Metric Anomaly Detection                         After root cause exploration, we get a candidate root cause node
+module. First, we generate the call graph starting from each abnor-                 (method) list. To get the final root cause service ranking, we intro-
+mal entry call by extending downstream, adopting a breadth-first                    duce three ranking keys as follows.
+search (BFS), as we only explore RT and EC root causes downstream
+                                                                                    4.4.1 Root Cause Node Count (RCNC). Many nodes (methods)
+opposite their propagation direction. Then we apply AmSitor in-
+                                                                                    belonging to different services may exist in the list. We introduce
+troduced in Section 3.3 to solve the ambiguous problem.
+                                                                                    RCNC because we found in other historical datasets that the root
+    Take the bottom-left part of Figure 3 as an example where the
+                                                                                    cause probability of a microservice is positively correlated with
+abnormal entry call is C1. Add the callee of the entry call to a list,
+                                                                                    its RCNC, i.e., the more root cause nodes in a service, the more
+and find the related calls of the list nodes, where the nodes are
+                                                                                    likely the service is the root cause service. So we count the RCNC
+the caller or callee of these related calls. If the callee of a newly
+                                                                                    of each service to rank services. The larger the RCNC, the higher
+found call is not in the list, add the callee to the list. Iterate this
+                                                                                    the service ranking.
+process until all nodes in the list are traversed and no new nodes
+are added. Finally, the graphs are merged if there are overlapping                  4.4.2 Average Error Rate (AER). AER is a commonly used metric
+parts. Among the calls, a call added only as its callee is in the list is           for ranking root causes. We first find the call corresponding to each
+called an extra call (for example, eC0). Extra calls do not participate             root cause node and calculate the mean of error rates (𝑒𝑟𝑟𝑜𝑟 𝑟𝑎𝑡𝑒 =
+in anomaly detection or root cause exploration. They are only used                  𝐸𝐶/𝑅𝐶) of 10 values in the detection window. Then we calculate
+to disambiguate for AmSits. For each AmSit, the correspondences                     the average of the error rate means of calls in service as the AER of
+of upstream and downstream calls are identified using AmSitor.                      service. The higher the AER, the higher the service ranking.
+Since root cause exploration is from upstream to downstream, a list
+of downstream calls corresponding to each upstream call is stored.                  4.4.3 Maximum Metric Similarity (MMS). MMS is introduced based
+For example, C3:{C6} in the figure indicates that the downstream                    on existing works [14, 16] that think the anomaly metric of the
+list of C3 is {C6}. As a result, we get the ambiguity-free call graph.              entry has similar change trends to that of the root cause. Specifically,
+                                                                                    we first find the root cause call corresponding to each root cause
+                                                                                    node and then calculate the Pearson correlation coefficient of the
+4.3    Root Cause Exploration
+                                                                                    anomaly metric (RT or EC) with the corresponding metric of its
+Based on the constructed graph from the previous section, we tra-                   entry call. Use the coefficient maximum (i.e., MMS) of each service
+verse the graph using a depth-first search (DFS) method to explore                  as the key. The higher the MMS, the higher the ranking.
+the potential root causes. Three different pruning methods are used                    We rank services with RCNC as the primary key and AER as the
+to filter out the non-root causes. The bottom-right part of Figure 3                secondary key. MMS is used to rank MicroHECL in Section 5.1.3. We
+shows their examples.                                                               discuss the applicability of the ranking keys above in Section 5.4.3.
+   AmSit-based Pruning (ASP). For a current call, if it and its
+upstream calls form an AmSit, the call and its downstream will
+                                                                                    5     EVALUATION
+be pruned by ASP when the call is not the downstream call corre-
+sponding to the path (e.g., C5 is not downstream of C3).                            In this section, we conduct experimental studies to answer the
+   Metric Similarity-based Pruning (MSP). This analysis is based                    following research questions. All the experiments are conducted
+on an assumption from MicroHECL [16] that two successive calls                      on a server with 22-core CPU (Intel(R) Xeon(R) CPU E5-2620 v3 @
+in an anomaly propagation chain have similar change trends in                       2.40GHz) and 57GB RAM.
+corresponding metrics. For a current call, check the Pearson cor-                   RQ1 How does AmSitor perform in identifying upstream and
+relation coefficient between the anomaly metric of its upstream                         downstream correspondences in AmSits?
+call and its corresponding metric based on the period of the last 30                RQ2 How does CMDiagnostor perform in root cause localization?
+WWW ’23, April 30–May 04, 2023, Austin, TX, USA                                                                                     Qingyang Yu et al.
+
+
+RQ3 Can each component of CMDiagnostor contribute to the over-                5.1.3   Root Cause Localization.
+     all performance?
+RQ4 Can AmSitor improve the performance of the other root cause                  Baselines. Existing root-cause service localization works are
+     localization approaches?                                                 mainly of two categories, i.e., topological graph-based and causal
+                                                                              graph-based. We choose the state-of-the-art approaches from each
+5.1     Experimental Setup                                                    as baselines, i.e., MonitorRank [10] (topological graph-based ran-
+                                                                              dom walk), MicroHECL [16] (topological graph-based DFS), Mi-
+In this section, we first introduce the datasets we used for evaluation.
+                                                                              croscope [14] (causal graph-based DFS), and AutoMap [22] (causal
+Then we introduce the baselines and metrics for the AmSit problem
+                                                                              graph-based random walk). As the high time complexity of the PC
+and RCL task correspondingly.
+                                                                              algorithm, it is infeasible for Microscope and AutoMap to work
+5.1.1 Datasets. Simulated Trace Dataset (D𝑆𝑇 ). We generate                   in the method level. We transform the dataset they use to the ser-
+D𝑆𝑇 based on the train-ticket testbed [29], which is a benchmark              vice level. MonitorRank and MicroHECL use the same method-level
+system of microservice architecture with 41 microservices. D𝑆𝑇                CMD as CMDiagnostor. More details can be found in Appendix C.2.
+spans 1 hour with 150,000 span records.                                          Beyond these two categories, there are also some other categories
+   Real-world Trace Dataset (D𝑅𝑇 ). We collect D𝑅𝑇 from a                     of root cause analysis approaches, such as trace-based [13, 27], log
+large-scale online advertising service system with 1.8K+ microser-            analysis-based [7, 15], and direct KPI correlation [19] approaches.
+vices and 0.23 million service nodes. D𝑅𝑇 contains 0.5 billion span           We do not choose baselines from these works since their inputs and
+records lasting 6 hours.                                                      outputs are much different from our scenario.
+   Real-world Failure Dataset (D𝑅𝐹 ). D𝑅𝐹 contains 65 real-
+world failures from an online service system of a top-tier global                 Evaluation Metrics. Following the existing works [16], we adopt
+multimedia service provider. The system consists of 8K+ microser-             the top-k hit ratio (HR@k) and mean reciprocal rank (MRR) to
+vices and 0.57 million service nodes. We collect D𝑅𝐹 from Decem-              measure the performance of each RCL method. HR@k represents
+ber 2021 to July 2022. The content of each data record is shown in            the proportion of the top-k candidate root cause lists containing
+Table 1. On average, there are 0.8 million CMD records per day.               the actual root causes. For a given failure case, the reciprocal rank
+                                                                              is the multiplicative inverse of the rank of the first correct answer.
+5.1.2   AmSit Problem.                                                        MRR further averages the reciprocal ranks in the dataset. If the
+   Baselines. To the best of our knowledge, we are the first to ad-           correct answer of a case is not included in the list, its reciprocal
+dress the ambiguity in CMD. As a result, we find no existing solu-            rank is taken as 0.
+tions for AmSit. Hence, we propose the following two straw man
+methods as baselines instead.                                                 5.2     Performance of AmSitor (RQ1)
+   PWS: Pair-Wise Similarity (PWS) determines the relationship                It is impractical to obtain explicit call correspondences in AmSits
+between a downstream call and each upstream one based on the                  from D𝑅𝐹 . For evaluating AmSitor (Algorithm 1), we use both
+intuitive traffic similarity. Specifically, PWS measures the similarity       simulated and real-world trace datasets (D𝑆𝑇 and D𝑅𝑇 ) that can
+with the Pearson coefficient. A relation will be removed if the               obtain actual call correspondences. Before the evaluation, we first
+similarity is lower than a threshold. In this paper, we select the            transform the trace data into CMD with a window size of 1 minute.
+threshold of 0.3, which has the best overall performance.
+   CBS: The traffic of a downstream call may come from multiple               5.2.1 Performance in D𝑆𝑇 . The experimental results are shown
+upstream calls. As a result, the similarity between the downstream            in the left part of Table 2. We perform data transformation with
+traffic and each upstream traffic can be intangible. Combination-             operationName as the node, and get 71 different calls and 13 AmSits.
+Based Similarity (CBS) is proposed based on PWS. Specifically                 The AmSits in D𝑆𝑇 are very simple, with 2 to 3 upstream calls cor-
+speaking, given a downstream call, CBS sums up the traffic for                responding to one downstream call. Each upstream call execution
+each combination of upstream calls. Calls in the combination with             will inevitably invoke its downstream call. Therefore, AmSits in
+the maximal similarity will be considered as the actual upstream              the train-ticket testbed are simple to solve, which is confirmed by
+calls of the given downstream one.                                            the high precision of all methods in Table 2.
+                                                                                  PWS determines the correspondence of the downstream call
+   Evaluation Metrics. We adopt accuracy, precision, and recall of            and each upstream call by their traffic similarity. Once the traffic
+AmSit cases to evaluate the performance of each AmSit solution. An            of the downstream call comes from multiple upstream calls, the
+AmSit case refers to a downstream call and the set of corresponding           similarity between the downstream traffic and each upstream traffic
+upstream ones S𝑢 . Let 𝑁 be the number of AmSit cases in a dataset            is less obvious. This makes PWS not always effective. Both CBS and
+and Ŝ𝑢 be the set of upstream calls identified by a AmSit solutions.         AmSitor can handle these AmSits with complete accuracy. However,
+Eq.(1) shows the definitions for the precision and recall for 𝑖 𝑡ℎ            CBS assumes that a request execution will invariably invoke each
+AmSit case, as well as the accuracy. We present the average of the            relevant call once and only once. But this assumption may not
+precision and recall in the rest of this section.                             always hold, especially in some complex environments. To evaluate
+                                                                              the performance of the three methods in a more complex real-world
+           𝐴𝑐𝑐𝑢𝑟𝑎𝑐𝑦 = |{𝑖 | S𝑢,𝑖 ≡ Ŝ𝑢,𝑖 , 𝑖 = 1, 2, · · · , 𝑁 }| / 𝑁         service environment, we use D𝑅𝑇 for further evaluation.
+          𝑃𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛𝑖 = |S𝑢,𝑖 ∩ Ŝ𝑢,𝑖 | / | Ŝ𝑢,𝑖 |                      (1)   5.2.2 Performance in D𝑅𝑇 . The experimental results are shown in
+              𝑅𝑒𝑐𝑎𝑙𝑙𝑖 = |S𝑢,𝑖 ∩ Ŝ𝑢,𝑖 | / |S𝑢,𝑖 |                             the right part of Table 2. We get 0.2 million different method calls
+CMDiagnostor: An Ambiguity-Aware Root Cause Localization Approach Based on Call Metric Data                                                                  WWW ’23, April 30–May 04, 2023, Austin, TX, USA
+
+
+Table 2: Comparison among AmSit solutions in D𝑆𝑇 and D𝑅𝑇                                      Table 4: Comparison among RCL approaches.
+(A = Accuracy, P = Average Precision, R = Average Recall).
+                                                                                                                             Method                         HR@1                   HR@3                HR@5                MRR
+                               D𝑆𝑇                      D𝑅𝑇
+          Method                                                                                        MonitorRank                                            0.35                0.60                    0.63              0.53
+                         A       P     R         A         P      R                                     Microscope                                             0.42                0.66                    0.68              0.59
+                                                                                                        MicroHECL                                              0.49                0.77                    0.80              0.69
+           PWS        61.54%     1    0.87     52.29%     0.69   0.76
+                                                                                                         AutoMap                                               0.22                0.74                    0.78              0.58
+           CBS         100%      1      1      55.13%     0.73   0.79
+          AmSitor      100%      1     1       89.51%     0.96   0.97                         CMDiagnostor                                                     0.65                0.91                    0.94              0.83
+
+Table 3: Performance of AmSitor with different numbers of                                                                                          & 0 ' L D J Q R V W R U  F D F K H G           0 R Q L W R U 5 D Q N
+upstream calls.                                                                                                                                    & 0 ' L D J Q R V W R U                         0 L F U R V F R S H
+                                                                                                                                                   0 L F U R + ( & /                               $ X W R 0 D S
+    #Upstream       Frequency                        Average      Average
+
+
+
+
+                                                                                               $ Y H U D J H  W L P H  V
+                                     Accuracy                                                                                  
+                                                                                                                                     
+      Call           of AmSit                        Precision     Recall
+       [2, 10]                                                                                                                       
+                        88%           95.67%            0.98          0.99                                                     
+      [11, 100]         11%           80.75%            0.92          0.96
+                                                                                                                                     
+      [101, ∞)          1%            39.31%            0.83          0.92                                                     
+       [2, ∞)          100%           89.51%            0.96          0.97                                                                >                 >              >                >        
+                                                                                                                                                              * U R X S H G  F D O O  Q X P E H U
+                                                                                    Figure 4: Average execution time for different RCL ap-
+by data transformation and find 1,428 AmSits. These AmSits cover
+                                                                                    proaches with respect to the group of the explored call num-
+277,236 possible upstream-downstream pairs and 222,621 actual
+                                                                                    ber, which is positively related to the complexity of the task.
+upstream-downstream pairs. The ideal reduction rate is 19.70%.
+   We aim to determine the right upstream calls for each down-
+stream call in these AmSits. There are 12,084 upstream and 9,323                    5.3.2 Efficiency Evaluation. Figure 4 compares the time taken by
+downstream calls, so 9,323 AmSit cases can be used for evalua-                      different approaches to locate the root causes of failure cases. We
+tion. AmSitor effectively identifies the upstream and downstream                    group the cases by the actual number of explored calls (after prun-
+correspondences in real-world AmSits, as shown in Table 2. The                      ing) of CMDiagnostor. Note that the identified correspondences
+accuracy of AmSitor achieves 89.51%, significantly outperforming                    in AmSits can be cached during actual deployment. So we accel-
+the two baseline methods by over 34%. The actual reduction rate, i.e.,              erate CMDiagnostor by reading the cached AmSits, denoted as
+the number of upstream-downstream pairs removed by AmSitor                          CMDiagnostor-cached in Figure 4. It can be seen that the efficiency
+divided by the total pair number, is 17.67%, close to the ideal value.              of CMDiagnostor-cached is slightly higher than that of MicroHECL
+   We note that the performance of AmSitor is affected by the up-                   as CMDiagnostor-cached prunes some extra calls. Microscope and
+stream call number, as shown in Table 3. As the number increases,                   AutoMap are inefficient as it is time-consuming to build causal
+the accuracy of AmSitor decreases. But AmSitor still achieves higher                graphs in a large service system. The average analysis time of these
+precision and recall than baseline methods. We dig into the up-                     approaches increases with the number of exploration calls.
+stream calls that are mistakenly identified and find that 87% of
+them occur no more than 20 times during the 6-hour period. We                       5.4       Ablation Study of CMDiagnostor (RQ3)
+believe that calls of this magnitude would have little impact on                    In this section, we conduct ablation studies to evaluate the con-
+RCL, even if misidentified.                                                         tribution of each component of CMDiagnostor to the overall per-
+                                                                                    formance, including the ambiguity-free call graph construction,
+5.3    Performance of CMDiagnostor (RQ2)                                            pruning strategies, metric anomaly detection, and candidate root
+We evaluate the effectiveness and efficiency of CMDiagnostor com-                   cause ranking. Since the metric anomaly detection and candidate
+pared with four baselines by using the real-world failure dataset                   root cause ranking modules can not be completely removed in the
+D𝑅𝐹 . We do not use D𝑆𝑇 for this evaluation because the AmSits in                   ablation study, we evaluate their effectiveness by replacing each
+the train-ticket testbed are too simple and not needed for handling,                method with alternative methods separately.
+which are not in line with the characteristics of real-world AmSits
+                                                                                    5.4.1 Contribution of Ambiguity-Free Call Graph Construction and
+in large-scale service systems. We do not use D𝑅𝑇 because we do
+                                                                                    Pruning Strategies. Three pruning strategies are proposed in Sec-
+not have a collection spanning many days and any failure case.
+                                                                                    tion 4.3. Among them, ADP is a basic one because, without it, root
+5.3.1 Effectiveness Evaluation. Table 4 compares different RCL                      cause exploration may indiscriminately explore to the end of each
+approaches, where CMDiagnostor achieves HR@5 and MRR of                             path, which is not in line with root cause localization. Therefore, we
+0.94 and 0.83, both outperforming the strongest baseline Micro-                     focus on analyzing the contribution of ASP and MSP and conduct 3
+HECL [16] by 0.14. Each component of CMDiagnostor contributes                       comparison experiments, i.e., not use ASP and MSP, only use MSP,
+to the overall performance, including metric anomaly detection,                     and only use ASP. The results are shown in Table 5, which show
+ambiguity-free call graph construction, root cause exploration, and                 that both ASP and MSP have considerable improvement effects, and
+candidate root cause ranking. The detailed ablation studies can be                  the performance can be improved one step further when combining
+found in Section 5.4 and Appendix E.                                                two pruning strategies. Furthermore, from the ablation of ASP, we
+WWW ’23, April 30–May 04, 2023, Austin, TX, USA                                                                                                      Qingyang Yu et al.
+
+
+Table 5: Ablation analysis by removing each pruning strategy.                                 Table 8: Performance of baselines with/without AmSitor,
+                                                                                              where + indicates equipping AmSitor.
+                Method          HR@1        HR@3           HR@5              MRR
+              CMDiagnostor         0.65          0.91          0.94          0.83                       Approach         HR@1      HR@3     HR@5        MRR
+
+                w/o ASP            0.63          0.89          0.91          0.81                     MonitorRank         0.35      0.60      0.63      0.53
+                w/o MSP            0.60          0.88          0.89          0.79                    MonitorRank(+)       0.37      0.62      0.66      0.55
+              w/o ASP, MSP         0.57          0.85          0.85          0.76                      Microscope         0.42      0.66      0.68      0.59
+                                                                                                      Microscope(+)       0.45      0.66      0.69      0.60
+    Table 6: Comparisons of anomaly detection methods.                                                 MicroHECL          0.46      0.77      0.80      0.69
+                                                                                                     MicroHECL(+)         0.46      0.83      0.89      0.73
+      No.          RT         EC          HR@1          HR@3      HR@5          MRR                     AutoMap           0.22      0.74      0.78      0.58
+          1      iForest   3𝜎 -1CW        0.62          0.88          0.91          0.80               AutoMap(+)         0.31      0.82      0.82      0.65
+          2      iForest   3𝜎 -3CW        0.60          0.91          0.94          0.82
+          3      iForest    iForest       0.58          0.89          0.92          0.80
+          4      iForest   OC-SVM         0.54          0.88          0.91          0.78
+          5      iForest     SPOT         0.58          0.85          0.89          0.77
+                                                                                              existing RCL methods to improve their performance. In this section,
+        6        3𝜎 -1CW     95-3CW       0.55          0.82          0.83          0.73      we conduct experiments to see whether AmSitor can improve their
+        7        3𝜎 -3CW     95-3CW       0.52          0.85          0.86          0.74
+        8        95-3CW      95-3CW       0.55          0.91          0.94          0.80      performance. As shown in Table 8, AmSitor improves four baselines.
+        9        OC-SVM      95-3CW       0.58          0.86          0.91          0.78
+       10         SPOT       95-3CW       0.52          0.80          0.82          0.71
+                                                                                              6   RELATED WORK
+      Ours       iForest     95-3CW       0.65          0.91          0.94      0.83
+                                                                                              There are mainly two categories of root cause service localiza-
+              Table 7: Comparisons of ranking strategies.                                     tion approaches based on call metrics, i.e., causal graph-based and
+                                                                                              topological graph-based. The causal graph-based approaches use
+                 Primary     Secondary
+  Method                                   HR@1          HR@3          HR@5           MRR     causal discovery algorithms to identify the relationships among
+                   Key          Key
+                                                                                              service components. For example, PC algorithm [9, 25] is widely
+      1           RCNC          -            0.62          0.88          0.91          0.80
+      2            AER          -            0.51          0.86          0.89          0.75   used [3, 14, 20, 22]. Then, they apply various inference methods to
+      3           MMS           -            0.11          0.65           0.8          0.52   identify the root causes, such as the random walk [22] or DFS [3, 14].
+      4           AMS           -            0.15          0.63          0.78          0.52   We refer readers to a recent survey [6] for more details. However,
+      5           MMS          AER           0.46          0.83          0.89          0.73
+      6           AMS          AER           0.38          0.71          0.80          0.63   they are usually limited by the low efficiency and accuracy of causal
+    Ours          RCNC         AER          0.65          0.91          0.94          0.83    discovery. Therefore, many approaches use call graphs, which can
+                                                                                              be obtained by sensors deployed on service components [10], to
+                                                                                              represent the dependencies among the components. However, these
+also conclude that ambiguity-free call graph construction has a                               methods suffer from the AmSit problem, limiting their performance.
+significant contribution to the overall performance.                                             Root cause service localization based on traces [13, 28] and
+                                                                                              logs [7, 15] are also extensively studied. However, traces are col-
+5.4.2 Performance of Anomaly Detection Methods. To investigate
+                                                                                              lected by distributed tracing systems and consume much computa-
+the performance of our anomaly detection methods, we perform
+                                                                                              tion and storage resources, and thus, are unavailable in many online
+ablation studies by replacing one of them with alternative methods.
+                                                                                              services. Logs are arbitrary and ad-hoc and contain much useless
+Several common unsupervised methods are selected, including 3𝜎-
+                                                                                              information, which limits the accuracy of root cause localization.
+based methods that respectively use the one hour before the alert
+                                                                                              Therefore, call metrics-based approaches are much more practical.
+window as the comparison window (CW) and the three compari-
+                                                                                                 MicroHECL [16] is a state-of-the-art topological graph-based
+son windows we use, one class support vector machine (OC-SVM)
+                                                                                              DFS method using CMD and the MSP pruning strategy to im-
+[12] using 12 features the same as our performance anomaly detec-
+                                                                                              prove efficiency. Compared with MicroHECL, CMDiagnostor uses
+tion, and the SPOT algorithm [17]. Table 6 shows the experimental
+                                                                                              AmSitor to disambiguate the call graph and only explores abnormal
+results, which indicate that our methods are the most effective.
+                                                                                              RT and EC metrics downstream from the entry node instead of up-
+5.4.3 Performance of Ranking Method. The ablation studies for                                 stream. It uses unsupervised anomaly detection methods instead of
+different ranking strategies are shown in Table 7. According to                               supervised ones. In addition, it ranks services based on the number
+Section 4.4, various indicators, i.e., RCNC, AER, and MMS, are used                           of root cause nodes in each service.
+for ranking. We also compare the service’s average metric similarity
+(AMS). Considering there are the same values for MMS, AMS, and                                7   CONCLUSIONS
+RCNC, a secondary key is used to improve their performance. The                               This paper proposes CMDiagnostor, an ambiguity-aware root cause
+results show our method achieves the best performance with RCNC                               localization approach based on call metric data. Though call metric
+as the primary key and AER as the secondary key.                                              data are widely used, the ambiguity existing in the call graph is
+                                                                                              ignored, which may lead to misjudgments on failure root causes.
+5.5       Performance of Baselines enhanced by                                                A simple but effective method, AmSitor, is proposed to address
+          AmSitor (RQ4)                                                                       the ambiguity problem and integrated into CMDiagnostor. Signifi-
+We are the first to investigate the AmSit problem and propose                                 cant improvements on a large-scale real-world dataset verify the
+AmSitor to eliminate its side effects. AmSitor can also be used by                            effectiveness and efficiency of CMDiagnostor.
+CMDiagnostor: An Ambiguity-Aware Root Cause Localization Approach Based on Call Metric Data                               WWW ’23, April 30–May 04, 2023, Austin, TX, USA
+
+
+ACKNOWLEDGMENTS                                                                               Performance Diagnosis via Causal Inference for OLTP Database Systems. In 2022
+                                                                                              22th IEEE/ACM International Symposium on Cluster, Cloud and Grid Computing
+This work is supported by the National Key Research and Develop-                              (CCGRID).
+ment Program of China (No.2019YFE0105500), the Research Council                          [21] Meng Ma, Weilan Lin, Disheng Pan, and Ping Wang. 2019. Ms-rank: Multi-metric
+                                                                                              and self-adaptive root cause diagnosis for microservice applications. In ICWS.
+of Norway (No.309494), the State Key Program of National Natu-                                60–67.
+ral Science of China under Grant 62072264, the National Natural                          [22] Meng Ma, Jingmin Xu, Yuan Wang, Pengfei Chen, Zonghua Zhang, and Ping
+Science Foundation of China (No.62272249 and No.62202445), and                                Wang. 2020. Automap: Diagnose your microservice-based web applications
+                                                                                              automatically. In WWW. 246–258.
+the Beijing National Research Center for Information Science and                         [23] Guansong Pang, Chunhua Shen, Longbing Cao, and Anton Van Den Hengel. 2021.
+Technology (BNRist) key projects. In addition, we thank Chenyuan                              Deep learning for anomaly detection: A review. ACM Computing Surveys (CSUR)
+Hu, Hucheng Xie, and other relevant Tencent employees for their                               54, 2 (2021), 1–38.
+                                                                                         [24] Benjamin H Sigelman, Luiz Andre Barroso, Mike Burrows, Pat Stephenson, Manoj
+help in this work.                                                                            Plakal, Donald Beaver, Saul Jaspan, and Chandan Shanbhag. 2010. Dapper, a
+                                                                                              large-scale distributed systems tracing infrastructure. (2010).
+                                                                                         [25] Peter Spirtes, Clark N Glymour, Richard Scheines, and David Heckerman. 2000.
+REFERENCES                                                                                    Causation, prediction, and search. MIT press.
+ [1] Betsy Beyer, Chris Jones, Jennifer Petoff, and Niall Richard Murphy. 2016. Site     [26] Sean Wolfe. 2018. Amazon’s one hour of downtime on prime day may
+     Reliability Engineering (first ed.). O’Reilly Media, Inc.                                have cost it up to $100 million in lost sales. Business Insider (July 2018).
+ [2] Mohammad Braei and Sebastian Wagner. 2020. Anomaly detection in univariate               URL: https://www.businessinsider.com/amazon-prime-day-website-issues-cost-it-
+     time-series: A survey on the state-of-the-art. arXiv preprint arXiv:2004.00433           millions-in-lost-sales-2018-7 (2018).
+     (2020).                                                                             [27] Li Wu, Johan Tordsson, Erik Elmroth, and Odej Kao. 2020. Microrca: Root cause
+ [3] Pengfei Chen, Yong Qi, Pengfei Zheng, and Di Hou. 2014. CauseInfer: Automatic            localization of performance issues in microservices. In NOMS 2020-2020 IEEE/IFIP
+     and distributed performance diagnosis with hierarchical causality graph in large         Network Operations and Management Symposium. IEEE, 1–9.
+     distributed systems. In INFOCOM. 1887–1895.                                         [28] Guangba Yu, Pengfei Chen, Hongyang Chen, Zijie Guan, Zicheng Huang, Linxiao
+ [4] SciPy community. 2022. scipy.optimize.dual_annealing. https://docs.scipy.org/            Jing, Tianjun Weng, Xinmeng Sun, and Xiaoyun Li. 2021. MicroRank: End-to-End
+     doc/scipy/reference/generated/scipy.optimize.dual_annealing.html, Last accessed          Latency Issue Localization with Extended Spectrum Analysis in Microservice
+     on 2022-10-11.                                                                           Environments. In WWW. 3087–3098.
+ [5] Rodrigo Fonseca, George Porter, Randy H Katz, and Scott Shenker. 2007. X-trace:     [29] Xiang Zhou, Xin Peng, Tao Xie, et al. 2018. Train Ticket: A Benchmark Microser-
+     A pervasive network tracing framework. In NSDI.                                          vice System. https://github.com/FudanSELab/train-ticket, Last accessed on
+ [6] Ruocheng Guo, Lu Cheng, Jundong Li, P. Richard Hahn, and Huan Liu. 2020. A               2022-10-11.
+     Survey of Learning Causality with Data: Problems and Methods. ACM Comput.
+     Surv. 53, 4 (jul 2020), 37 pages.
+ [7] Shilin He, Qingwei Lin, Jian-Guang Lou, Hongyu Zhang, Michael R. Lyu, and
+     Dongmei Zhang. 2018. Identifying Impactful Service System Problems via Log
+     Analysis. In Proceedings of the 2018 26th ACM Joint Meeting on European Software
+     Engineering Conference and Symposium on the Foundations of Software Engineering.
+     https://doi.org/10.1145/3236024.3236083
+ [8] Jonathan Kaldor, Jonathan Mace, Michał Bejda, Edison Gao, Wiktor Kuropatwa,
+     Joe O’Neill, Kian Win Ong, Bill Schaller, Pingjia Shan, Brendan Viscomi, et al.
+     2017. Canopy: An end-to-end performance tracing and analysis system. In SOSP.
+     34–50.
+ [9] Markus Kalisch and Peter Bühlman. 2007. Estimating high-dimensional directed
+     acyclic graphs with the PC-algorithm. Journal of Machine Learning Research 8, 3
+     (2007).
+[10] Myunghwan Kim, Roshan Sumbaly, and Sam Shah. 2013. Root cause detection
+     in a service-oriented architecture. ACM SIGMETRICS Performance Evaluation
+     Review 41, 1 (2013), 93–104.
+[11] Scikit learn community. 2022. IsolationForest. https://scikit-learn.org/stable/
+     modules/generated/sklearn.ensemble.IsolationForest.html, Last accessed on 2022-
+     10-11.
+[12] Scikit learn community. 2022. OneClassSVM. https://scikit-learn.org/stable/
+     modules/generated/sklearn.svm.OneClassSVM.html, Last accessed on 2022-10-
+     11.
+[13] Zeyan Li, Junjie Chen, Rui Jiao, Nengwen Zhao, Zhijun Wang, Shuwei Zhang,
+     Yanjun Wu, Long Jiang, Leiqin Yan, Zikai Wang, et al. 2021. Practical Root Cause
+     Localization for Microservice Systems via Trace Analysis. In IWQoS.
+[14] JinJin Lin, Pengfei Chen, and Zibin Zheng. 2018. Microscope: Pinpoint per-
+     formance issues with causal graphs in micro-service environments. In ICSOC.
+     3–20.
+[15] Q. Lin, H. Zhang, J. Lou, Y. Zhang, and X. Chen. 2016. Log Clustering Based
+     Problem Identification for Online Service Systems. In 2016 IEEE/ACM 38th In-
+     ternational Conference on Software Engineering Companion (ICSE-C). https:
+     //doi.org/10.1145/2889160.2889232
+[16] Dewei Liu, Chuan He, Xin Peng, Fan Lin, Chenxi Zhang, Shengfang Gong, Ziang
+     Li, Jiayu Ou, and Zheshun Wu. 2021. MicroHECL: High-Efficient Root Cause
+     Localization in Large-Scale Microservice Systems. In ICSE-SEIP. 338–347.
+[17] Fengrui Liu. 2022. SpotDetector. https://streamad.readthedocs.io/en/latest/api/
+     streamad.model.html#spotdetector, Last accessed on 2022-10-11.
+[18] Fei Tony Liu, Kai Ming Ting, and Zhi-Hua Zhou. 2008. Isolation forest. In 2008
+     eighth ieee international conference on data mining. IEEE, 413–422.
+[19] Ping Liu, Yu Chen, Xiaohui Nie, Jing Zhu, Shenglin Zhang, Kaixin Sui, Ming
+     Zhang, and Dan Pei. 2019. FluxRank: A Widely-Deployable Framework to Auto-
+     matically Localizing Root Cause Machines for Software Service Failure Mitigation.
+     In 2019 IEEE 30th International Symposium on Software Reliability Engineering
+     (ISSRE). https://doi.org/10.1109/ISSRE.2019.00014
+[20] Xianglin Lu, Zhe Xie, Zeyan Li, Mingjie Li, Xiaohui Nie, Nengwen Zhao, Qingyang
+     Yu, Shenglin Zhang, Kaixin Sui, Lin Zhu, and Dan Pei. 2022. Generic and Robust
+WWW ’23, April 30–May 04, 2023, Austin, TX, USA                                                                                         Qingyang Yu et al.
+
+
+A     MATHEMATICAL ANALYSIS OF TRAFFIC                                               The EC of intermediate calls increases as the related request
+Each time the user request is processed by a given caller 𝐴, the                     does not execute the necessary calls.
+number of calls from 𝐴 to 𝐵 is determined by the business logic                     Therefore, we do not consider high or low traffic to be the root
+of the system, denoted as a random variable 𝑛𝐴→𝐵 . Within each                   cause of failure. Because the root cause of high-traffic failure should
+                                                                 (𝑡 )            be that some nodes can not respond correctly, and the root cause
+time slicing 𝑡, denote the number of calls from 𝐴 to 𝐵 as 𝑁𝐴→𝐵 =
+Í (𝑡 )                                                                           of low-traffic failure should be that some upstream calls do not
+  𝑖 𝑛𝐴→𝐵,𝑖 , where 𝑖 is the index for different requests. Let 𝜃 𝑖 be the         execute properly. So we chose RT and EC instead of RC.
+context of 𝑖 𝑡ℎ request, e.g., the distribution of user input and the
+effect of middle-wares like caching. Hence, the probability distri-
+bution of 𝑛𝐴→𝐵,𝑖 can be taken as a conditional one of 𝑛𝐴→𝐵 , i.e.,
+                                                                                 C IMPLEMENTATION DETAILS
+𝑛𝐴→𝐵,𝑖 ∼ 𝑃 (𝑛𝐴→𝐵 | 𝜃𝑖 ). By grouping the contexts
+                                                        of all calls in the
+                                                                           
+                                                                                 C.1 Performance Anomaly Detection
+                                  (𝑡 )
+same time slicing, we obtain 𝑁𝐴→𝐵 = 𝜃
+                                          Í Í
+                                                          (𝑡 )    𝑛
+                                                                    (𝑡 )
+                                                                             .   We use the Python-based machine learning framework scikit-learn
+                                                 𝑗 ∈ {𝑖 |𝜃 =𝜃 } 𝐴→𝐵,𝑗
+                                                           𝑖                     [11] to implement the iForest model. IForest identifies anomalies by
+Notice that elements within the brackets come from the same dis-                 isolating them with shorter path lengths. A large number of samples
+tribution 𝑃 (𝑛𝐴→𝐵 | 𝜃 ). With the Law of Large Numbers, we have                  will reduce the ability of iForest to isolate anomalies because normal
+             (𝑡 )        (𝑡 )
+(2) where 𝑁𝐴,𝜃 = |{𝑖 | 𝜃𝑖 = 𝜃 }| is the number of requests starting              samples will interfere with the isolation process. Small datasets
+from 𝐴 at the given time 𝑡 with the same context 𝜃 .                             tend to achieve better results and efficiency in iForest. Each training
+                   (𝑡 )
+                              ∑︁
+                                  (𝑡 )                                           case corresponds to a 10-minute period with 12 features, so the
+                  𝑁𝐴→𝐵 →         𝑁𝐴,𝜃 E (𝑛𝐴→𝐵 | 𝜃 )              (2)             dataset contains too many such 10-minute cases. Thus, sampling
+                                  𝜃                                              is necessary. We select a subset (e.g., 200,000 cases in this paper)
+    In this work, we approximate 𝜃 in 𝑃 (𝑛𝐴→𝐵 | 𝜃 ) with 𝐴’s up-                 for training. Training cases are selected from historical data semi-
+stream calls, as the structure of a trace, i.e., how the system pro-             randomly. Specifically, we randomly select a few days from each
+cesses a user request, has to be consistent with what the user request           month, then randomly select some calls from each of those days,
+is. So (2) can be extended into (3), where each 𝑈 is a caller of 𝐴.              and finally, randomly select some 10-minute periods from the calls.
+                 (𝑡 )
+                          ∑︁
+                                 (𝑡 )                                            The selected cases are used to train the iForest model. The model
+               𝑁𝐴→𝐵 →         𝑁𝐴,𝜃 E (𝑛𝐴→𝐵 | 𝜃 )                                 trained can output the prediction results (i.e., normal or abnormal)
+                             𝜃                                                   after receiving 12 features of a detection window.
+                                                                          (3)
+                                  (𝑡 )
+                            ∑︁
+                        ≈        𝑁𝑈 →𝐴 E (𝑛𝐴→𝐵 | 𝑈 → 𝐴)
+                            𝑈
+                                                                                 C.2     RCL approaches
+   Then, we find the number of calls from 𝐴 to 𝐵 can be approxi-
+                                                                                 Five RCL approaches are implemented as follows.
+mated as the weighted sum of the numbers of 𝐴’s upstream calls.
+                                                                                  • MonitorRank [10]: It determines possible root causes of a
+   A special case of 𝑃 (𝑛𝐴→𝐵 | 𝜃 ) is a Bernoulli distribution with a
+                                                                                    failure by running a personalized PageRank algorithm on the
+parameter of 𝑝𝜃 , i.e., 𝐴 will call 𝐵 once with a probability of 𝑝𝜃 or
+                                                                                    topological graph. We adjust MonitorRank to start from each
+not with a probability of 1 − 𝑝𝜃 . Under this circumstance, (3) can be
+                     Í     (𝑡 )                                                     entry node to meet our context and rank services by the average
+further deduced to 𝑈 𝑁𝑈 →𝐴 𝑝𝑈 →𝐴 . We use the expectation here                      ranking of methods in each service to meet the method level.
+for an arbitrary distribution.                                                    • Microscope [14]: It determines possible root causes of a fail-
+                                                                                    ure by recursively visiting the causal graph built based on PC
+B    METRIC SELECTION                                                               algorithm and enriched by service calls. As PC algorithm is chal-
+We choose RT and EC for root cause localization instead of RC                       lenging to handle a mass of method-level nodes, we transform
+because we do not think the RC anomaly is the failure root cause.                   the method-level data to service level. We also adjust it to start
+We analyze two types of RC anomalies as follows.                                    from each entry service instead of the front-end service.
+ • Traffic is too high: If the RC of a call is too high, the down-                • MicroHECL [16]: It determines possible root causes of a failure
+   stream call traffic will increase. As a result, some service nodes               by extending anomaly propagation chains starting from the en-
+   on the link cannot cope with such a large number of requests,                    try service. As its anomaly detection methods need labeled data
+   causing an increase in RT or EC. Conversely, if the high RC                      lacking in our context, we use our methods in Section 4.1 instead.
+   does not cause an increase in RT or EC, then the high RC is not                  Since our cases have no traffic root causes, exploring upstream
+   considered a root cause because it does not affect the service                   is unnecessary. So MicroHECL only explores downstream for
+   performance and reliability. We prefer to regard service nodes                   RT and EC anomalies, as in our approach. MicroHECL ranks
+   that cannot adapt to the current traffic when the traffic is too                 services with MMS as the primary key and AER as the secondary
+   high as the root cause in order to solve the current problem                     key, as described in Section 4.4, to meet the method level.
+   through capacity expansion of the nodes.                                       • AutoMap [22]: It determines possible root causes of a failure
+ • Traffic is too low: The traffic of a call is too low may be because              by running a heuristic random walk algorithm on the causal
+   relevant user requests are few currently (e.g., early morning),                  graph constructed by combining PC algorithm and multi-metric
+   which is not the root cause of failure. On the other hand, the                   data. We transform the method-level data to the service level as
+   related user requests are not few, but those reaching the caller                 in Microscope. In addition, we parallelize the original algorithm
+   of the call are few due to the reasons of the intermediate link.                 to make the time consumption acceptable in our scenario.
+CMDiagnostor: An Ambiguity-Aware Root Cause Localization Approach Based on Call Metric Data                                                                                                                                                                                                                 WWW ’23, April 30–May 04, 2023, Austin, TX, USA
+
+                                + 5 #               + 5 #                          + 5 #              0 5 5                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                       & 0 ' L D J Q R V W R U  Z  R  $ 6 3   0 6 3
+                                                                                                                                                                                                                                                                                                     & 0 ' L D J Q R V W R U  Z  R  $ 6 3
+
+
+
+
+                                                                                                                                                                                                                                    ( [ S O R U H G  F D O O  Q X P E H U
+                                                                                                                                                                                                                                                                                                         & 0 ' L D J Q R V W R U  Z  R  0 6 3
+                                                                                                                                                                                                                                                                                                    & 0 ' L D J Q R V W R U
+                                                                                                                                                                                                                                                                                
+ 0 H W U L F
+
+
+
+
+                   
+                                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                            
+
+                   
+                                                                                                    
+                                 5 H J U H V V L R Q  F R H I I L F L H Q W  W K U H V K R O G                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                    & D V H
+               (a) regression coefficient threshold                                                                                                              (b) MSP threshold
+                                                                                                                                                                                                       Figure 7: Explored call number after pruning.
+       Figure 5: Impact of hyperparameters on CMDiagnostor.
+                                                                                                                                                                                                                                                               Entry node                                                   Wrong path
+                                                                                                                                                                                                                                                                                                                        as C1⥇C4, C3→C4
+
+                                                                                  
+                                                                                                                                                                                                                                                                                          A
+                                                                                                                                                                                                                                                                                                       C1
+                                                                                  
+                                                                                                                                                                                                                                                                                          B                C2                   D                     E
+                                                                                                                                                                                                                                                                                                                                          C4
+                                                            $ F F X U D F \
+
+
+
+
+                                                                                                                                                                    RT
+                                                                                                                                                                        ST
+                                                                                                                                                                                                                                                                                                    C3
+                                                                                  
+                                                                                                                                                                                                                                                                                          C                      Root cause node
+                                                                                  
+                                                                                                                                                                                                                                                                                                                                  Wrong root cause node
+                                                                                  
+                                                                                  
+                                                                                                                                                             
+                                                                                                                                                                                                           Figure 8: AmSit related to root cause node.
+                                                                                                      5 H J U H V V L R Q  F R H I I L F L H Q W  W K U H V K R O G                           H                                                                                                                                         H 
+                                                                                                                                                                                                                                                                                                                                     
+Figure 6: Impact of regression coefficient threshold on                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                     
+AmSitor.                                                                                                                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                                                                                                                     
+                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                          8 S V W U H D P  &                                                                                                                            8 S V W U H D P  & 
+ • CMDiagnostor: Some default threshold settings are the fol-                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                                                                                   
+   lowing: the regression coefficient threshold used by AmSitor is                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                     
+   0.005; the correlation threshold used by the MSP pruning strat-                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                              
+   egy is 0.7. In addition, the traffic interval used by AmSitor is the                                                                                                                                                   8 S V W U H D P  &                                                                                                                          ' R Z Q V W U H D P  & 
+   24-hour period before the alert is generated.                                                                                                                                                        Figure 9: Traffic of related calls of an AmSit.
+D                     HYPERPARAMETER SENSITIVITY                                                                                                                                     E CASE STUDY
+There are two hyper-parameters in CMDiagnostor, i.e., the regres-                                                                                                                    E.1 Pruning Number Analysis in Failure Cases
+sion coefficient threshold used by AmSitor (Section 3.3) and the
+                                                                                                                                                                                     As an extension of Section 5.4.1, this section explores the call num-
+correlation threshold used by the MSP pruning strategy (Section 4.3).
+                                                                                                                                                                                     ber pruned in failure cases. According to statistics, 22 out of 65
+Their default settings are 0.005 and 0.7, respectively. The following
+                                                                                                                                                                                     cases encounter and deal with the AmSit problem. We count the
+results are based on the D𝑅𝐹 dataset.
+                                                                                                                                                                                     number of calls explored using different pruning strategies for these
+   Impact of regression coefficient threshold. Figure 5(a) shows
+                                                                                                                                                                                     cases, and the results are shown in Figure 7. More precise statistics
+the impacts of different regression coefficient thresholds on the
+                                                                                                                                                                                     are below. In the 22 cases, compared with method CMDiagnostor
+effectiveness of CMDiagnostor. We find that the regression coef-
+                                                                                                                                                                                     without ASP and MSP, the number of calls explored by method
+ficient threshold does not impact the CMDiagnostor effectiveness
+                                                                                                                                                                                     CMDiagnostor without ASP is reduced by 0.17 on average; the
+much. The largest difference in the four metrics is 0.05 of HR@1,
+                                                                                                                                                                                     number of calls explored by method CMDiagnostor without MSP
+and the largest differences in the other three metrics are all 0.02.
+                                                                                                                                                                                     is on average a reduction of 0.14; our CMDiagnostor using both
+In addition, our setting of regression coefficient threshold (0.005)
+                                                                                                                                                                                     ASP and MSP explores an average reduction of 0.23 in the number
+shows the best performance in the comparison.
+                                                                                                                                                                                     of calls. This shows our pruning methods can improve efficiency.
+   Impact of MSP threshold. Figure 5(b) shows the impacts of
+different MSP thresholds on the effectiveness of CMDiagnostor.
+                                                                                                                                                                                     E.2               Actual Effect of AmSitor on RCL
+The MSP threshold also does not impact the CMDiagnostor effec-
+tiveness much. The largest difference in the four metrics is 0.07 of                                                                                                                 We use a real-world failure case to show the effect. For this case,
+HR@1, and the largest differences in HR@3, HR@5, and MRR, are                                                                                                                        CMDiagnostor can identify the actual root cause by using AmSitor
+0.02, 0.02, and 0.03, respectively. Our setting of MSP threshold (0.7)                                                                                                               but cannot identify the root cause without AmSitor. Figure 8 shows
+shows the best performance in the comparison.                                                                                                                                        the main AmSit affecting the identification. When exploring from
+   We also discuss the impact of regression coefficient threshold on                                                                                                                 the entry node 𝐴, the method without AmSitor explores the call 𝐶4
+AmSitor using D𝑆𝑇 and D𝑅𝑇 datasets. Figure 6 shows the results.                                                                                                                      while missing the root cause node 𝐷. Fortunately, CMDiagnostor
+We find AmSitor is robust and insensitive to the threshold. 0.005 also                                                                                                               identifies the upstream call of 𝐶4 is 𝐶3. Related traffic flows are
+performs the best compared with the other four values. When the                                                                                                                      shown in Figure 9, which intuitively illustrates the correctness of
+algorithm is applied to datasets beyond this paper, we recommend                                                                                                                     AmSitor. As a result, CMDiagnostor does not explore 𝐶4 and finds
+adopting the optimal value in this paper as a starting point and                                                                                                                     the actual root cause node 𝐷. This shows that AmSitor can improve
+experimentally searching for better ones.                                                                                                                                            real-world root cause exploration effectiveness.
+

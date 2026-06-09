@@ -1,0 +1,816 @@
+  An Empirical Investigation of Practical Log Anomaly Detection
+                   for Online Service Systems
+                  Nengwen Zhao∗                                                  Honglin Wang                                         Zeyan Li
+           Tsinghua University; BNRist                                                 BizSeer                             Tsinghua University; BNRist
+                 Beijing, China                                                     Beijing, China                               Beijing, China
+
+                       Xiao Peng                                                    Gang Wang                                         Zhu Pan
+               China Everbright Bank                                         China Everbright Bank                            China Everbright Bank
+                   Beijing, China                                                Beijing, China                                   Beijing, China
+
+                        Yong Wu                                                      Zhen Feng                                      Xidao Wen
+               China Everbright Bank                                         China Everbright Bank                         Tsinghua University; BNRist
+                   Beijing, China                                                Beijing, China                                  Beijing, China
+
+                   Wenchi Zhang                                                      Kaixin Sui                                       Dan Pei†
+                         BizSeer                                                       BizSeer                             Tsinghua University; BNRist
+                      Beijing, China                                                Beijing, China                               Beijing, China
+
+ABSTRACT                                                                                      anomaly detection in the real world deeply. Our work is helpful
+Log data is an essential and valuable resource of online service sys-                         for practitioners and researchers to apply log anomaly detection to
+tems, which records detailed information of system running status                             practice to enhance service reliability.
+and user behavior. Log anomaly detection is vital for service relia-
+bility engineering, which has been extensively studied. However,                              CCS CONCEPTS
+we find that existing approaches suffer from several limitations                              • Software and its engineering → Maintaining software.
+when deploying them into practice, including 1) inability to deal
+with various logs and complex log abnormal patterns; 2) poor inter-                           KEYWORDS
+pretability; 3) lack of domain knowledge. To help understand these                            Log Anomaly Detection, Online Service Systems, Practical Chal-
+practical challenges and investigate the practical performance of                             lenges
+existing work quantitatively, we conduct the first empirical study
+and an experimental study based on large-scale real-world data. We                            ACM Reference Format:
+find that logs with rich information indeed exhibit diverse abnormal                          Nengwen Zhao, Honglin Wang, Zeyan Li, Xiao Peng, Gang Wang, Zhu Pan,
+                                                                                              Yong Wu, Zhen Feng, Xidao Wen, Wenchi Zhang, Kaixin Sui, and Dan Pei.
+patterns (e.g., keywords, template count, template sequence, vari-
+                                                                                              2021. An Empirical Investigation of Practical Log Anomaly Detection for
+able value, and variable distribution). However, existing approaches
+                                                                                              Online Service Systems. In Proceedings of the 29th ACM Joint European Soft-
+fail to tackle such complex abnormal patterns, producing unsatis-                             ware Engineering Conference and Symposium on the Foundations of Software
+factory performance. Motivated by obtained findings, we propose                               Engineering (ESEC/FSE ’21), August 23–28, 2021, Athens, Greece. ACM, New
+a generic log anomaly detection system named LogAD based on                                   York, NY, USA, 12 pages. https://doi.org/10.1145/3468264.3473933
+ensemble learning, which integrates multiple anomaly detection
+approaches and domain knowledge, so as to handle complex situ-
+                                                                                              1    INTRODUCTION
+ations in practice. About the effectiveness of LogAD, the average
+F1-score achieves 0.83, outperforming all baselines. Besides, we                              Log data is an important and valuable data source in online service
+also share some success cases and lessons learned during our study.                           systems, which records detailed information of system running
+To our best knowledge, we are the first to investigate practical log                          status and user behavior. Log anomaly detection, aiming to identify
+                                                                                              abnormal system behavior, could assist engineers in identifying
+∗ BNRist: Beijing National Research Center for Information Science and Technology             incidents promptly and diagnose incidents rapidly [30, 40, 41, 53].
+† Dan Pei is the corresponding author.
+                                                                                              Therefore, log anomaly detection is vital for service reliability and
+                                                                                              incident management [20, 21].
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed            In traditional monitoring, engineers manually examine logs and
+for profit or commercial advantage and that copies bear this notice and the full citation     write rules (keywords and regular expressions) to detect anom-
+on the first page. Copyrights for components of this work owned by others than ACM            alies based on their domain knowledge. However, as the scale and
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a   complexity of service systems increase, it is challenging to detect
+fee. Request permissions from permissions@acm.org.                                            log anomalies by manual rules due to the following reasons. 1) An
+ESEC/FSE ’21, August 23–28, 2021, Athens, Greece                                              online service system involves many components such as hard-
+© 2021 Association for Computing Machinery.
+ACM ISBN 978-1-4503-8562-6/21/08. . . $15.00                                                  ware, virtual machines, database, and network, generating a large
+https://doi.org/10.1145/3468264.3473933                                                       number and variety of logs, about TBs per day [55]. It is tedious
+ESEC/FSE ’21, August 23–28, 2021, Athens, Greece                  N. Zhao, H. Wang, Z. Li, X. Peng, G. Wang, P. Zhu, Y. Wu, Z. Feng, X. Wen, W. Zhang, K. Sui, D. Pei
+
+
+to set manual rules for such numerous and various logs. 2) Setting               F1-score is lower than 0.7. Consequently, we could conclude that
+rules requires intensive domain knowledge, while the manpower of                 existing approaches are not generic and effective in the real world.
+experienced engineers is limited. Besides, different engineers may                  Motivated by the findings obtained from empirical study and
+have different preferences when making rules. 3) Service systems                 experimental study, we propose a generic and effective log anom-
+are usually under frequent software changes. Thus the manual rules               aly detection system named LogAD, integrating a knowledge base
+should be constantly updated and maintained, which is also labor-                and multiple anomaly detection techniques to address the above
+intensive [31]. In summary, it is time-consuming and error-prone to              challenges. LogAD contains four components, data preparation, log
+detect log anomalies via manual rules in large-scale systems. Thus,              preprocessing, log anomaly detection, and alerts with visualiza-
+it is imperative to design an automated log anomaly detection ap-                tion. More specifically, we first collect unstructured raw logs to
+proach to replace manual effort.                                                 prepare for anomaly detection. The goal of log preprocessing is to
+    To overcome the drawbacks of manual rules, tremendous efforts                transform raw logs into structured data. In addition to the widely-
+have been dedicated into automated log anomaly detection [19, 23,                used log parsing technique (Drain [28] used in LogAD), we also
+25, 29, 30, 35, 38, 42, 45, 47, 48, 50, 51, 53]. Although the superiority        import rule matching based on the knowledge base. It is because
+of existing work has been illustrated in their papers, we encounter              that not all logs can be well processed with an automated parsing
+several practical challenges when applying them to the real world.               algorithm without human involvement. Rule matching could utilize
+1) Inability to handle various logs and complex abnormal patterns.               domain knowledge to extract valuable information and enhance
+In practice, each service component could generate logs, leading                 performance (tackle the third challenge). Afterwards, appropriate
+to the diversity of log types. Besides, log messages contain rich                anomaly detection algorithms are selected based on the configura-
+information, including timestamps, templates, and variables [25],                tions in the knowledge base or engineers’ selection. LogAD fuses
+which can be obtained via log parsing [55]. Thus log abnormal pat-               multiple anomaly detection techniques to handle complex abnor-
+terns are also diverse, such as template count [35, 37, 47], template            mal types (tackle the first challenge). After identifying anomalies,
+sequence [18, 25, 26, 38, 39, 52], variable value [25] and variable              LogAD generates an alert with an interpretable report, which could
+distribution. Existing approaches, however, are mainly evaluated on              assist engineers in understanding this alert and gaining insights to
+limited public datasets (HDFS [46], OpenStack [52], and BGL [2, 40])             diagnose the problem (tackle the second challenge).
+and can only deal with one or two types of abnormal patterns. 2)                    We evaluated the performance of LogAD on ten log datasets
+Poor interpretability. Existing work simply provides the result of               with different abnormal patterns used in the experimental study.
+whether the current time is abnormal or not. However, engineers                  The results show that LogAD could achieve the best F1-score (0.83
+are confused about why it is an anomaly and how the normal pat-                  on average) across all datasets. Besides, LogAD has been applied
+tern should behave. Equipping with an interpretable explanation,                 in a large company and we also share some success cases to help
+engineers could gain some actionable insights to diagnose and mit-               understand the practical usage of LogAD. These cases demonstrate
+igate the anomaly more efficiently. 3) Lack of domain knowledge.                 that LogAD could assist incident management from multiple as-
+Existing work targets at automated log anomaly detection without                 pects (e.g., predicting OOM failure, detecting network issues, and
+human involvement. Incorporating domain knowledge, however,                      detecting database server down). Moreover, we also share some
+could not only deal with some special situations, but also allow                 lessons learned during our study. We believe our work is helpful for
+the interaction between humans and algorithms to improve the                     practitioners and researchers to apply the technique of log anomaly
+performance, which is more friendly to engineers. In summary,                    detection to practice to enhance service reliability.
+existing approaches cannot be applied directly to practice.                         To sum up, this paper has the following major contributions:
+    To help understand the role of log anomaly detection in incident             • We point out several practical challenges of log anomaly de-
+management and the above challenges intuitively, we performed the                  tection. Besides, we conduct the first empirical study and an
+first empirical study based on large-scale real-world data, and ob-                experimental study on large-scale real-world data to further sup-
+tained three key findings. 1) Log anomaly detection is indeed bene-                port these challenges. Some key observations obtained from our
+ficial to incident discovery and diagnosis. 2) Engineers still prefer to           study could provide some guidance for the practical usage of log
+use keyword-based strategy in current practice instead of advanced                 anomaly detection.
+approaches due to poor interpretability. However, keywords-based                 • Inspired by the observations, we propose an effective and generic
+strategy is also unsatisfactory, producing false alarms and missing                log anomaly detection system named LogAD, which incorporates
+alarms. 3) Log types and abnormal patterns are indeed diverse. We                  domain knowledge and multiple anomaly detection approaches
+summarized some common-used logs in engineers’ daily operation                     to tackle diverse abnormal patterns with good interpretability.
+and maintenance and corresponding abnormal patterns through                      • The effectiveness of LogAD is confirmed based on real-world log
+historical incident analysis and interviews with engineers. To fur-                data. Besides, LogAD has been applied in a large company, and
+ther confirm the above challenges quantitatively, we conducted an                  we share some real-world cases and lessons learned.
+extensive experimental study to evaluate five typical unsupervised
+log anomaly detection approaches (PCA [47], LogCluster [35], In-                 2 BACKGROUND
+variant Mining [37], DeepLog [25] and LogAnomaly [38]) on ten
+real-world log datasets from different service components with                   2.1 Log Anomaly Detection
+various abnormal patterns. The results show that all of these ap-                Log anomaly detection strives to identify abnormal behavior of
+proaches perform unstably on different datasets, and the average                 systems and users. Following the existing work [31], the general
+                                                                                 pipeline of log anomaly detection can be summarized with Figure 1,
+An Empirical Investigation of Practical Log Anomaly Detection for Online Service Systems                               ESEC/FSE ’21, August 23–28, 2021, Athens, Greece
+
+
+        ① Log Collection                  ② Log Parsing                    ③ Grouping                ④ Feature Representation           ⑤Anomaly Detection
+     02:45:01 systemd[1]: Reloaded    Template + variable                                                  Template count
+     System Logging Service.
+     02:45:01 vsftpd[132130]:         Time systemd[*]: Reloaded
+                                      System Logging Service.
+                                                                                                           Template sequence             Clustering    PCA
+     [billing] OK LOGIN: Client                                          Fixed window
+     x.x.x.x                          Time vsftpd[*]: [billing] OK                                                                                           …
+                                                                                                           Semantic vector
+     02:45:01 vsftpd[132197]:         LOGIN: Client ip                   Sliding window
+     [billing] OK LOGIN: Client       Time vsftpd[*]: [billing] OK                                         Time interval …
+                                      LOGIN: Client ip…                  Session window                                                   LSTM        Bi-LSTM
+     x.x.x.x…
+
+
+
+                                          Figure 1: Pipeline of existing log anomaly detection approaches
+
+
+including five main steps: log collection, log parsing, grouping,                          2.2    Practical Challenges
+feature representation, and anomaly detection.                                             Although many approaches have been proposed to identify log
+   Log Collection. Log collection mainly contains agent-based method                       anomalies, they perform not well when applying them to the real
+(e.g., Filebeat [4] and Logstash [10]) and syslog-based method (e.g.,                      world. The significant challenges can be summarized as follows.
+syslog-ng [17] and Rsyslog [15]). A log message usually contains
+a timestamp and detailed information indicating what has hap-                              2.2.1 Various Logs and Complex Abnormal Patterns. Each com-
+pened [31]. As systems grow in scale and complexity, logs are                              ponent in large-scale service systems would generate logs, from
+generated at an ever-increasing rate. For example, a service system                        hardware-layer (e.g., switch log) to middleware-layer (e.g., Apache
+in a large company could generate about 2 TB of log data daily [36].                       access log) and application-layer (e.g., business error log). These
+   Log Parsing. Logs are usually unstructured texts, generated using                       logs reflect the system status from different angles and may ex-
+the printf function with a string template and detailed information.                       hibit different patterns. However, existing approaches are mainly
+Log parsing aims to transform raw logs into structured templates                           evaluated on several public datasets (HDFS [46], BGL [2] and Open-
+(constant parts) and variables (variable parts) [55]. Log parsing                          Stack [25]), which are not representative and generic.
+has been extensively studied in the literature, such as Drain [28],                           In addition to the variety of logs, logs with rich information
+Spell [24], LogMine [27] and LogSig [43]. Zhu et al. conducted an                          could also perform different abnormal patterns. Based on existing
+experience report of existing log parsing algorithms on large-scale                        work and empirical analysis, we introduce six common abnormal
+log datasets [55], demonstrating the superiority of Drain.                                 patterns, and Figure 2 presents some intuitive explanations.
+   Grouping. Due to contextual time dependency existing in logs,                           • Keywords. Once some negative keywords (e.g., “OutOfMemory”)
+we cannot consider only a single log message for anomaly detec-                              appear in a log message, this log is abnormal.
+tion. Thus we need to split raw logs into a set of log sequences                           • Template count [31, 35, 37, 47]. The number of some templates
+using different grouping strategies. As introduced in [31], common                           increases or decreases dramatically.
+methods include fixed time windows, sliding time windows, and                              • Template sequence [18, 25, 26, 38, 39, 52]. Template sequence
+session windows (e.g., splitting HDFS logs using blockid ).                                  could reflect the order of task execution. For example, the normal
+   Feature Representation. Existing approaches have designed var-                            sequence is A → B → C, while A → B → D violating the normal
+ious features, such as template count [35, 37, 47] recording the                             pattern is an anomaly.
+number of each template in the window, template sequence [25, 38]                          • Variable value [25]. Some variables in logs may have specific
+recording the order of task execution, log semantic feature [33, 53]                         physical meaning (e.g., time cost), which could be extracted and
+which characterizes the semantic information using the techniques                            aggregated into a metric with time-series format. Thus we could
+of natural language processing (NLP), and variable value [25] which                          identify the anomaly of variable value from the time series.
+represents the behavior of some key variables (e.g., response time).                       • Variable distribution. Some variables are categorical, e.g., return
+   Anomaly Detection. Anomaly detection is adopted to identify                               code, URL, and IP in Nginx access log, whose distribution should
+anomalies from extracted features, containing two categories. 1) Tra-                        be considered. For example, the increase in 502 (bad gateway)
+ditional statistical methods. He et al. have provided a detailed expe-                       return code would lead to abnormal distribution of HTTP return
+rience report [31] about these traditional statistical methods, includ-                      codes, indicating system unavailability.
+ing PCA [47], LogCluster [35], Invariant Mining [37] and some other                        • Time interval [33]. Some performance issues (e.g., network con-
+classification-based supervised methods [22, 34]. 2) Deep learning                           gestion) may induce long time intervals between logs. Time in-
+based methods. In recent years, deep learning has been widely used                           terval anomaly could also result in template count anomaly.
+in log anomaly detection. DeepLog[25] and LogAnomaly [38] train
+a prediction model on normal log data and predict which template                              In addition to the above log abnormal patterns, there are also
+will arrive using LSTM-based models. Once the arrived log tem-                             other situations. For example, the number of total logs increases or
+plate violates the top-k predicted results, this log is regarded as                        decreases dramatically; new emerging log patterns cannot match
+an anomaly. LogRobust [53] adopts an attention-based Bi-LSTM                               any log templates extracted from training data. As a result, a prac-
+classification model to detect anomalies based on semantic features.                       tical log anomaly detection system needs to have the ability to deal
+In this paper, we mainly focus on unsupervised approaches since it                         with various logs and complex abnormal patterns.
+is difficult to obtain high-quality and sufficient anomaly labels to                       2.2.2 Poor Interpretability. Current work aims to design novel
+construct supervised classification models.                                                algorithms to improve detection performance. However, most of
+ESEC/FSE ’21, August 23–28, 2021, Athens, Greece                                     N. Zhao, H. Wang, Z. Li, X. Peng, G. Wang, P. Zhu, Y. Wu, Z. Feng, X. Wen, W. Zhang, K. Sui, D. Pei
+
+
+        Keywords                 Template count             Template sequence                       and “Diagnosis process” attributes, to count the number of inci-
+      JVMDUMP013I Processed                             A                       C                   dents that were discovered via log anomalies and the number of
+      dump event “systhrow”,
+      detail “java/lang                                     A         B
+      /OutOfMemoryError".                               B                       D
+                                                                                                    incidents whose diagnosis involved logs. The results are displayed
+                                                                                                    in Figure 3. Only 3.4% of incidents are discovered via log anomalies,
+       Variable value           Variable distribution           Time interval                       probably due to the insensitivity of engineers on log anomalies
+                                                            8:01 INFOAllocate block
+                         Time                   Return      08:02 …                                 and the drawbacks of the current practice of log anomaly detection
+                         cost                   code        08:35 INFO Receiving block
+                                                                                                    (see §3.2). The role of logs in incident discovery may be further
+                                                                                                    enhanced via a more effective log anomaly detection approach. In
+ Figure 2: Various log abnormal patterns in the real world                                          terms of incident diagnosis, 30.9% of incidents involve log data
+                                                                                                    in troubleshooting. Considering that some low-quality tickets do
+                                                                                                    not record detailed diagnosis process, the actual percentage could
+these algorithms work as a “black box”. It is difficult for engineers                               be larger. The results demonstrate that log data is a valuable data
+to intuitively figure out what the anomalies are, why the current                                   source in incident diagnosis. Usually, utilizing logs for troubleshoot-
+time is abnormal, and how the expected normal patterns should                                       ing also aims to identify log anomalies during the incident [30, 35].
+behave. Besides, engineers cannot gain any intuitive and actionable                                 Overall, an effective log anomaly detection approach could not only
+insights from the abstract feature vectors. Thus, methods that could                                enable more timely and accurate incident discovery, but also could
+reflect the natures of anomalies with a friendly visualization are                                  improve the efficiency of incident diagnosis.
+highly desired in practice. In this way, engineers could understand
+the results better and investigate the anomaly immediately.                                         3.2     RQ2: Current Practice
+2.2.3 Lack of Domain Knowledge. Existing approaches are pro-                                        The current practice of log anomaly detection in the company
+posed for automated log anomaly detection with little human in-                                     we cooperated with is setting keywords (e.g., “error” and “time
+volvement. Based on our observations, however, incorporating do-                                    out”) manually. Based on the feedback from engineers, existing
+main knowledge is necessary due to the variety of logs and abnor-                                   approaches, especially deep learning based ones, are black-box and
+mal patterns. For example, faced with various logs, which log files                                 cannot provide intuitive results. Poor interpretability makes it diffi-
+are more critical and should be monitored, which anomaly detection                                  cult to understand results intuitively and gain actionable insights
+approach is appropriate, and for multiple variables in logs, which                                  to diagnose the anomaly. Besides, tuning parameters of black-box
+variables have physical meaning and need to be monitored. All                                       models is also challenging. In comparison, configuring keywords
+of these should be determined by experienced experts and cannot                                     based on domain knowledge is more acceptable for engineers (sup-
+be completely replaced by automated algorithms. Besides, fusing                                     porting the second and third challenges).
+domain knowledge could help handle some special situations and                                         To study the performance of the current practice, we counted the
+ensure human-computer interactive log analysis, to enhance the                                      number of alerts generated from logs per day, and the distribution
+performance and interpretability.                                                                   of #log alerts/day is presented in Figure 4. It is clear that there
+                                                                                                    are tens to hundreds of log alerts per day. The percentage of #log
+3     EMPIRICAL STUDY                                                                               alerts/day larger than 100 accounts for 54.6%, and the average #log
+                                                                                                    alerts/day is 282. Based on the results of RQ1 (incident discovery
+To better understand the role of log anomaly detection in incident                                  via log anomalies accounts for 3.8%), we infer that the current
+management and support the above challenges, we conducted an                                        practice of log anomaly detection may bring some invalid alarms.
+empirical study to answer the following research questions (RQs):                                   Moreover, engineers confirm the incapability of keyword-based
+• RQ1: What role do logs play in incident management?                                               methods due to the following reasons. 1) In large-scale systems,
+• RQ2: How about the performance of the current practice of log                                     various and numerous logs are generated per day. It is error-prone
+  anomaly detection in the real world?                                                              and labor-intensive to configure all keywords correctly; 2) Simple
+• RQ3: What logs engineers frequently use in daily maintenance,                                     keyword strategy could generate some false positives (occurrence
+  and what abnormal patterns may exist in log data?                                                 of some keywords does not necessarily mean an incident) and false
+   To answer these questions, we analyzed tens of thousands of                                      negatives (some keywords are missed, or some incidents are not
+incidents and millions of alerts related to logs over the last two years                            reflected on keywords) [31]. Typically, to enhance performance
+from a large company, which supports tens of millions of users and                                  and adapt to the dynamic environment, engineers tend to spend
+contains hundreds of services. Due to the privacy policy, we hid the                                significant efforts to maintain and update rules constantly (e.g.,
+specific number of incidents. Besides, we also interviewed several                                  adding new “AND” and “OR” conditions). Consequently, a practical
+experienced engineers from different teams (e.g., business, database,                               and effective log anomaly detection approach to save efforts is in
+and network) to obtain some practical feedback.                                                     urgent demand.
+
+3.1       RQ1: Logs in Incident Management                                                          3.3     RQ3: Log Types and Log Abnormal Patterns
+In general, incident ticket records detailed information about how                                  As introduced in §2.2, various logs and complex log abnormal pat-
+the incident was detected (“Summary” attribute) and the detailed                                    terns exist in practice. To confirm it, we counted the percentage of
+steps of troubleshooting (“Diagnosis process” attribute). To answer                                 alerts generated from different kinds of logs. Intuitively, logs, where
+this question, we set keywords (i.e., “log”) to search the “Summary”                                engineers set alerting rules, are more critical than others. As shown
+An Empirical Investigation of Practical Log Anomaly Detection for Online Service Systems                                                                ESEC/FSE ’21, August 23–28, 2021, Athens, Greece
+
+
+
+
+                                                                  Percentage(%)
+
+
+
+
+                                                                                                                                   Percentage(%)
+                                                                                                         43.5%
+    Percentage(%)
+
+
+                                                    30.9%                                                                                               31.2%
+                                                                                  40                                                               30
+                                                                                               26.6%                                                            20.4%
+                    20                                                                                                                             20                   17.8%
+                                                                                  20   18.8%                                                                                    12.2%
+                                                                                                                                                                                        8.9%    9.5%
+                                                                                                                                                   10
+                               3.4%                                                                               6.4%     4.7%
+                     0                                                             0                                                                0
+                            Incident             Incident                              <50     50-100   100-500 500-1000   >1000                    Application OS      DB      HW   Operation Others
+                            discovery            diagnosis                                        #Log alerts/Day                                                        Log type
+
+
+     Figure 3: The percentage of logs used                         Figure 4: The distribution of the num-                           Figure 5: The percentage of different
+     in incident discovery and diagnosis                           ber of log alerts per day                                        types of log alerts
+
+                           Table 1: Some typical common-used log files, corresponding abnormal patterns and incident scenarios
+
+                    Type                     Example logs        Abnormal patterns                                                                              Incident scenarios
+                                                                 Template count (e.g., #“connection refused” increases), new                                    System unavailability, applica-
+                    Application              Application error
+                                                                 log pattern (unknown error messages)                                                           tion error
+                                             Linux, Windows,     Keywords (e.g., “soft lockup” and “page allocation failure”),                                  OOM, node hang, hardware fail-
+                    Operation system
+                                             AIX                 #total logs, template count (e.g., #“creating session” decreases)                              ures
+                                             Oracle,    DB2,                                                                                                    Database server down, perfor-
+                    Database                                     Keywords (e.g, “ORA-”, “Level: Error”), new log pattern
+                                             MySQL                                                                                                              mance degradation, SQL defect
+                    Hardware (Network de-                        Keywords (e.g., illegal state transition, address conflict de-
+                                             Switch, F5                                                                                                         IP address conflicted
+                    vices)                                       tected), new log pattern, template count
+                    Hardware (Storage)       Ceph                Keywords (e.g., “no reply”, and “time out”), new log pattern                                   Disk failure, space exhaustion
+                                                                 Keywords (e.g., “IOException”), template sequence (wrong or-
+                    Distributed system       HDFS, OpenStack                                                                                                    Task failed, instance failure
+                                                                 der of execution), new log pattern
+                    Operation                User behavior       Template count, template sequence                                                              Illegal operation, security issue
+                    Middleware        (Web   Nginx     access,   Variable distribution (e.g., return code, and IP address), #total                              System unavailability, illegal
+                    server)                  Apache access       logs                                                                                           user access, security threat
+                                                                 Keywords (“OutOfMemory”), template count (e.g.,#“FullGC”                                       GC overhead limit exceeded, full
+                    Middleware (JVM GC)      CMS, G1, parallel
+                                                                 increases), variable value (GC time cost)                                                      heap space, memory leak
+                    Middleware (Message                          Keywords (e.g., “error occur”, “ended abnormally”, and “excep-
+                                             IBM MQ                                                                                                             Message queue stuck
+                    queue)                                       tion”), new log pattern
+
+
+
+in Figure 5, it is clear that the logs generated from application, oper-                                    3.4     Summary
+ation systems (OS), database (DB), hardware (HW), and operation                                             • Log anomaly detection is valuable for incident management.
+account for a substantial part (about 90%). To further support it, we                                       • Engineers tend to use keyword-based method in current prac-
+interviewed several engineers from different teams. Our goal is to                                            tice due to better interpretability. However, the performance of
+understand which logs engineers find most valuable, which logs are                                            keyword-based strategy is far from satisfying.
+frequently inspected during daily maintenance, and what abnormal                                            • Log types and abnormal patterns are indeed diverse in practice.
+patterns these logs typically exhibit. Based on the discussion results,                                       Thus a practical, effective and generic log anomaly detection ap-
+we summarized some typical common-used logs, the corresponding                                                proach to tackling such complex situations is in urgent demand.
+abnormal patterns, and potential incident scenarios, as shown in
+Table 1. We obtain two key findings from this table. First, the abnor-                                      4     EXPERIMENTAL STUDY
+mal patterns existing in logs are indeed diverse, and moreover, a
+                                                                                                            To further illustrate the performance of existing approaches in prac-
+log file may exhibit more than one abnormal pattern. For example,
+                                                                                                            tice quantitatively, we conducted an experimental study based on
+the anomalies in JVM Garbage Collection (GC) logs contain the
+                                                                                                            several real-world datasets. We selected five popular unsupervised
+appearance of keywords “OutOfMemory”, the increase in “FullGC”
+                                                                                                            log anomaly detection approaches, including statistical approaches
+template (template count), and the rise of GC time cost and heap
+                                                                                                            (PCA [47], LogCluster [35] and IM [37]) and deep learning based
+space (variable value). Second, different abnormal behavior in a log
+                                                                                                            approaches (DeepLog [25] and LogAnomaly [38]), aiming to answer
+file may indicate different potential incidents. Taking Nginx access
+                                                                                                            the following two research questions:
+logs recording HTTP requests as an example, the anomaly of return
+code distribution (e.g., 502 accounts for a large part) may indicate                                        • RQ4: How about the effectiveness of the studied approaches on
+system unavailability. The anomaly of IP address distribution (e.g.,                                          various real-world log data with different abnormal patterns?
+the increase in the number of an IP) may indicate an illegal user                                           • RQ5: How about the efficiency of the studied approaches?
+is frequently trying to access the website. Therefore, log anomaly
+detection is a complex task, and various situations should be taken                                         4.1     Datasets and Measurements
+into consideration, which a single algorithm cannot solve.                                                  We collected ten real-world log datasets from different service com-
+                                                                                                            ponents, as displayed in Table 2. D1 and D2 are application error
+ESEC/FSE ’21, August 23–28, 2021, Athens, Greece                     N. Zhao, H. Wang, Z. Li, X. Peng, G. Wang, P. Zhu, Y. Wu, Z. Feng, X. Wen, W. Zhang, K. Sui, D. Pei
+
+
+         Table 2: Details of our experimental datasets                             and unstably on various real-world data. The average F1-score
+                                                                                   of the five approaches could only achieve 0.48∼0.66. Besides, deep
+      Dataset      Type                      #Logs       #Pos/#Neg                 learning based approaches perform better than traditional statistical
+      D1           Application error         26,918      3/720                     approaches, indicating the superiority of deep learning techniques.
+      D2           Application error         84,139      7/1446                       The reasons for the unsatisfactory performance can be summa-
+      D3           User operation            9,080       2/38                      rized as three points. First, the abnormal patterns of public log
+      D4           Nginx access              2,856,793   32/3036                   datasets are relatively simple. Taking HDFS as an example, some
+      D5           JVM GC (CMS)              217,613     13/398
+                                                                                   abnormal blocks contain negative keywords (e.g., “IOException”,
+      D6           JVM GC (Parallel)         64,208      27/469
+      D7           DB2                       16,133      2/74                      “Unexpected error”, and “does not belong to any file”). The number of
+      D8           Linux system              771,083     4/768                     total logs of some abnormal blocks is far fewer than normal blocks.
+      D9           Linux system              3,227,843   5/1459                    We also tried to set some manual rules to detect anomalies from
+      D10          Linux system              1,087,956   6/1288                    HDFS dataset, and the F1-score could also achieve about 0.86. There-
+                                                                                   fore, it is inappropriate to demonstrate the efficacy and practicality
+                                                                                   of log anomaly detection algorithms using such simple datasets.
+logs which record the application-layer error information of a ser-                Second, these approaches perform unstably with high standard
+vice. D3 is user operation log, which records the users’ actions on                deviations due to various abnormal patterns. These approaches fail
+servers (such as logging in, logging out, and executing commands).                 to consider comprehensive information in logs, which limits the
+D4 is Nginx access log recording HTTP requests. D5 and D6 are                      types of anomalies (see Figure 2) they can detect. For example, PCA
+collected from JVM GC with two different GC strategies (CMS and                    and LogCluster deal with template count; DeepLog deals with tem-
+parallel). D7 is DB2 database log. D8, D9, and D10 are Linux system                plate sequence and variable value; LogAnomaly tackles template
+logs from three servers, where different tasks are running. The                    count and template sequence. Third, the poor performance of log
+abnormal patterns of these datasets are diverse (see Table 1).                     parsing could destroy detection accuracy. We observe that even the
+   We adopt precision, recall, and F1-score as evaluation measure-                 state-of-the-art log parsing algorithm (Drain) performs not well on
+ments, which have been widely used in existing work [25, 31, 38].                  some logs, requiring manual adjustment using domain knowledge.
+About data labeling, it is inappropriate to label single log message               For example, access log (D4) composing with IP, URL, and return
+since we need to refer to the contextual information to determine                  code, could be transformed into structural information with domain
+the current time is abnormal or not. Based on the grouping methods                 rule, while it is unsuitable for log parsing algorithm based on word
+discussed in [31], we split all logs by sliding time window (win-                  frequency, resulting in low F1-score on all approaches.
+dow size is 10 minutes and step size is 5 minutes). Motivated by                      The results further support the proposed challenges in §2.2 quan-
+the label of public datasets (e.g., HDFS and OpenStack), we label                  titatively. Thus we need to propose a practical and generic log
+a time window as an anomaly if an incident (e.g., illegal access                   anomaly detection system to overcome the challenges.
+in D4, frequent FullGC in D5 and D6, server unavailability in D8,
+D9 and D10) occurs during the window. All log messages during                       4.4     RQ5: Efficiency
+the time window are regarded as a whole. The number of positive                     Time efficiency is a vital factor for log anomaly detection, to guar-
+(abnormal) and negative (normal) samples are presented in Table 2.                  antee timely incident discovery and efficient incident diagnosis.
+                                                                                    Table 4 presents the average time cost on ten experimental datasets,
+4.2     Experiment Setup                                                            including offline training time on all training samples (including log
+We split each dataset into a training set and a testing set in the                  parsing) and online detection time on a 10-minute time window (one
+ratio of 6:4, where the training set is all normal data. It is easy to              sample). We find that the average online prediction time of these
+obtain sufficient normal data in practice since services tend to run                approaches is in a satisfactory range, less than 2 seconds (nearly
+stably without failures. For the studied approaches, we used the                    real time). About offline training, statistical approaches require
+parameters provided by their papers. The log parsing approach we                    relative short time, about several minutes. In comparison, DeepLog
+adopted is Drain [28], whose superiority has been demonstrated in                   and LogAnomaly require tens of minutes to train the model. It is be-
+[55]. The implementation of Drain is based on LogParser [9] and                     cause they adopt template sequence as features which is very large,
+the implementation of statistical approaches (PCA, LogCluster, and                  and LSTM model also takes much time to train. Considering that
+IM) is based on loglizer [8, 31]. All approaches are implemented                    the training process is conducted offline and will not destroy the ef-
+by Python with widely-used libraries, including NumPy [11], pan-                    ficiency of anomaly detection, long training time is also acceptable.
+das [12], scikit-learn [16], Pytorch [13], etc. Our experimental study              However, faced with TBs logs generated per day, high training cost
+was conducted on Ubuntu 18.04.1 with 24-core Intel Xeon(R) CPU                      may take up many computation resources, and make the model
+E5-2620 v3@2.40GHz, 64GB memory, 64-bit operating system.                           cannot update flexibly to accommodate to software changes.
+
+4.3     RQ4: Effectiveness                                                          5     APPROACH
+Table 3 presents the precision, recall, and F1-score of five stud-                  Motivated by the findings obtained from the empirical study and
+ied approaches on different datasets. Clearly, although these ap-                   experimental study, we propose a generic log anomaly detection
+proaches achieve promising performance on several public datasets                   system named LogAD to tackle the practical challenges together
+(HDFS [46], BGL [2] and OpenStack [52]), they perform not well                      in §2.2, which could handle various logs and complex abnormal
+An Empirical Investigation of Practical Log Anomaly Detection for Online Service Systems                                  ESEC/FSE ’21, August 23–28, 2021, Athens, Greece
+
+
+                   Table 3: Precision (P), recall (R) and F1-score (F1) of studied approaches on experimental datasets
+
+          Approach                     PCA                     LogCluster                      IM                    DeepLog                 LogAnomaly
+           Dataset            P          R       F1      P          R       F1      P           R       F1     P          R       F1      P        R       F1
+             D1              0.40      1.00     0.57    0.38      1.00     0.55    0.51       1.00     0.68   0.64      0.33     0.44    0.45    0.67     0.54
+             D2              0.56      0.43     0.48    0.50      0.57     0.53    0.34       0.43     0.38   0.71      0.86     0.78    0.71    0.86     0.78
+             D3              0.67      0.50     0.57    0.72      0.50     0.59    0.43       1.00     0.60   0.43      0.50     0.46    0.62    0.50     0.55
+             D4              0.20      0.44     0.28    0.24      0.53     0.33    0.32       0.21     0.26   0.17      0.38     0.23    0.22    0.34     0.27
+             D5              0.92      1.00     0.96    0.80      1.00     0.89    0.87       1.00     0.93   0.91      1.00     0.95    0.91    1.00     0.95
+             D6              0.64      1.00     0.78    0.86      0.81     0.83    0.82       1.00     0.90   0.93      0.96     0.94    0.92    1.00     0.96
+             D7              0.42      0.50     0.46    0.44      0.50     0.47    0.58       0.25     0.35   0.57      1.00     0.73    0.53    1.00     0.69
+             D8              0.10      0.25     0.14    0.35      0.25     0.29    0.14       0.25     0.18   1.00      0.50     0.66    1.00    0.50     0.66
+             D9              0.18      0.60     0.28    0.28      1.00     0.44    0.44       0.40     0.42   0.32      1.00     0.48    0.54    0.60     0.57
+            D10              0.29      0.33     0.31    0.43      0.33     0.37    0.29       1.00     0.45   0.74      0.50     0.60    1.00    0.50     0.67
+         Mean F1 (Std)              0.48 (0.24)                0.53 (0.19)                 0.52 (0.24)               0.63 (0.22)              0.66 (0.19)
+
+
+              Table 4: Average time cost comparison                                        variable anomaly detection. Consequently, equipping log parsing
+                                                                                           with a knowledge base, raw log data could be well transformed into
+   Approach          PCA      LogCluster       IM      DeepLog      LogAnomaly             structured information for further anomaly detection.
+ Training (min)      0.89        5.40         4.60      34.67          48.54
+  Detection (s)      0.23        0.56         0.38       1.02          1.78                5.2     Log Anomaly Detection
+                                                                                           As presented in §3, log messages contain rich information (tem-
+                                                                                           plate, variable, and timestamp) and exhibit diverse log abnormal
+patterns. More specifically, LogAD contains four steps: data prepa-                        patterns. Therefore, it is notoriously hard for a single algorithm
+ration, log preprocessing, log anomaly detection, and alerts with                          to work well faced with such complex situations. In our system,
+visualization. There are three core ideas of LogAD. First, LogAD inte-                     we leverage the idea of ensemble learning and integrate multiple
+grates multiple anomaly detection techniques to deal with complex                          anomaly detection techniques [45]. In this way, engineers could
+scenarios (tackle the first challenge). The second one is importing                        select one or more suitable anomaly detection components based on
+a knowledge base fusing expert experience, which could assist log                          domain knowledge to detect specific abnormal patterns for differ-
+preprocessing (§5.1), selecting corresponding algorithms (§5.2) and                        ent logs. Although existing work [45] adopts multiple approaches
+setting keywords (tackle the third challenge). The last one is LogAD                       (PCA, LogCluster and IM) to detect anomalies more accurately, it is
+provides an intuitive alert report with good interpretability for en-                      not designed for tackling various abnormal patterns. For template
+gineers to understand the alerts (tackle the second challenge). In                         count, we propose to adopt LSTM-based multivariate time-series
+the following, we will introduce three main components in detail.                          anomaly detection technique (§5.2.2). Besides, it is the first time to
+                                                                                           notice variable distribution, and we utilize the popular distribution
+5.1     Log Preprocessing                                                                  distance measurement (JS divergence) to detect anomalies (§5.2.5).
+The goal of log preprocessing is to transform unstructured logs into                       The techniques of template sequence (§5.2.3) and variable value
+structured information. In the experimental study (§4), we observe                         (§5.2.4) are from existing work. In the following, we will introduce
+that even the state-of-the-art log parsing algorithm (Drain [28])                          the anomaly detection techniques equipped in LogAD in detail.
+performs not well on some logs and often requires manual ad-
+                                                                                           5.2.1 Keywords. Although keyword-based strategy is relatively
+justments on templates (e.g., merging and deleting). Besides, auto-
+                                                                                           simple, it cannot be replaced since it is the most direct way to
+mated log parsing fails to handle complex situations. For example,
+                                                                                           identify failures. Based on our experience, setting rare, specific and
+the formats of log timestamps are diverse in practice, about tens
+                                                                                           fatal keywords(e.g., “OutOfMemory” and “IOException”) is more
+of types, e.g., “05/01/21 21:40:00”, “05/01/2021 09:40:00 PM” and
+                                                                                           valuable and accurate. The keywords of different logs(see Table 1)
+“20210501|214000|895”. It is a daunting task for an automated algo-
+                                                                                           are maintained in the knowledge base. Once the keyword appears
+rithm to identify various timestamps accurately without domain
+                                                                                           in online logs, an alert would be generated.
+knowledge. To address the problem, LogAD imports a knowledge
+base to assist log preprocessing from three perspectives. First, the                       5.2.2 Template Count. Existing work (e.g., PCA [47]) encodes a
+templates of some generic logs (e.g., Oracle and DB2) are usually                          template count feature vector for each time window and detects
+fixed. Thus we could store these templates as knowledge. In this                           anomalies on this vector, which is not intuitive for engineers. In
+way, if we want to detect anomalies on similar logs, it will save re-                      LogAD, we characterize the behavior of template count using tem-
+sources and efforts of log parsing and manual adjustments. Second,                         plate time series at a regular interval (e.g., one minute). The number
+for some special logs which are inappropriate to use parsing algo-                         of a template per minute should follow a normal pattern. In this
+rithm (e.g., access log), LogAD could directly adopt rule matching to                      way, engineers could grasp an overview of the patterns of template
+transform raw logs into structured information (e.g., access logs can                      count. Usually, a log file may have tens to hundreds of templates.
+be split into timestamp, IP, URL, and return code). Third, some key                        Detecting anomalies on each template series would consume many
+variables (e.g., heap space in GC logs) could be selected for further                      resources and incur numerous alerts. Based on our observation,
+ESEC/FSE ’21, August 23–28, 2021, Athens, Greece                      N. Zhao, H. Wang, Z. Li, X. Peng, G. Wang, P. Zhu, Y. Wu, Z. Feng, X. Wen, W. Zhang, K. Sui, D. Pei
+
+
+                 Data Preparation          Log Preprocessing                     Log Anomaly Detection                       Alerts with Visualization
+
+                      Unstructured          Knowledge                                    Template          Template                      Alerts
+                      raw logs              base                                         count             sequence
+
+              02:45:01 systemd[1]:                                                       New               Variable
+              Reloaded System Logging        Rule                                        pattern           value
+              Service.                       matching
+              02:45:01 vsftpd[132130]:                                                                     Variable
+              OK LOGIN: Client
+                                             Parsing    Structured   Algorithm           Keywords          distribution
+              x.x.x.x…                                                                          …                                    Dashboard
+                                                        data         selection
+
+
+                                                               Figure 6: Overview of LogAD
+
+
+there exists some relationship among the number of different tem-                    range of distribution distance can be learned from historical data.
+plates. For example, the decrease in template A may lead to an                       When online detection, once the distribution of current data is far
+increase in template B. Thus we could use the multivariate time se-                  away from the historical data (exceeding the threshold), we can
+ries anomaly detection technique (LSTM-based algorithm [32] used                     infer current time is an anomaly.
+in LogAD) and regard all template series as an overall entity, which                    In summary, here we just introduce several typical anomaly
+could not only enhance accuracy and identify potential correlated                    detection algorithms. During practical usage, the anomaly detec-
+anomalies but also save computation resources.                                       tion module is extensible, and engineers could add new anomaly
+                                                                                     detection techniques to suit their needs.
+5.2.3 Template Sequence. Template sequence typically profiles the
+process of task execution (e.g., batch tasks and distributed system
+tasks). Recently, some approaches adopt LSTM-based models to                         5.3     Alerting with Visualization
+learn the normal template sequence [25, 38]. Once the arrived log                    After an anomaly is detected via the above anomaly detection mod-
+template violates the top-k predicted template, it is regarded as an                 ule, an alert would be triggered. Different from existing approaches,
+anomaly. However, directly applying LSTM-based approaches fails                      LogAD provides an interpretable report for this alert, including the
+to provide the normal sequence intuitively, which is unfriendly                      time series of template count (help understand the historical pat-
+to engineers. In general, the workflow of task execution can be                      tern of each template), normal template sequence with FSA (help
+characterized as a finite state automaton (FSA). Thus it would be                    understand the workflow of task execution), the time series of spe-
+better to provide a normal workflow visualization generated from                     cific variable value, and distribution of log variables. In this way,
+logs so that engineers can have a global view of the task execution                  engineers could easily understand why current logs are abnormal.
+process. In LogAD, we build a FSA based on [25] since it has over-                   More importantly, the interpretable report could assist engineers
+come several drawbacks of other related work (e.g., CloudSeer [52]).                 in taking action to diagnose and mitigate the anomaly.
+When online detection, once the arrived logs violate the workflow
+graph, they are considered as anomalies.
+                                                                                     6 EVALUATION AND CASE STUDY
+5.2.4 Variable Value. Some variables in logs with specific physical
+                                                                                     6.1 Performance and Application
+meaning are vital and should be monitored closely, e.g., time cost
+and heap space in GC logs. The variable value can be aggregated                      To demonstrate the efficacy of LogAD, we compare it with the
+into time series with a regular interval (e.g., one minute). Thus we                 best performance of baseline methods on ten real-world datasets
+could leverage the technique of time series anomaly detection to                     in §4. The results are displayed in Figure 7. It is clear that the
+detect the anomalies of variable value. Specifically, we find that                   average F1-score of LogAD achieves 0.83, outperforming baseline
+there are usually two types of variable value series, seasonal and                   approaches. In comparison, the average F1-score of baselines only
+stationary. We first utilize auto-correlation coefficient [44, 54] to                achieve 0.48 ∼ 0.66 (Table 3). We further investigated the reasons for
+determine the variable series is seasonal or not. Then we adopt                      the superiority of LogAD. First of all, through integrating multiple
+Holt-winters for seasonal series [49] and 3-σ for stationary series.                 anomaly detection techniques, LogAD can deal with various logs
+                                                                                     and complex abnormal patterns. In comparison, existing work can
+5.2.5 Variable Distribution. Some variables are categorical, instead                 handle only one or two abnormal patterns, incurring unsatisfac-
+of continuous value, for example, IP address, URL, and return code                   tory and unstable performance across all datasets. Second, LogAD
+in access logs; city, ISP, version, and browser in transaction logs.                 incorporates a knowledge base accumulating rich expert experi-
+Taking an intuitive example, the number of requests from different                   ence to tackle some special cases. For example, the performance
+cities in normal situations tends to follow a regular distribution.                  of log parsing could be enhanced, some crucial keywords as prior
+Once the number of requests from a city decreases dramatically,                      knowledge are configured in LogAD and so on. Third, the anomaly
+the distribution changes accordingly, indicating local system un-                    detection techniques used in LogAD are effective compared with
+availability or city ISP issues. Thus for categorical variables, we                  some existing work, which could enable LogAD to identify anom-
+mainly focus on the distribution anomaly. LogAD utilizes Jensen-                     alies accurately. For example, LSTM-based multivariate template
+Shannon (JS) divergence [7] to characterize the distance between                     count anomaly detection performs better than PCA. Consequently,
+two distributions (ranging from 0 to 1). Specifically, the normal                    the results confirm the practical effectiveness of LogAD.
+ An Empirical Investigation of Practical Log Anomaly Detection for Online Service Systems                                                           ESEC/FSE ’21, August 23–28, 2021, Athens, Greece
+
+
+                                      LogAD                    Best F1-score of baselines                                the variables also behave abnormally (increase in GC time cost and
+           1.0                                                                                                           heap space), which could assist engineers in analyzing the problem.
+           0.8
+F1-score
+
+
+
+
+                                                                                                                         In comparison, existing approaches fail to analyze templates and
+           0.6
+           0.4
+                                                                                                                         variables together and provide an interpretable report. Overall,
+           0.2                                                                                                           LogAD could enable engineers to predict OOM failure in advance
+           0.0                                                                                                           and provide key variable analysis for failure diagnosis.
+                       D1       D2         D3         D4       D5    D6           D7           D8      D9      D10
+                                                               Dataset
+                                                                                                                         6.2.2 Case 2: Identifying Illegal Access. Usually, Nginx access logs
+                                                                                                                         record the HTTP requests and contain time, URL, user IP and return
+ Figure 7: F1-score comparison between LogAD and the best
+                                                                                                                         code. As a common log type in the real world, access logs can be
+ performance of baseline approaches
+                                                                                                                         transformed into the combination of these variables with the help
+                                                                                                                         of a knowledge base. As shown in Figure 9(b), LogAD detected
+                                                Redis                     Flink                                          the illegal access problem via a spike of the number of total logs,
+                                     Query    Rules
+                                                                          Anomaly                            Front-end
+                                                                                                                         achieving more than 4000 requests per minute (pink band). Through
+                                       Preprocess-                                                  Query
+
+                      Topic 1          ing module                         detection    Write
+                                                                                                                web      the analysis of variable distribution, we find the IP-1 and URL a
+    Raw log                                                Topic 2         module              Influx Data    service
+                          Write (raw data)                                                     DB                        account for a large part. Thus we could easily find the illegal user
+                 ES                      Write (structured data)
+                                                                     Query and return data
+                                                                                                                         and the behavior. However, keyword-based method cannot handle
+                                                                                                                         access log because it does not have negative keywords (setting
+                                                                                                                         error return code, e.g., 404, could cause many false alarms). Besides,
+                      Figure 8: Architecture of LogAD in practice                                                        existing approaches in academic also fail to detect and analyze
+                                                                                                                         the problem, because access log is unsuitable for log parsing, and
+                                                                                                                         they cannot analyze variable distribution. Actually, special logs in
+   Figure 8 presents the deployment architecture of LogAD. In de-
+                                                                                                                         practice like access logs should be treated specially with human
+tail, raw log data are pushed to Kafka [1]. The log preprocessing
+                                                                                                                         involvement, including processing them with defined manual rules
+module consumes raw logs from Kafka in real time, and the out-
+                                                                                                                         and selecting suitable anomaly detection methods.
+putted structured data are also pushed to a new Kafka topic for
+further anomaly detection. We adopt Apache Flink [5] to imple-                                                           6.2.3 Case 3: Detecting Unavailable Server. In traditional monitor-
+ment log preprocessing module and anomaly detection algorithms                                                           ing, engineers adopt an agent to regularly check the availability of
+in the computation layer, which can process the stream data with                                                         servers (e.g., one hour). We find that the abnormal status of servers
+high performance and low latency in a distributed way. All log                                                           could be identified more accurately and timely via the analysis
+anomalies detected by the anomaly detection core are stored in a                                                         of server system logs. In this case, the server is hung due to the
+time-series database (InfluxDB [6]) with the format of (timestamp,                                                       occurrence of deadlock. We could detect the problem via the signif-
+anomaly). Knowledge base in LogAD is maintained in Redis [14]                                                            icant decrease in the number of total logs and some templates (pink
+since the rules would not occupy too much space, and Redis as                                                            bands in Figure 9(c)). It is because server hang will cause the tasks
+an in-memory data structure store is highly efficient. Besides, all                                                      on the server to fail to run, so the number of system logs and some
+raw logs and structured information are indexed into ElasticSearch                                                       templates (each template generally represents a type of task) will
+(ES) [3] via consuming Kafka, so that data become available for                                                          be significantly reduced. For example, sessions cannot be created in
+search immediately. Finally, the front-end web service could read                                                        the server (Template: “systemd: Starting Session * of user root”) and
+data from ES and InfluxDB to provide a visualization for engineers.                                                      the data collection agent does not work (Template: “dd.collector[*]:
+   We interviewed several engineers and they appreciated LogAD                                                           INFO (collector.py:*): Finished run *. Collection time: *s.”). When
+from two aspects. 1) The anomaly detection techniques are white-                                                         engineers notice the problem, they will reboot the server to mitigate
+box, so that engineers could understand the reported anomalies                                                           the incident. Thus the number of total logs and some templates
+with good interpretability and grasp normal patterns. 2) Engineers                                                       would increase due to server restart (green bands in Figure 9(c)).
+could obtain comprehensive information intuitively. For example,
+engineers only know the appearance of OOM using keywords on                                                              7 DISCUSSION
+GC logs. However, LogAD could present various information like
+heap space, time cost and GC frequency.                                                                                  7.1 Lessons Learned
+                                                                                                                         There exists a gap between the research of algorithms and real ap-
+ 6.2              Case Study                                                                                             plication scenarios. Log anomaly detection algorithm has been
+                                                                                                                         extensively studied in the literature. In the real world, however,
+We introduce three success cases collected from the real world.
+                                                                                                                         it is critical to find suitable application scenarios for algorithms
+6.2.1 Case 1: Predicting OOM Failure. A historical OOM failure                                                           and solve practical problems. We want to answer how to apply
+was discovered by traditional keyword-based (“OutOfMemory”)                                                              log anomaly detection properly to service reliability management
+method. With LogAD, as presented in Figure 9(a), we could predict                                                        and what practical issues could be solved by log anomaly detection.
+the failure in advance via the increase in the number of “FullGC”                                                        Through our study, we find that log anomaly detection could assist
+templates. It is because this OOM failure is not transient, which                                                        in identifying illegal requests with access logs, detecting network
+is induced by frequent FullGC operation. Thus we could predict it                                                        failures with network device logs, detecting database problems with
+through the abnormal behavior of FullGC templates. Meanwhile,                                                            database logs, and so on.
+ESEC/FSE ’21, August 23–28, 2021, Athens, Greece                                                                                       N. Zhao, H. Wang, Z. Li, X. Peng, G. Wang, P. Zhu, Y. Wu, Z. Feng, X. Wen, W. Zhang, K. Sui, D. Pei
+
+
+                                                                                                                                                          #Toal loJs                                                      #7otal logs                       7emSlate: systemd: Starting Session * of user root.
+   TeamSalte: Full *C: C0S *: [C0S-FonFurrent-mark:
+                                                                        VariablH: HHap VpacH                                                                                                           1000
+      * seFs] [Times: user * sys *, real * seFs]                                                                  4000
+                                                      800x104
+                                                                                                                  3000
+      20                                                                                                                                                                                               500                                                    200
+                                                      600x104
+                                                                                                                  2000
+      10                                              400x104
+                                                                                                                  1000                                                                                   0                                                      0
+                                                                                                                                 Jun 09                 Jun 10            Jun 11              Jun 12          SeS 01   SeS 03    SeS 05   SeS 07                    SeS 01   SeS 03   SeS 05   SeS 07
+       0                                              200x104
+      Aug 01    Aug 02    Aug 03    Aug 04                 Aug 01     Aug 02      Aug 03     Aug 04
+                                                                                                                               VariabOe: I3 addreVV                           VaULable: 8RL            7emSOate: dd.FoOOeFtor[*]: I1)O (FoOOeFtor.Sy:*):     dbus[*]: [system] Successfully activated service
+                    Variable: GC time                                                                                                                                                                  )inished run *. CoOOeFtion time: *s. (mit time: *s                'org.freedesktoS.Sroblems'
+                                                      2019-08-04T13:13:08.857: [Full GC 2019-08-                    I3-1                                         a
+                                                      04T13:13:08.858: [CMS2019-08-04T13:13:18.180: [CMS-                                                                                                15                                                    20
+                                                                                                                    I3-2
+      300
+                                                      concurrent-mark: 16.639/16.669 secs] [Times: user=38.45       I3-3                                         b
+                                                                                                                                                                                                         10
+      200                                             sys=0.31, real=16.66 secs]                                    I3-4
+                                                       (concurrent mode failure): 7864319K->7864319K(7864320K),                                                  c                                                                                             10
+                                                                                                                    I3-5                                                                                  5
+      100                                             53.3661840 secs] 9279935K->7874993K(9279936K), [CMS                                                        d
+                                                                                                                  2therV
+                                                      Perm : 239273K->239264K(524288K)], 53.3666690 secs]
+       0                                                                                                                   0    20        40       60     80         0   20      40     60    80          0                                                     0
+                                                      [Times: user=62.76 sys=0.00, real=53.36 secs]                                                                                                           SeS 01   SeS 03    SeS 05   SeS 07
+      Aug 01    Aug 02    Aug 03    Aug 04                                                                                           3ercentage(%)                            PeUcentage(%)                                                                         SeS 01   SeS 03   SeS 05   SeS 07
+
+
+
+                              (a) Predicting OOM failure                                                                        (b) Identifying illegal access                                                                  (c) Detecting unavailable server
+
+
+                                                                                                              Figure 9: Illustration of three cases
+
+
+    A single algorithm is usually not a panacea in practice. In academic,                                                                                        on the open-source library. In particular, we implemented them
+log anomaly detection algorithms are solely evaluated on several                                                                                                 based on a matured framework, which has been presented in §4.2.
+public datasets, and the generality cannot be demonstrated. In real                                                                                                 Diversity of evaluation datasets. Our experimental study used ten
+applications, a single algorithm cannot always perform well due                                                                                                  real-world log datasets from different service components, but the
+to diverse situations, unsatisfactory data quality, and customized                                                                                               results might not represent other types of logs. It is challenging
+demand, which usually require human involvement and a combi-                                                                                                     to evaluate the performance on all kinds of logs, and our datasets
+nation of multiple algorithms to achieve promising performance.                                                                                                  include various logs, from infrastructure-layer to application-layer.
+In particular, this argument can be extended to other tasks. For                                                                                                 Thus we are confident that the results can demonstrate the efficacy
+example, the patterns of time series are also diverse in practice,                                                                                               of LogAD. In the future, we will reduce this threat by conducting
+including seasonal, stationary and variable, which also requires                                                                                                 an experimental study on more log datasets.
+different time series anomaly detection algorithms.                                                                                                                 Evaluation measurements. Following existing work, we used
+    Choose appropriate logs for anomaly detection. Although various                                                                                              precision/recall/F1-score as measurements. However, we did not
+logs exist in practice, from infrastructure-layer to application-layer,                                                                                          study the sensitivity of parameters (e.g., window size). In the future,
+it is unnecessary to detect anomalies on all log files. Monitoring                                                                                               we will conduct parameter analysis and consider more comprehen-
+all logs would waste too many computation resources and incur                                                                                                    sive metrics such as precision-recall curve, to reduce this threat.
+numerous alerts, and some alerts are false alarms or unimportant,
+resulting in alert fatigue for engineers. In general, we summarize                                                                                                   8         CONCLUSION
+several principles for selecting logs. 1) Select familiar and frequently                                                                                         In this paper, we propose several significant practical challenges
+used logs in daily operation and maintenance, so that the alerts                                                                                                 when applying log anomaly detection approaches in academic to
+are valuable and actionable for engineers in incident discovery and                                                                                              practice, including the inability to deal with various logs and abnor-
+diagnosis. 2) Critical application logs reflecting the service quality                                                                                           mal patterns, poor interpretability, and lack of domain knowledge.
+directly and generic component logs (e.g., Oracle, DB2, and Hadoop)                                                                                              To help understand practical log anomaly detection, we conduct the
+with rich expert knowledge are preferred. 3) Select well-formatted                                                                                               first empirical study and an experimental study based on large-scale
+logs (e.g., single-line). In some log files, a log message is distributed                                                                                        real-world data and obtain several key observations, supporting
+in multiple lines (e.g., java dump logs), which brings significant                                                                                               these challenges. Inspired by the findings, we propose a generic log
+challenges to process such logs.                                                                                                                                 anomaly detection system named LogAD to tackle these challenges
+    Human-computer interactive log analysis. It is challenging to de-                                                                                            together. LogAD contains three core ideas: incorporating multiple
+tect log anomalies automatically without any human involvement.                                                                                                  anomaly detection techniques to handle diverse abnormal patterns,
+Both log parsing and log anomaly detection require domain knowl-                                                                                                 importing a knowledge base fusing domain experience, and visually
+edge from experienced experts. For log parsing, engineers should                                                                                                 providing an interpretable report. The average F1-score of LogAD
+get involved to transform some special logs into structured data                                                                                                 achieves 0.83, demonstrating its effectiveness. To our best knowl-
+(e.g., Nginx access log) and extracting some important variables for                                                                                             edge, we are the first to investigate practical log anomaly detection
+variable anomaly detection. For log anomaly detection, engineers                                                                                                 in industrial scenarios. We believe that our work can provide some
+need to get involved to decide what abnormal pattern the log could                                                                                               inspiration and guidance for practitioners and researchers to apply
+behave. Consequently, it is a formidable task for an algorithm to                                                                                                log anomaly detection to practice.
+make such decisions without the help of domain experts.
+                                                                                                                                                                     ACKNOWLEDGMENTS
+                                                                                                                                                                 We thank Junjie Chen for his helpful discussions on this work. This
+7.2            Threats to Validity                                                                                                                               work is supported by the National Key Research and Development
+                                                                                                                                                                 Program of China (Grant No.2019YFE0105500), the State Key Pro-
+Implementation. The internal threat to validity mainly lying in                                                                                                  gram of National Natural Science of China under Grant 62072264,
+our study is the implementation of our system and compared ap-                                                                                                   and the Beijing National Research Center for Information Science
+proaches. To reduce this threat, two authors have carefully checked                                                                                              and Technology (BNRist) key projects.
+the code, and the implementation of compared approaches is based
+An Empirical Investigation of Practical Log Anomaly Detection for Online Service Systems                                      ESEC/FSE ’21, August 23–28, 2021, Athens, Greece
+
+
+REFERENCES                                                                                      60–70. https://doi.org/10.1145/3236024.3236083
+ [1] Apache Kafka: A distributed streaming platform.. https://kafka.apache.org. [On-       [31] Shilin He, Jieming Zhu, Pinjia He, and Michael R. Lyu. 2016. Experience Report:
+     line; accessed 04-May-2021].                                                               System Log Analysis for Anomaly Detection. In 27th IEEE International Sympo-
+ [2] BGL Dataset. https://www.usenix.org/cfdr-data.                                             sium on Software Reliability Engineering, ISSRE 2016, Ottawa, ON, Canada, October
+ [3] Elasticsearch. https://www.elastic.co/elasticsearch/. [Online; accessed 04-May-            23-27, 2016. IEEE Computer Society, 207–218. https://doi.org/10.1109/ISSRE.2016.
+     2021].                                                                                     21
+ [4] Filebeat. https://www.elastic.co/beats/filebeat. [Online; accessed 04-May-2021].      [32] Kyle Hundman, Valentino Constantinou, Christopher Laporte, Ian Colwell, and
+ [5] Flink, Scalable Stream and Batch Data Processing. https://flink.apache.org/.               Tom Soderstrom. 2018. Detecting spacecraft anomalies using lstms and non-
+     [Online; accessed 04-May-2021].                                                            parametric dynamic thresholding. In Proceedings of the 24th ACM SIGKDD In-
+ [6] InfluxDB. https://www.influxdata.com/. [Online; accessed 04-May-2021].                     ternational Conference on Knowledge Discovery & Data Mining. ACM, 387–395.
+ [7] Jensen–Shannon divergence. https://en.wikipedia.org/wiki/Jensen-Shannon_                   https://doi.org/10.1145/3219819.3219845
+     divergence. [Online; accessed 04-May-2021].                                           [33] Xiaoyun Li, Pengfei Chen, Linxiao Jing, Zilong He, and Guangba Yu. 2020. Swiss-
+ [8] loglizer. https://github.com/logpai/loglizer. [Online; accessed 04-May-2021].              Log: Robust and Unified Deep Learning Based Log Anomaly Detection for Diverse
+ [9] logparser. https://github.com/logpai/logparser. [Online; accessed 04-May-2021].            Faults. In 2020 IEEE 31st International Symposium on Software Reliability Engi-
+[10] Logstash. https://www.elastic.co/logstash. [Online; accessed 04-May-2021].                 neering (ISSRE). IEEE, 92–103. https://doi.org/10.1109/ISSRE5003.2020.00018
+[11] NumPy. https://numpy.org/. [Online; accessed 04-May-2020].                            [34] Yinglung Liang, Yanyong Zhang, Hui Xiong, and Ramendra Sahoo. 2007. Failure
+[12] pandas. https://pandas.pydata.org/. [Online; accessed 04-May-2020].                        prediction in ibm bluegene/l event logs. In Seventh IEEE International Conference
+[13] PyTorch. https://pytorch.org/. [Online; accessed 40-May-2021].                             on Data Mining (ICDM 2007). IEEE, 583–588. https://doi.org/10.1109/ICDM.2007.
+[14] Redis. https://redis.io/. [Online; accessed 04-May-2021].                                  46
+[15] Rsyslog. https://www.rsyslog.com/. [Online; accessed 04-May-2021].                    [35] Qingwei Lin, Hongyu Zhang, Jian-Guang Lou, Yu Zhang, and Xuewei Chen.
+[16] scikit-learn. https://scikit-learn.org/.                                                   2016. Log clustering based problem identification for online service systems. In
+[17] syslog-ng. https://www.syslog-ng.com/. [Online; accessed 04-May-2021].                     2016 IEEE/ACM 38th International Conference on Software Engineering Companion
+[18] Hen Amar, Lingfeng Bao, Nimrod Busany, David Lo, and Shahar Maoz. 2018.                    (ICSE-C). IEEE, 102–111.
+     Using finite-state models for log differencing. In Proceedings of the 2018 26th ACM   [36] Jinyang Liu, Jieming Zhu, Shilin He, Pinjia He, Zibin Zheng, and Michael R
+     Joint Meeting on European Software Engineering Conference and Symposium on                 Lyu. 2019. Logzip: Extracting hidden structures via iterative clustering for log
+     the Foundations of Software Engineering. 49–59. https://doi.org/10.1145/3236024.           compression. In 2019 34th IEEE/ACM International Conference on Automated
+     3236069                                                                                    Software Engineering (ASE). IEEE, 863–873. https://doi.org/10.1109/ASE.2019.
+[19] Christophe Bertero, Matthieu Roy, Carla Sauvanaud, and Gilles Trédan. 2017.                00085
+     Experience report: Log mining using natural language processing and application       [37] Jian-Guang Lou, Qiang Fu, Shengqi Yang, Ye Xu, and Jiang Li. 2010. Mining
+     to anomaly detection. In 2017 IEEE 28th International Symposium on Software                Invariants from Console Logs for System Problem Detection.. In USENIX Annual
+     Reliability Engineering (ISSRE). IEEE, 351–360. https://doi.org/10.1109/ISSRE.             Technical Conference. 1–14.
+     2017.43                                                                               [38] Weibin Meng, Ying Liu, Yichen Zhu, Shenglin Zhang, Dan Pei, Yuqing Liu, Yihao
+[20] Junjie Chen, Xiaoting He, Qingwei Lin, Yong Xu, Hongyu Zhang, Dan Hao, Feng                Chen, Ruizhi Zhang, Shimin Tao, Pei Sun, et al. 2019. LogAnomaly: Unsupervised
+     Gao, Zhangwei Xu, Yingnong Dang, and Dongmei Zhang. 2019. An empirical                     Detection of Sequential and Quantitative Anomalies in Unstructured Logs.. In
+     investigation of incident triage for online service systems. In Proceedings of the         IJCAI. 4739–4745.
+     41st International Conference on Software Engineering: Software Engineering in        [39] Animesh Nandi, Atri Mandal, Shubham Atreja, Gargi B Dasgupta, and Subhra-
+     Practice. 111–120. https://doi.org/10.1109/ICSE-SEIP.2019.00020                            jit Bhattacharya. 2016. Anomaly detection using program control flow graph
+[21] Junjie Chen, Shu Zhang, Xiaoting He, Qingwei Lin, Hongyu Zhang, Dan Hao,                   mining from execution logs. In Proceedings of the 22nd ACM SIGKDD Interna-
+     Yu Kang, Feng Gao, Zhangwei Xu, Yingnong Dang, and Dongmei Zhang. 2020.                    tional Conference on Knowledge Discovery and Data Mining. 215–224. https:
+     How Incidental are the Incidents? Characterizing and Prioritizing Incidents for            //doi.org/10.1145/2939672.2939712
+     Large-Scale Online Service Systems. In 35th IEEE/ACM International Conference         [40] Adam Oliner and Jon Stearley. 2007. What supercomputers say: A study of five
+     on Automated Software Engineering. 373–384. https://doi.org/10.1145/3324884.               system logs. In 37th Annual IEEE/IFIP International Conference on Dependable
+     3416624                                                                                    Systems and Networks (DSN’07). IEEE, 575–584. https://doi.org/10.1109/DSN.
+[22] Mike Chen, Alice X Zheng, Jim Lloyd, Michael I Jordan, and Eric Brewer. 2004.              2007.103
+     Failure diagnosis using decision trees. In International Conference on Autonomic      [41] Tongqing Qiu, Zihui Ge, Dan Pei, Jia Wang, and Jun Xu. 2010. What happened
+     Computing, 2004. Proceedings. IEEE, 36–43. https://doi.org/10.1109/ICAC.2004.              in my network: mining network events from router syslogs. In Proceedings of
+     1301345                                                                                    the 10th ACM SIGCOMM conference on Internet measurement. 472–484. https:
+[23] Rui Chen, Shenglin Zhang, Dongwen Li, Yuzhe Zhang, Fangrui Guo, Weibin                     //doi.org/10.1145/1879141.1879202
+     Meng, Dan Pei, Yuzhi Zhang, Xu Chen, and Yuqing Liu. 2020. LogTransfer: Cross-        [42] Ruben Sipos, Dmitriy Fradkin, Fabian Moerchen, and Zhuang Wang. 2014.
+     System Log Anomaly Detection for Software Systems with Transfer Learning.                  Log-based predictive maintenance. In Proceedings of the 20th ACM SIGKDD
+     In 2020 IEEE 31st International Symposium on Software Reliability Engineering              international conference on knowledge discovery and data mining. 1867–1876.
+     (ISSRE). IEEE, 37–47. https://doi.org/10.1109/ISSRE5003.2020.00013                         https://doi.org/10.1145/2623330.2623340
+[24] Min Du and Feifei Li. 2016. Spell: Streaming parsing of system event logs. In         [43] Liang Tang, Tao Li, and Chang-Shing Perng. 2011. LogSig: Generating sys-
+     2016 IEEE 16th International Conference on Data Mining (ICDM). IEEE, 859–864.              tem events from raw textual logs. In Proceedings of the 20th ACM interna-
+     https://doi.org/10.1109/ICDM.2016.0103                                                     tional conference on Information and knowledge management. 785–794. https:
+[25] Min Du, Feifei Li, Guineng Zheng, and Vivek Srikumar. 2017. Deeplog: Anomaly               //doi.org/10.1145/2063576.2063690
+     detection and diagnosis from system logs through deep learning. In Proceedings        [44] Michail Vlachos, Philip Yu, and Vittorio Castelli. 2005. On Periodicity Detection
+     of the 2017 ACM SIGSAC Conference on Computer and Communications Security.                 and Structural Periodic Similarity. In Proceedings of the 2005 SIAM International
+     1285–1298. https://doi.org/10.1145/3133956.3134015                                         Conference on Data Mining, SDM 2005. https://doi.org/10.1137/1.9781611972757.40
+[26] Qiang Fu, Jian-Guang Lou, Yi Wang, and Jiang Li. 2009. Execution anomaly              [45] X. Xia, W. Zhang, and J. Jiang. 2019. Ensemble Methods for Anomaly Detection
+     detection in distributed systems through unstructured log analysis. In 2009 ninth          Based on System Log. In 2019 IEEE 24th Pacific Rim International Symposium on
+     IEEE international conference on data mining. IEEE, 149–158. https://doi.org/10.           Dependable Computing (PRDC). https://doi.org/10.1109/PRDC47002.2019.00034
+     1109/ICDM.2009.60                                                                     [46] Wei Xu, Ling Huang, Armando Fox, David Patterson, and Michael Jordan. 2009.
+[27] Hossein Hamooni, Biplob Debnath, Jianwu Xu, Hui Zhang, Guofei Jiang, and                   Online system problem detection by mining patterns of console logs. In 2009
+     Abdullah Mueen. 2016. Logmine: Fast pattern recognition for log analytics.                 Ninth IEEE International Conference on Data Mining. IEEE, 588–597. https:
+     In Proceedings of the 25th ACM International on Conference on Information and              //doi.org/10.1109/ICDM.2009.19
+     Knowledge Management. 1573–1582. https://doi.org/10.1145/2983323.2983358              [47] Wei Xu, Ling Huang, Armando Fox, David Patterson, and Michael I Jordan. 2009.
+[28] Pinjia He, Jieming Zhu, Zibin Zheng, and Michael R Lyu. 2017. Drain: An online             Detecting large-scale system problems by mining console logs. In Proceedings
+     log parsing approach with fixed depth tree. In 2017 IEEE International Conference          of the ACM SIGOPS 22nd symposium on Operating systems principles. 117–132.
+     on Web Services (ICWS). IEEE, 33–40. https://doi.org/10.1109/ICWS.2017.13                  https://doi.org/10.1145/1629575.1629587
+[29] Shilin He, Pinjia He, Zhuangbin Chen, Tianyi Yang, Yuxin Su, and Michael R Lyu.       [48] R. B. Yadav, P. S. Kumar, and S. V. Dhavale. 2020. A Survey on Log Anomaly
+     2020. A Survey on Automated Log Analysis for Reliability Engineering. arXiv                Detection using Deep Learning. In 2020 8th International Conference on Reliability,
+     preprint arXiv:2009.07237 (2020).                                                          Infocom Technologies and Optimization (Trends and Future Directions) (ICRITO).
+[30] Shilin He, Qingwei Lin, Jian-Guang Lou, Hongyu Zhang, Michael R Lyu, and                   1215–1220. https://doi.org/10.1109/ICRITO48877.2020.9197818
+     Dongmei Zhang. 2018. Identifying impactful service system problems via log            [49] He Yan, Ashley Flavel, Zihui Ge, Alexandre Gerber, Dan Massey, Christos Pa-
+     analysis. In Proceedings of the 2018 26th ACM Joint Meeting on European Software           padopoulos, Hiren Shah, and Jennifer Yates. 2012. Argus: End-to-end service
+     Engineering Conference and Symposium on the Foundations of Software Engineering.           anomaly detection and localization from an isp’s point of view. In 2012 Proceedings
+                                                                                                IEEE INFOCOM. IEEE, 2756–2760.
+ESEC/FSE ’21, August 23–28, 2021, Athens, Greece                              N. Zhao, H. Wang, Z. Li, X. Peng, G. Wang, P. Zhu, Y. Wu, Z. Feng, X. Wen, W. Zhang, K. Sui, D. Pei
+
+
+[50] Lin Yang, Junjie Chen, Zan Wang, Weijing Wang, Jiajun Jiang, Xuyuan Dong,                    anomaly detection on unstable log data. In Proceedings of the 2019 27th ACM
+     and Wenbin Zhang. 2021. Semi-supervised log-based anomaly detection via                      Joint Meeting on European Software Engineering Conference and Symposium on the
+     probabilistic label estimation. In 2021 IEEE/ACM 43rd International Conference on            Foundations of Software Engineering. 807–817. https://doi.org/10.1145/3338906.
+     Software Engineering (ICSE). IEEE, 1448–1460. https://doi.org/10.1109/ICSE43902.             3338931
+     2021.00130                                                                              [54] Nengwen Zhao, Jing Zhu, Yao Wang, Minghua Ma, Wenchi Zhang, Dapeng Liu,
+[51] Kun Yin, Meng Yan, Ling Xu, Zhou Xu, Zhao Li, Dan Yang, and Xiaohong Zhang.                  Ming Zhang, and Dan Pei. 2019. Automatic and Generic Periodicity Adaptation for
+     2020. Improving Log-Based Anomaly Detection with Component-Aware Analysis.                   KPI Anomaly Detection. IEEE Transactions on Network and Service Management
+     In 2020 IEEE International Conference on Software Maintenance and Evolution                  16, 3 (2019), 1170–1183. https://doi.org/10.1109/INFOCOM41043.2020.9155219
+     (ICSME). IEEE, 667–671. https://doi.org/10.1109/ICSME46990.2020.00069                   [55] Jieming Zhu, Shilin He, Jinyang Liu, Pinjia He, Qi Xie, Zibin Zheng, and Michael R.
+[52] Xiao Yu, Pallavi Joshi, Jianwu Xu, Guoliang Jin, Hui Zhang, and Guofei Jiang.                Lyu. 2019. Tools and Benchmarks for Automated Log Parsing. In Proceedings of
+     2016. Cloudseer: Workflow monitoring of cloud infrastructures via interleaved                the 41st International Conference on Software Engineering: Software Engineering
+     logs. ACM SIGARCH Computer Architecture News 44, 2 (2016), 489–502. https:                   in Practice (ICSE-SEIP ’19). IEEE Press, 121–130. https://doi.org/10.1109/ICSE-
+     //doi.org/10.1145/2980024.2872407                                                            SEIP.2019.00021
+[53] Xu Zhang, Yong Xu, Qingwei Lin, Bo Qiao, Hongyu Zhang, Yingnong Dang,
+     Chunyu Xie, Xinsheng Yang, Qian Cheng, Ze Li, et al. 2019. Robust log-based
+

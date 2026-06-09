@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Syslog Processing for Switch Failure Diagnosis and Prediction in Datacenter Networks（IWQoS 2017）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>Syslog Processing for Switch Failure Diagnosis and Prediction in Datacenter Networks（IWQoS 2017）</h1>
+<blockquote>作者：Shenglin Zhang、Weibin Meng、Jiahao Bu、Sen Yang、Ying Liu、Dan Pei、Jun (Jim) Xu、Yu Chen、Hui Dong、Xianping Qu、Lei Song</blockquote>
+<blockquote>机构：清华大学（网研院/计算机系/TNList）；佐治亚理工学院；百度公司</blockquote>
+<blockquote>发表年份：2017</blockquote>
+<blockquote>会议/期刊：IWQoS 2017（IEEE/ACM International Symposium on Quality of Service）</blockquote>
+<blockquote>关联 PDF：同目录下 `IWQOS_2017_zsl.pdf`</blockquote>
+<h2>一、文档信息速览</h2>
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Syslog Processing for Switch Failure Diagnosis and Prediction in Datacenter Networks</td></tr>
+<tr><td>作者</td><td>Shenglin Zhang, Weibin Meng, Jiahao Bu, Sen Yang, Ying Liu, Dan Pei, Jun (Jim) Xu, Yu Chen, Hui Dong, Xianping Qu, Lei Song</td></tr>
+<tr><td>机构</td><td>清华大学、佐治亚理工学院、百度公司</td></tr>
+<tr><td>发表年份</td><td>2017</td></tr>
+<tr><td>会议/期刊</td><td>IWQoS 2017</td></tr>
+<tr><td>分类</td><td>交换机 syslog 处理 / 故障预测 / 模板提取 / 增量学习</td></tr>
+<tr><td>核心问题</td><td>交换机 syslog 模板提取的准确率与增量学习能力难以兼顾；现有 STE、Signature Tree、LogSimilarity 都有准确率或增量训练缺陷</td></tr>
+<tr><td>主要贡献</td><td>(1) 提出 FT-tree（Frequent Template Tree），基于频繁词组合同时获得高准确率 + 增量训练；(2) 与 3 种现有方法对比；(3) 在 2 年 2,223 台交换机 10+ 数据中心数据上 F1 提升 155-188%，训练时间减少 117-730 倍</td></tr>
+</tbody></table>
+<h2>二、背景（Background）</h2>
+<p>现代云服务商的数据中心网络动辄部署数万乃至数十万台交换机，每年发生数百次交换机故障（如微软数据中心年故障 400+）。这些故障轻则服务降级，重则整片数据中心宕机（如 Colo4、Hosting.com 的事件）。交换机故障诊断与预测因此成为网络运维的核心任务之一。</p>
+<p>交换机 syslog 是故障诊断与预测的"金矿"信息源：每条 syslog 包含时间戳、交换机 ID、消息类型（message type）和详细消息（detailed message）；详细消息一般通过 printf 生成，包含位置、丢包率、IP 等动态参数。但 syslog 本身是非结构化文本，必须先通过"模板提取"将每条消息归类为有限数量的"模板/子类型"，才能进一步用机器学习做故障预测。</p>
+<p>现有三种主流模板提取方法都存在明显缺陷：</p>
+<ul>
+<li><b>STE（Statistical Template Extraction）</b>：基于 word-score 聚类，漏判某些子类型（消息无法匹配任何模板），且不支持增量训练。</li>
+<li><b>Signature Tree（Qiu 等）</b>：基于词组合的频率，但因"组合"而非"词"统计，重建需要处理全部历史数据，不能增量。</li>
+<li><b>LogSimilarity（Kimura 等）</b>：按"字符 / 字母 / 数字"5 类分词，可增量但容易把不同子类型归为同一模板（低准确率）。</li>
+</ul>
+<p>这意味着在大型数据中心网络每天千万级新 syslog、跨 2 年历史的场景下，要么牺牲准确率，要么付出极大计算开销（每天/每次固件升级都要从头训练）。</p>
+<h2>三、目的（Problems Solved）</h2>
+<ul>
+<li><b>模板提取准确率低</b>：现有 STE、LogSimilarity 误匹配严重。</li>
+<li><b>不支持增量训练</b>：Signature Tree、STE 每次有新模板出现都需要全量重训。</li>
+<li><b>故障预测精度受限</b>：错误模板 → 错误统计 → 预测 F1 下降。</li>
+<li><b>固件/软件升级带来的新模板</b>：必须能在线识别、增量更新。</li>
+<li><b>HSMM 等下游预测模型的模板依赖</b>：把模板质量提升与故障预测精度提升解耦。</li>
+</ul>
+<h2>四、核心原理（Principles）</h2>
+<p><b>系统总览</b>：基于观察"正确的模板通常是 syslog 中频繁出现的词组合"，FT-tree 维护一个前缀树结构，其根节点是 message type（如 SIF、OSPF、lacp），每条根到叶路径就是一个 message template；按词的全局支持度（频率）排序后逐条消息插入；超过度阈值 \(k\) 的子节点被剪掉。</p>
+<p><b>关键概念</b>：</p>
+<ul>
+<li><b>Syslog Message</b>：交换机产生的一条记录。</li>
+<li><b>Message Type / Subtype</b>：消息类型（粗粒度）/ 子类型（细粒度模板）。</li>
+<li><b>Template</b>：去掉动态参数后的消息骨架。</li>
+<li><b>FT-tree</b>：频繁模板树；前缀树扩展。</li>
+<li><b>Support (词组合频率)</b>：在所有 syslog 中某词组合出现的消息数。</li>
+<li><b>Word-name</b>：节点对应的词。</li>
+<li><b>Pruning Threshold $k$</b>：节点最大子节点数。</li>
+<li><b>Incremental Retraining</b>：增量训练。</li>
+<li><b>HSMM (Hidden Semi-Markov Model)</b>：下游故障预测模型。</li>
+<li><b>Rand Index</b>：评估聚类 / 模板学习准确率。</li>
+<li><b>$\Delta\tau_m$ / $\Delta\tau_a$ / $[\tau_s, \tau_e]$ / $\xi$ / $\theta$</b>：预测模型的时间参数。</li>
+<li><b>ominous / non-ominous time bin</b>：故障前 / 非故障前时间窗。</li>
+</ul>
+<p><b>数学原理</b>：</p>
+<ul>
+<li><b>Support 定义</b>：</li>
+</ul>
+<p>$$</p>
+<p>\text{Support}(A) = |\{M \in D_M \mid A \subseteq M\}|</p>
+<p>$$</p>
+<ul>
+<li><b>FT-tree 插入（递归）</b>：若当前节点 N 的 word-name = p.word-name 且 N 是 T 的子节点，则创建新子节点 N'，递归处理 P。</li>
+<li><b>节点度约束</b>：</li>
+</ul>
+<p>$$</p>
+<table>
+<thead><tr><th>\text{children}(C)</th><th>> k \implies \text{Eliminate all children of } C</th></tr></thead>
+<tbody>
+</tbody></table>
+<p>$$</p>
+<ul>
+<li><b>Rand Index（评估模板学习）</b>：</li>
+</ul>
+<p>$$</p>
+<p>\text{Rand Index} = \frac{a + b}{a + b + c + d}</p>
+<p>$$</p>
+<p>其中 \(a, b\) 为聚类结果与人工分类一致的对数；\(c, d\) 为不一致的对数。</p>
+<ul>
+<li><b>故障预测 F1</b>：</li>
+</ul>
+<p>$$</p>
+<p>F_1 = \frac{2 \cdot \text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}}</p>
+<p>$$</p>
+<ul>
+<li><b>Ominous Time Bin</b>：若 $\tau_x \in [\tau_s, \tau_e]$ 且消息数 $\ge \theta$。</li>
+<li><b>预测范围</b>：$\Delta\tau_m = 2h$，$\Delta\tau_a = 30min$，$[\tau_s, \tau_e] = 24h$，$\xi = 15min$，$\theta = 5$。</li>
+</ul>
+<p><b>与现有技术的差异</b>：与 STE 相比，FT-tree 不会漏判；与 Signature Tree 相比，FT-tree 用"词"而非"组合"频率统计，可增量；与 LogSimilarity 相比，FT-tree 用真实词而非字符类别，准确率大幅提升。</p>
+<h2>五、算法详解（Algorithm）</h2>
+<ul>
+<li><b>输入 / 输出</b>：</li>
+<li>输入：某 message type 的所有消息集合 $D_M$，剪枝阈值 $k$。</li>
+<li>输出：FT-tree $T$，其中每条根到叶路径是一个模板。</li>
+<li>在线：新增消息 $M_{new}$ → 自动增量更新树结构。</li>
+</ul>
+<ul>
+<li><b>核心模块</b>：</li>
+<li><b>单次扫描统计词频</b>（Algorithm 1 第 1-3 行）：生成按支持度降序的词列表 $L$。</li>
+<li><b>建树</b>（第 4-9 行）：创建以 message type 为根的树；每条消息按 $L$ 顺序插入前缀树。</li>
+<li><b>剪枝</b>（第 10-14 行）：遍历每个非叶节点，若子节点数 > $k$，删除所有子节点并把该节点升级为叶。</li>
+<li><b>增量更新</b>（§III-B）：固件升级后，仅对增量消息按 Algorithm 1 插入；新词追加到 $L$ 末尾。</li>
+<li><b>故障预测</b>：以提取的模板序列作为输入，HSMM 训练 / 推理。</li>
+</ul>
+<ul>
+<li><b>伪代码</b>：</li>
+</ul>
+<pre><code class="language-python">
+def build_ft_tree(messages, k):
+    """Algorithm 1"""
+    L = sorted(word_freq(messages).items(), key=lambda x: -x[1])  # 第 1-3 行
+    T = Tree(root_label=messages[0].type)  # 第 4 行
+    for M in messages:
+        ordered = sorted(M.words, key=lambda w: L.index(w))  # 第 6 行
+        insert_tree(ordered, T)  # 第 7-8 行
+    for C in T.children:
+        if len(C.children) > k:
+            C.children = []  # 第 11-12 行
+    return T
+
+def insert_tree(words, node):
+    if not words:
+        return
+    p, P = words[0], words[1:]
+    child = node.find_child(p)
+    if child is None:
+        child = node.add_child(p)
+    insert_tree(P, child)
+
+def incremental_update(T, new_messages, k):
+    """对新增消息调用 insert_tree 即可"""
+    for M in new_messages:
+        ordered = sort_by_L_with_new_words(M.words, T.L)
+        insert_tree(ordered, T)
+    # 不必全量重训
+
+def predict_failure(template_seq, hsmm):
+    """HSMM 训练 / 推理"""
+    return hsmm.predict(template_seq)
+</code></pre>
+<ul>
+<li><b>关键数学</b>：见 §四。</li>
+</ul>
+<ul>
+<li><b>复杂度分析</b>：</li>
+<li>单次扫描词频：$O(N \cdot \bar{L})$，$N$ 为消息数，$\bar{L}$ 为平均消息长度。</li>
+<li>树构建：每条消息插入 $O(\bar{L})$，整体 $O(N \cdot \bar{L})$。</li>
+<li>剪枝：$O(|T|)$。</li>
+<li>增量更新：仅对新增消息 $O(N_{new} \cdot \bar{L})$，远小于全量重训。</li>
+<li>故障预测：HSMM 时间 $O(T^2 \cdot N_{states})$。</li>
+</ul>
+<ul>
+<li><b>训练与推理</b>：</li>
+<li>训练：FT-tree 构建（一次性 / 增量）+ HSMM 训练。</li>
+<li>推理：每条新 syslog 匹配到模板 → 模板序列输入 HSMM → 故障预警。</li>
+</ul>
+<ul>
+<li><b>示例</b>：SIF 类型 12 条消息中包含 4 个子类型 N1-N4（Interface * down、Interface * up、Vlan-interface * down、Vlan-interface * up）；FT-tree 正确识别出 4 个模板；匹配到这些模板后，HSMM 在 SIF 序列上实现 F1=0.4821，Recall 95.3%，Precision 32.27%。</li>
+</ul>
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[交换机 syslog 流] --> B[按 message type 分流]
+    B --> C1[FT-tree 1: SIF]
+    B --> C2[FT-tree 2: OSPF]
+    B --> C3[FT-tree 3: lacp]
+    B --> C4[FT-tree N: ...]
+    C1 --> D1[模板序列 1]
+    C2 --> D2[模板序列 2]
+    C3 --> D3[模板序列 3]
+    D1 --> E[HSMM 故障预测模型]
+    D2 --> E
+    D3 --> E
+    E --> F{故障概率 > 阈值?}
+    F -->|是| G[告警 + 故障类型]
+    F -->|否| H[继续监控]
+</div>
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[历史 syslog 全部] --> S2[按 type 分组]
+    S2 --> S3[对每组构建 FT-tree]
+    S3 --> S4[按 10 折交叉验证评估 Rand Index]
+    S3 --> S5[对每条消息匹配模板]
+    S5 --> S6[得到模板序列]
+    S6 --> S7[HSMM 训练]
+    S7 --> S8[HSMM 推理]
+    S8 --> S9[故障 / 正常二分类]
+    S9 --> S10{是否新模板?}
+    S10 -->|是| S11[增量 insert_tree]
+    S10 -->|否| S12[直接匹配]
+</div>
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><b>+ FT-tree 双优</b>：同时获得高准确率（Rand Index 接近 1）+ 增量训练（无需重训）。</li>
+<li><b>+ 频繁词组合模板</b>：把"模板"定义为"频繁出现的词组合"，让树结构自然支持增量。</li>
+<li><b>+ 度阈值 $k$ 剪枝</b>：参数 $k$ 直观（"每个 subtype 不能超过 $k$ 个子 pattern"），便于运维人员理解。</li>
+<li><b>+ 大规模工业验证</b>：2,223 台交换机 2 年真实故障工单 + syslog。</li>
+<li><b>+ 端到端 F1 提升</b>：通过改进模板质量，HSMM 故障预测 F1 提升 155-188%。</li>
+<li><b>+ 计算效率大幅提升</b>：相对 Signature Tree / STE 减少 117-730 倍时间。</li>
+</ul>
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><b>数据集</b>：合作 Tier-1 云服务商 10+ 数据中心 2,223 台同型号交换机 2 年 syslog；228 次硬件故障；131 台故障交换机；1,273 个 ominous 时间窗 vs 5,516,435 个 non-ominous 时间窗。</li>
+<li><b>Baseline</b>：Signature Tree、STE、LogSimilarity。</li>
+<li><b>主要指标</b>：Rand Index、Precision、Recall、F1、训练时间。</li>
+<li><b>关键结果数字</b>：</li>
+<li>模板学习准确率：FT-tree 与 Signature Tree Rand Index 接近 1；STE 仅 62.10%，LogSimilarity 59.31%；</li>
+<li>故障预测 F1：FT-tree / Signature Tree = 48.21%，STE = 16.75%，LogSimilarity = 18.93%（<b>F1 提升 155-188%</b>）；</li>
+<li>每日模板匹配时间：FT-tree 51 min、LogSimilarity 80 min、STE 100 h、Signature Tree 628 h（<b>计算效率提升 117-730 倍</b>）；</li>
+<li>228 次故障中 Precision 32.27%、Recall 95.3%。</li>
+<li><b>消融实验</b>：对比 FT-tree vs Signature Tree（同样高准确率但 Signature Tree 不可增量），证明增量特性的独立价值。</li>
+<li><b>效率分析</b>：测试服务器 12× Intel Xeon E5645 @ 2.40GHz，单线程运行。</li>
+<li><b>可视化</b>：4 个 message type 的 Rand Index 对比柱状图、PR 曲线对比。</li>
+</ul>
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><b>大型数据中心交换机故障预测</b>：在生成告警前 24h 内预警。</li>
+<li><b>运营商网络设备 syslog 解析</b>：路由器、OLT 等的故障诊断。</li>
+<li><b>云服务商 SLA 保障</b>：提前更换即将故障的交换机。</li>
+<li><b>AIOps 平台模板管理</b>：跨多厂商设备的统一模板库。</li>
+<li><b>新固件发布兼容性验证</b>：用增量 FT-tree 快速识别新模板。</li>
+</ul>
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>iwqos16-li</code>：M³ 多层 SVC 视频组播（同一作者群）。</li>
+<li><code>iwqos16-sui</code>：清华 Wi-Fi 轨迹隐私（同一作者群）。</li>
+<li><code>lanman16-sui</code>：AP 密度对 Wi-Fi 性能的影响（同一作者群）。</li>
+<li><code>mobisys16-sui</code>：WiFiSeer 大规模企业 Wi-Fi 延迟（同一作者群）。</li>
+<li><code>ubicomp16-EDUM</code>：基于 Wi-Fi 的课堂教育测量（同一作者群）。</li>
+<li><code>liu_cnsm14_cloudwatchplus</code>：云租户级应用感知延迟监控。</li>
+</ul>
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><b>Syslog</b>：设备日志协议。</li>
+<li><b>Message Type / Subtype</b>：消息类型 / 子类型。</li>
+<li><b>Template</b>：消息模板。</li>
+<li><b>FT-tree</b>：Frequent Template Tree。</li>
+<li><b>Support</b>：词组合在消息集合中的频率。</li>
+<li><b>Word-name</b>：FT-tree 节点的词名。</li>
+<li><b>Pruning Threshold $k$</b>：节点最大子节点数。</li>
+<li><b>Incremental Retrainable</b>：可增量重训。</li>
+<li><b>HSMM</b>：隐半马尔可夫模型。</li>
+<li><b>Rand Index</b>：聚类 / 模板学习评估指标。</li>
+<li><b>ominous time bin</b>：故障前时间窗。</li>
+<li><b>$\Delta\tau_m$</b>：滑动窗口长度（2h）。</li>
+<li><b>$\Delta\tau_a$</b>：运维人员响应时间（30min）。</li>
+<li><b>$[\tau_s, \tau_e]$</b>：预测时间范围（24h）。</li>
+<li><b>$\xi$</b>：时间分桶大小（15min）。</li>
+<li><b>$\theta$</b>：最低消息数阈值（5）。</li>
+<li><b>Pingmesh</b>：微软数据中心延迟测量系统。</li>
+<li><b>OUI</b>：组织唯一标识符。</li>
+</ul>
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Paper: Pingmesh（Guo 等, SIGCOMM 2015）——大规模数据中心延迟测量。</li>
+<li>Paper: Network failures in data centers（Gill, Jain, Nagappan, SIGCOMM 2011）。</li>
+<li>Paper: Spatio-temporal factorization of log data（Kimura 等, INFOCOM 2014）——STE。</li>
+<li>Paper: Proactive failure detection learning（Kimura 等, CNSM 2015）——LogSimilarity。</li>
+<li>Paper: What happened in my network（Qiu, Ge, Pei, Wang, Xu, IMC 2010）——Signature Tree。</li>
+<li>Paper: Error log processing for accurate failure prediction（Salfner, Tschirpke, WASL 2008）。</li>
+<li>Paper: Using hidden semi-Markov models for effective online failure prediction（Salfner, Malek, SRDS 2007）。</li>
+<li>Paper: Developing a predictive model of QoE for Internet video（Balachandran 等, SIGCOMM 2013）。</li>
+<li>相关论文：<code>iwqos16-li</code>、<code>iwqos16-sui</code>、<code>lanman16-sui</code>、<code>mobisys16-sui</code>。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

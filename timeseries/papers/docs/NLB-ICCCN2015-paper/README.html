@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>NLB: NDN Live Video Broadcasting over Wireless WLAN（ICCCN 2015）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>NLB: NDN Live Video Broadcasting over Wireless WLAN（ICCCN 2015）</h1>
+
+<blockquote>作者：Menghan Li、Dan Pei、Xiaoping Zhang（通讯作者）、Beichuan Zhang、Ke Xu</blockquote>
+<blockquote>机构：清华大学（清华信息科学与技术国家实验室 / 计算机科学与技术系）；亚利桑那大学计算机科学系</blockquote>
+<blockquote>发表年份：2015</blockquote>
+<blockquote>会议/期刊：ICCCN 2015（IEEE International Conference on Computer Communication and Networks）</blockquote>
+<blockquote>关联 PDF：同目录下 <code>NLB-ICCCN2015-paper.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>NDN Live Video Broadcasting over Wireless WLAN</td></tr>
+<tr><td>作者</td><td>Menghan Li、Dan Pei、Xiaoping Zhang（通讯作者）、Beichuan Zhang、Ke Xu</td></tr>
+<tr><td>机构</td><td>清华大学 TNList / 计算机系；亚利桑那大学计算机系</td></tr>
+<tr><td>发表年份</td><td>2015</td></tr>
+<tr><td>会议/期刊</td><td>ICCCN 2015</td></tr>
+<tr><td>分类</td><td>无线网络 / 视频直播 / NDN 跨层优化</td></tr>
+<tr><td>核心问题</td><td>最后一跳 WiFi 上 NDN 仍按 unicast 传送，导致同一视频被多客户端重复拉取、浪费带宽；802.11 broadcast 无 MAC ACK 丢包严重</td></tr>
+<tr><td>主要贡献</td><td>(1) NLB：基于 NDN 的 cross-layer 直播方案，AP 端用 802.11 broadcast 发送 Data；(2) Leader-based Interest 抑制 + 周期性 Interest ACK；(3) 接收端速率控制 + 丢包恢复；(4) commodity 1Gbps AP（Mercury MW4530R 720MHz）+ 20 WiFi client 测试床；20 客户端全部 1Mbps 直播流畅，UCast/BCast 上限分别仅 7 / 4 客户端</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+<p>视频流量已占北美下行峰值 29.7%，且 Cisco 预测 2018 年 61% 互联网接入走 WiFi 与移动设备。视频内容分发是当前最迫切的需求。NDN（Named Data Networking，Jacobson 等）作为以内容为中心的未来网络架构，原生支持 caching/multicast，理论上最适合视频分发。但在最后一跳（WiFi）上，目前 NDN 实现仍把多客户端看成多个独立 unicast 会话，导致同一视频被多客户端重复拉取、浪费带宽。WiFi 自带的 broadcast 机制虽能缓解，但又因没有 MAC ACK 而丢包严重。</p>
+<p>论文把直播（NLB）的目标形式化为：</p>
+<blockquote>给定一个直播视频（bit rate 固定）以及 N 个 WiFi 客户端，最小化无线介质上 Interest/Data 包数量，同时保证 playback 平滑。</blockquote>
+<p>论文对比了当前 NDN 直播方案，发现 UCast（每客户端 unicast）受限于 7 客户端；BCast（AP 直接 broadcast Data）受限于 broadcast 带宽（4 客户端）。NLB 综合两者：AP 用 broadcast 传 Data，客户端用 Leader/Follower 机制避免重复 Interest。</p>
+
+<h2>三、目的（Problems Solved）</h2>
+<ul>
+<li><b>多客户端重复 Interest/Data 浪费带宽</b>：选举一个 Leader 集中发 Interest，其他 Follower 在 NDN 层 delay 重复 Interest。</li>
+<li><b>802.11 broadcast 无 MAC ACK 导致丢包</b>：在应用层用 Interest pipeline + RTT 估计 + 重传 timer 弥补。</li>
+<li><b>Interest 与 Data 同时占用无线信道造成冲突</b>：在 NDN 层用 Delayed Interest Table（DIT）抑制冲突，AP 周期发送 Interest ACK 同步 Leader 进度。</li>
+<li><b>首跳必须兼容现有 IP/MAC 层</b>：不修改 802.11 MAC，AP 用 OpenWrt + UDP tunnel 把 NDN 包送到原 NDN 网络；AP 同时仍可跑 IP 业务。</li>
+<li><b>Leader 失效后切换</b>：用 <code>SNmax</code> 机制保证新 Leader 不重发已被老 Leader 发过的 Interest。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<p><b>NDN 基础</b>：每个内容块有 name；消费者发 Interest，路由器建 PIT 聚合相同 Interest，Data 沿原路返回。CS（Content Store）缓存沿途 Data。</p>
+<p><b>NLB 三层方案</b>（不修改 802.11 MAC）：</p>
+<ul>
+<li><b>NDN 应用层（NDNVideo）</b>：publisher 把直播切成 segment，写到 NDN repository（命名 <code>/repo/stream/video/segments/=number</code>）；player 用 Interest pipeline 请求。</li>
+<li><b>NDN 层 ccnd 增强</b>：AP ccnd 把同一目的 WLAN 面的多入口 Interest 在 PIT 合并，对 Data 走 broadcast；Leader ccnd 维护 DIT（Delayed Interest Table），Follower ccnd 也维护 DIT。</li>
+<li><b>应用层播放器</b>：从 metadata 拿 bit rate，估算 pipeline 大小 $W = (S_2 - S_1) T_r / T_s$，维护 RTT 平滑 $S_{RTT}=(1-\alpha)S_{RTT}+\alpha RTT$（$\alpha=1/8$）、方差 $RTT_{VAR}=(1-\beta)RTT_{VAR}+\beta|S_{RTT}-RTT|$（$\beta=1/4$）、重传 timer $T_i=S_{RTT}+K\cdot RTT_{VAR}$（$K=3$，参考 RFC 2988），并排除 &lt;10ms 的本地 CS 命中 RTT 防止 timer 退化。</li>
+</ul>
+<p><b>Leader 选择</b>：AP 把第 1 个发 Interest 的客户端选为 Leader，每收到 <code>P_ack</code>（默认 30）个来自 Leader 的 Interest 就广播一个 Interest ACK（特殊 Data 包，含 Leader nonce + 客户端数 N）。Follower 收到 Interest ACK 后对照 nonce 判断自己是不是 Leader。</p>
+<p><b>Interest 抑制概率</b>：Leader 转发 Interest 时，按 $1/(N-R)$ 的概率允许 Follower 的延迟 Interest 发出（$R$ 是同 Interest 已经被 Follower 重发的次数）；当 $R &gt; N/2$ 时直接强制发出。</p>
+<p><b>Interest pipeline 大小</b>：</p>
+<p>\[
+W = \frac{(S_2 - S_1) \cdot T_r}{T_s}
+\]</p>
+<p>其中 $S_2, S_1$ 是相邻 $T_s$（默认 5s）内最新两个 segment 号，$T_r$ 是平均 RTT。</p>
+<p><b>Interest 重传 timer</b>：</p>
+<p>\[
+T_i = S_{RTT} + K \cdot RTT_{VAR}, \quad K=3
+\]</p>
+<p><b>Follower Interest 重发条件</b>：</p>
+<ul>
+<li>Interest 命中本地 CS（DIT 删除）→ 已收到，无需再发；</li>
+<li>收到 Data 消耗 DIT 中的 Interest → 推进 $SN_i$；</li>
+<li>超过 $N/2$ 次重发 → 强制发出。</li>
+</ul>
+
+<h2>五、算法详解（Algorithm）</h2>
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：直播视频流（1Mbps H.264）；$N$ 个 WiFi 客户端；AP 一个；NDN 服务器一个。</li>
+<li>输出：所有客户端流畅播放 1Mbps 视频；wireless 介质上 Interest/Data 重复数显著降低。</li>
+</ul>
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>Server-side NDNVideo publisher</b>：在 Ubuntu server 上跑原版 ccnd + NDNVideo 切分直播。</li>
+<li><b>AP-side modified ccnd</b>：在 OpenWrt 上跑 modified ccnd：把同 WLAN 面 PIT 条目合并后 broadcast；周期性发 Interest ACK。</li>
+<li><b>Client-side modified ccnd</b>：在 Ubuntu / MacOS 上跑 modified ccnd + NDNVideo player：每个客户端根据 Interest ACK 决定自己跑 Leader 还是 Follower；Follower 用 DIT 做 Interest 抑制；Leader 维护 DIT 用于延迟重传 Interest。</li>
+<li><b>Application-layer adaptation</b>：player 算 bit rate、Smoothed RTT、Interest 重传 timer；Live stream bootstrap 找最新 segment；playout delay $T_{pd}=5$ 秒用于缓存抗 jitter。</li>
+</ul>
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+# AP 端 modified ccnd
+class NLBAccessPoint:
+    def on_interest(self, interest, in_face):
+        if self.stream_name(interest) not in self.streams:
+            self.streams[interest.name] = Stream(leader_face=in_face,
+                                                  leader_nonce=interest.nonce,
+                                                  client_count=1)
+        else:
+            stream = self.streams[interest.name]
+            stream.client_count += 1
+            self.pit.add(interest.name, in_face)
+        # 转发到上游一次
+        self.forward_to_upstream(interest)
+
+    def on_data(self, data):
+        faces = self.pit.consume(data.name)
+        # 把 Data broadcast 到 WLAN（不 unicast）
+        for f in faces:
+            if f.is_wlan():
+                self.wlan_broadcast(data)
+            else:
+                self.send(data, f)
+        # 每收 P_ack=30 个 Leader Interest 就广播一个 Interest ACK
+        if self.leader_interest_count[data.name] % 30 == 0:
+            self.wlan_broadcast(self.build_interest_ack(N=stream.client_count))
+
+
+# Follower 端 ccnd DIT 抑制
+class FollowerDIT:
+    def on_interest_from_app(self, interest):
+        if self.cs.has(interest.name):
+            return  # 本地 CS 已命中
+        self.dit.add(interest.name)
+
+    def on_data(self, data):
+        sn = self.dit.consume(data.name)  # consumed segment number
+        # 把 DIT 中 SN < sn 的延迟 Interest 随机发出去
+        for entry in self.dit.entries_with_sn_less_than(sn):
+            if random.random() < 1.0 / max(1, (self.N - entry.retry_count)):
+                self.send_interest(entry.interest)
+                self.dit.remove(entry)
+        # 自己 cs 缓存
+        self.cs.add(data)
+
+    def on_retransmit_from_app(self, interest):
+        entry = self.dit[interest.name]
+        entry.retry_count += 1
+        if entry.retry_count > self.N // 2:
+            self.send_interest(interest)  # 强制发出
+            self.dit.remove(entry)
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四（pipeline $W$、RTT 平滑、重传 timer、Follower 强制发出阈值 $N/2$）。</li>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>客户端 Interest 抑制：每个 Follower 维护 DIT，$O(1)$ per Interest 查表；</li>
+<li>AP broadcast：单次 Data $O(1)$ broadcast，复用 PIT 条目避免重复 unicast；</li>
+<li>测试床实测：1Mbps 视频 / 20 客户端，AP CPU ~30%；UCast 在 7 客户端 AP CPU 已 &gt;90%。</li>
+</ul>
+<ol>
+<li><b>训练与推理</b>：无机器学习；纯协议 + 启发式。</li>
+<li><b>示例</b>：校园直播赛事。20 个学生在教室用 WiFi 看同一 1Mbps 直播。NLB 选第一个发 Interest 的学生为 Leader，其 ccnd 转发所有 Interest；其他 19 个 Follower 在 NDN 层抑制重复 Interest；AP 通过 802.11 broadcast 把 Data 一次性送达 20 个客户端，wireless 介质利用率保持在 30% CPU / 低 Interest 冗余（~120%）+ 低 Data 冗余（~119%）。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[视频源 + NDNVideo Publisher] --> B[NDN 网络核心 UDP tunnel]
+    B --> C[AP ccnd modified]
+    C --> C1[周期 Interest ACK 广播]
+    C --> C2[PIT 合并后 WLAN broadcast]
+    C2 --> D1[802.11 broadcast 信道]
+    D1 --> E1[客户端 1 Follower ccnd + DIT]
+    D1 --> E2[客户端 2 Follower ccnd + DIT]
+    D1 --> E3[客户端 i Leader ccnd + DIT]
+    D1 --> EN[客户端 N Follower ccnd + DIT]
+    E3 --> F[NDNVideo player]
+    E1 --> F
+    E2 --> F
+    EN --> F
+    E1 --> G[Interest 抑制决策]
+    E2 --> G
+    E3 --> G
+    EN --> G
+    G --> H{命中 CS?}
+    H -- 是 --> I[直接播放]
+    H -- 否 --> J{DIT 中?}
+    J -- 是 --> K[延迟 + 概率 1/N-R 重发]
+    J -- 否 --> L[立即发 Interest]
+    K --> M[收 Data 后消费 DIT]
+    L --> M
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[直播开启 NDNVideo publisher 切分 segment] --> S2[客户端启动 ccnd + player]
+    S2 --> S3[第 1 个客户端发 Interest 被 AP 选为 Leader]
+    S3 --> S4[AP 周期广播 Interest ACK 含 Leader nonce + 客户端数 N]
+    S4 --> S5{客户端 nonce 匹配?}
+    S5 -- 是 --> S6[保持 Leader 模式 正常转发 Interest]
+    S5 -- 否 --> S7[进入 Follower 模式 启用 DIT 抑制]
+    S6 --> S8[Leader ccnd 维护 DIT 记录已发 Interest]
+    S7 --> S9[Follower ccnd 维护 DIT 抑制重复 Interest]
+    S8 --> S10[AP 把 PIT 合并后 Data broadcast 到 WLAN]
+    S9 --> S10
+    S10 --> S11[客户端收 Data 消费 DIT 播放]
+    S11 --> S12{重传 timer 到期?}
+    S12 -- 否 --> S11
+    S12 -- 是 --> S13{重试次数 > N/2?}
+    S13 -- 是 --> S14[强制重发 Interest]
+    S13 -- 否 --> S15[延迟重发 概率 1/N-R]
+    S14 --> S11
+    S15 --> S11
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><b>+ Leader/Follower 机制</b>：在 NDN 层把"谁来发 Interest"集中到一个客户端，避免 N 个客户端重复 Interest。</li>
+<li><b>+ Interest ACK 周期广播</b>：让所有 Follower 同步 Leader 的 <code>SNmax</code>，同时切换 Leader 时不重发老 Interest。</li>
+<li><b>+ DIT（Delayed Interest Table）抑制重复 Interest</b>：概率 $1/(N-R)$ 允许 Follower 延迟重发，$R &gt; N/2$ 时强制发出。</li>
+<li><b>+ 不改 802.11 MAC</b>：用 AP 端 modified ccnd + UDP tunnel 兼容现有 NDN 与 IP 业务，部署门槛低。</li>
+<li><b>+ commodity AP 即可运行</b>：Mercury MW4530R 720MHz CPU 跑 OpenWrt，20 客户端 AP CPU 仅 ~30%。</li>
+<li><b>+ 接收端 RTT 平滑 + 排除本地 CS 命中 RTT</b>：避免 RTO 退化到 μs 级引发的 Interest 爆炸。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><b>测试床</b>：1 台 Mercury MW4530R 802.11ac 5GHz AP（broadcast 6Mbps 上限，unicast 750Mbps），最多 20 台 Linux VM WiFi 客户端；NDNVideo publisher 在 Ubuntu server 上；客户端跑 modified ccnd；H.264 1Mbps 视频（Mobile calendar 样本）。</li>
+<li><b>参数</b>：playout delay $T_{pd}=5$s；$T_s=5$s；$P_{ack}=30$；每实验 300s 重复 5 次。</li>
+<li><b>对比方案</b>：</li>
+<li><b>UCast</b>：客户端和 AP 跑原版 ccnd，Interest/Data 都走 UDP unicast。</li>
+<li><b>BCast</b>：客户端跑 NLB player + 原版 ccnd，AP 用 modified ccnd broadcast Data，但 Interest 仍走 unicast。</li>
+<li><b>NLB</b>：本文方案。</li>
+<li><b>关键数字</b>：</li>
+<li>1Mbps 视频 / 20 客户端：NLB 全部流畅（buffer rate &lt;0.041 /s，buffer ratio &lt;2%）；UCast 在 7 客户端后 buffer ratio 飙到 14.03%；BCast 在 4 客户端后 buffer ratio 飙到 4.02%。</li>
+<li>Interest 冗余度：NLB 20 客户端时 122.96%；理想 unicast 100%；UCast 快速偏离；BCast 接近 ideal unicast。</li>
+<li>Data 冗余度：NLB 20 客户端时 118.75%；BCast 显著优于 UCast 但仍远差于 NLB。</li>
+<li>AP CPU：NLB 20 客户端 ~30%；UCast 7 客户端 &gt;90%；BCast 4 客户端 ~60%（受限于 broadcast 6Mbps 带宽）。</li>
+<li><b>结论</b>：NLB 至少是 UCast 的 3 倍、BCast 的 5 倍客户端规模；在 1Mbps 视频上仍有 1% 每客户端的额外冗余空间，支持更多客户端。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><b>校园/企业直播</b>：上千上万学生/员工通过 WiFi 看同一直播讲座。</li>
+<li><b>大型赛事直播</b>（SuperBowl、NBA 决赛、World Cup、Olympic）：用户从移动设备 WiFi 接入。</li>
+<li><b>企业内训/全公司会议直播</b>：NDN 缓存进一步把热点内容推到接入侧。</li>
+<li><b>酒店/医院/会场 WiFi 直播</b>：高密度客户端场景下避免 broadcast 带宽浪费。</li>
+<li><b>可与 MAC 层 802.11 broadcast 增强方案（Medusa、Dircast、Flexcast 等）互补</b>。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>F2Tree-ICDCS15</code> / <code>f2tree</code>（Fat Tree 快速故障恢复，DCN 视角）</li>
+<li><code>CQRD-ComputerNetworks15</code> / <code>CQRD-LCN</code>（交换机内部 CQRD 队列管理）</li>
+<li><code>FUSO-ATC16</code>（多路径 TCP 快速重传）</li>
+<li><code>conext15-final2</code>（FUNNEL 软件变更后性能评估）</li>
+<li><code>Multi-AS-cooperative-incoming-traffic-engineering-in-a-transit-edge-separate-internet-zhang2014</code>（LISP 边 AS 协作流量工程）</li>
+<li><code>firewall</code>（防火墙指纹与 DoF 攻击）</li>
+<li><code>chen_npc14_CQ</code>（CQ 交换机 buffer 设计理论）</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><b>NDN (Named Data Networking)</b>：以内容名为中心的网络架构。</li>
+<li><b>CCN / Content Centric Networking</b>：NDN 的同义前身。</li>
+<li><b>Interest / Data packet</b>：NDN 两种基本包类型。</li>
+<li><b>PIT (Pending Interest Table)</b>：NDN 路由器中记录 Interest 入接口的表。</li>
+<li><b>CS (Content Store)</b>：NDN 路由器本地缓存。</li>
+<li><b>ccnd</b>：NDN 转发守护进程（来自 ccnx 0.8.1）。</li>
+<li><b>PIT Aggregation</b>：同 name 的多个 Interest 合并为一条。</li>
+<li><b>Leader / Follower</b>：NLB 中负责发 Interest 的客户端与其余客户端。</li>
+<li><b>DIT (Delayed Interest Table)</b>：Leader/Follower 各自维护的兴趣抑制表。</li>
+<li><b>Interest ACK</b>：AP 周期广播的特殊 Data 包，告知 Leader nonce + 客户端数 N。</li>
+<li><b>SNmax</b>：Leader 已发 Interest 的最大 segment number。</li>
+<li><b>Playout delay $T_{pd}$</b>：播放器启动后缓存时间，用于抗 jitter。</li>
+<li><b>Smoothed RTT / RTT VAR</b>：RFC 2988 风格的 RTT 平滑与方差。</li>
+<li><b>Interest Retransmission Timer $T_i$</b>：$T_i = S_{RTT} + K \cdot RTT_{VAR}$。</li>
+<li><b>802.11 Broadcast</b>：WiFi 物理层 broadcast，但无 MAC ACK。</li>
+<li><b>OpenWrt</b>：嵌入式 Linux，广泛用于家用 AP。</li>
+<li><b>Medusa / Dircast / Flexcast</b>：基于 MAC 层 802.11 broadcast 增强的方案，与 NLB 互补。</li>
+<li><b>H.264 / FFmpeg / MPEG-2 HD</b>：视频编码与样本。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Paper: NLB ICCCN 2015（本文）。</li>
+<li>Paper: NDN（Jacobson et al. 2009）—— NDN 架构。</li>
+<li>Paper: NDNVideo（Kulinski &amp; Burke, NDN TR-0007, 2012）—— NDN 直播原型。</li>
+<li>Paper: Medusa（NSDI 2010）、Dircast（ICNP 2009）、Flexcast（MobiCom 2011）—— MAC 层 802.11 broadcast 增强。</li>
+<li>Paper: AMVS-NDN（NOMEN 2013）—— 移动 NDN 自适应视频流。</li>
+<li>工具：NDN/ccnx 0.8.1、OpenWrt、FFmpeg、iperf、Mercury MW4530R。</li>
+<li>相关论文：<code>F2Tree-ICDCS15</code>、<code>f2tree</code>、<code>CQRD-ComputerNetworks15</code>、<code>CQRD-LCN</code>、<code>FUSO-ATC16</code>、<code>conext15-final2</code>、<code>Multi-AS-cooperative-incoming-traffic-engineering-in-a-transit-edge-separate-internet-zhang2014</code>、<code>firewall</code>、<code>chen_npc14_CQ</code>。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

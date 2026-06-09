@@ -1,0 +1,453 @@
+          Enhanced Fine-Tuning of Lightweight
+       Domain-Specific Q&A model Based on Large
+                   Language Models
+                  Shenglin Zhang∗ , Pengtian Zhu∗ , Minghua Ma† , Jiagang Wang‡ , Yongqian Sun∗ ,
+                  Dongwen Li∗ , Jingyu Wang∗ , Qianying Guo§ , Xiaolei Hua§ , Lin Zhu§ , Dan Pei‡
+                   ∗ Nankai University, † Microsoft,‡ Tsinghua University,§ China Mobile Research Institute
+
+
+
+   Abstract—Large language models (LLMs) excel at general               construct instruction datasets, achieving performance close to
+question-answering (Q&A) but often fall short in specialized            GPT-3.5 and GPT-4. However, these methods cannot guarantee
+domains due to a lack of domain-specific knowledge. Commercial          the correctness and diversity of the generated instruction
+companies face the dual challenges of privacy protection and
+resource constraints when involving LLMs for fine-tuning. This          data. Fortunately, high-quality instruction data is scarce in
+paper propose a novel framework, Self-Evolution, designed               most scenarios, while the volume of knowledge documents
+to address these issues by leveraging lightweight open-source           is enormous.
+LLMs through multiple iterative fine-tuning rounds. To enhance             In summary, applying general-purpose models to specific
+the efficiency of iterative fine-tuning, Self-Evolution employ a
+strategy that filters and reinforces the knowledge with higher          domains presents the following challenges:
+value during the iterative process. We employed Self-Evolution on        1) Limitation of Computational Resources. Model per-
+Qwen1.5-7B-Chat using 4,000 documents containing rich domain
+                                                                            formance is typically proportional to the scale of the
+knowledge from China Mobile, achieving a performance score
+174% higher on domain-specific question-answering evaluations               model’s parameters. However, fine-tuning and deploying
+than without using Self-Evolution and even 22% higher than                  powerful general-purpose language models requires sub-
+Qwen1.5-72B-Chat. Self-Evolution has been deployed in China                 stantial computational resources. For example, a LLM
+Mobile’s daily operation and maintenance for 117 days, and it               with 72B parameters using fp16 precision requires five
+improves the efficiency of locating alarms, fixing problems, and
+                                                                            Tesla V100-32GB GPUs for inference. Fine-tuning such
+finding related reports, with an average efficiency improvement
+of over 18.6%. In addition, we release Self-Evolution framework             a model incurs even greater costs. This is prohibitively
+code in https://github.com/Zero-Pointer/Self-Evolution.                     expensive and impractical for tasks that must be contin-
+   Index Terms—large language model, question answering, do-                uously available.
+main alignment, data mining                                              2) High-quality data scarcity. Domain-specific high-
+                                                                            quality instruction data is often scarce. Manually cor-
+                      I. I NTRODUCTION                                      recting instruction data requires significant human effort,
+   With the emergence of large language models (LLMs) such                  making it expensive. A solution is needed to automat-
+as Qwen [1], LLaMA [2], and GPT [3], their exceptional gen-                 ically construct high-quality data without human assis-
+eration, understanding of complex language structures and di-               tance.
+alogue capabilities have garnered widespread attention [4], [5].         3) Lack of diversity and correctness. Firstly, using a fixed
+However, in specific domains, their performance often fails to              model to construct instruction data tends to generate
+meet practical requirements. For instance, GPT-4 may cite in-               overly similar data. Additionally, relying solely on the
+correct legal provisions when answering legal questions, lead-              model’s internal capabilities for data generation may
+ing to erroneous analytical conclusions. ChatLaw-MoE [6],                   result in incorrect or irrelevant data for the domain. The
+fine-tuned on high-quality law data, has outperformed GPT-                  model might need more domain understanding or have
+4 across multiple application scenarios. Therefore, enabling                learned incorrect knowledge, leading to hallucination
+general models to acquire domain-specific knowledge allows                  issues. We hope the model can dynamically learn from
+for deploying a domain model with minimal computational                     unsupervised domain documents, continually improving
+resources, potentially outperforming general models with ten                its capabilities while ensuring the diversity and accuracy
+times the number of parameters.                                             of data generation.
+                                                                         4) Data privacy. Due to the inclusion of private information
+   State-of-the-art approaches extensively utilize instruction
+                                                                            in domain-specific data, fine-tuning commercial LLMs
+fine-tuning (IFT) to align general-purpose models with spe-
+                                                                            poses major challenges when dealing with sensitive in-
+cific application domains and maximize their effectiveness.
+                                                                            ternal company data, including privacy leakage and high
+InstructGPT [7] employed instruction fine-tuning to bridge
+                                                                            costs.
+the performance gap between models with a hundredfold
+difference in parameter count. In the absence of instruction               In this paper, we propose a novel framework Self-Evolution
+data, certain approaches [8]–[11] use advanced LLMs to                  to address the aforementioned challenges. The contributions of
+
+
+
+                                                                    1
+this paper are summarized as follows:                                    the model and then use this newly constructed data to
+  1) Considering the costs and privacy concerns during actual            enhance domain or task capabilities. Self-Instruct [17], for
+     deployment, we select an open-source model with 7B                  instance, proposes using self-generated samples to enhance the
+     parameters as the data generation, scoring model, and               instruction-following ability of pre-trained language models.
+     model for QA tasks in real scenarios. All phases in                 Self-Align [18] mainly adopts topic-guided red-blue adversar-
+     Self-Evolution can be completed with just one Tesla                 ial self-guidance and principle-driven self-calibration to con-
+     V100-32GB GPU, significantly reducing computational                 struct data and fine-tune models, requiring less than 300 lines
+     resource requirements. (Addressed challenges 1 and 4.)              of manually constructed data (including 195 seed prompts,
+  2) Self-Evolution uses LLM to generate instrutiondata based            16 principles, and five examples) to achieve high-quality fine-
+     on a large number of unlabeled knowledge documents,                 tuned model. The potential of these self-guided methods is
+     ensuring domain relevance and correctness while avoid-              certainly worth exploring further.
+     ing the need for manual assistance. Additionally, the LLM              However, these methods still require manually constructed
+     undergoes iterative updates, generating a new batch of              supervision data and are limited by the model’s inherent
+     data each time. This process ensures diversity between              knowledge constraints, preventing them from generating in-
+     different batches of data. (Addressed challenges 2 and              struction data beyond the model’s capabilities.
+     3.)
+  3) We conducted extensive evaluation experiments using                 C. Instruction Data Selection
+     real-world data from China-Mobile, a top-tier telecom-                 In the early stages of IFT research, many works improved
+     munications provider providing services for one billion+            model capabilities by building large instruction datasets. How-
+     monthly active users (MAU). Self-Evolution achieves                 ever, LIMA [19] proposed that “less alignment is more”
+     a performance score 174% higher on domain-specific                  showing that fine-tuning the model with only 1,000 high-
+     question-answering evaluations than without using Self-             quality samples can achieve a performance comparable to
+     Evolution and even 22% higher than Qwen1.5-72B-Chat.                GPT-4. Appropriate data filtering strategies can improve learn-
+     The Self-Evolution has been deployed in China Mobile’s              ing efficiency and help reduce hallucinations caused by over-
+     daily operation and maintenance for 117 days.                       training [2], [20].
+                     II. R ELATED W ORK                                     ALPAGASUS [21] uses ChatGPT for scoring, though this
+A. Instruction Fine-tuning                                               method may overlook the target model’s capabilities and lacks
+                                                                         interpretability. The forgetting score [22] tracks changes in
+   The potential of LLMs in the specific domain is vast                  sample classification during training. GraNd [23] prunes data
+and promising. For example, Microsoft deployed GPT to                    based on the gradient norm of the sample. While the forgetting
+summarize anomalous events in its services [12]. However,                score and GraNd require significant overhead since they need
+as task complexity and requirements increase, instruction fine-          to continuously update the scoring model, thus increasing the
+tuning (IFT) is widely adopted to enhance model performance.             overall model training time.
+FLAN [13] achieved significant improvements in generaliza-
+                                                                            Instruction Following Difficulty (IFD) [24] stands out for
+tion by fine-tuning a high-quality instruction dataset. Instruct-
+                                                                         its efficiency, using the representation features of the target
+GPT [7] successfully aligned GPT-3 [3] with human intent by
+                                                                         model to identify high-quality instruction data. It provides
+fine-tuning a dataset rich in real-world instruction forms and
+                                                                         a simpler, cheaper, and interpretable approach by computing
+task types. OWL [14] collected numerous operation domain
+                                                                         the generation complexity of the answer using a single fixed
+instructions and achieved remarkable results in log parsing
+                                                                         scoring model.
+and anomaly detection. However, these methods require a
+large amount of manually annotated data, which becomes a
+                                                                                         Stage 1                  Stage 2               Stage 3
+bottleneck for widespread application due to the high cost.                           Generate QAs         Select Training Data     Learn Knowledge
+
+B. Instruction Data Generation
+   Researchers have extensively explored methods to reduce
+                                                                         Document        𝑳𝑳𝑳𝑳𝑳𝑳𝒊𝒊
+human involvement in generating instruction data. Some meth-                                                            Selection
+ods [8]–[10], [15] use advanced commercial models to create                                                   QA Database             SFT−Data𝒊𝒊
+                                                                                    Generate
+instruction datasets. For instance, Alpaca [8] uses a small                                                          Store                     Finetune
+amount of manually constructed data to extract knowledge                                                  Scoring
+from DaVinci-003 [16], creating a 52k instruction dataset. It
+fine-tunes LLaMA to achieve performance close to GPT-3.5,                               New QAs               Scored QAs               𝑳𝑳𝑳𝑳𝑳𝑳𝒊𝒊+𝟏𝟏
+
+significantly reducing the cost of obtaining instruction datasets.
+Peng et al. [9] extract knowledge from GPT-4, resulting in                                                          Iterate
+higher quality and more diverse responses.
+   Another class of methods [11], [17], [18] employs a self-                                         Fig. 1. Self-Evolution
+guided approach. These methods extract knowledge from
+
+
+
+                                                                     2
+                                     III. M ETHOD                                                                                      TABLE II
+                                                                                                                              A NSWER GENERATION PROMPT.
+   The overview of Self-Evolution is illustrated in Fig. 1.
+                                                                                                          Role Description:
+To start, Self-Evolution requires a LLM θ0 as the initial                                                 You are an expert in the field of operations......
+QA1 generation model and scoring model and a collection                                                   You must generate responses based on the requirements.
+                                                                                                          Workflow Description:
+of domain-related documents T . Self-Evolution consists of                                                1. Receive and parse the user’s question.
+three phases. In the first stage, the QA generation model                                                 2. Read and analyze the document provided by the user.
+                                                                                                          3. Provide a concise and comprehensive answer by combining your knowledge
+generates QA pairs based on the domain-related documents.                                                 with the document content.
+In the second phase, the scoring model and a scoring metric                                               In Context Learning:
+                                                                                                          Examples:
+are employed to identify valuable samples from all histori-                                               Question: Which is the largest planet in the solar system?
+cal instruction QA pairs. In the third phase, these valuable                                              Knowledge fragment: The solar system consists of eight planets, with Jupiter
+                                                                                                          being the largest. Its mass is 2.5 times that of all other planets combined.
+instruction samples are used to conduct a new round of IFT,                                               Answer: The largest planet in the solar system is Jupiter.
+reinforcing the model’s domain knowledge. These three phases                                              Warnings:
+iterate continuously until the desired performance is achieved.                                           Your answer will be sent independently of the document after generation......
+                                                                                                          Your response must ensure two points: conciseness and accuracy.
+The following sections will provide a detailed description of                                             Domain Knowledge and Question:
+these phase.                                                                                              Question: {Question}
+                                                                                                          Knowledge fragment: {Knowledge}
+
+A. QA generation
+   More new QA data are generated in the QA generation                                                  B. Data Selection And Training
+phase. Self-Evolution constructs new questions and answers                                                 Prior to conducting the i-th round of IFT, we can filter and
+based on each domain-related document rather than deriving                                              select a subset of instruction data from the previous i − 1
+them from manually constructed questions.                                                               rounds to enhance the training process. Self-Evolution em-
+   This questions generation process is represented as qij =                                            ploys the IFD metric [24] to identify more valuable instruction
+LLM (θi , tj ), where tj is the j-th document in T . During                                             data. Equation 3 represents the calculation method for the IFD
+this process, we design delicated prompt to prioritize two key                                          score, while Equations 1 and 2 denote the Conditioned Answer
+aspects: 1) Question conciseness: Preventing the generation                                             Score and Direct Answer Score, respectively.
+of content with multiple sub-questions, which could lead to                                                                        N
+                                                                                                                              1 X
+model hallucinations (Note 2). 2) Question validity: Ensuring                                                                       log P wiA | Q, w1A , . . . , wi−1
+                                                                                                                                                                  A
+                                                                                                                                                                         
+                                                                                                         sθ (A | Q) = −                                               ; θ (1)
+each generated question is answerable (Note 6). The detailed                                                                  N i=1
+prompt used for question generation is as follows:                                                                             N
+                                                                                                                          1 X
+                                                                                                                                log P wiA | w1A , w2A , . . . , wi−1
+                                                                                                                                                                 A
+                                                                                                                                                                        
+                                                                                                           sθ (A) = −                                                ;θ              (2)
+                                                                                                                          N i=1
+                                     TABLE I
+                          Q UESTION GENERATION PROMPT.                                                                                             sθ (A | Q)
+                                                                                                                              IFDθ (Q, A) =                                          (3)
+  Domain Knowledge:
+                                                                                                                                                     sθ (A)
+  Reference document: {Knowledge}
+  Role Description:                                                                                        The Conditioned Answer Score quantifies a model’s ability
+  You are an expert in the operations domain.
+  Based on your comprehensive knowledge and the information provided above......                        to produce responses that align with both the given instructions
+  Rules Description:
+  Note 1: The question should be as concise as possible.
+                                                                                                        and the correct answers. It assesses the model’s output congru-
+  Note 2: The question should not contain multiple sub-questions, only one question is permitted.       ence with the directive and the expected solution. The Direct
+  ......
+  Note 6: Do not output declarative sentences; it must be a question!                                   Answer Score evaluates the LLM’s capacity to independently
+  Please formulate a question now.
+  Question:                                                                                             generate correct answers, reflecting the answer’s intrinsic
+                                                                                                        complexity in the absence of contextual instructions. A high
+   This answer generation process is represented as aij =                                               IFD score indicates the model’s difficulty in aligning responses
+LLM (θi , tj , qij ). Incorporating tj , ensures that the questions                                     with instructions, thereby highlighting the instruction’s com-
+are correctly answered. In this process, we emphasize response                                          plexity.
+completeness, ensuring that the generated content is a com-                                                Therefore, Self-Evolution extract k instruction data with the
+plete answer rather than one containing pronouns referring                                              highest IFD scores from D0 , D1 , . . . , Di−1 to form IF Di .
+back to the document. The prompt used for answer generation                                             This set IF Di is then combined with Di for the i-th round
+is as follows:                                                                                          of training, leveraging historical high-quality data alongside
+   After obtaining the newly generated questions and answers,                                           newly generated data, potentially enhancing the efficiency and
+Self-Evolution combines them into new instruction data Di =                                             effectiveness of each training iteration.
+{(qi0 , ai0 ), (qi1 , ai1 ), . . . , (qi|T | , ai|T | )}.                                               C. Next Iteration
+   1 As the instruction data in this paper consistently takes the form of question-
+                                                                                                           Self-Evolution employs a model self-evolution scheme. To
+answer pairs, the terms “instruction data”, “QA” and “question-answer pairs”                            elucidate the principles underlying this scheme, we define a
+are used interchangeably in the following text.                                                         scoring function score = f (q, a) that evaluates the quality
+
+
+
+                                                                                                    3
+of an answer a with respect to a question q. As previously                                            TABLE III
+mentioned, a = LLM (θi , q) denote the response of model                                 E XAMPLE FOR K NOWLEDGE D OCUMENT.
+θi to q, and a = LLM (θi , t, q) represent the response of                Alarm: {Alarm instance}
+model θi to q given a highly relevant knowledge document t.               Alarm explanation:
+                                                                          -{This is the reason for the alarm to appear}
+We define θi+1 = IF T (θi , q, a) as the next-generation model            -{This is the condition for the alarm to be cleared}
+θi+1 resulting from fine-tuning θi on the instruction data pair           -{This is the specific threshold for the occurrence and resolution of alarms}
+(q, a). We leverage In-context Learning [25] to establish the             Possible reasons:
+                                                                          -Reason 1: {This is the first possible reason that may occur}
+first inequality:                                                         -Reason 2: {This is the second possible reason that may occur}
+                                                                          Processing steps:
+                                                                          -Reason 1:
+           f (q, LLM (θi , q)) ≤ f (q, LLM (θi , t, q))      (4)             -{Step 2 of reason 1}
+                                                                             -{Step 2 of Reason 1}
+This inequality demonstrates that the instruction data                    -Reason 2:
+                                                                             -{Step 1 of Reason 2}
+((q, LLM (θi , t, q)) provides valuable learning opportunities
+for model θi . Consequently, we derive θi+1 through θi+1 =
+IF T (θi , q, a). Post-training, we obtain the second inequality:                                     TABLE IV
+                                                                                         E XAMPLE FOR Q UESTION AND A NSWER .
+          f (q, LLM (θi , q)) ≤ f (q, LLM (θi+1 , q))        (5)         Question:
+                                                                         How to gradually troubleshoot and solve the problem when device A starts
+Thus, model θi completes one iteration of evolution. The                 and device B cannot function properly?
+                                                                         Answer:
+iterative process can be terminated by setting an iteration              When the alarm of B not working properly appears after device A is started,
+threshold. Empirically, this threshold is proportionally related         the following steps can be followed for troubleshooting and handling:
+                                                                         1. Check component C.
+to the model’s parameter count and inversely related to the data             -If C is firm, proceed to step 3.
+volume. Smaller parameter counts tend to be more suscepti-                   -If it is not secure, try reinstalling component C.
+                                                                         2. After reinstalling component C, check if the alarm disappears.
+ble to hallucinations [26], necessitating threshold adjustments              -If the alarm disappears, the problem has been resolved, and the process ends.
+based on both parameter count and data volume.                               -If the alarm still exists, proceed to step 3.
+                                                                         3. Check if component C is damaged.
+                                                                             -If damaged, proceed to step 4.
+                                                                             -If not damaged, please contact technical personnel.
+                 IV. E XPERIMENTAL S ETUP                                4. Replace component C with a new one and check if the alarm is cleared.
+                                                                         Throughout the entire process, it is essential to backup data before
+A. Model and Dataset                                                     operation to prevent data loss.
+
+   The base model selected for our experiments is Qwen1.5-
+7B-Chat [1], denoted as θ0 . We use the LoRA (Low-Rank                  B. Baseline
+Adaptation) [27] method to fine-tune models. The LoRA
+hyperparameters are configured as follows: lora-rank is set                1) Qwen1.5-7B-Chat-Fine-Tuned by High Quality QA:
+to 4, and lora-alpha is set to 8. Notably, we set lora-target           The Qwen1.5 series of language models has demonstrated
+to “all” [11], which enables us to achieve superior training            exceptional performance in the Chinese language domain [1],
+results. The model chosen for IFD scoring is Qwen1.5-7B-                with Qwen1.5-72B-Chat achieving capabilities comparable to
+Chat, denoted as θif d . It is important to note that θif d does        GPT-3.5 on certain tasks. Consequently, we utilized Qwen1.5-
+not participate in the subsequent training process. Its param-          72B-Chat to generate 4,000 high-quality question-answer pairs
+eters remain fixed throughout the iteration process, ensuring           following the approach outlined in Section III-A. These pairs
+consistent scoring criteria in each round of evaluation.                were subsequently used to train a Qwen1.5-7B-HQ model
+   We select 4,000 valuable internal knowledge documents                for evaluation purposes, denoted as θHQ . This methodology
+from China Mobile, denoted as T , where |T | = 4000. As                 of extracting knowledge from documents using a superior
+shown in Table III, T contains crucial operational knowledge            model emulates the industrial scenario of constructing IFT data
+such as alert analysis, configuration analysis, and operational         from operational documentation, which often yields favorable
+experience, enabling operation engineers to quickly familiarize         results [8], [10].
+themselves with and solve problems. These knowledge docu-                  2) Original LLM: We employed the untrained Qwen1.5-
+ments are incorporated into the training process. Specifically,         7B-Chat and Qwen1.5-72B-Chat models in our evaluation to
+they are converted into corresponding instruction data and
+subsequently used for IFT.
+   We collected 100 real-world question-answer pairs related to                                      TABLE V
+                                                                                    C OMPARISON OF DIFFERENT BASELINE METHODS .
+these documents, as shown in Table IV. These pairs correspond
+to the knowledge that operations engineers need to acquire                   Model Name            Is Aligned?                Data Source
+on an ad hoc basis during their work. Due to their close                                                            Generated by Qwen1.5-72B-Chat
+                                                                           Qwen1.5-7B-HQ                Yes
+                                                                                                                            with documents
+association with the knowledge contained in the documents,                Qwen1.5-7B-Chat               No                         -
+we consider this set as a test set to evaluate the model’s                Qwen1.5-72B-Chat              No                         -
+performance.                                                                  GPT-3.4                   No                         -
+
+
+
+
+                                                                    4
+simulate the scenario of using open-source models directly for                         performance of Qwen1.5-72B-Chat-assisted alignment. This
+domain-specific question answering. Additionally, we included                          demonstrates the effectiveness of the proposed method.
+GPT-3.5 in our evaluation to simulate the scenario of utilizing
+a closed-source model for domain-specific question answering.                                             VII. A BLATION E XPERIMENT
+
+                      V. E VALUATION M ETRICS
+  We use the BLEU [28] score of θHQ , denoted as                                                1.2
+BLEU (θHQ ), as a benchmark score and calculate the relative
+scores of other models in comparison to it. The performance
+score for a model θ is calculated as:                                                           1.0
+                              BLEU (θ)
+                  Score =                                (6)
+                            BLEU (θHQ )
+
+
+
+
+                                                                                        Score
+   To better illustrate the differences between methods, we                                                                                 7B
+let θHQ serves as a target model for comparison. We col-                                                                                    72B
+                                                                                                                                            GPT-3.5
+lected 100 valuable subjective questions internally from China                                                                              7B-HQ
+Mobile, which are related to the knowledge documents T .                                                                                    Self-Evolution
+                                                                                                                                            No Retrieval
+These questions can reflect the model’s learning of T through                                                                               Random Retrieval
+question-answering performance. This score represents how                                                                                   All Retrieval
+                                                                                                0.3
+closely a given model’s performance in the domain-specific                                            0          2          4           6             8
+                                                                                                                        Generation
+task approaches that of the optimally fine-tuned model θHQ .
+                    VI. E XPERIMENTAL R ESULTS                                                            Fig. 3. Ablation Experiment Results.
+
+
+                                                                                       A. Historical Data Retrieval Module
+          1.2                                                                             One of the core components of Self-Evolution is the histor-
+                                                                                       ical data retrieval module. To investigate its specific role, we
+                                                                                       designed targeted experiments. After generating the instruction
+          1.0
+                                                                                       data Di in the i-th iteration, instead of performing historical
+                                                                                       data retrieval, we directly used it as the complete training
+                                                                                       dataset. The results, as shown in Figure 3, indicate that the
+  Score
+
+
+
+
+                                                                                       iterated model failed to surpass the performance of HQ, and
+                                                                                       the training effectiveness was compromised to some extent.
+                                                                                       This demonstrates that historical instruction data is valuable
+                                                          7B
+                                                          72B                          and needs to be retrieved and relearned.
+                                                          GPT-3.5
+                                                          7B-HQ                        B. Historical Data Retrieval Strategy
+                                                          Self-Evolution
+          0.3                                                                             To validate the effectiveness of using IFD scores for effi-
+                0           2           4           6            8
+                                    Generation                                         cient historical instruction data filtering in Self-Evolution, we
+                                                                                       designed two experiments.
+Fig. 2. The x-axis represents the number of iterations of the Self-Evolution,             To demonstrate the rationality of our data filtering motiva-
+while the y-axis shows the performance scores of different models. The                 tion, the corresponding experiment employed a full retrieval
+horizontal lines in the graph represent the performance of four distinct models,
+and the line graph depicts the performance of the Self-Evolution at each
+                                                                                       strategy during the recall phase, using all previously generated
+iteration.                                                                             data as a part for training. The results, as shown in Figure
+                                                                                       3, indicate that the performance of the iterated model rapidly
+   We compare Qwen1.5-7B-Chat, trained using Self-                                     deteriorated. Due to repeated training on excessive low-quality
+Evolution, with multiple baseline models. As shown in Fig-                             data, the model quickly began to exhibit hallucinations. More-
+ure 2, untrained models perform poorly in domain-specific                              over, in the eight-iteration experiment, the total training time
+knowledge question answering tasks. The θHQ model, fine-                               for full retrieval strategy was approximately three times that
+tuned with high-quality data, demonstrates excellent perfor-                           of Self-Evolution. This proves that discarding a portion of
+mance. Notably, Self-Evolution surpasses the performance of                            the data not only accelerates training speed but also enhances
+both GPT-3.5 and Qwen1.5-72B-Chat in its first iteration.                              training effectiveness.
+As the iterations progress, the model’s performance gradually                             To demonstrate the superiority of our data filtering strat-
+approaches that of θHQ , ultimately surpassing it by the seventh                       egy, we designed an experiment using a random retrieval
+round. Based on the above experiments, we can conclude                                 strategy during the recall phase, where k instruction data
+that Self-Evolution enables Qwen1.5-7B-Chat to surpass the                             were randomly recalled from historical instruction data and
+
+
+
+                                                                                   5
+added to the training set. As shown in Figure 3, performance                          [8] R. Taori, I. Gulrajani, T. Zhang, Y. Dubois, X. Li, C. Guestrin, P. Liang,
+improvements were observed only in the first two generations                              and T. B. Hashimoto, “Stanford alpaca: An instruction-following llama
+                                                                                          model,” 2023.
+of the iteration process, with continued training producing                           [9] B. Peng, C. Li, P. He, M. Galley, and J. Gao, “Instruction tuning with
+negative effects. This proves that an appropriate data filtering                          gpt-4,” arXiv preprint arXiv:2304.03277, 2023.
+strategy is necessary, as an unstable retrieval strategy can lead                    [10] W.-L. Chiang, Z. Li, Z. Lin, Y. Sheng, Z. Wu, H. Zhang, L. Zheng,
+                                                                                          S. Zhuang, Y. Zhuang, J. E. Gonzalez, I. Stoica, and E. P. Xing,
+to a decline in model performance.                                                        “Vicuna: An open-source chatbot impressing gpt-4 with 90%* chatgpt
+   In the aforementioned experiments, we tested three alterna-                            quality,” March 2023. [Online]. Available: https://lmsys.org/blog/2023-
+tive approaches: removing the historical data retrieval module,                           03-30-vicuna/
+                                                                                     [11] C. Xu, D. Guo, N. Duan, and J. McAuley, “Baize: An open-source chat
+employing a full retrieval strategy, and using a random retrieval                         model with parameter-efficient tuning on self-chat data,” arXiv preprint
+strategy. All of these approaches resulted in some degree of                              arXiv:2304.01196, 2023.
+performance degradation compared to Self-Evolution. These                            [12] P. Jin, S. Zhang, M. Ma, H. Li, Y. Kang, L. Li, Y. Liu, B. Qiao,
+                                                                                          C. Zhang, P. Zhao et al., “Assess and summarize: Improve outage
+results demonstrate that the data retrieval module in Self-                               understanding with large language models,” in Proceedings of the 31st
+Evolution is essential, and the data filtering strategy centered                          ACM Joint European Software Engineering Conference and Symposium
+on IFD plays a crucial role in the method’s effectiveness.                                on the Foundations of Software Engineering, 2023, pp. 1657–1668.
+                                                                                     [13] J. Wei, M. Bosma, V. Y. Zhao, K. Guu, A. W. Yu, B. Lester, N. Du,
+                                                                                          A. M. Dai, and Q. V. Le, “Finetuned language models are zero-shot
+           VIII. C ONCLUSION AND F UTURE W ORK                                            learners,” arXiv preprint arXiv:2109.01652, 2021.
+   In this paper, we address a key challenge in applying LLMs                        [14] H. Guo, J. Yang, J. Liu, L. Yang, L. Chai, J. Bai, J. Peng, X. Hu,
+                                                                                          C. Chen, D. Zhang, xu Shi, T. Zheng, liangfan zheng, B. Zhang, K. Xu,
+to the specific domain: the difficulty in utilizing vast amounts                          and Z. Li, “OWL: A large language model for IT operations,” in The
+of unlabeled knowledge documents. To tackle this issue, we                                Twelfth International Conference on Learning Representations, 2024.
+employ self-Alignment in Self-Evolution to rapidly construct                              [Online]. Available: https://openreview.net/forum?id=SZOQ9RKYJu
+                                                                                     [15] C. Xu, Q. Sun, K. Zheng, X. Geng, P. Zhao, J. Feng, C. Tao, and
+a large volume of Instruction data. As the iteration progresses,                          D. Jiang, “Wizardlm: Empowering large language models to follow
+both the model’s capabilities and the quality of generated                                complex instructions,” arXiv preprint arXiv:2304.12244, 2023.
+data improve. To maximize the utilization of instruction data                        [16] G. Hinton, O. Vinyals, and J. Dean, “Distilling the knowledge in a neural
+                                                                                          network,” arXiv preprint arXiv:1503.02531, 2015.
+generated in each iteration, we use IFD scores to filter out                         [17] Y. Wang, Y. Kordi, S. Mishra, A. Liu, N. A. Smith, D. Khashabi,
+high-quality data to assist in training. In the China Mobile                              and H. Hajishirzi, “Self-instruct: Aligning language models with self-
+business question-answering evaluation, our approach, using                               generated instructions,” arXiv preprint arXiv:2212.10560, 2022.
+                                                                                     [18] Z. Sun, Y. Shen, Q. Zhou, H. Zhang, Z. Chen, D. Cox, Y. Yang,
+only a 7B model throughout, outperforms solutions assisted by                             and C. Gan, “Principle-driven self-alignment of language models from
+72B models, conserves a significant amount of computational                               scratch with minimal human supervision,” Advances in Neural Informa-
+resources.                                                                                tion Processing Systems, vol. 36, 2024.
+                                                                                     [19] C. Zhou, P. Liu, P. Xu, S. Iyer, J. Sun, Y. Mao, X. Ma, A. Efrat, P. Yu,
+   In current business scenarios, multi-turn dialogue capabili-                           L. Yu et al., “Lima: Less is more for alignment,” Advances in Neural
+ties are becoming increasingly important. Therefore, in future                            Information Processing Systems, vol. 36, 2024.
+work, we plan to extend Self-Evolution to improve the model’s                        [20] L. Huang, W. Yu, W. Ma, W. Zhong, Z. Feng, H. Wang, Q. Chen,
+                                                                                          W. Peng, X. Feng, B. Qin et al., “A survey on hallucination in large
+domain-specific multi-turn dialogue capabilities using only                               language models: Principles, taxonomy, challenges, and open questions,”
+unsupervised text data.                                                                   arXiv preprint arXiv:2311.05232, 2023.
+                                                                                     [21] L. Chen, S. Li, J. Yan, H. Wang, K. Gunaratna, V. Yadav, Z. Tang,
+                                                                                          V. Srinivasan, T. Zhou, H. Huang et al., “Alpagasus: Training a better
+                                                                                          alpaca with fewer data,” arXiv preprint arXiv:2307.08701, 2023.
+                              R EFERENCES                                            [22] M. Toneva, A. Sordoni, R. T. d. Combes, A. Trischler, Y. Bengio, and
+ [1] J. Bai, S. Bai, Y. Chu, Z. Cui, K. Dang, X. Deng, Y. Fan, W. Ge,                     G. J. Gordon, “An empirical study of example forgetting during deep
+     Y. Han, F. Huang et al., “Qwen technical report,” arXiv preprint                     neural network learning,” arXiv preprint arXiv:1812.05159, 2018.
+     arXiv:2309.16609, 2023.                                                         [23] M. Paul, S. Ganguli, and G. K. Dziugaite, “Deep learning on a data
+ [2] H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei,                 diet: Finding important examples early in training,” Advances in Neural
+     N. Bashlykov, S. Batra, P. Bhargava, S. Bhosale et al., “Llama                       Information Processing Systems, vol. 34, pp. 20 596–20 607, 2021.
+     2: Open foundation and fine-tuned chat models,” arXiv preprint                  [24] M. Li, Y. Zhang, Z. Li, J. Chen, L. Chen, N. Cheng, J. Wang, T. Zhou,
+     arXiv:2307.09288, 2023.                                                              and J. Xiao, “From quantity to quality: Boosting llm performance
+ [3] T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal,                  with self-guided data selection for instruction tuning,” arXiv preprint
+     A. Neelakantan, P. Shyam, G. Sastry, A. Askell et al., “Language mod-                arXiv:2308.12032, 2023.
+     els are few-shot learners,” Advances in neural information processing           [25] P. Liu, W. Yuan, J. Fu, Z. Jiang, H. Hayashi, and G. Neubig, “Pre-
+     systems, vol. 33, pp. 1877–1901, 2020.                                               train, prompt, and predict: A systematic survey of prompting methods
+ [4] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training                in natural language processing,” ACM Computing Surveys, vol. 55, no. 9,
+     of deep bidirectional transformers for language understanding,” arXiv                pp. 1–35, 2023.
+     preprint arXiv:1810.04805, 2018.                                                [26] Z. Gekhman, G. Yona, R. Aharoni, M. Eyal, A. Feder, R. Reichart,
+ [5] C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena,                     and J. Herzig, “Does fine-tuning llms on new knowledge encourage
+     Y. Zhou, W. Li, and P. J. Liu, “Exploring the limits of transfer learning            hallucinations?” arXiv preprint arXiv:2405.05904, 2024.
+     with a unified text-to-text transformer,” Journal of machine learning           [27] E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang,
+     research, vol. 21, no. 140, pp. 1–67, 2020.                                          and W. Chen, “Lora: Low-rank adaptation of large language models,”
+ [6] J. Cui, Z. Li, Y. Yan, B. Chen, and L. Yuan, “Chatlaw: Open-source                   arXiv preprint arXiv:2106.09685, 2021.
+     legal large language model with integrated external knowledge bases,”           [28] K. Papineni, S. Roukos, T. Ward, and W.-J. Zhu, “Bleu: a method for
+     arXiv preprint arXiv:2306.16092, 2023.                                               automatic evaluation of machine translation,” in Proceedings of the 40th
+ [7] L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. Wainwright, P. Mishkin,                   annual meeting of the Association for Computational Linguistics, 2002,
+     C. Zhang, S. Agarwal, K. Slama, A. Ray et al., “Training language                    pp. 311–318.
+     models to follow instructions with human feedback,” Advances in neural
+     information processing systems, vol. 35, pp. 27 730–27 744, 2022.
+
+
+
+
+                                                                                 6
+

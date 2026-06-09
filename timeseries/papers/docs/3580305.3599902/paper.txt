@@ -1,0 +1,874 @@
+  Robust Multimodal Failure Detection for Microservice Systems
+            Chenyu Zhao*                                     Minghua Ma∗                                    Zhenyu Zhong                        Zhiyuan Tan
+            Nankai University                                   Microsoft                                  Shenglin Zhang†                      Xiao Xiong
+             Tianjin, China                                   Beijing, China                                Nankai University                 Nankai University
+                                                                                                             Tianjin, China                    Tianjin, China
+
+                 LuLu Yu                                    Yongqian Sun                                        Dan Pei                       Qingwei Lin
+                Jiayi Feng                                  Yuzhi Zhang                                    Tsinghua University               Dongmei Zhang
+           Nankai University                               Nankai University                                  Beijing, China                      Microsoft
+            Tianjin, China                                  Tianjin, China                                                                      Beijing, China
+
+ABSTRACT                                                                                               Beach, CA, USA. ACM, New York, NY, USA, 11 pages. https://doi.org/10.
+Proactive failure detection of instances is vitally essential to mi-                                   1145/3580305.3599902
+croservice systems because an instance failure can propagate to
+the whole system and degrade the system’s performance. Over the                                        1    INTRODUCTION
+years, many single-modal (i.e., metrics, logs, or traces) data-based
+anomaly detection methods have been proposed. However, they                                            As an increasing number of Internet applications migrate to the
+tend to miss a large number of failures and generate numerous                                          cloud, the microservice architecture, which allows each microser-
+false alarms because they ignore the correlation of multimodal data.                                   vice to be independently developed, deployed, upgraded, and scaled,
+In this work, we propose AnoFusion, an unsupervised failure de-                                        has attracted widespread attention recently [47]. A microservice sys-
+tection approach, to proactively detect instance failures through                                      tem is typically a large-scale system with many instances (e.g., vir-
+multimodal data for microservice systems. It applies a Graph Trans-                                    tual machines or containers). Correlations among instances, e.g., ser-
+former Network (GTN) to learn the correlation of the heteroge-                                         vice invocations and resource contention, are usually complex and
+neous multimodal data and integrates a Graph Attention Network                                         dynamic [42]. When an instance fails, it may degrade the perfor-
+(GAT) with Gated Recurrent Unit (GRU) to address the challenges                                        mance of the whole microservice system, impact user experience
+introduced by dynamically changing multimodal data. We evaluate                                        and even lead to revenue loss. For example, some failed instances
+the performance of AnoFusion through two datasets, demonstrat-                                         resulted in a surge of connection activity that overwhelmed the net-
+ing that it achieves the 𝐹 1 -score of 0.857 and 0.922, respectively,                                  working devices between the internal network and the main AWS
+outperforming the state-of-the-art failure detection approaches.                                       network in December 2021 [2]. Therefore, it is crucial to proactively
+                                                                                                       detect instance failures to mitigate failures timely.
+CCS CONCEPTS                                                                                               Operators continuously collect three types of monitoring data,
+                                                                                                       including metrics, logs, and traces for proactively detecting instance
+• Software and its engineering → Maintaining software; •
+                                                                                                       failures [30]. The metrics include system-level metrics (e.g., CPU
+Computing methodologies → Failure Detection; Graph Neu-
+                                                                                                       utilization, memory utilization, and network throughput) and user-
+ral Networks.
+                                                                                                       perceived metrics (e.g., average response time, error rate, and page
+                                                                                                       view count). A log records the hardware or software runtime in-
+KEYWORDS                                                                                               formation, including state changes, debugging output, and system
+Microservice System, Multimodal, Failure Detection                                                     alerts. For an API request, a trace records its invocation chain
+ACM Reference Format:                                                                                  through instances, where each service invocation is called a span.
+Chenyu Zhao, Minghua Ma, Zhenyu Zhong, Shenglin Zhang, Zhiyuan Tan,                                        We adopt failure and anomaly to characterize the faulty behav-
+Xiao Xiong, LuLu Yu, Jiayi Feng, Yongqian Sun, Yuzhi Zhang, Dan Pei,                                   iors of instances and monitoring data: 1) an anomaly is a deviation
+Qingwei Lin, Dongmei Zhang. 2023. Robust Multimodal Failure Detection                                  from the normal system state (often reflected in monitoring data),
+for Microservice Systems. In Proceedings of the 29th ACM SIGKDD Conference                             and 2) a failure is an event where the service delivered by an in-
+on Knowledge Discovery and Data Mining (KDD ’23), August 6–10, 2023, Long                              stance goes wrong, and user experience is degraded [23]. Table 1
+∗ Equal Contribution                                                                                   lists some types of anomalies and failures. For example, when a
+† Corresponding Author                                                                                 “login failure” occurs, users cannot log into the system successfully.
+                                                                                                       Anomalies in logs and traces can be detected when this failure hap-
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed                  pens: many “ERROR”s will be printed in logs, and some trace data
+for profit or commercial advantage and that copies bear this notice and the full citation              will have significantly larger Response Time (RT). It is common
+on the first page. Copyrights for components of this work owned by others than the                     to observe many anomalies during a service failure. However, an
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission          (intermittent) anomaly does not necessarily lead to a failure.
+and/or a fee. Request permissions from permissions@acm.org.                                                Over the years, a significant number of methods have been pro-
+KDD ’23, August 6–10, 2023, Long Beach, CA, USA                                                        posed for automatic metric/log/trace (from now on, we call them
+© 2023 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 979-8-4007-0103-0/23/08. . . $15.00                                                           single-modal) anomaly detection. They try to proactively detect the
+https://doi.org/10.1145/3580305.3599902                                                                single-modal data’s anomalous behaviors and determine that the
+
+
+
+
+                                                                                                5639
+KDD ’23, August 6–10, 2023, Long Beach, CA, USA                                                                                                     Chenyu Zhao et al.
+
+
+Table 1: The anomalies of multimodal data during service
+                                                                                                          disk_io_rate
+failures. “Mem” represents the memory utilization metric,                                                                             Anomaly
+“ERR” is an error log, and 𝑅𝑇𝑆𝑥 →𝑆 𝑦 denotes the response time
+
+
+
+
+                                                                                                  Value
+when service instance 𝑆𝑥 calls 𝑆 𝑦 . “–” means no anomaly is
+
+
+
+
+                                                                                                  M
+                                                                                                          disk_io_time
+found or data is lost in that data modality.
+
+   Failure Type          Metric      Log          Trace         # Failures                                               Timestamps
+                                                                                                       ERROR | 0.0.0.4 | Service2 | mob_helper.py ->
+ failed of QR code       Mem ↑        –             –              505                                  mob_info_to_redis -> 88 | ... information has
+
+
+
+
+                                                                                                  L
+   system stuck          Mem ↓        –             –               16                                    expired, mobile phone login is invalid
+    login failure          –         ERR     𝑅𝑇𝑆 1 →𝑆 2 =11s       527                                          S2->S4: Response time = 11s
+
+
+
+
+                                                                                                  T
+   file not found          –          –      𝑅𝑇𝑆 2 →𝑆 3 =1.5s       36
+   access denied           –         ERR     𝑅𝑇𝑆 2 →𝑆 4 =1.1s       15
+                                                                                    Figure 1: The multimodal monitoring data, i.e., Metrics, Logs,
+instance fails when the monitoring data becomes anomalous. How-                     and Trace, during an instance failure
+ever, after investigating hundreds of instance failures (see § 5.1.1),
+we conclude that previous methods do not work well for instance
+failure detection in microservice systems. Correlating metrics, logs,               the modality’s characteristics and construct the nodes and edges of
+and traces (from now on, we call them multimodal) is crucial for                    heterogeneous graphs. After that, we adopt Graph Attention Net-
+instance failure detection. On the one hand, the single-modal data                  work (GAT) [36], which assigns different weights to neighbor nodes
+cannot reveal all types of failures, let alone itself can be missing or             and learns the dynamic patterns of multimodal data, to optimize the
+collected too slowly [23]. For example, in Table 1, when the failure                graphs and filter significant node information. We then use a Gated
+“failed to generate QR code” happens, only the instance’s metrics,                  Recurrent Unit (GRU) [19] to capture the temporal information
+i.e., memory utilization, increase dramatically and exhibit anoma-                  and predict the multimodal data of the next moment. Finally, the
+lous behaviors. If only conducting log or trace anomaly detection,                  similarity between the observation and prediction values is used to
+this type of failure will be falsely ignored. On the other hand, sim-               determine whether an instance fails.
+ply combining the anomaly detection results of the single-modal                        The contributions of this paper are summarized as follows:
+anomaly detection methods may generate false alarms, which have
+                                                                                    • To the best of our knowledge, we are among the first to iden-
+been confirmed in our experiments (see Table 3). For instance, the
+                                                                                      tify the importance of exploring the correlation of multimodal
+(transient) anomalies detected by single-modal anomaly detection
+                                                                                      monitoring data (i.e., metrics, logs, and traces), and correlate the
+methods may not represent any instance failure. Suppose an in-
+                                                                                      multimodal data using GTN for instance failure detection.
+stance’s network throughput metric experiences an anomaly and an
+                                                                                    • Our approach, AnoFusion, serializes the data of the three modali-
+alarm is reported because the metric increases suddenly and returns
+                                                                                      ties according to each modality’s trait. It combines GTN and GAT
+to the normal level after a short period. However, the system still
+                                                                                      to detect anomalies in the dynamic multimodal data robustly. In
+delivers normal service, because no trace data becomes anomalous,
+                                                                                      addition, a GRU layer is used to capture the temporal information
+and user experience is not impacted. Hence, no instance failure
+                                                                                      of the multimodal data.
+should be reported.
+                                                                                    • We adopt two microservice systems, consisting of 10 and 28 in-
+    To this end, we aim to correlate the multimodal data to detect
+                                                                                      stances, respectively, to evaluate the performance of AnoFusion.
+instance failures for microservice systems, which face the following
+                                                                                      The evaluation results show that AnoFusion detects instance fail-
+two challenges. (1) Modeling the complex correlations among multi-
+                                                                                      ures with average 𝐹 1 -score of 0.857 and 0.922, outperforming
+modal data. When a failure occurs, one, two, or three modalities
+                                                                                      baseline methods by 0.278 and 0.480 on average, respectively.
+of data can become anomalous, and they are correlated with each
+other. Neglecting the correlations can degrade the failure detection                   Our source code and experimental data are available at https:
+accuracy. (2) Dealing with the heterogeneous and dynamically chang-                 //github.com/zcyyc/AnoFusion.
+ing multimodal data. Specifically, metrics are usually in the form of
+multivariate time series, and logs are typically semi-structured text.              2 BACKGROUND AND RELATED WORK
+Moreover, a trace consists of spans in a tree structure. Integrating
+                                                                                    2.1 Single-modal Anomaly Detection
+such heterogeneous multimodal data is quite challenging. Addition-
+ally, an instance’s multimodal data usually changes dynamically                     Generally, operators continuously collect three types of observ-
+over time.                                                                          able monitoring data: metrics, logs, and traces [30] to ensure the
+    In this work, we propose AnoFusion, an unsupervised instance                    reliability of microservice systems. Figure 1 shows an example of
+failure detection approach for microservice systems. To address the                 anomalous multimodal data in a failure case.
+first challenge, we apply Graph Transformer Network (GTN) [16,                      Metric. A metric is defined as x = {𝑥 1, 𝑥 2, . . . , 𝑥𝑇 }, where 𝑇 is the
+45] since it can embed multimodal data into a graph and learn the                   length of the metric, 𝑥𝑡 ∈ R denotes the observation at time 𝑡. A
+correlation of heterogeneous data through the effective represen-                   microservice instance typically has a set of metrics that can be rep-
+tations of graph nodes and edges [40, 43]. To address the second                    resented as a multivariate time series, monitoring various service
+challenge, we first serialize the data of each modality according to                metrics (e.g., page view) and system/hardware metrics (e.g., CPU
+
+
+
+
+                                                                             5640
+Robust Multimodal Failure Detection for Microservice Systems                                                KDD ’23, August 6–10, 2023, Long Beach, CA, USA
+
+
+usage). Figure 1 (M part) shows an example of metric data. Tradi-               2.2    Multimodal Anomaly Detection
+tional statistic metric anomaly detection methods [24] do not need              Deep learning-based multimodal data fusion has witnessed great
+training data but can be less effective when facing intricate data.             success in several research fields. For example, video subtitle gener-
+Supervised learning methods [17, 20] need operators to manually                 ation [12], conversation behavior classification [32], and emotion
+label anomalies, which is impractical in many real-world scenarios.             recognition [14]. Recent studies have started to tackle the anomaly
+Thus, unsupervised methods [1, 25, 25, 35, 44] that do not require              detection problem based on multimodal data. Vijayanand et al. [37]
+anomaly labels have become a hot research topic in recent years.                propose an anomaly detection framework for cloud servers using
+For example, JumpStarter [25] applies a compressed sensing tech-                multidimensional data, including different features such as net-
+nique for anomaly detection. USAD [1] detects anomalies through                 work traffic sequence features, CPU usage, and memory usage from
+adversarial training with high efficiency. A metric anomaly de-                 host logs. These extracted multidimensional features are fed to the
+tection method can easily detect an instance failure if multiple                detection model that identifies the anomalies and maximizes the
+metrics become anomalous soon after the failure. However, since                 detection accuracy. [6] performs correlation analysis on metrics and
+metric anomaly detection methods only utilize metric data to detect             logs to discover the anomaly patterns in cloud operations. Addition-
+anomalies and possible failures in a system, they will fail to alert            ally, SCWarn [46] combines metrics and logs for anomaly detection
+operators when a failure does not manifest itself on metrics. AnoFu-            by serializing the metrics and logs separately and adopting LSTM
+sion analyzes metric data in an unsupervised way and reduces false              to detect failures. However, traces, which are vital to instances,
+alarms by using metric data together with other data modalities.                are missing in these works, and thus, they cannot achieve optimal
+Log. Log data is semi-structured text output by instances at the                performance when detecting anomalies in our scenario. To the best
+application or system level. It is typically used to record the opera-          of our knowledge, we are among the first to focus on detecting
+tional status of hardware or software. Generally, logs are generated            instance failures using multimodal data.
+with a predefined structure. As a result, extracting log templates
+and their parameters is a standard step in analyzing log data [7]. For          2.3    Graph Neural Networks
+example, Figure 1 (L part) lists a log. Traditional log anomaly detec-
+tion methods are usually designed to identify keywords in logs like             GTN. GTN takes a heterogeneous graph as input and turns it into
+“ERROR” or “fail”. However, negative keywords such as “fail” may                a new graph structure specified by meta-paths. Meta-paths are re-
+appear in logs due to network jitters or operator login failure, and            lational sequences that connect pairs of objects in heterogeneous
+they do not imply an instance failure. Advanced approaches follow               graphs, which are commonly employed to extract structural infor-
+a similar workflow: log parsing, feature extraction, and anomaly                mation. By combining multiple GT layers with GCN, GTN learns
+detection [11]. Deep learning-based methods learn the log patterns              node representations on the graph efficiently in an end-to-end
+(e.g., sequential feature, quantitative relationship) of normal execu-          way [43]. We apply GTN to learn the correlations among multi-
+tions and determine an anomaly when the pattern of a log sequence               modal data in our scenario.
+deviates from the learned normal patterns [5, 22, 41]. For example,             GAT. GCN is not good at analyzing dynamic graphs, and when
+LogAnomaly [27] applies template vectors to extract the hidden                  the graph structure of training and test sets changes, GCN will
+semantic information in the log templates and detects continuous                no longer be suitable. In addition, GCN assigns the same weight
+and quantitative log anomalies at the same time. Deeplog [5] pre-               to each neighbor node, which falls short of our expectations for
+dicts the logs that may appear after a sliding window utilizing the             future graph structure optimization. GAT solves the problems of
+LSTM model. AnoFusion requires neither labeling work nor domain                 GCN by allocating various weights to different nodes. It enables
+knowledge when analyzing log data.                                              various nodes to be distinguished in terms of importance, so that
+Trace. A trace is made up of spans, each of which corresponds to a              AnoFusion can focus on more significant information in the graph
+service invocation [29]. Figure 1 (T part) shows an example of trace            structure [36]. Therefore, GAT is expected to achieve better perfor-
+data. When the service processes a user’s request, several instances            mance in processing dynamically changing time series data, and
+will be invoked. The monitoring system records when a specific                  thus we utilize GAT instead of GCN.
+service is called and when it responds, and the difference between              GRU. As we know, RNN [15] can represent time dependency by
+them is the Response Time (RT). Most trace anomaly detection                    adopting deterministic hidden variables. However, RNN may be
+methods detect anomalies according to whether the response time                 incapable of dealing with the long-term dependency problem in the
+of each invocation increases dramatically and/or whether the in-                time series, and LSTM [13] and GRU [19] are proposed as solutions.
+vocation path behaves abnormally [9, 18, 21, 28, 29]. For instance,             Generally, GRU is often comparable to LSTM, and the fewer param-
+TraceAnomaly [21] learns the normal patterns of traces, and anom-               eters and more straightforward structure make it ideal for model
+alies are detected when their patterns deviate from those of normal             training [35]. We thus apply GRU to capture the time dependency
+traces. However, on the one hand, a trace anomaly alone does not                of the multimodal data.
+necessarily denotes an instance fails. On the other hand, an instance
+failure may not manifest itself in the trace data. Therefore, using             3     MOTIVATION
+trace anomaly detection methods alone can also lead to missed
+                                                                                To prove that single-modal data is insufficient to comprehensively
+alerts or false alarms. AnoFusion can combine trace data with other
+                                                                                capture the failure patterns of instances, we adopt two datasets (see
+modalities to boost anomaly detection performance.
+                                                                                Section 5.1 for more details) for an empirical study. These datasets
+                                                                                contain the multimodal data (i.e., metrics, logs, and traces) collected
+
+
+
+
+                                                                         5641
+KDD ’23, August 6–10, 2023, Long Beach, CA, USA                                                                                       Chenyu Zhao et al.
+
+
+from microservice systems. It also includes the records of all failure              In summary, single-modal anomaly detection approaches fail
+injections for a fair evaluation.                                                to detect failures robustly since they lack insights from other data
+   We perform a thorough internal data analysis to investigate the               modalities. Additionally, simply combining the anomaly detection
+correlation of different modalities. Table 1 lists some monitoring               results of the single-modal anomaly detection methods, instead of
+data collected from a microservice system. Many instance failures                mining the correlations of the multimodal data, cannot guarantee
+cannot be successfully captured using single-modal data. It also                 high accuracy. Therefore, we attempt to design a robust instance
+shows that when a failure occurs, data of different modalities may               failure detection approach by correlating the multimodal data.
+display anomalous patterns at the same time. Mining the correlation
+between multimodal data can provide more comprehensive and                       4 ANOFUSION
+accurate information for failure detection tasks.
+   Moreover, we experiment to evaluate the failure detection per-
+                                                                                 4.1 Overview
+formance of single-modal data-based anomaly detection meth-                      As shown in Figure 2, the workflow of AnoFusion is divided into the
+ods. We apply five popular single-modal anomaly detection meth-                  offline training stage and the online detection stage. To capture the
+ods (Section 5.1), JumpStarter [25], USAD [1], LogAnomaly [27],                  heterogeneity and correlation among multimodal data, we employ
+Deeplog [5], TraceAnomaly [21], and the combination of Jump-                     GTN to update the heterogeneous graphs. Moreover, to improve
+Starter, LogAnomaly, and TraceAnomaly, to conduct metric/log/trace               the robustness of AnoFusion, we apply GAT after GTN, making
+anomaly detection, respectively. Table 3 lists the precision, recall,            it perform stably when the data patterns of the training set and
+and 𝐹 1 -score of these methods.                                                 test set are different. In addition, to achieve unsupervised failure
+                                                                                 detection and make AnoFusion more suitable for time series data,
+Metric anomaly detection. JumpStarter and USAD achieve low
+                                                                                 we use GRU to predict the multimodal data of the next moment. In
+performance on the two datasets. JumpStarter extracts real-time
+                                                                                 the offline training stage, AnoFusion consists of four main steps:
+normal patterns from metric data, but it does not consider the
+patterns of historical data. USAD is not very noise-resilient, which             • Multimodal Data Serialization. To prepare for the future graph
+results in a significant number of false positives and false negatives.            structure’s construction, AnoFusion converts multimodal data
+Furthermore, they do not take logs and traces into account, thus                   (i.e., metrics, logs, and traces) into time series using predefined
+they lack essential information from logs and traces for failure                   processes and aligns their time. After serialization, AnoFusion
+detection tasks.                                                                   treats each time series as a “data channel”.
+Log anomaly detection. LogAnomaly and Deeplog achieve rela-                      • Graph Stream Construction. To build the raw inputs for GTN,
+tively high 𝐹 1 -score on D1. It is because the anomaly patterns of                AnoFusion constructs a heterogeneous graph containing all the
+the log data in D1 are more obvious and straightforward to identify                data channels based on their connections for each moment 𝑡.
+than those in D2. When a keyword like “ERROR” appears in logs,                     Then, all heterogeneous graphs form a graph stream, which will
+there is a high probability that it is an instance failure. However,               be input into GTN.
+only relying on log data results in a large number of false positives            • Feature Filtering. GTN updates the graph stream by learning
+and false negatives in D2, for some failures do not manifest them-                 the representations of nodes in the heterogeneous graph and
+selves obviously in logs, and some anomalous logs do not indicate                  capturing the correlation among different data modalities. The
+an instance failure.                                                               updated graph stream is regarded as the features of the original
+                                                                                   data channels. Then, AnoFusion utilizes GAT to give attention
+Trace anomaly detection. TraceAnomaly gets unsatisfactory 𝐹 1 -
+                                                                                   scores to the nodes in the graph stream, identifying different
+score on both datasets. The precision of TraceAnomaly is low, in-
+                                                                                   patterns and achieving feature filtering.
+dicating that there are a huge number of false positives. Because
+                                                                                 • Failure Detection. GRU is applied to temporal sequences to
+TraceAnomaly determines anomalies based on only response time.
+                                                                                   predict the values at the next moment based on the previous
+However, a larger response time quickly returning to normal status
+                                                                                   inputs. We train the GRU network to predict the next graph
+does not indicate an instance failure.
+                                                                                   based on the given graph stream as accurately as possible.
+JLT. JLT aggregates the results of JumpStarter, LogAnomaly, and
+                                                                                     In the online detecting stage, for a given time 𝑡, multimodal data
+TraceAnomaly directly, to form a multimodal baseline. The aggre-
+                                                                                 will be serialized according to the observations in [𝑡 −𝜃, 𝑡], where 𝜃
+gation method is majority voting, which determines a failure if
+                                                                                 is the input window size. Then, we use the serialized data channels
+two or more modalities have anomalies at a certain moment. JLT
+                                                                                 to construct a heterogeneous graph stream. The graph stream of this
+suffers from low precision (recall) on D1 (D2), indicating a high
+                                                                                 window will be fed into the trained model to obtain the prediction
+false positive (negative) rate, because it ignores the correlation of
+                                                                                 of the next graph. AnoFusion calculates the similarity between the
+the multimodal data. On the one hand, some failures only manifest
+                                                                                 predicted graph and the observed graph as the failure score and
+themselves in a specific modality of data, making the majority vot-
+                                                                                 then determines whether it is a failure. Note that AnoFusion does
+ing strategy requiring two or more modalities to have anomalies for
+                                                                                 not restrict the dimensions of any modality data.
+failure detection ineffective, which results in many false negatives
+on D2. On the other hand, since JumpStarter, LogAnomaly, and
+TraceAnomaly all suffer from low precision on D1, their combina-                 4.2    Multimodal Data Serialization
+tion, i.e., JLT, still experiences a high false positive rate.                   Serialization of metric data. Metrics collected from instances
+                                                                                 are in the form of time series, which have a serialized structure.
+                                                                                 Therefore, it only requires regular preprocessing steps such as
+
+
+
+
+                                                                          5642
+Robust Multimodal Failure Detection for Microservice Systems                                                                  KDD ’23, August 6–10, 2023, Long Beach, CA, USA
+
+
+
+                           ① Multimodal Data Serialization                                     ② Graph Stream Construction
+                                                               Channels               Timestamps                                                Metric
+                   Metric                                                                                         Edge Types
+                                            Metric                                                                                               Log
+                                                                                                                    10 10 5  0
+                       Log                                                                                                     
+                                             Log                                                                    10 10 7  0                Trace
+                                                                                                                     5 7 10  0
+                                                                                                                                                        window
+         Service                                                                                                         
+        Instance                            Trace                                                                    0 0 0  0
+                   Trace                                                                                                       
+                                                                Time                                                                                Trained Model
+
+
+                             ④ Failure Detection                                                   ③ Feature Filtering
+                                                                                      Timestamps                                                       Failure Score
+                                                  Calculate                                                                  Graph
+                                                  Similarity      t+1                                                     Transformer
+                                                                            G                                               Network
+           Trained Model                                                    R                                                                            Threshold
+                                                                            U
+                                                  Calculate
+                                                                  T                                                  Graph Attention
+                                                  Similarity                                                            Network                           Failure
+                                    Observation            Prediction
+                                                                          Offline Training                                                       Online Detection
+
+Figure 2: The framework of AnoFusion. It is an unsupervised learning approach without using labels in the offline training.
+
+
+normalization. The normalization process is given by: m̂ ≡ m/|m|                             embedding vector and that of the centroid of each cluster. After
+where m is the raw metric data and m̂ is the normalized data. It                             that, AnoFusion uses a sliding window to split the input log data
+scales individual samples to have a unit norm, which can be useful                           into windows, each of which has the window length 𝜃 and the step
+when using a quadratic form such as the dot-product to quantify                              size 𝛿. We count the number of each category of logs as well as
+the similarity of any pair of samples.                                                       the total number of logs in each window to form 𝑀 + 1 time series,
+Serialization of log data. Parsing logs correctly and extracting                             where 𝑀 is the number of log template clusters. The horizontal axis
+log templates are the two essential steps of log serialization [39].                         𝑇𝑖𝑚𝑒𝑠𝑡𝑎𝑚𝑝 corresponds to the input log’s collection time.
+We adopt the advanced log parsing algorithm, Drain [10], which                               Serialization of tracing data. AnoFusion uses the sliding window
+has shown its superiority and efficiency, to extract log templates in                        with length 𝜃 and step size 𝛿 to split tracing data. Each window
+AnoFusion. The log serialization process is the following two steps:                         contains tracing data (in the form of RT) of the invocations related
+(1) Clustering. To deal with log changes caused by constantly                                to the instance. Then, for each window, AnoFusion computes the
+updating code, adding new logs, and altering new logs in actual                              mean, median, range, and standard deviation of the invocations RT,
+microservice systems, we first use a clustering algorithm for the log                        producing four time series, respectively. If status code is available,
+templates. By grouping similar log templates into clusters, on the                           AnoFusion may take them as the fifth time series. We treat each
+one hand, the redundant information can be removed, and on the                               time series as a data channel, similar to the serialization of log data.
+other hand, the types of log templates can be used to characterize                           Clock synchronization. To build the graph structure more con-
+log data. Once a new log template emerges due to a software up-                              veniently, AnoFusion synchronizes the clocks of the three modal
+date, the similarity between the new log template and the previous                           data after serialization. The goal of AnoFusion is failure detection
+cluster centroids can be calculated, and it can be decided whether                           for a single instance and all the monitoring data acquired is within
+the new log template belongs in an existing cluster or should be                             that instance. Therefore, the monitoring data clocks of the three
+regarded as a new cluster. Furthermore, through the empirical study                          modalities are relatively synchronized. The metric data is collected
+of a large number of online service systems, we conclude that fail-                          every minute. A log entry is generated when an event occurs in the
+ures rarely occur in real-world scenarios [25]. Since AnoFusion is                           instance. Moreover, a trace is recorded when a request is processed.
+an unsupervised learning method based on the assumption that                                 Therefore, we obtained the features (e.g. the number of occurrences)
+all training samples have normal patterns, removing anomalous                                of metrics, logs, and traces every minute in our scenario.
+log templates will improve the model’s performance. Based on the
+analysis mentioned above, we finally utilize the “bert-base-uncased”
+model [4] to obtain sentence embedding vectors, and apply the DB-                            4.3     Graph Stream Construction
+SCAN [33] algorithm to cluster these vectors. AnoFusion computes                             The data
+the centroid c of each cluster C by:                                                                n channels we get
+                                                                                                                  o from the previous step can be described
+                                    ∑︁                                                       as 𝑋 = x (1) , . . . , x (𝑁 ) , where 𝑁 is the number of data channels.
+                        c = arg min     |a − b|                    (1)                       AnoFusion constructs a heterogeneous graph 𝐺𝑡 for each timestamp
+                                    a∈ C
+                                           b∈ C                                              𝑡 using the extracted data channels. The node set of graph 𝐺𝑡 ,
+(2) Serialization. The category of each log entry in the input can                           denoted by
+                                                                                                      n 𝑋𝑡 , consists ofo the value of each data channel at time 𝑡,
+                                                                                                           (1)        (𝑁 )
+be determined by calculating the distance between its sentence                               i.e., 𝑋𝑡 = 𝑥𝑡 , . . . , 𝑥𝑡       . Since there are three modalities, there
+
+
+
+
+                                                                                      5643
+KDD ’23, August 6–10, 2023, Long Beach, CA, USA                                                                                                    Chenyu Zhao et al.
+
+                                                                                                                                                        
+are also three types of nodes (i.e., metrics, logs, and traces). Thus,                 this process. Specifically, for each channel pair x (𝑖 ) , x ( 𝑗 ) , we first
+the number of edge types 𝐾 = 6 (i.e., metrics-metrics, metrics-logs,                   compute a raw attention score for each attention head based on 𝐴′ :
+metrics-traces, logs-logs, log-traces, traces-traces). The adjacency                                                                                  
+                                                                                                 (ℎ)
+matrix for each type of edge in graph 𝐺𝑡 can now be expressed as                                𝛽𝑖,𝑗 = 𝐿𝑒𝑎𝑘𝑦𝑅𝑒𝑙𝑢 𝐴𝑖,𝑗   ′
+                                                                                                                           · 𝑐𝑜𝑛𝑐𝑎𝑡 𝑊 x (𝑖 ) ,𝑊 x ( 𝑗 )          (5)
+𝐴 (𝑘 ) ∈ R𝑁 ×𝑁 , where 𝑘 = 1, . . . , 𝐾.
+   AnoFusion utilizes the mutual information (MI) [8] to calculate                    where 𝛽 (ℎ) is the attention score for the ℎ-th attention head, 𝑊
+                                                                                       denotes the learnable parameter of a linear transformation. Then,
+                                                                     
+the adjacency matrix. For each data channel pair x (𝑖 ) , x ( 𝑗 ) with
+                                                                                       AnoFusion normalizes the raw attention score with softmax and
+an edge type of 𝑘, the corresponding adjacency matrix value can
+                                                                                       performs node feature aggregation for the 𝑖-th node 𝑥 (𝑖 ) by:
+be calculated as follows:                                                                                                                       
+                                                    
+                                                        (𝑖 ) ( 𝑗 )
+                                                                                                                                           (ℎ)
+                      𝜏 ∑︁𝜏                       𝑝 𝑥 𝑎 , 𝑥𝑏                                                                     exp 𝛽𝑖,𝑗
+        (𝑘 )   (𝑘 )
+                     ∑︁         
+                                    (𝑖 ) ( 𝑗 )
+                                                                                                   (ℎ)′                (ℎ)′
+      𝐴𝑖,𝑗 = 𝐴 𝑗,𝑖 =         𝑝 𝑥𝑎 , 𝑥𝑏 𝑙𝑜𝑔                           (2)                        𝛽e𝑖,𝑗 = 𝑠𝑜 𝑓 𝑡𝑚𝑎𝑥 𝛽𝑖,𝑗       = Í                 
+                                                     (𝑖 )
+                                                           
+                                                                 (𝑗)                                                               𝑁 exp 𝛽 (ℎ)
+                     𝑎=1 𝑏=1                     𝑝 𝑥 𝑎 𝑝 𝑥𝑏                                                                       𝑙=1           𝑖,𝑙
+                                                                                                                                                       (6)
+                                                                                                                           𝑁
+where 𝜏 is the
+             number of timestamps (i.e., the length of each data                                                  𝐻     ∑︁
+                                                                                                                                           (ℎ)′ ª
+                                                                                                  x (𝑖 )′ = 𝑊𝐻 · 𝑐𝑜𝑛𝑐𝑎𝑡 ­ 𝑊 (ℎ) x ( 𝑗 ) 𝛽e𝑖,𝑗 ®
+                                                                                                                        ©
+channel), 𝑝 x (𝑖 ) , x ( 𝑗 ) is the joint probability mass function of x (𝑖 )                                      ℎ=1
+                                                                                                                    « 𝑗=1                   ¬
+and x ( 𝑗 ) , and 𝑝 x (𝑖 ) and 𝑝 x ( 𝑗 ) are the marginal probability                                                                        (ℎ)
+                                                                                       where 𝐻 is the number of attention heads, 𝛽𝑖,𝑙 denote the ℎ-th
+mass functions of x (𝑖 ) and x ( 𝑗 ) , respectively. After calculating
+                                                                                       head attention score between channel 𝑖 and channel 𝑙, 𝑊 (ℎ) and
+MI for all channel pairs, we now have the final adjacency matrix
+                                                                                       𝑊𝐻 denote the linear transformation for each head and final output,
+𝐴 ∈ R𝑁 ×𝑁 ×𝐾 . 𝐺𝑡 = (𝑋𝑡 , 𝐴) is defined to be the heterogeneous
+                                                                                       respectively. The data channels are successively updated across the
+graph generated at time 𝑡. AnoFusion stacks the graphs of each
+                                                                                       multi-layer Graph Attention Network.
+moment together to form a graph stream 𝐺 = {𝐺 1, . . . , 𝐺𝜏 }.
+                                                                                       4.5    Failure Detection
+4.4     Feature Filtering
+                                                                                       After feature filtering, we use the updated graph stream to train a
+AnoFusion performs feature filtering by updating the heterogeneous
+                                                                                       failure detection model based on a recurrent neural network. Let
+graph stream 𝐺 with GTN and learning failure patterns by GAT.
+                                                                                       𝑋 ′ ∈ R𝑁 ×𝜏 denote the updated data channels, we can use GRU to
+Graph Transformer Network. GTN models the heterogeneity                                capture its complex temporal dependence and predict the value of
+and correlation of multimodal channels using the adjacency matrix                      data channels at time 𝜏. The GRU network can be formulated as:
+𝐴. Graph Transformer layers (GT layers) are the main component
+                                                                                                     𝑧𝑡 = 𝜎 𝑊𝑧 𝑋𝑡′ + 𝑈𝑧 ℎ𝑡 −1 + 𝑏𝑧
+                                                                                                                                    
+of GTN. They learn the soft selection and composite relationship of
+                                                                                                      𝑟𝑡 = 𝜎 𝑊𝑟 𝑋𝑡′ + 𝑈𝑟 ℎ𝑡 −1 + 𝑏𝑟
+                                                                                                                                    
+edge types to produce useful multi-hop connections, also known as
+meta-path [43]. Specifically, considering the adjacency matrix 𝐴 as                                                                                    (7)
+                                                                                                     ℎˆ𝑡 = tanh 𝑊ℎ 𝑋𝑡′ + 𝑈ℎ (ℎ𝑡 −1 ⊙ 𝑟𝑡 ) + 𝑏ℎ
+                                                                                                                                               
+the input, a GT layer has two steps: First, it softly constructs several
+graph structures from 𝐴 by a 1 × 1 convolutional layer, which can                                     ℎ𝑡 = (1 − 𝑧𝑡 ) ⊙ ℎ𝑡 −1 + 𝑧𝑡 ⊙ ℎˆ𝑡 ,
+be formulated as:                                                                      where 𝜎 denotes the sigmoid function, ⊙ denotes the Hadamard
+                                   ∑︁  𝐾
+                                                (𝑘 )                                   product (i.e., element-wise product), 𝑋𝑡′ is the input vector, ℎ𝑡 −1
+                𝑄 (𝑘 ) = 𝜙 𝐴,𝑊 (𝑘 ) =        𝑤𝑖 𝐴 (𝑖 )               (3)
+                                                                                       is the previous hidden state, ℎˆ𝑡 is the candidate activation vector,
+                                             𝑖=1
+                                                                                       ℎ𝑡 is the hidden state and output vector of time 𝑡. 𝑧𝑡 denotes the
+where 𝑄 (𝑘 ) is the generated graph for edge type 𝑘, 𝜙 denotes the 1×                  update gate, controlling how much information ℎ𝑡 needs to keep
+1 convolution, 𝑊 (𝑘 ) ∈ R1×1×𝐾 is the parameter of 𝜙 (for edge type                    from ℎ𝑡 −1 , and how much information needs to be received from
+𝑘), 𝐾 is the number of edge types. Second, it combines each 𝑄 (𝑘 )                     ℎˆ𝑡 . 𝑟𝑡 denotes the reset gate, controlling whether the calculation
+through matrix multiplication to generate a new graph structure                        of the candidate activation vector depends on the previous hidden
+𝐴′ , a.k.a, meta-path:                                                                 state. 𝑊 and 𝑈 are trainable parameter matrices, and 𝑏 is a trainable
+                                       𝐾
+                                       Ö                                               parameter vector. AnoFusion uses the final hidden state of GRU, ℎ𝑡 ,
+                           𝐴′ = 𝐷 −1         𝑄 (𝑘 )                       (4)          to predict the value of data channels at time 𝜏 (i.e., the last moment
+                                       𝑘=1                                             in the graph stream):
+Note that we also normalize 𝐴′ by 𝐷, which denotes the degree                                                 𝑋ˆ𝜏′ = tanh (𝑊𝑜 ℎ𝜏 −1 + 𝑏𝑜 )                        (8)
+matrix of 𝐴, to ensure numerical stability. Stacking several GT
+layers in GTN aims to learn a high-level meta-path that is a useful                    where 𝑊𝑜 and 𝑏𝑜 are the learnable parameters. AnoFusion adopts
+relationship of multimodal data.                                                       mean squared error (MSE) between the predicted value 𝑋ˆ𝜏′ and the
+                                                                                       observation 𝑋𝜏′ as the loss function:
+Graph Attention Network. With the meta-path matrix 𝐴′ gen-
+erated by stacking multiple GT layers, AnoFusion employs GAT                                                        1 ˆ′
+                                                                                                                  L=  ∥𝑋 − 𝑋𝜏′ ∥ 22           (9)
+on the heterogeneous graph stream to distinguish the significance                                                   𝑁 𝜏
+of multimodal data channels and completes the feature filtering.                       where 𝑁 is the number of data channels. The GRU network is
+The multi-head attention mechanism is utilized as well to stabilize                    updated using this loss function iteratively.
+
+
+
+
+                                                                                5644
+Robust Multimodal Failure Detection for Microservice Systems                                                    KDD ’23, August 6–10, 2023, Long Beach, CA, USA
+
+
+4.6     Online Detection                                                           Table 2: The detailed information of the two datasets. #Micro
+                                                                                   and #Ins denote the number of microservices and instances,
+In the online detection stage, for a new-coming multimodal mon-
+                                                                                   respectively.
+itoring data 𝑋𝑡 , AnoFusion will first serialize the data using its
+previous historical observations, i.e., 𝑋𝑡 −𝜃 +1:𝑡 −1 , and construct the
+graph stream 𝐺 = {𝐺𝑡 −𝜃 +1, . . . , 𝐺𝑡 }, where 𝜃 is the length of the                        #Micro     #Ins    %Failures     Modality          #
+window. Then, the graph stream is fed into the trained model to                                                                  Metric       734,165
+get a prediction 𝑋ˆ𝑡 for 𝑋𝑡 . We calculate the difference between the                    D1       5       10        4.908         Log        87,974,577
+observed and predicted values for each data channel 𝑛 [3]:                                                                       Trace       28,681,438
+                                     (𝑛)  (𝑛)                                                                                    Metric      3,122,168
+                          𝐸𝑅𝑅𝑛 = |𝑋ˆ𝑡 − 𝑋𝑡 |                        (10)
+                                                                                         D2      14       28        1.243         Log        14,894,069
+Failures may only happen in part of the multimodal data, so we                                                                   Trace       9,473,763
+focus on the biggest error. AnoFusion utilizes the max function to
+aggregate 𝐸𝑅𝑅𝑛 (𝑡) , 𝑛 ∈ [1, 𝑁 ]:                                                    typical symptoms of failure types, such as QR code generation
+                                                                                     failure, system stuck, file not found, and access denied, etc.
+                                    𝑁    𝐸𝑅𝑅𝑛 − e
+                                                𝜇                                  • Dataset 2 (D2) is collected from a large-scale microservice system
+                          𝐸𝑅𝑅 = max                                 (11)
+                                   𝑛=1      𝜎
+                                            e                                        operated by a commercial bank. The system has 28 instances such
+where 𝐸𝑅𝑅 is the failure score at time 𝑡, e
+                                          𝜇 and e𝜎 are the median and                as Web servers, application servers, databases, etc., and provides
+inter-quartile range (IQR) of the set composed by 𝐸𝑅𝑅𝑛 , respectively.               services for millions of users daily. Failures are injected into the
+We use median and IQR instead of mean and standard deviation as                      system manually by professional operators and the multimodal
+they are more robust.                                                                monitoring data (i.e. metrics, logs, and traces) is collected. In
+   AnoFusion uses a threshold to determine if a failure has occurred                 general, these failures can be resource (CPU, memory, disk) fail-
+at a specific time 𝑡. However, using a static threshold is not effective             ures, network failures (network packet loss and network latency),
+since data distribution changes over time. To solve this problem,                    and application failures (VM failures). Due to the non-disclosure
+we employ the Extreme Value Theory (EVT) [34] to automatically                       agreement, we cannot make this dataset publicly available.
+and accurately determine the threshold. EVT is a statistical theory                5.1.2 Implementation. AnoFusion is implemented in PyTorch and
+that identifies the occurrences of extreme values and doesn’t make                 all of the experiments are conducted on a Linux Server with two
+any assumptions about data distribution. EVT can be applied to                     16C32T Intel(R) Xeon(R) Gold 5218 CPU @ 2.30 GHz, two NVIDIA(R)
+estimate the likelihood of observing the extreme value for anomaly                 Tesla(R) V100S, and 192 GB RAM. In the multimodal data serial-
+detection. EVT has been shown to accurately choose thresholds in                   ization stage, we set the sliding window length 𝜃 = 60 and step
+previous failure detection methods [25, 26].                                       size 𝛿 = 1 (more discussions can be found in Section 5.4). In the
+                                                                                   graph stream construction stage, we set the number of GT layers
+5     EVALUATION                                                                   in GTN to 5, as suggested by [14]. For GAT, the total number of
+In this section, we address the following research questions:                      attention heads 𝐻 is 6 (see Section 5.4 for more details). We split the
+• RQ1: How well does AnoFusion perform in failure detection?                       multimodal monitoring datasets into a training set and a testing set,
+• RQ2: Does each component contribute to AnoFusion?                                where the training set contains the front 60% data of each instance
+• RQ3: How do the major hyperparameters of AnoFusion influence                     and the testing set contains the rest 40%.
+  its performance?                                                                 5.1.3 Baseline Approaches. We utilize JumpStarter [25], USAD [1],
+                                                                                   LogAnomaly [27], Deeplog [5], TraceAnomaly [21], SCWarn [46],
+5.1     Experimental Design                                                        and JLT (see Section 3), which use single modality, two modalities,
+5.1.1 Datasets. To evaluate the performance of AnoFusion, we                       or three modalities of data for instance failure detection, as baselines.
+conduct extensive experiments using two microservice systems                       For all approaches, we use grid-search to set their parameters best
+(forming dataset 1 and 2, respectively). Table 2 lists the detailed in-            for accuracy.
+formation of the datasets. The second column indicates the number
+                                                                                   5.1.4 Evaluation Metrics. We adopt the widely-used True Positive
+of microservices of each dataset. The third column indicates the
+                                                                                   (TP), False Positive (FP), and False Negative (FN), to label the failure
+number of instances of each dataset. The fourth column displays
+                           𝑇 ℎ𝑒 𝑛𝑢𝑚𝑏𝑒𝑟 𝑜 𝑓 𝑓 𝑎𝑖𝑙𝑢𝑟𝑒 𝑤𝑖𝑛𝑑𝑜𝑤𝑠                        detection results according to the ground truth [25, 26, 31]. A TP is
+the average failure ratio ( 𝑇 ℎ𝑒 𝑡𝑜𝑡𝑎𝑙 𝑛𝑢𝑚𝑏𝑒𝑟 𝑜 𝑓 𝑤𝑖𝑛𝑑𝑜𝑤𝑠 ) of all in-             a failure both confirmed by operators and detected by an approach.
+stances. The fifth column lists every modality, and the last column                An FP is a normal window that is falsely identified as a failure by an
+shows the number of metrics, logs, or traces.                                      approach. An FN is a missed failure that should have been detected.
+• Dataset 1 (D1) is Generic AIOps Atlas (GAIA) dataset from                        We calculate 𝑝𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛 = 𝑇 𝑃/(𝑇 𝑃 + 𝐹 𝑃), 𝑟𝑒𝑐𝑎𝑙𝑙 = 𝑇 𝑃/(𝑇 𝑃 + 𝐹 𝑁 ),
+  CloudWise1 . It contains the multimodal data collected from a                    and 𝐹 1 -score= 2 · 𝑝𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛 · 𝑟𝑒𝑐𝑎𝑙𝑙/(𝑝𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛 + 𝑟𝑒𝑐𝑎𝑙𝑙) to evaluate
+  system consisting of 10 instances, which is collected more than                  the overall performance of each approach.
+  0.7 million metrics, 87 million logs, and 28 million traces in two
+  weeks. Real-world failures are injected, and Table 1 lists some                  5.2    RQ1: Effectiveness of AnoFusion
+                                                                                   Table 3 lists the average precision, recall, and best 𝐹 1 -score of AnoFu-
+1 https://github.com/CloudWise-OpenSource                                          sion and seven baseline approaches described above on the two
+
+
+
+
+                                                                            5645
+KDD ’23, August 6–10, 2023, Long Beach, CA, USA                                                                                              Chenyu Zhao et al.
+
+
+                    Table 3: The average precision, recall, and 𝐹 1 -score of different approaches on the two datasets
+
+                                                  Modality                          D1                                      D2
+                   Approach
+                                        Metric      Log      Trace   Precision    Recall        𝐹 1 -score   Precision     Recall    𝐹 1 -score
+               JumpStarter [25]            ✓                           0.466       0.785          0.584        0.533       0.413          0.465
+                  USAD [1]                 ✓                           0.459       0.825          0.590        0.837       0.341          0.484
+               LogAnomaly [27]                       ✓                 0.486       0.957          0.644        0.126       0.344          0.184
+                 Deeplog [5]                         ✓                 0.506       0.812          0.623        0.105       0.275          0.151
+              TraceAnomaly [21]                               ✓        0.550       0.548          0.549        0.521       0.699          0.597
+                  SCWarn [46]              ✓         ✓                 0.547       0.425         0.447         0.633       0.891         0.734
+                     JLT                   ✓         ✓        ✓        0.461       0.940         0.618         0.800       0.344         0.481
+                   AnoFusion               ✓         ✓        ✓        0.795       0.945         0.857         0.863       0.991         0.922
+
+
+datasets. AnoFusion outperforms all baseline approaches on both                   Table 4: The average precision, recall, and 𝐹 1 -score of AnoFu-
+datasets, with best 𝐹 1 -score of 0.857 and 0.922, respectively.                  sion and different model variants
+Multimodal failure detection. SCWarn performs better than
+single-modal failure detection methods by simultaneously process-                                 Approach      Precision        Recall     𝐹 1 -score
+ing metrics and logs on D2. However, it ignores tracing data, which                                w/o GTN         0.608         0.891        0.723
+is crucial for detecting instance failures in microservice systems                                 use GCN         0.769         0.847        0.802
+on D1. The correlation among each modality is ignored by JLT,                              D1
+                                                                                                   w/o GAT         0.602         0.643        0.615
+yielding sub-optimal performance on both datasets.                                                 AnoFusion       0.795         0.945        0.857
+AnoFusion. Our approach is effective to detect instance failures,
+                                                                                                   w/o GTN         0.742         0.917        0.859
+with the average best 𝐹 1 -score significantly higher than existing
+                                                                                                   use GCN         0.819         0.863        0.823
+methods. Compared with SCWarn which combines two modalities,                               D2
+                                                                                                   w/o GAT         0.698         0.735        0.700
+the average best 𝐹 1 -score of AnoFusion outperforms it by 41.00% and
+                                                                                                   AnoFusion       0.863         0.991        0.922
+18.80% on both datasets, respectively. Compared with JLT, using a
+heterogeneous graph stream significantly improves the effective-
+ness of instance failure detection. AnoFusion outperforms JLT by                  5.3      RQ2: Contributions of Components
+23.90% and 44.10% on both datasets, respectively.                                 To demonstrate the contribution and importance of each component
+Robustness comparison. Firstly, we use two datasets from differ-                  of AnoFusion, we create three variants of AnoFusion and conduct a
+ent microservice systems, and the experiments show that AnoFusion                 series of experiments to compare their performance. These variants
+achieves superior detection results on both datasets, outperform-                 are: 1) AnoFusion w/o GTN. To study the significance of GTN in
+ing all baselines. Secondly, each dataset contains many kinds of                  modeling the heterogeneity and correlation of multimodal data, we
+instances. We analyze the failure detection results of each instance              remove GTN from AnoFusion. 2) AnoFusion using GCN. To show
+for each dataset. The 𝐹 1 -scores of AnoFusion for all instances on D1            the importance of assigning different weights to neighbor nodes
+range from 0.784 to 0.977, and from 0.805 to 0.986 on D2. We can                  in the graph (attention mechanism), we use GCN instead of GAT
+see that AnoFusion performs well in both D1 and D2. Therefore, we                 in AnoFusion. 3) AnoFusion w/o GAT. To demonstrate how the
+believe these are testaments to the robustness of AnoFusion.                      graph attention mechanism improves AnoFusion’s performance, we
+Efficiency comparison. We simulate the online detection en-                       remove the GAT from AnoFusion.
+vironment and analyze the complexity of AnoFusion and other                           Table 4 lists the average precision, recall, and best 𝐹 1 -score of
+baselines by counting the detection time required for each slid-                  the three variants discussed above on two datasets. When GTN
+ing window. AnoFusion takes a window containing the data points                   is removed, both precision and recall are degraded. The decrease
+as input and then calculates a failure score through the trained                  in precision is especially obvious. It shows that GTN can capture
+model. The average running time of AnoFusion’s online failure de-                 heterogeneity and correlation among multimodal data in heteroge-
+tection is 1.932 × 10 −2 s. The prediction time of other baselines is             neous graphs, thereby reducing false positives by comprehensively
+9.810×10 −3 s for JumpStarter, 8.975×10 −5 s for USAD, 1.707×10 −3 s              synthesizing the information of the three modalities. Both precision
+for LogAnomaly, 1.165 × 10 −4 s for Deeplog, 1.102 × 10 −2 s for                  and recall decrease when GCN is substituted with GAT, demonstrat-
+TraceAnomaly, 3.331 × 10 −3 s for SCWarn, and 9.958 × 10 −3 s for                 ing that GAT is more efficient than GCN for dynamically changing
+JLT. Since operators perform failure detection every minute, ev-                  time series. Each node in the heterogeneous graph stream behaves
+ery approach can satisfy this requirement. Furthermore, AnoFusion                 differently. Treating all nodes equally like GCN introduces noise to
+achieves satisfactory results by leveraging the three modalities,                 the graph stream that can interfere with the model training process.
+which is superior considering both effectiveness and performance.                 Furthermore, when GAT is no longer present in AnoFusion, the
+                                                                                  precision and recall drop dramatically, which indicates that GAT
+                                                                                  can focus on the most relevant information in the graph.
+
+
+
+
+                                                                           5646
+Robust Multimodal Failure Detection for Microservice Systems                                                  KDD ’23, August 6–10, 2023, Long Beach, CA, USA
+
+
+                                                                                  want to detect failures accurately rather than receive a large number
+                                                                                  of false alarms. Therefore, concentrating solely on 𝐹 1 -score is not
+                                                                                  appropriate for all instances. In the future, we plan to provide an
+
+
+
+
+                                             F1-score
+F1-score
+
+
+
+
+                                                                                  interface that allows operators to apply additional weights, valuing
+                                                                                  one of precision or recall more than the other.
+
+                                                                                  6.2    Threat to Validity
+                          w                                    H                  Failure labeling. In our experiments, we use two datasets, one
+                                                                                  is public and another is collected from a real-world commercial
+Figure 3: 𝐹 1 -score of AnoFusion under different parameters                      bank. The ground truth labels are based on failure injection (D1)
+                                                                                  and manually checking failure reports by system operators (D2).
+                                                                                  Manually labeling anomalies may contain few noises. We believe
+5.4        RQ3: Hyperparameters Sensitivity                                       that the labeling noises are minimal due to the extensive experience
+We mainly discuss the effect of two hyperparameters in multimodal                 of operators. Furthermore, to reduce the impact of labeling noises,
+data serialization and graph stream construction on AnoFusion’s per-              we adopt widely used evaluation metric to detect continuous failure
+formance. Figure 3 shows how the average best 𝐹 1 -score of AnoFu-                segments instead of point-wise anomalies [26].
+sion changes with different values of hyperparameters. Specifically,              Granularity effect. The granularity of the monitoring data in our
+we increase the size of the sliding window in data serialization, 𝜃 ,             experiments is one minute, but this has no effect on the algorithm’s
+from 10 to 120. From the experiment results, we can find that if 𝜃                effectiveness. We believe the algorithm can still work with finer or
+is too large, it will contain too many seasonal variations and will               coarser-grained data without additional effort. The datasets in our
+struggle to reconstruct the current state; if 𝜃 is too small, the model           experiments are still limited. We will experiment AnoFusion with a
+will be unable to comprehensively learn the information from his-                 larger scale of system in the future.
+torical data, degrading AnoFusion’s performance. 𝜃 between 40 and
+                                                                                  Data modalities. Our work involves the utilization of three modal-
+90 can lead to relatively good performance. Thus, we set 𝜃 = 60.
+                                                                                  ities of monitoring data. We believe that in a real-world scenario,
+    We change the number of attention heads in GAT, 𝐻 , from 2 to
+                                                                                  as long as the modalities of the monitoring data are no less than
+10. An 𝐻 of 6 yields the best performance. If 𝐻 is too small, the
+                                                                                  two, the algorithm will function normally. Furthermore, if a failure
+performance of AnoFusion will slightly degrade due to the decrease
+                                                                                  manifests itself in only one type of monitoring data, AnoFusion
+in model size; if 𝐻 is too large, more redundant information may
+                                                                                  will consider not only the correlation among historical multimodal
+be generated, interfering with the training of AnoFusion [38].
+                                                                                  data, but also the proportion of anomalous in all monitoring data
+                                                                                  to determine whether the instance fails.
+6 DISCUSSION
+6.1 Lessons Learned                                                               7     CONCLUSION
+Collecting multimodal monitoring data in real-time. We uti-                       Failure detection in the microservice systems is of great importance
+lize multimodal data to detect failures in instances. Ensuring the                for service reliability. In this work, we propose AnoFusion, one of
+real time data quality of different modalities is essential for the deep          the first studies using multimodal data, i.e., metrics, logs, and traces,
+learning models. From our real-world experience in Microsoft, we                  to detect failures of instances in microservice systems robustly.
+suggest leveraging the open-source monitoring systems or Azure                    Specifically, we first serialize the data of the three modalities and
+Monitor2 to build the data pipeline. For example, Prometheus3 can                 construct a heterogeneous graph structure. Then, GTN is utilized to
+be used to collect metrics. ELK (Elasticsearch, Logstash, and Kibana)             update the heterogeneous graph, with GAT being used to capture
+Stack4 are used to collect logs. Skywalking5 can be used to collect               significant features. Finally, we use GRU to predict the data pat-
+traces. Additionally, 16 days of data are utilized for training. When             tern at the next moment. The deviation between the predicted and
+the model training is completed, AnoFusion digests 10 minutes of                  observed values is used as the failure scores. We apply AnoFusion
+data to perform real-time detection in the online detection stage,                on two microservice systems, which proves that it significantly
+which is efficient and effective in practice.                                     improves the 𝐹 1 -score for failure detection. We believe that the so-
+Selection of evaluation metrics. In the online detection stage,                   lution of applying multimodal data for failure detection will benefit
+AnoFusion adopts the EVT algorithm [34] to obtain the best 𝐹 1 -score.            more areas beyond microservice systems.
+In practice, however, operators may have varying preferences for
+precision and recall depending on the business type. For example,                 ACKNOWLEDGMENTS
+operators generally seek a high recall for the core services that                 The work was supported by the National Natural Science Foun-
+provide online shopping services. They do not want to miss any                    dation of China (Grant No. 62272249 and 62072264), the Natural
+potential failures that could negatively impact users’ experience.                Science Foundation of Tianjin (Grant No. 21JCQNJC00180), and
+Precision is often preferable in data analytic services. Operators                the Beijing National Research Center for Information Science and
+2 https://azure.microsoft.com/en-us/products/monitor                              Technology (BNRist).
+3 https://prometheus.io
+4 https://www.elastic.co/what-is/elk-stack
+5 https://skywalking.apache.org
+
+
+
+
+                                                                           5647
+KDD ’23, August 6–10, 2023, Long Beach, CA, USA                                                                                                                         Chenyu Zhao et al.
+
+
+REFERENCES                                                                                               Eleventh Symposium on Educational Advances in Artificial Intelligence, EAAI 2021,
+ [1] Julien Audibert, Pietro Michiardi, Frédéric Guyard, Sébastien Marti, and Maria A.                   Virtual Event, February 2-9, 2021. AAAI Press, 1808–1816. https://ojs.aaai.org/
+     Zuluaga. 2020. USAD: UnSupervised Anomaly Detection on Multivariate Time                            index.php/AAAI/article/view/16275
+     Series. In KDD ’20: The 26th ACM SIGKDD Conference on Knowledge Discovery                      [16] Thomas N. Kipf and Max Welling. 2017. Semi-Supervised Classification with
+     and Data Mining, Virtual Event, CA, USA, August 23-27, 2020, Rajesh Gupta,                          Graph Convolutional Networks. In 5th International Conference on Learning
+     Yan Liu, Jiliang Tang, and B. Aditya Prakash (Eds.). ACM, 3395–3404. https:                         Representations, ICLR 2017, Toulon, France, April 24-26, 2017, Conference Track
+     //doi.org/10.1145/3394486.3403392                                                                   Proceedings. OpenReview.net. https://openreview.net/forum?id=SJU4ayYgl
+ [2] AWS. 2021. Summary of the AWS Service Event in the Northern Virginia (US-                      [17] Nikolay Laptev, Saeed Amizadeh, and Ian Flint. 2015. Generic and Scalable
+     EAST-1) Region. (2021). https://aws.amazon.com/cn/message/12721/.                                   Framework for Automated Time-series Anomaly Detection. In Proceedings of
+ [3] Ailin Deng and Bryan Hooi. 2021. Graph Neural Network-Based Anomaly De-                             the 21th ACM SIGKDD International Conference on Knowledge Discovery and
+     tection in Multivariate Time Series. In Thirty-Fifth AAAI Conference on Artificial                  Data Mining, Sydney, NSW, Australia, August 10-13, 2015, Longbing Cao, Chengqi
+     Intelligence, AAAI 2021, Thirty-Third Conference on Innovative Applications of Ar-                  Zhang, Thorsten Joachims, Geoffrey I. Webb, Dragos D. Margineantu, and Graham
+     tificial Intelligence, IAAI 2021, The Eleventh Symposium on Educational Advances                    Williams (Eds.). ACM, 1939–1947. https://doi.org/10.1145/2783258.2788611
+     in Artificial Intelligence, EAAI 2021, Virtual Event, February 2-9, 2021. AAAI Press,          [18] Zeyan Li, Junjie Chen, Rui Jiao, Nengwen Zhao, Zhijun Wang, Shuwei Zhang,
+     4027–4035. https://ojs.aaai.org/index.php/AAAI/article/view/16523                                   Yanjun Wu, Long Jiang, Leiqin Yan, Zikai Wang, Zhekang Chen, Wenchi Zhang,
+ [4] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. BERT:                       Xiaohui Nie, Kaixin Sui, and Dan Pei. 2021. Practical Root Cause Localization
+     Pre-training of Deep Bidirectional Transformers for Language Understanding. In                      for Microservice Systems via Trace Analysis. In 29th IEEE/ACM International
+     Proceedings of the 2019 Conference of the North American Chapter of the Associa-                    Symposium on Quality of Service, IWQOS 2021, Tokyo, Japan, June 25-28, 2021.
+     tion for Computational Linguistics: Human Language Technologies, NAACL-HLT                          IEEE, 1–10. https://doi.org/10.1109/IWQOS52092.2021.9521340
+     2019, Minneapolis, MN, USA, June 2-7, 2019, Volume 1 (Long and Short Papers), Jill             [19] Zhe Li, Peisong Wang, Hanqing Lu, and Jian Cheng. 2019. Reading selectively
+     Burstein, Christy Doran, and Thamar Solorio (Eds.). Association for Computa-                        via Binary Input Gated Recurrent Unit. In Proceedings of the Twenty-Eighth
+     tional Linguistics, 4171–4186. https://doi.org/10.18653/v1/n19-1423                                 International Joint Conference on Artificial Intelligence, IJCAI 2019, Macao, China,
+ [5] Min Du, Feifei Li, Guineng Zheng, and Vivek Srikumar. 2017. DeepLog: Anomaly                        August 10-16, 2019, Sarit Kraus (Ed.). ijcai.org, 5074–5080. https://doi.org/10.
+     Detection and Diagnosis from System Logs through Deep Learning. In Proceedings                      24963/ijcai.2019/705
+     of the 2017 ACM SIGSAC Conference on Computer and Communications Security,                     [20] Dapeng Liu, Youjian Zhao, Haowen Xu, Yongqian Sun, Dan Pei, Jiao Luo, Xiaowei
+     CCS 2017, Dallas, TX, USA, October 30 - November 03, 2017, Bhavani M. Thurais-                      Jing, and Mei Feng. 2015. Opprentice: Towards Practical and Automatic Anomaly
+     ingham, David Evans, Tal Malkin, and Dongyan Xu (Eds.). ACM, 1285–1298.                             Detection Through Machine Learning. In Proceedings of the 2015 ACM Internet
+     https://doi.org/10.1145/3133956.3134015                                                             Measurement Conference, IMC 2015, Tokyo, Japan, October 28-30, 2015, Kenjiro
+ [6] Mostafa Farshchi, Jean-Guy Schneider, Ingo Weber, and John Grundy. 2018.                            Cho, Kensuke Fukuda, Vivek S. Pai, and Neil Spring (Eds.). ACM, 211–224. https:
+     Metric selection and anomaly detection for cloud operations using log and metric                    //doi.org/10.1145/2815675.2815679
+     correlation analysis. J. Syst. Softw. 137 (2018), 531–549. https://doi.org/10.1016/j.          [21] Ping Liu, Haowen Xu, Qianyu Ouyang, Rui Jiao, Zhekang Chen, Shenglin Zhang,
+     jss.2017.03.012                                                                                     Jiahai Yang, Linlin Mo, Jice Zeng, Wenman Xue, and Dan Pei. 2020. Unsuper-
+ [7] Ying Fu, Meng Yan, Jian Xu, Jianguo Li, Zhongxin Liu, Xiaohong Zhang, and Dan                       vised Detection of Microservice Trace Anomalies through Service-Level Deep
+     Yang. 2022. Investigating and improving log parsing in practice. In Proceedings                     Bayesian Networks. In 31st IEEE International Symposium on Software Relia-
+     of the 30th ACM Joint European Software Engineering Conference and Symposium                        bility Engineering, ISSRE 2020, Coimbra, Portugal, October 12-15, 2020, Marco
+     on the Foundations of Software Engineering. 1566–1577.                                              Vieira, Henrique Madeira, Nuno Antunes, and Zheng Zheng (Eds.). IEEE, 48–58.
+ [8] Weihao Gao, Sreeram Kannan, Sewoong Oh, and Pramod Viswanath. 2017. Esti-                           https://doi.org/10.1109/ISSRE5003.2020.00014
+     mating Mutual Information for Discrete-Continuous Mixtures. In Advances in                     [22] Yudong Liu, Xu Zhang, Shilin He, Hongyu Zhang, Liqun Li, Yu Kang, Yong Xu,
+     Neural Information Processing Systems 30: Annual Conference on Neural Infor-                        Minghua Ma, Qingwei Lin, Yingnong Dang, Saravan Rajmohan, and Dongmei
+     mation Processing Systems 2017, December 4-9, 2017, Long Beach, CA, USA, Is-                        Zhang. 2022. UniParser: A Unified Log Parser for Heterogeneous Log Data.
+     abelle Guyon, Ulrike von Luxburg, Samy Bengio, Hanna M. Wallach, Rob Fergus,                        In Proceedings of the Web Conference (WWW ’22). ACM, 1893–1901. https:
+     S. V. N. Vishwanathan, and Roman Garnett (Eds.). 5986–5997. https://proceedings.                    //doi.org/10.1145/3485447.3511993
+     neurips.cc/paper/2017/hash/ef72d53990bc4805684c9b61fa64a102-Abstract.html                      [23] Minghua Ma, Yudong Liu, Yuang Tong, Haozhe Li, Pu Zhao, Yong Xu, Hongyu
+ [9] Xiaofeng Guo, Xin Peng, Hanzhang Wang, Wanxue Li, Huai Jiang, Dan Ding,                             Zhang, Shilin He, Lu Wang, Yingnong Dang, Saravanakumar Rajmohan, and
+     Tao Xie, and Liangfei Su. 2020. Graph-based trace analysis for microservice                         Qingwei Lin. 2022. An Empirical Investigation of Missing Data Handling in Cloud
+     architecture understanding and problem diagnosis. In Proceedings of the 28th                        Node Failure Prediction. In Proceedings of the European Software Engineering
+     ACM Joint Meeting on European Software Engineering Conference and Symposium                         Conference and Symposium on the Foundations of Software Engineering (ESEC/FSE).
+     on the Foundations of Software Engineering. 1387–1397.                                              1453 – 1464.
+[10] Pinjia He, Jieming Zhu, Zibin Zheng, and Michael R. Lyu. 2017. Drain: An                       [24] Minghua Ma, Zheng Yin, Shenglin Zhang, Sheng Wang, Christopher Zheng, Xin-
+     Online Log Parsing Approach with Fixed Depth Tree. In 2017 IEEE International                       hao Jiang, Hanwen Hu, Cheng Luo, Yilin Li, Nengjun Qiu, et al. 2020. Diagnosing
+     Conference on Web Services, ICWS 2017, Honolulu, HI, USA, June 25-30, 2017, Ilkay                   Root Causes of Intermittent Slow Queries in Cloud Databases. In PVLDB, Vol. 13.
+     Altintas and Shiping Chen (Eds.). IEEE, 33–40. https://doi.org/10.1109/ICWS.                        1176–1189.
+     2017.13                                                                                        [25] Minghua Ma, Shenglin Zhang, Junjie Chen, Jim Xu, Haozhe Li, Yongliang Lin,
+[11] Shilin He, Xu Zhang, Pinjia He, Yong Xu, Liqun Li, Yu Kang, Minghua Ma,                             Xiaohui Nie, Bo Zhou, Yong Wang, and Dan Pei. 2021. Jump-Starting Multivariate
+     Yining Wei, Yingnong Dang, Saravanakumar Rajmohan, et al. 2022. An empirical                        Time Series Anomaly Detection for Online Service Systems. In 2021 USENIX
+     study of log analysis at Microsoft. In Proceedings of the 30th ACM Joint European                   Annual Technical Conference, USENIX ATC 2021, July 14-16, 2021, Irina Calciu and
+     Software Engineering Conference and Symposium on the Foundations of Software                        Geoff Kuenning (Eds.). USENIX Association, 413–426. https://www.usenix.org/
+     Engineering. 1465–1476.                                                                             conference/atc21/presentation/ma
+[12] Vladimir Iashin and Esa Rahtu. 2020. Multi-modal Dense Video Captioning. In                    [26] Minghua Ma, Shenglin Zhang, Dan Pei, Xin Huang, and Hongwei Dai. 2018.
+     2020 IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR                           Robust and Rapid Adaption for Concept Drift in Software System Anomaly
+     Workshops 2020, Seattle, WA, USA, June 14-19, 2020. Computer Vision Foundation                      Detection. In 29th IEEE International Symposium on Software Reliability Engineer-
+     / IEEE, 4117–4126. https://doi.org/10.1109/CVPRW50498.2020.00487                                    ing, ISSRE 2018, Memphis, TN, USA, October 15-18, 2018, Sudipto Ghosh, Roberto
+[13] Chen Jia and Yue Zhang. 2020. Multi-Cell Compositional LSTM for NER Domain                          Natella, Bojan Cukic, Robin S. Poston, and Nuno Laranjeiro (Eds.). IEEE Computer
+     Adaptation. In Proceedings of the 58th Annual Meeting of the Association for                        Society, 13–24. https://doi.org/10.1109/ISSRE.2018.00013
+     Computational Linguistics, ACL 2020, Online, July 5-10, 2020, Dan Jurafsky, Joyce              [27] Weibin Meng, Ying Liu, Yichen Zhu, Shenglin Zhang, Dan Pei, Yuqing Liu, Yihao
+     Chai, Natalie Schluter, and Joel R. Tetreault (Eds.). Association for Computational                 Chen, Ruizhi Zhang, Shimin Tao, Pei Sun, and Rong Zhou. 2019. LogAnomaly:
+     Linguistics, 5906–5917. https://doi.org/10.18653/v1/2020.acl-main.524                               Unsupervised Detection of Sequential and Quantitative Anomalies in Unstruc-
+[14] Ziyu Jia, Youfang Lin, Jing Wang, Zhiyang Feng, Xiangheng Xie, and Caijie Chen.                     tured Logs. In Proceedings of the Twenty-Eighth International Joint Conference on
+     2021. HetEmotionNet: Two-Stream Heterogeneous Graph Recurrent Neural                                Artificial Intelligence, IJCAI 2019, Macao, China, August 10-16, 2019, Sarit Kraus
+     Network for Multi-modal Emotion Recognition. In MM ’21: ACM Multimedia                              (Ed.). ijcai.org, 4739–4745. https://doi.org/10.24963/ijcai.2019/658
+     Conference, Virtual Event, China, October 20 - 24, 2021, Heng Tao Shen, Yueting                [28] Sasho Nedelkoski, Jorge S. Cardoso, and Odej Kao. 2019. Anomaly Detection and
+     Zhuang, John R. Smith, Yang Yang, Pablo Cesar, Florian Metze, and Balakrishnan                      Classification using Distributed Tracing and Deep Learning. In 19th IEEE/ACM
+     Prabhakaran (Eds.). ACM, 1047–1056. https://doi.org/10.1145/3474085.3475583                         International Symposium on Cluster, Cloud and Grid Computing, CCGRID 2019,
+[15] Soopil Kim, Sion An, Philip Chikontwe, and Sang Hyun Park. 2021. Bidirec-                           Larnaca, Cyprus, May 14-17, 2019. IEEE, 241–250. https://doi.org/10.1109/CCGRID.
+     tional RNN-based Few Shot Learning for 3D Medical Image Segmentation. In                            2019.00038
+     Thirty-Fifth AAAI Conference on Artificial Intelligence, AAAI 2021, Thirty-Third               [29] Sasho Nedelkoski, Jorge S. Cardoso, and Odej Kao. 2019. Anomaly Detection from
+     Conference on Innovative Applications of Artificial Intelligence, IAAI 2021, The                    System Tracing Data Using Multimodal Deep Learning. In 12th IEEE International
+                                                                                                         Conference on Cloud Computing, CLOUD 2019, Milan, Italy, July 8-13, 2019, Elisa
+
+
+
+
+                                                                                             5648
+Robust Multimodal Failure Detection for Microservice Systems                                                                            KDD ’23, August 6–10, 2023, Long Beach, CA, USA
+
+
+     Bertino, Carl K. Chang, Peter Chen, Ernesto Damiani, Michael Goul, and Kat-                          18653/v1/p19-1580
+     sunori Oyama (Eds.). IEEE, 179–186. https://doi.org/10.1109/CLOUD.2019.00038                    [39] Lingzhi Wang, Nengwen Zhao, Junjie Chen, Pinnong Li, Wenchi Zhang, and
+[30] Rodolfo Picoreti, Alexandre Pereira do Carmo, Felippe Mendonça de Queiroz,                           Kaixin Sui. 2020. Root-Cause Metric Location for Microservice Systems via Log
+     Anilton Salles Garcia, Raquel Frizera Vassallo, and Dimitra Simeonidou. 2018.                        Anomaly Detection. In 2020 IEEE International Conference on Web Services (ICWS).
+     Multilevel Observability in Cloud Orchestration. In 2018 IEEE 16th Intl Conf                         142–150. https://doi.org/10.1109/ICWS49710.2020.00026
+     on Dependable, Autonomic and Secure Computing, 16th Intl Conf on Pervasive                      [40] Lianghao Xia, Chao Huang, Yong Xu, Peng Dai, Xiyue Zhang, Hongsheng Yang,
+     Intelligence and Computing, 4th Intl Conf on Big Data Intelligence and Computing                     Jian Pei, and Liefeng Bo. 2021. Knowledge-Enhanced Hierarchical Graph Trans-
+     and Cyber Science and Technology Congress, DASC/PiCom/DataCom/CyberSciTech                           former Network for Multi-Behavior Recommendation. In Thirty-Fifth AAAI Con-
+     2018, Athens, Greece, August 12-15, 2018. IEEE Computer Society, 776–784. https:                     ference on Artificial Intelligence, AAAI 2021, Thirty-Third Conference on Innovative
+     //doi.org/10.1109/DASC/PiCom/DataCom/CyberSciTec.2018.00134                                          Applications of Artificial Intelligence, IAAI 2021, The Eleventh Symposium on Edu-
+[31] Hansheng Ren, Bixiong Xu, Yujing Wang, Chao Yi, Congrui Huang, Xiaoyu                                cational Advances in Artificial Intelligence, EAAI 2021, Virtual Event, February 2-9,
+     Kou, Tony Xing, Mao Yang, Jie Tong, and Qi Zhang. 2019. Time-Series Anom-                            2021. AAAI Press, 4486–4493. https://ojs.aaai.org/index.php/AAAI/article/view/
+     aly Detection Service at Microsoft. In Proceedings of the 25th ACM SIGKDD                            16576
+     International Conference on Knowledge Discovery & Data Mining, KDD 2019, An-                    [41] Shi Ying, Bingming Wang, Lu Wang, Qingshan Li, Yishi Zhao, Jianga Shang, Hao
+     chorage, AK, USA, August 4-8, 2019, Ankur Teredesai, Vipin Kumar, Ying Li,                           Huang, Guoli Cheng, Zhe Yang, and Jiangyi Geng. 2021. An Improved KNN-Based
+     Rómer Rosales, Evimaria Terzi, and George Karypis (Eds.). ACM, 3009–3017.                            Efficient Log Anomaly Detection Method with Automatically Labeled Samples.
+     https://doi.org/10.1145/3292500.3330680                                                              ACM Transactions on Knowledge Discovery from Data (TKDD) 15, 3 (2021), 1–22.
+[32] Tulika Saha, Aditya Prakash Patra, Sriparna Saha, and Pushpak Bhattacharyya.                    [42] Guangba Yu, Pengfei Chen, Hongyang Chen, Zijie Guan, Zicheng Huang, Linxiao
+     2020. Towards Emotion-aided Multi-modal Dialogue Act Classification. In Pro-                         Jing, Tianjun Weng, Xinmeng Sun, and Xiaoyun Li. 2021. MicroRank: End-to-End
+     ceedings of the 58th Annual Meeting of the Association for Computational Linguis-                    Latency Issue Localization with Extended Spectrum Analysis in Microservice
+     tics, ACL 2020, Online, July 5-10, 2020, Dan Jurafsky, Joyce Chai, Natalie Schluter,                 Environments. In WWW ’21: The Web Conference 2021, Virtual Event / Ljubljana,
+     and Joel R. Tetreault (Eds.). Association for Computational Linguistics, 4361–4372.                  Slovenia, April 19-23, 2021, Jure Leskovec, Marko Grobelnik, Marc Najork, Jie
+     https://doi.org/10.18653/v1/2020.acl-main.402                                                        Tang, and Leila Zia (Eds.). ACM / IW3C2, 3087–3098. https://doi.org/10.1145/
+[33] Erich Schubert, Jörg Sander, Martin Ester, Hans Peter Kriegel, and Xiaowei                           3442381.3449905
+     Xu. 2017. DBSCAN Revisited, Revisited: Why and How You Should (Still) Use                       [43] Seongjun Yun, Minbyul Jeong, Raehyun Kim, Jaewoo Kang, and Hyunwoo J. Kim.
+     DBSCAN. ACM Trans. Database Syst. 42, 3, Article 19 (jul 2017), 21 pages. https:                     2019. Graph Transformer Networks. In Advances in Neural Information Processing
+     //doi.org/10.1145/3068335                                                                            Systems 32: Annual Conference on Neural Information Processing Systems 2019,
+[34] Alban Siffer, Pierre-Alain Fouque, Alexandre Termier, and Christine Largouët.                        NeurIPS 2019, December 8-14, 2019, Vancouver, BC, Canada, Hanna M. Wallach,
+     2017. Anomaly Detection in Streams with Extreme Value Theory. In Proceedings                         Hugo Larochelle, Alina Beygelzimer, Florence d’Alché-Buc, Emily B. Fox, and
+     of the 23rd ACM SIGKDD International Conference on Knowledge Discovery and                           Roman Garnett (Eds.). 11960–11970. https://proceedings.neurips.cc/paper/2019/
+     Data Mining, Halifax, NS, Canada, August 13 - 17, 2017. ACM, 1067–1075. https:                       hash/9d63484abb477c97640154d40595a3bb-Abstract.html
+     //doi.org/10.1145/3097983.3098144                                                               [44] Xu Zhang, Yong Xu, Qingwei Lin, Bo Qiao, Hongyu Zhang, Yingnong Dang,
+[35] Ya Su, Youjian Zhao, Chenhao Niu, Rong Liu, Wei Sun, and Dan Pei. 2019. Robust                       Chunyu Xie, Xinsheng Yang, Qian Cheng, Ze Li, Junjie Chen, Xiaoting He, Ran-
+     Anomaly Detection for Multivariate Time Series through Stochastic Recurrent                          dolph Yao, Jian-Guang Lou, Murali Chintalapati, Furao Shen, and Dongmei Zhang.
+     Neural Network. In Proceedings of the 25th ACM SIGKDD International Conference                       2019. Robust log-based anomaly detection on unstable log data. In Proceedings
+     on Knowledge Discovery & Data Mining, KDD 2019, Anchorage, AK, USA, August                           of the ACM Joint Meeting on European Software Engineering Conference and
+     4-8, 2019, Ankur Teredesai, Vipin Kumar, Ying Li, Rómer Rosales, Evimaria Terzi,                     Symposium on the Foundations of Software Engineering, ESEC/SIGSOFT FSE 2019,
+     and George Karypis (Eds.). ACM, 2828–2837. https://doi.org/10.1145/3292500.                          Tallinn, Estonia, August 26-30, 2019, Marlon Dumas, Dietmar Pfahl, Sven Apel, and
+     3330672                                                                                              Alessandra Russo (Eds.). ACM, 807–817. https://doi.org/10.1145/3338906.3338931
+[36] Petar Velickovic, Guillem Cucurull, Arantxa Casanova, Adriana Romero, Pietro                    [45] Ziwei Zhang, Peng Cui, and Wenwu Zhu. 2022. Deep Learning on Graphs: A
+     Liò, and Yoshua Bengio. 2018. Graph Attention Networks. In 6th International                         Survey. IEEE Trans. Knowl. Data Eng. 34, 1 (2022), 249–270. https://doi.org/10.
+     Conference on Learning Representations, ICLR 2018, Vancouver, BC, Canada, April 30                   1109/TKDE.2020.2981333
+     - May 3, 2018, Conference Track Proceedings. OpenReview.net. https://openreview.                [46] Nengwen Zhao, Junjie Chen, Zhaoyang Yu, Honglin Wang, Jiesong Li, Bin Qiu,
+     net/forum?id=rJXMpikCZ                                                                               Hongyu Xu, Wenchi Zhang, Kaixin Sui, and Dan Pei. 2021. Identifying bad soft-
+[37] S. Vijayanand and S. Saravanan. 2022. A deep learning model based anomalous                          ware changes via multimodal anomaly detection for online service systems. In
+     behavior detection for supporting verifiable access control scheme in cloud                          ESEC/FSE ’21: 29th ACM Joint European Software Engineering Conference and Sym-
+     servers. J. Intell. Fuzzy Syst. 42, 6 (2022), 6171–6181. https://doi.org/10.3233/JIFS-               posium on the Foundations of Software Engineering, Athens, Greece, August 23-28,
+     212572                                                                                               2021, Diomidis Spinellis, Georgios Gousios, Marsha Chechik, and Massimiliano Di
+[38] Elena Voita, David Talbot, Fedor Moiseev, Rico Sennrich, and Ivan Titov. 2019.                       Penta (Eds.). ACM, 527–539. https://doi.org/10.1145/3468264.3468543
+     Analyzing Multi-Head Self-Attention: Specialized Heads Do the Heavy Lifting,                    [47] Xiang Zhou, Xin Peng, Tao Xie, Jun Sun, Chao Ji, Wenhai Li, and Dan Ding.
+     the Rest Can Be Pruned. In Proceedings of the 57th Conference of the Association                     2021. Fault Analysis and Debugging of Microservice Systems: Industrial Survey,
+     for Computational Linguistics, ACL 2019, Florence, Italy, July 28- August 2, 2019,                   Benchmark System, and Empirical Study. IEEE Trans. Software Eng. 47, 2 (2021),
+     Volume 1: Long Papers, Anna Korhonen, David R. Traum, and Lluís Màrquez                              243–260. https://doi.org/10.1109/TSE.2018.2887384
+     (Eds.). Association for Computational Linguistics, 5797–5808. https://doi.org/10.
+
+
+
+
+                                                                                              5649
+

@@ -1,0 +1,748 @@
+             Robust Anomaly Detection for Multivariate Time Series
+                 through Stochastic Recurrent Neural Network
+                           Ya Su∗                                                  Youjian Zhao                                    Chenhao Niu
+           Tsinghua University; BNRist                                   Tsinghua University; BNRist                         Tsinghua University; BNRist
+
+                        Rong Liu                                                       Wei Sun                                          Dan Pei†
+         Stevens Institute of Technology                               Beijing University of Posts and                       Tsinghua University; BNRist
+                                                                            Telecommunications
+ABSTRACT                                                                                      ACM Reference Format:
+Industry devices (i.e., entities) such as server machines, spacecrafts,                       Ya Su, Youjian Zhao, Chenhao Niu, Rong Liu, Wei Sun, and Dan Pei.
+                                                                                              2019. Robust Anomaly Detection for Multivariate Time Series through
+engines, etc., are typically monitored with multivariate time series,
+                                                                                              Stochastic Recurrent Neural Network. In The 25th ACM SIGKDD Conference
+whose anomaly detection is critical for an entity’s service quality                           on Knowledge Discovery and Data Mining (KDD ’19), August 4–8, 2019,
+management. However, due to the complex temporal dependence                                   Anchorage, AK, USA. ACM, New York, NY, USA, 10 pages. https://doi.org/
+and stochasticity of multivariate time series, their anomaly detec-                           10.1145/3292500.3330672
+tion remains a big challenge. This paper proposes OmniAnomaly,
+a stochastic recurrent neural network for multivariate time series                            1    INTRODUCTION
+anomaly detection that works well robustly for various devices.                               Anomaly detection has been an active research topic in SIGKDD
+Its core idea is to capture the normal patterns of multivariate                               community with applications in graph [3, 12], log messages
+time series by learning their robust representations with key                                 [15, 23], time series [6, 9, 14, 22], etc. In this paper, we focus on
+techniques such as stochastic variable connection and planar                                  anomaly detection for multivariate time series [6]. Industry devices,
+normalizing flow, reconstruct input data by the representations,                              such as server machines [9, 14], spacecrafts [6], robot-assisted
+and use the reconstruction probabilities to determine anomalies.                              systems [16, 17], engines [11], are typically monitored with multiple
+Moreover, for a detected entity anomaly, OmniAnomaly can provide                              time series metrics (also called telemetry data, sensor data, etc.) so
+interpretations based on the reconstruction probabilities of its                              that each device’s behavioral anomalies can be timely detected
+constituent univariate time series. The evaluation experiments are                            and later resolved. Multiple univariate time series from the same
+conducted on two public datasets from aerospace and a new server                              device (or more generally, an entity) forms a multivariate time
+machine dataset (collected and released by us) from an Internet                               series. Table 1 shows some example datasets about entities, and
+company. OmniAnomaly achieves an overall F1-Score of 0.86 in                                  Fig. 1 shows an example multivariate time series snippet with two
+three real-world datasets, significantly outperforming the best                               anomalous regions from the server machine dataset.
+performing baseline method by 0.09. The interpretation accuracy                                           Table 1: Example datasets about entities
+for OmniAnomaly is up to 0.89.                                                                      Entity Type         NO.      NO. of
+                                                                                                        and              of      metrics            Metric Name
+                                                                                                       dataset         entities per entity
+CCS CONCEPTS                                                                                     Server machine                              CPU load, network usage,
+• Computing methodologies → Anomaly detection; Neural                                                                   28         38
+                                                                                                    [this paper]                                 memory usage, etc.
+networks; Bayesian network models.                                                             Soil Moisture Active                          Telemetry data: radiation,
+                                                                                                                        55         25
+                                                                                               Passive satellite [6]                                 temperature,
+KEYWORDS                                                                                           Mars Science
+                                                                                                                        27         55
+                                                                                                                                                power, computational
+                                                                                               Laboratory rover [6]                                 activities, etc.
+Anomaly Detection; Multivariate Time Series; Stochastic Model;
+                                                                                                  Robot-assisted                               Sensor data: kinematic,
+Recurrent Neural Network                                                                                                ∼39        17
+                                                                                                 system [16, 17]                             visual, haptic, auditory, etc.
+                                                                                                                                              Sensor data: accelerator,
+    ∗ BNRist: Beijing National Research Center for Information Science and                         Engine [11]           -         12
+                                                                                                                                              torque, temperature, etc.
+Technology
+    † Dan Pei is the corresponding author.                                                        In general, it is preferred to detect entity anomalies at the entity-
+                                                                                              level directly using multivariate time series [6, 11, 16, 17], rather
+                                                                                              than at the metric-level using univariate time series, for a number of
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed         reasons. First, in practice, operation engineers are more concerned
+for profit or commercial advantage and that copies bear this notice and the full citation     about the overall status of an entity than each constituent metric.
+on the first page. Copyrights for components of this work owned by others than ACM            Second, it is labor-intensive to train and maintain an individual
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a   anomaly detection model for each metric, given a large number of
+fee. Request permissions from permissions@acm.org.                                            metrics (e.g., 1485 (27*55) for Mars Science Laboratory rover in Table
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA                                                 1). Third, an incident (e.g., overload) at an entity typically causes
+© 2019 Association for Computing Machinery.
+ACM ISBN 978-1-4503-6201-6/19/08. . . $15.00                                                  anomalies in multiple metrics. If we detect anomalies at the metric-
+https://doi.org/10.1145/3292500.3330672                                                       level, we would need to define rules based on extensive domain
+knowledge to process anomaly results of all metrics to determine              [6], but its stochastic variables are very simple, without temporal
+whether the entity is anomalous or not, which is challenging                  dependence. Stochastic variables are latent representations of
+to do. Forth, intuitively, modeling the expected value of one                 input data and their quality is the key to model performance.
+univariate time series can benefit from the more information in               To learn robust representations of data, we propose a stochastic
+the multivariate time series of the same entity. In summary, it is            recurrent neural network, with explicit temporal dependence among
+more intuitive, effective and efficient to detect anomalies at the            stochastic variables modeled. Our approach novelly glues GRU [1]
+entity-level than at the metric-level. Thus, in this paper, similar           (a variant of RNN) and VAE with the following two key techniques.
+to [6, 11, 16, 17], we focus on detecting the overall anomalies of the        a) speech reconstruction literature [5] has shown that explicitly
+multivariate time series of each monitored entity.                            modeling the temporal dependence among stochastic variables can
+      TCP active opens                                                        make these variables capture more information from historical
+      TCP retransmissions                                                     stochastic variables and represent the input data better. Inspired
+      Memory usage                                                            by [5], to explicitly model temporal dependence among stochastic
+      CPU load                                                                variables in the latent space, we propose the stochastic variable
+      Disk write                                                              connection technique: Linear Gaussian State Space Model [8]
+      ETH1 inflow                                                             connection between stochastic variables, and the concatenation of
+      UDP out
+                                                                              stochastic variable and GRU latent variable. b) To help stochastic
+      TCP timeout
+                                                                              variables capture complex distributions of input data, we adopt
+                         Anomaly1   Anomaly2
+                                                                              planar Normalizing Flows (planar NF) [18] which uses a series of
+                                                                              invertible mappings to learn non-Gaussian posterior distributions in
+Figure 1: An 8-metric 2-day-long multivariate time series                     latent stochastic space. These techniques make our model capable
+snippet from the server machine dataset, with two anoma-                      of learning salient representations from datasets with different
+lous regions highlighted in pink.                                             characteristics to achieve great robustness.
+   Entities under our study (servers, spacecrafts, etc.) are engi-               The second challenge is how to provide interpretation
+neering artifacts, which have software control logic and interact             to the detected entity-level anomalies, given the stochastic
+with environment, human operators, and other systems in a very                deep learning approaches. The interpretation is to answer the
+complex way. As a result, their complex behaviors can exhibit                 question of why an observation is detected as an anomaly. Anomaly
+both stochasticity and strong temporal dependence. A previous                 interpretation can help analyze the entity anomalies and speed
+study [5] has shown that the stochasticity in speech sequence can             up troubleshooting, and thus is often required in practice [6].
+be more precisely captured by stochastic variables with properly              However, it is challenging to interpret anomalies of multivariate
+estimated probability distributions [5] than deterministic variables.         time series, and stochastic deep learning approaches make the
+[24] shows that univariate time series in an online shopping website          interpretation even harder. Our solution to this problem is based on
+can present complex temporal relationships. Therefore, ideally our            the following observation. In practice, when manually checking and
+study should take a stochastic approach with temporal dependence              troubleshooting entity anomalies, operators typically look for the
+modeling. However, despite the rich literature in multivariate time           top few individual metrics that deviate from historical patterns the
+series anomaly detection in different areas [4, 6, 11, 16, 17, 20, 26, 27],   most. For example, if a server machine is suffering from network
+previous studies either take deterministic approaches [4, 6, 11]              slowdown, the metrics related to network would behave more
+to model time series, or take stochastic approach but ignore the              abnormally than other metrics. Thus, in our approach, a detected
+temporal dependence of observations in the time series [27].                  entity anomaly can be interpreted by a few univariate time series
+   Due to anomaly diversities and the lack of labels for train-               with the lowest reconstruction probabilities.
+ing [6], our approach has to be an unsupervised one. Based on                    The contributions of this paper are summarized as follows:
+our observation and intuition, anomalies are usually unexpected
+instances significantly deviating from normal patterns formed by                  • We propose OmniAnomaly, a novel stochastic recurrent
+the majority of a dataset. Thus, our core idea is to learn robust                   neural network for multivariate time series anomaly detec-
+latent representations to capture normal patterns of multivariate time              tion. To the best of our knowledge, OmniAnomaly is the
+series, considering both the temporal dependence and stochasticity.                 first multivariate time series anomaly detection algorithm
+The more different an observation is from the normal patterns, the                  that can deal with explicit temporal dependence among
+more likely it is considered as an anomaly. There are two major                     stochastic variables to learn robust representations of input
+challenges for this idea.                                                           data, required by industry device monitoring.
+   The first challenge is how to learn robust latent repre-                       • We propose the first anomaly interpretation approach for
+sentations, considering both the temporal dependence and                            stochastic based multivariate time series anomaly detection
+stochasticity of multivariate time series. Previous work [5]                        algorithms that works with not only OmniAnomaly, but also
+has shown that a stochastic model alone is hard to capture the                      other algorithms such as [16]. The interpretation accuracy
+long-term dependence and complex probability distributions of                       for OmniAnomaly is up to 0.89.
+multivariate time series. Intuitively, it is advantageous to let the              • Our experiments show great effect of the four key techniques
+deterministic hidden variable of RNN act as an internal memory for                  in OmniAnomaly: GRU, planar NF, stochastic variable con-
+stochastic models [5]. [16] made an attempt along this direction by                 nection, and an adjusted Peaks-Over-Threshold method for
+simply replacing the feed-forward network in a VAE [7] with LSTM                    automatic anomaly threshold selection.
+    • Through extensive experiments, we show that OmniAnomaly            structure of our model. In addition, we provide preliminaries about
+      achieves an overall F1-Score of 0.86 in three real-world           GRU, VAE, planar NF, the key components of our model.
+      datasets, significantly outperforming the best performing
+                                                                         3.1      Problem Statement
+      baseline model by 0.09, demonstrating the benefits of explic-
+                                                                         A time series contains successive observations which are usually
+      itly modeling the temporal dependence among stochastic
+                                                                         collected at equal-space timestamps [10]. In our study, we focus on
+      variables in the latent space. OmniAnomaly exhibits great
+                                                                         multivariate time series, defined as x = {x1 , x2 , ..., xN }, where N is
+      robustness in working with three datasets from different
+                                                                         the length of x, and an observation xt ∈ R M is an M-dimensional
+      devices, with F1-Scores all higher than 0.84.
+                                                                         vector [6] at time t (t ≤ N ): xt = [x t1 , x t2 , ..., x tM ] , and x ∈ R M ×N .
+    • We publicly publish our code and server machine dataset
+                                                                         In Fig. 1, the observations are equally spaced by 1 minute, the total
+      of experiments on GitHub1 for better reproducibility of the
+                                                                         number of observations is N = 2 ∗ 24 ∗ 60, and each observation
+      results of this paper.
+                                                                         has a dimension of M = 8. We use xt−T:t (∈ R M ×(T +1) ) to denote a
+2    RELATED WORK                                                        sequence of observations {xt−T , xt−T+1 , ..., xt } from time t − T to t.
+Multivariate time series anomaly detection is an active topic.              For multivariate time series anomaly detection, the objective is to
+Supervised learning methods [17, 20] need labeled data for model         determine whether an observation xt is anomalous or not. For time
+training and can only identify anomaly occurrences for known             series modeling, historical values are beneficial for understanding
+anomaly types [13]. As a result, supervised methods have limited         current data. Therefore, a sequence of observations xt−T:t instead
+usage and unsupervised approaches are desirable. The state-of-           of just xt is used to calculate the anomaly result. Our anomaly
+the-art unsupervised solutions to multivariate time series anomaly       detection approach returns an anomaly score for xt , and then the
+detection in literature can be categorized into the following types:     anomaly result can be obtained by comparing against a threshold.
+     • Deterministic models [4, 6, 11]. To detect spacecraft anom-       3.2      Overall Structure
+       alies, [6] applies LSTM for multivariate time series prediction
+                                                                                                Data Pre-      Model      Anomaly   Threshold
+       and determines anomalies using prediction errors. Similar                                processing    Training     Scores
+                                                                                                                                    Selection
+       to seq2seq models, [11] proposes an LSTM-based Encoder-
+       Decoder which aims at reconstructing “normal” time series            Multivariate time                Model             Threshold
+                                                                              series data
+       behaviors, and uses reconstruction errors for multi-sensor
+       anomaly detection. Although LSTM can deal with the                                                      Online     Anomaly   Anomaly       Anomaly
+                                                                                                              Detection    Score     Result     Interpretation
+       temporal dependence of time series, it is deterministic
+       without stochastic variables.                                     Figure 2: Overall Structure of OmniAnomaly. The solid
+     • Stochastic based models [16, 27]. [27] proposes a model           lines denote offline training and the dash lines show the
+       DAGMM which joints Deep Autoencoder (AE) and Gaussian             procedure of online detection.
+       Mixture Model (GMM) simultaneously. It reduces the dimen-
+                                                                            As shown in Fig. 2, the overall structure of OmniAnomaly consists
+       sion of input observations to get latent representations by
+                                                                         of two parts: offline training and online detection. Data Prepro-
+       AE, and estimates the density of the representations using
+                                                                         cessing is a module shared by both offline training and online
+       GMM. However, this method is designed for multivariate
+                                                                         detection. During data preprocessing, the dataset is transformed
+       variables (not multivariate time series), and ignores the
+                                                                         by data standardization, and then it is segmented into sequences
+       inherent temporal dependence of time series. Previous work
+                                                                         through sliding windows [21] of length T + 1. After preprocessing,
+       suggests that, in general, stochastic variables can improve
+                                                                         a training multivariate time series, usually spanning a period of
+       the performance of RNN, because they can capture the
+                                                                         time (e.g., a couple of weeks), is sent to Model Training module
+       probability distributions of time series [5]. [16] simply
+                                                                         to learn a model that captures the normal patterns of multivariate
+       combines LSTM and VAE by replacing the feed-forward
+                                                                         time series and outputs an anomaly score for each observation.
+       network in a VAE to LSTM, but ignores the dependence of
+                                                                         These anomaly scores are used by the Threshold Selection module
+       stochastic variables.
+                                                                         to choose an anomaly threshold automatically following the POT
+   Compared with the above approaches, OmniAnomaly is a                  method (see later in Section 4.4). This offline training procedure
+stochastic recurrent neural network which glues VAE and GRU              can be conducted routinely, e.g., once per week or month.
+such that the temporal dependence and stochasticity of time                 The Online Detection module stores the trained model. A new
+series can be explicitly modeled. Moreover, OmniAnomaly applies          observation (e.g., xt at time t) after preprocessing can be fed into
+techniques such as stochastic variable connection to model the           Online Detection module to get its anomaly score. If the anomaly
+temporal dependence between stochastic variables. As a result, the       score of xt is below the anomaly threshold, xt will be declared as
+stochastic variables can capture more information from historical        anomalous, otherwise, it is normal. If xt is detected as an anomaly,
+stochastic variables and represent the input data better, as will be     we interpret it by estimating and ranking the contribution (i.e.,
+demonstrated in Section 5.                                               reconstruction probability) of each dimension in xt .
+3    PRELIMINARIES
+In this section, we present the problem statement of multivariate
+                                                                         3.3      Basics of GRU, VAE and Planar NF
+                                                                         RNNs [5] are able to represent the time dependence by adopting
+time series anomaly detection in detail and introduce the overall
+                                                                         deterministic hidden variables. Simple RNN could fail to learn the
+    1 https://github.com/smallcowbaby/OmniAnomaly                        long-term dependence in a sequence [1]. RNN variants, LSTM
+and GRU [1], were invented to address this problem using gating
+                                                                                                       𝐳𝐭#𝐓           …      𝐳𝐭#𝟏               𝐳𝐭   𝐱′𝐭#𝐓       …    𝐱′𝐭#𝟏            𝐱′𝐭
+mechanisms. In general, the performance of GRU is as good as
+LSTM (GRU performs even better than LSTM in some applications
+[1]), and GRU is more suitable for model training when the datasets                                    𝐞𝐭#𝐓           …     𝐞𝐭#𝟏               𝐞𝐭    𝐝 𝐭#𝐓       …    𝐝 𝐭#𝟏            𝐝𝐭
+are not very large because of its fewer parameters and simpler
+structure [1]. Thus we apply GRU in OmniAnomaly to capture the                                          𝐱 𝐭#𝐓         …      𝐱 𝐭#𝟏             𝐱𝐭    𝐳𝐭#𝐓        …     𝐳𝐭#𝟏            𝐳𝐭
+complex temporal dependence in time series.
+                                                                                                                           (a1) qnet                                 (a2) pnet
+   VAE is a deep Bayesian model [7], and it has been successfully
+applied to anomaly detection for seasonal univariate time series [24].                              (a) Overall graphical model of OmniAnomaly which consists of two parts: (a1)
+VAE represents a high-dimensional input xt to a latent representa-                                  qnet and (a2) pnet . Nodes correspond to different variables. At time t , xt is
+                                                                                                    the input observation and x′t is the reconstruction of xt , et and dt are memory
+tion zt with a reduced dimension, and then reconstructs xt by zt .                                  variables in GRU cells which are deterministic, zt is a z-space variable which
+With a prior pθ (zt ) for zt , xt is sampled from posterior distributions                           is stochastic, and edges represent the dependence between variables.
+pθ (xt |zt ). However, it is intractable to compute pθ (xt |zt ), and VAE
+approximates pθ (xt |zt ) using an inference network qϕ (zt |xt ), where                                         Planar Normalizing Flow
+                                                                                                                                          𝐾
+                                                                                                                                                                     𝐱′𝐭
+                                                                                                                      𝑓1            𝑓2
+ϕ and θ are parameters of the inference net (i.e., qnet) and the                                                𝐳𝟎𝐭         𝐳𝟏𝐭          …𝑓   𝐳𝐊𝐭
+                                                                                                                                                          𝝁𝐱                  𝝈𝐱𝐭
+generative net (i.e., pnet), respectively.                                                               𝝁 𝐳𝐭                𝝈 𝐳𝐭
+                                                                                                                                                             𝐭
+
+
+   Stochastic Gradient Variational Bayes (SGVB) [7] is a variational                                    Linear                                         Linear          Softplus + 𝜖
+                                                                                                                           Softplus + 𝜖
+inference algorithm often used in VAE to train the parameters ϕ
+and θ by maximizing the evidence of lower bound (ELBO), L(xt ):                                                  Dense layer ℎ∅                              Dense layer ℎ𝜃
+
+       L(xt ) = Eqϕ (zt |xt ) [log(pθ (xt |zt ))] − D K L [q ϕ (zt |xt ) | |pθ (zt )]      (1)                        Concat
+                                                                                                            𝐳𝐭−𝟏                    𝐞𝐭                                           𝐝𝐭
+               = Eqϕ (zt |xt ) [ log(pθ (xt |zt )) + log(pθ (zt )) − log(q ϕ (zt |xt ))]
+                                                                                                            𝐞𝐭−𝟏                  GRU                        𝐝 𝐭−𝟏            GRU
+   Monte Carlo integration [19] can be used to compute the above
+                                        (l )                                                                                                                                      O𝜃
+expectation, as shown in Eq. 2, where zt , l = 1, 2...L is sampled                                                                  𝐱𝐭                       𝐳𝐭−𝟏                𝐳𝐭
+from the qϕ (zt |xt ).                                                                                                                                                 T𝜃
+                                                                                                         (b1) Network architecture for qnet           (b2) Network architecture for pnet
+             1 ÕL                  (l )            (l )             (l )
+    L(xt ) ≈         [log(pθ (xt |zt )) + log(pθ (zt )) − log(q ϕ (zt |xt ))] (2)
+             L  l =1                                                                                       (b) Detailed network architecture of OmniAnomaly at time t .
+     In the qnet, qϕ (zt |xt ) is often assumed to be diagonal Gaussian                          Figure 3: Overall graphical model and detailed network
+[7], but this simple assumption would make the network under-                                    architecture of OmniAnomaly
+fit because qϕ (zt |xt ) may not necessarily follow Gaussian. To                                 the qnet capture complex distributions of input data, we adopt
+learn the non-Gaussian posterior density qϕ (zt |xt ), [18] proposed                             planar NF [18] which uses a series of invertible mappings to learn
+a solution named planar NF which transforms qϕ (zt |xt ) using                                   non-Gaussian posterior distributions in latent stochastic space.
+the invertible mappings. We first sample from qϕ (zt |xt ) to get                                   The overall graphical model of OmniAnomaly is shown in Fig.
+z0t . Then through a chain of invertible mappings, we get zK           t =
+                                                                                                 3(a), which is composed of a qnet and a pnet. In the pnet, it uses
+f K (f K −1 (...f 1 (z0t ))), where f k (k = 1, 2...K) are invertible map-                       a latent representation zt−T:t (a set of probability distributions)
+ping functions (f k (zk−1                                                                        to reconstruct the input xt−T:t . An accurate representation can
+                            t ) = zt
+                                    k−1 + utanh(wT zk−1 + b), u, w and b
+                                                      t                                          minimize the reconstruction loss. qnet is optimized to approximate
+are the parameters) [18]. In the qnet, we only take zK         t , the final                     the pnet and obtain good latent representations.
+output of planar NF, as our stochastic variable zt (i.e., zt = zK    t ).                           The details of the qnet are shown in Fig. 3(b1). At time t, an input
+4      DESIGN OF OMNIANOMALY                                                                     observation xt and et−1 (the hidden variable in GRU at time t − 1),
+In this section, we first present the network architecture of                                    are sent to a GRU cell to generate the hidden variable et (Eq. 3a).
+OmniAnomaly, followed by offline model training, online anomaly                                  The deterministic et is critical for OmniAnomaly to capture long-
+detection, anomaly threshold selection, and anomaly interpretation.                              term complex temporal information between xt and its preceding
+                                                                                                 x-space observations. Then, et , concatenated with zt−1 , enters the
+4.1       Network Architecture                                                                   dense layer to generate mean µ zt and standard deviation σzt for the
+                                                                                                 stochastic variable zt (Eq. 3b and 3c). As a result, z-space variables
+The basic idea of OmniAnomaly is the following. First, it uses GRU
+                                                                                                 are now temporally dependent, as shown in Fig. 3(a1). The qnet
+to capture complex temporal dependence between multivariate ob-
+                                                                                                 can be formulated as follows:
+servations in x-space. Second, we apply VAE, a popular variational
+algorithm for representation learning, to map observations (i.e.,                                         et =(1 − cet ) ◦ t anh(we xt + ue (ret ◦ et−1 ) + be ) + cet ◦ et−1                (3a)
+input observations in x-space) to stochastic (i.e., z-space) variables.                                  µ zt =w µ z h ϕ ([zt−1, et ]) + b µ z                                               (3b)
+Third, inspired by speech reconstruction literature [5], to explicitly
+                                                                                                        σzt =sof tplus(wσz h ϕ ([zt−1, et ]) + bσz ) + ϵ σz                                  (3c)
+model temporal dependence among stochastic variables in the latent
+                                                                                                                              e       e         e
+space, we propose the stochastic variable connection technique                                   In Eq. 3a-3c, ret = siдmod(wr xt + ur et−1 + br ) is the reset gate
+(Linear Gaussian State Space Model (SSM) [8] connection between                                  determining how to combine a new input with the previous memory.
+                                                                                                                e       e         e
+stochastic variables, and the concatenation of stochastic variable                               cet = siдmod(wc xt + uc et−1 + bc ) is the update gate deciding how
+and GRU hidden variable). Forth, to help stochastic variables in                                 much previous memory need to keep.
+     As shown in Fig. 3(b1), [zt−1 , et ] is the concatenation of zt−1 and                   4.3     Online Detection
+et . hϕ denotes the dense layer with ReLU activation function. µ zt                          Now we can determine whether an observation at a time step
+is derived from a linear layer and σzt is produced by the soft-plus                          (say t, denoted as xt ) is anomalous or not using the trained
+activation function with small ϵ to prevent numerical overflow.                              OmniAnomaly model. Note that the input of OmniAnomaly is a
+All the u∗ -s, w∗ -s, b∗ -s are the parameters of the corresponding                          sequence data of length T +1. Thus, we take the sequence xt−T:t ,
+layers. The output of the qnet, z0t , is diagonal Gaussian and sampled                       i.e., xt and T consecutive observations preceding to it, as an input
+from N (µ zt , σz2t I). To learn a non-Gaussian posterior distribution                       to reconstruct xt . As suggested by [24], this reconstruction can
+of qϕ (zt |xt ), we use planar NF to approximate zt . As shown at the                        be evaluated by the conditional probability log(pθ (xt |zt−T:t )). This
+top of Fig. 3(b1), zt (i.e., zK                               0                              reconstruction probability is used as the anomaly score in our model.
+                              t ) is obtained by passing the zt through a
+                                    k                                                        The anomaly score of xt is denoted as S t , so S t = log(pθ (xt |zt−T:t )).
+chain of K transformations f which are planar mappings [18].
+                                                                                             A high score means the input xt can be well reconstructed. If an
+     The pnet, as shown in Fig. 3(b2), attempts to reconstruct xt
+                                                                                             observation follows the normal patterns of time series, it can be
+with zt using a structure similar to the qnet. We utilize linear
+                                                                                             reconstructed with high confidence. On the other hand, the smaller
+Gaussian SSM [8] to “connect” z-space variables in qnet and make
+                                                                                             the score, the less likely the observation can be reconstructed and
+them temporally dependent: zt = Oθ (Tθ zt−1 + vt ) + ϵ t , where
+                                                                                             thus it is more likely to be anomalous. Formally, if S t is lower than
+Tθ and Oθ are transition and observation matrices [8], vt and ϵ t
+                                                                                             an anomaly threshold, then xt is marked as anomalous; otherwise
+are transition and observation noises. At time t, zt , along with the
+                                                                                             xt is normal. Next, we describe how to automatically determine the
+variable dt−1 at time t-1, is passed through a GRU cell to produce
+                                                                                             anomaly threshold offline.
+the deterministic variable dt (Eq. 4a). Then dt is further processed
+through the dense layer to generate the mean µ xt and standard                               4.4     Automatic Threshold Selection
+deviation σxt of variable xt′ (reconstruction of xt ) (Eq. 4b and 4c).                       As shown in Fig. 2, during offline training, with a multivariate
+     Similar to the qnet, the pnet can be formulated as follows:                             time series of N ′ observations, we compute an anomaly score for
+       dt =(1 − cdt ) ◦ t anh(wd zt + ud (rdt ◦ dt−1 ) + bd ) + cdt ◦ dt−1            (4a)   every observation. Then all anomaly scores form a univariate time
+                µx θ           µx                                                            series {S 1 , S 2 , ..., S N′ }. Next, we set the anomaly threshold th F offline
+      µ xt =w    h (dt ) + b                                                          (4b)
+                                                                                             following the principle of Extreme Value Theory (EVT) [22].
+      σxt =sof tplus(wσx h θ (dt ) + bσx ) + ϵ σx                                     (4c)      EVT is a statistical theory whose goal is to find the law of
+                          d     d        d                       d
+   where rdt = siдmod(wr zt +ur dt−1 +br ) and cdt = siдmod(wc zt +                          extreme values, and extreme values are usually placed at the
+  d          d                                                                               tails of a probability distribution. The advantage of EVT is that
+uc dt−1 + bc ), which are the reset and update gate, respectively.
+                                                                                             it makes no assumption on data distribution when finding extreme
+   The reconstructed data xt′ is sampled from N (µ xt , σx2t I) and
+                                                                                             values. Peaks-Over-Threshold (POT) [22] is the second theorem
+created from zt . If there is an anomaly at time t, xt′ may vary
+                                                                                             in EVT. The basic idea of POT is to fit the tail portion of a
+significantly from the original data xt . Therefore, we can detect
+                                                                                             probability distribution by a generalized Pareto distribution (GPD)
+anomalies based on the reconstruction probability of xt .
+                                                                                             with parameters. We adopt POT to learn the threshold of anomaly
+                                                                                             scores. Unlike classical POT applications which focus on “values
+4.2     Offline Model Training
+                                                                                             at the high end of a distribution”, anomalies in our analysis are
+The qnet and pnet in OmniAnomaly are trained simultaneously                                  located at the low end of the distribution. So we adapt the GPD
+by tuning the network parameters (u∗ -s, w∗ -s, and b∗ -s). Similar                          function as follows:
+to VAE models, we can train our model straightforwardly by                                                                                           γs −γ 1
+                                                                                                            F¯ (s) = P (t h − S > s |S < t h) ∼ (1 +   )                  (6)
+optimizing ELBO, as described in Section 3.3. The length of each                                                                                     β
+input sequence data (e.g., xt−T:t ) in training dataset is T +1. For the                        where th is the initial threshold of anomaly scores, γ and β are
+             (l )
+l-th sample zt−T:t , where 1 ≤ l ≤ L and L is the sample length, the                         shape and scale parameters of GPD, S is any value in {S 1 , S 2 , ..., S N′ }.
+loss function can be formulated as:                                                          The portion below a threshold th is denoted as th − S, and it is
+                        ÕL                                                                   empirically set to a low quantile. Similar to [22], we estimate the
+       e t−T:t ) ≈ 1
+       L(x
+                                                      (l )
+                                  [log(pθ (xt−T:t |zt−T:t ))+                          (5)
+                   L       l =1                                                              values of parameters γ̂ and βˆ by Maximum Likelihood Estimation
+                                             (l )                 (l )
+                                    log(pθ (zt−T:t )) − log(q ϕ (zt−T:t |xt−T:t ))]          (MLE). The final threshold th F is then computed by:
+                                                                                                                                   βˆ qN ′ −γ̂
+                                                                                                                    t hF ≃ t h −
+                                                                                                                                                 
+    For each sample, the first term of Eq. 5 is the negative reconstruc-                                                              (     ) −1                          (7)
+                                              Ít                                                                                   γ̂ N t′h
+tion error: log(pθ (xt−T:t |zt−T:t )) = i=t           −T log(pθ (xi |zt−T:i )), and             where q is the desired probability to observe S < th, N ′ is the
+the posterior probability of xi can be calculated as: pθ (xi |zt−T:i ) ∼                     number of observations, and Nth  ′ is the number of S s.t. S < th.
+                                                                                                                                                    i      i
+N (µ xi , σx2i I). The sum of the second and third terms is regulariza-                      For POT method, there are only two parameters (low quantile and
+tion (i.e., Kullback-Leibler loss). The second term log(pθ (zt−T:t )) =                      q) that need to be tuned. These two parameters are model-wide and
+Ít
+   i=t −T log(pθ (zi |zi−1 )), where zi can be obtained by Linear Gauss-                     can be set empirically: low quantile (e.g., less than 7%) and q (e.g.,
+ian SSM [8] initialized with the standard multivariate normal                                10−4 ) [22], seeing Appendix B.
+distribution. The third term is to approximate the true posterior dis-
+tribution of zi in the z-space in the qnet: − log(qϕ (zt−T:t |xt−T:t )) =                    4.5     Anomaly Interpretation
+   Ít
+         −T log(q ϕ (zi |zi−1 , xt−T:i )). zi (i.e., zi ) is transformed through
+− i=t                                                 K
+                                                                                             As described in Section 1, the goal of our anomaly interpretation
+planar NF. zi = f (f
+                 K       K    K −1 (...f (zi ))), where z0i = µ zi + ξ i σzi ,
+                                         1     0
+                                                                                             solution is to annotate the detected entity anomaly with the top few
+ξ i ∼ N (0, I), and the formulation of f k can be seen in Section 3.3.                       univariate time series ranked by their reconstruction probabilities.
+Thus, we have to obtain the reconstruction probability for individual             5.2.1 OmniAnomaly vs. other approaches. To demonstrate the
+x ti (the i-th dimension of xt ). However, in OmniAnomaly, the recon-             effectiveness of OmniAnomaly, we first compare it with four
+struction probability is calculated for the M-dimensional xt . For-               state-of-the-art unsupervised approaches for multivariate time
+tunately, as presented in Section 4.2, pθ (xt |zt−T:t ) ∼ N (µ xt , σx2t I),      series anomaly detection: LSTM with nonparametric dynamic
+                        ÎM
+thus, pθ (xt |zt−T:t ) = i=1  pθ (x ti |zt−T:t ). Therefore, the conditional      thresholding (LSTM-NDT for short) [6], EncDec-AD [11], DAGMM
+probability of xt can be factorized as:                                           [27], and LSTM-VAE [16], which have been described in Section
+                                         ÕM                                       2. Moreover, we select Donut [24], a state-of-the-art univariate
+               log(pθ (xt |zt−T:t )) =           log(pθ (x ti |zt−T:t ))    (8)
+                                          i =1                                    time series anomaly detection approach based on VAE, as another
+         ÍM
+   S t = i=1 S ti , where S ti = log(pθ (x ti |zt−T:t ) and S ti is the anomaly   baseline. To apply Donut [24] to multivariate time series anomaly
+score of x ti . Note that S ti benefits from the rich information in the          detection, we use a simple rule to define entity-level anomalies as
+multivariate time series xt−T:t−1 , thus its interpretation power is              follows: for an M-dimensional entity, at time t, if there are at least
+higher than the anomaly score that is obtained by just utilizing                  M ′ (1 ≤ M ′ ≤ M, where M ′ can be tuned by different datasets)
+x ti −T :t −1 (as in univariate time series).                                     univariate time series that are anomalous, then the entity is declared
+      For a detected anomaly xt , we interpret it by estimating the               as anomalous.
+contribution (i.e., reconstruction probability) of each dimension                     Table 2 shows the precision, recall, F1 of LSTM-NDT, DAGMM,
+of xt . We sort S ti (1 ≤ i ≤ M) in ascending order and form the                  LSTM-VAE and OmniAnomaly on three datasets and Total dataset
+list AS t . For x ti , the higher ranked in AS t , the smaller S ti , and the     (i.e., union of these three datasets). Each of these approaches pro-
+greater contribution of x ti to xt . The ordered list is presented to the         vides a specific method for us to choose anomaly thresholds and F1
+operators as the anomaly interpretation, and hopefully the top few                is calculated accordingly. OmniAnomaly outperforms all baselines
+dimensions can provide sufficient clues for operators to understand               on MSL and SMD datasets, and its F1 is only slightly lower than the
+and troubleshoot the detected entity anomaly.                                     best baseline on SMAP dataset. Also, OmniAnomaly exceeds the
+      Note that the factorization Eq. 8 holds as long as pθ (xt |zt−T:t ) ∼       best performing state-of-the-art method (i.e., LSTM-NDT) by 0.09
+N (µ xt , σx2t I) holds. Therefore, our proposed anomaly interpre-                on the F1 for Total dataset. OmniAnomaly’s robustness is better than
+tation approach is applicable to other multivariate time series                   baseline models in that the precision and recall of OmniAnomaly are
+anomaly detection algorithms such as [16].                                        both higher than 0.74 for all three datasets, which is not achieved
+                                                                                  by any baseline approaches.
+5     EVALUATION                                                                                     Donut          LSTM-NDT   EncDec-AD         DAGMM      LSTM-VAE   OmniAnomaly
+In this section, we first describe experimental datasets and perfor-                           1.0
+
+
+mance metrics. Then, we conduct many experiments to show the                                   0.9
+
+
+effectiveness of our model.                                                                    0.8
+                                                                                      F1best
+
+
+
+
+                                                                                               0.7
+5.1     Datasets and Performance Metrics                                                       0.6
+To demonstrate the effectiveness of OmniAnomaly, we conduct
+                                                                                               0.5
+experiments on three datasets: SMD (Server Machine Dataset),                                                 SMAP              MSL
+                                                                                                                                           Datasets
+                                                                                                                                                      SMD              Total
+
+
+SMAP (Soil Moisture Active Passive satellite) and MSL (Mars                       Figure 4: F1b est of OmniAnomaly and all baseline models.
+Science Laboratory rover). More details can be seen in Appendix A.
+   We use Precision, Recall, F1-Score (denoted as F1) to evaluate                    Since Donut [24] and EncDec-AD [11] provide no specific
+the performance of OmniAnomaly and baseline models: F1 =                          methods for choosing anomaly thresholds, they are not shown
+2 × P r ecision × Recall
+  P r ecision + Recall
+                         , where Precision= T PT+PF P , Recall= T PT+PF N .       in Table 2. Instead, they are evaluated using F1best , as shown in Fig.
+Some anomaly detection models provide methods to choose anom-                     4. Again, OmniAnomaly excels all baseline models at MSL and MSD
+aly thresholds, and thus their F1 can be calculated based on the                  datasets and is ranked the second at SMAP dataset. In particular,
+selected thresholds accordingly. In case a model gives no specific                OmniAnomaly outperforms the best performing state-of-the-art
+way to select thresholds, or we want to calculate a model’s best F1               method (i.e., LSTM-NDT) by 0.086 on F1best (0.8871 vs. 0.8012) for
+in theory, we enumerate all possible anomaly thresholds to search                 Total dataset. For those algorithms already listed in Table 2, there
+for the best F1, denoted as F1best , in contrast with F1.                         is no significant difference between their F1 and F1best .
+   In practice, anomalous observations usually occur continuously                    Overall, these experimental results demonstrate the superiority
+to form contiguous anomaly segments. It is acceptable if an alert                 of OmniAnomaly compared with the state-of-the-art approaches.
+for anomalies is triggered within any subset of a ground truth                    Next, we analyze the performance of these methods in detail.
+anomaly segment. Thus, a point-adjust approach was proposed                          Donut [24] aims at univariate time series anomaly detection.
+by [24] to calculate the performance. For any observation in the                  We use the aforementioned rule combining the anomaly result of
+ground truth anomaly segment, if it is detected as an anomaly,                    each univariate time series to do multivariate time series anomaly
+we think this segment is detected correctly and all observations                  detection. For each dataset, we enumerate all values to get the
+in the segment are considered to have been correctly detected as                  M ′ which can make Donut perform the best, and the values of
+anomalies. The observations outside the ground truth anomaly                      M ′ for SMAP, MSL, SMD are 1, 10, 5 respectively. We can see
+segment are treated as usual. We adopt the point-adjust way to                    that, M ′ varies by different datasets, because it heavily relies on
+calculate the performance metrics in our paper.                                   characteristics of the datasets. In reality, for each dataset, it would
+                                                                                  be challenging and requires extensive domain knowledge to choose
+5.2     Results and Analysis                                                      a proper M ′ , and one specific rule may not be appropriate for all
+  Table 2: Performance of OmniAnomaly and 3 baseline approaches. F1b est of Donut [24] and EncDec-AD [11] are in Fig. 4.
+                                         SMAP                             MSL                                       SMD                                          Total
+          Methods
+                         P (Precision)    R (Recall)     F1        P        R         F1                P             R            F1                P             R         F1
+      LSTM-NDT [6]          0.8965         0.8846      0.8905   0.5934   0.5374     0.5640           0.5684        0.6438        0.6037           0.7598        0.7794     0.7694
+       DAGMM [27]           0.5845         0.9058      0.7105   0.5412   0.9934     0.7007           0.5951        0.8782        0.7094           0.5835        0.9042     0.7093
+      LSTM-VAE [16]         0.8551         0.6366      0.7298   0.5257   0.9546     0.6780           0.7922        0.7075        0.7842           0.7782        0.7075     0.7411
+      OmniAnomaly           0.7416         0.9776      0.8434   0.8867   0.9117     0.8989           0.8334        0.9449        0.8857           0.7797        0.9586     0.8599
+
+anomaly types because of the diversity of the faults. Donut performs              contains the temporal relationship in time series. As a result,
+the worst on MSL, because MSL has more univariate time series                     OmniAnomaly performs better than DAGMM.
+and anomalous types than SMAP and SMD. These observations                             LSTM-VAE [16] simply combines LSTM and VAE by replacing
+confirm our intuition that we should model the multivariate time                  the feed-forward network in a VAE with LSTM. As suggested by
+series as an entity, instead of examining each univariate time series             [2], for sequential data modeling, in order to well represent the
+individually, to understand their behaviors.                                      input data, it is beneficial to include information coming from zt−1
+   LSTM-NDT [6] is a deterministic model without leveraging                       as part of zt . However, LSTM-VAE does not consider the temporal
+stochastic information. Stochastic information can improve model                  dependence among stochastic (i.e., z-space) variables. This explains
+performance because it can learn the inherent stochasticity of                    its worse performance compared to OmniAnomaly.
+time series [5]. As a stochastic model, OmniAnomaly performs                          Summary. Compared with deterministic approaches like LSTM-
+better than LSTM-NDT. Moreover, LSTM-NDT is a prediction-based                    NDT and EncDec-AD, OmniAnomaly is a deep Bayesian network
+model. However, some time series are inherently unpredictable                     which extends the modeling capabilities of recurrent neural net-
+[11] due to external factors. As a result, the prediction of time                 works with stochastic variables. Moreover, OmniAnomaly is a
+series may not be accurate and the prediction-based models may                    reconstruction based model that can work well regardless of the
+not be appropriate. According to [6], for MSL, a wide variety of                  predictability of the multivariate time series. Unlike DAGMM, Om-
+behaviors with varying regularity make it hard to be predicted.                   niAnomaly works well with the temporal dependence of time series
+Some time series (e.g., TCP retransmissions, the second univariate                data by GRU. Besides, compared with LSTM-VAE, OmniAnomaly
+time series in Fig. 1) in SMD are also unpredictable because                      captures the dependence of the stochastic variables through the
+of uncontrollable factors (e.g., complex and dynamic network                      z-space variable connection such that our z-space layer can better
+environment). Therefore, LSTM-NDT does not perform well on                        represent the distributions of input data. Moreover, planar NF is
+these two datasets. OmniAnomaly is a reconstruction-based model                   also helpful in constructing z-space variables in the qnet. The
+which aims at learning normal patterns of multivariate time series,               effectiveness of z-space variable connection and planar NF will
+so it works well with both predictive and unpredictable time series.              be described shortly.
+   EncDec-AD [11] is a seq2seq model based on encoder-decoder
+                                                                                  5.2.2 Effects of major techniques in OmniAnomaly. In this section,
+reconstruction. This model uses the final hidden variable of its
+                                                                                  we experimentally show the effects of four major techniques in
+encoder as the initial hidden variable of its decoder. When the length
+                                                                                  OmniAnomaly: (1) GRU; (2) z-space variable connection; (3) planar
+or dimension of an input sequence is large, it is difficult for the final
+                                                                                  NF; (4) POT method for automatic anomaly threshold selection.
+hidden variable in the encoder to remember all the information
+                                                                                     We reconfigure OmniAnomaly to create four categories of
+of the entire sequence such that the input can be perfectly
+                                                                                  variants, denoted as C1-C4, described as follows. (C1) In this
+reconstructed. Thus it is not surprising that EncDec-AD performs
+                                                                                  category, the GRU in OmniAnomaly is replaced by a simple RNN,
+the worst on MSL, because the dimension of MSL is larger than
+                                                                                  denoted as “C1-RNN”, or by LSTM, denoted as “C1-LSTM”. (C2) The
+the other two datasets, and the final hidden variable in the encoder
+                                                                                  z-space variables are connected in qnet only (denoted as “C2-qnet”),
+may not be able to remember sufficient information. In addition,
+                                                                                  in pnet only (denoted as “C2-pnet”), or in neither net (denoted as
+EncDec-AD’s hidden layer is composed of LSTM units, which are
+                                                                                  “C2-no z connected”). (C3) Planar NF in qnet of OmniAnomaly is
+not able to handle stochastic information. This deterministic nature
+                                                                                  replaced by Gaussian function (i.e., “C3-no planar NF”). (C4) Instead
+perhaps also contributes to its inferior performance.
+                                                                                  of applying the POT method to set a threshold automatically, here
+   DAGMM [27] focuses on anomaly detection for multivariate
+                                                                                  we enumerate thresholds to obtain F1best . For fair comparison, the
+data without temporal information between observations. The
+                                                                                  results for variants in Categories C1-C3 are all evaluated by F1best .
+input of DAGMM is just one observation (i.e., multivariate obser-
+vation) instead of a sequence of T +1 observations. However, for                                     OmniAnomaly
+                                                                                                     C1-LSTM
+                                                                                                                            C1-RNN
+                                                                                                                            C2-no z connected
+                                                                                                                                                      C2-qnet
+                                                                                                                                                      C2-pnet
+                                                                                                                                                                         C3-no planar NF
+
+
+multivariate time series, the temporal information is important                                1.0
+
+
+and necessary, because observations are dependent and historical                               0.9
+
+
+data is helpful in reconstructing current observations. For example,                           0.8
+                                                                                      F1best
+
+
+
+
+without considering temporal information, the observation around                               0.7
+
+
+40-th hour in Fig. 1 would be easily mistaken as anomalous by                                  0.6
+
+
+DAGMM and causes a false positive, because it has a low probability                            0.5
+                                                                                                         SMAP                               MSL                           SMD
+                                                                                                                                          Datasets
+among all multivariate observations. In our model, for both training
+and detection, the input is a sequence of observations which                      Figure 5: F1b est of OmniAnomaly and the variants in C1-C3.
+    Effect of GRU. From Fig. 5, we can see that “C1-RNN” is inferior           length of GTt and P can be 100 or 150. Hit@P% equals the number
+to “C1-LSTM” and OmniAnomaly, because a simple RNN is not                      of overlapping dimensions between GTt (ground truth) and the
+able to capture long-term dependence of time series. Moreover,                 top ⌊P% × |GTt |⌋ contributing dimensions in AS t suggested by
+OmniAnomaly is slightly better than “C1-LSTM”. This may be                     OmniAnomaly. We give a toy example to explain HitRate@P%. For
+possibly explained by the fact that GRU has fewer parameters and               a 6-dimensional observation xt , its AS t is {2, 3, 6, 1, 5, 4} and GTt is
+simpler structure [1] than LSTM so it is easier for model training.            {2, 6}. The result is 0.5 for HitRate@100% and 1.0 for HitRate@150%.
+Thus, we choose GRU to capture complex temporal dependence of                     There is no ground truth provided for SMAP and MSL for
+multivariate time series (i.e., x-space) in our model.                         anomaly interpretation, thus we evaluate OmniAnomaly only on
+    Effect of z-space variable connection. Explicitly modeling the             SMD. The average interpretation accuracy for all detected anom-
+temporal dependence of z-space variables is an indispensable                   alies is: HitRate@100%=0.8002 and HitRate@150%=0.8919, which
+technique in our model, and it is critical for latent representations          demonstrates that OmniAnomaly can give reasonable interpretation
+to learn the normal patterns of input data. Fig. 5 shows the                   for anomalies in practice. Similarly, we can also evaluate the
+performance of OmniAnomaly and its three variants in C2. We can                interpretability of entity anomalies detected by LSTM-VAE in
+see that with z-space variable connection both in qnet and pnet, Om-           SMD dataset: HitRate@100%=0.5046 and HitRate@150%=0.6239.
+niAnomaly performs better than the other three variants. z-space               OmniAnomaly achieves better anomaly interpretability than LSTM-
+variable connection in qnet can help the stochastic variables in qnet          VAE, because our z-space variables can represent the input data
+capture more information from historical stochastic variables so               more robustly to improve reconstruction.
+that they can represent the input data better. Rather than simply
+choosing N (0, I) as the prior of z-space variables, OmniAnomaly can           6 DISCUSSION
+fit the prior expectation of a data distribution better by applying            6.1 Visualization on z-space representations
+Linear Gaussian SSM for z-space variable connection in pnet. MSL
+                                                                               In this section, we explain how OmniAnomaly works for anom-
+contains substantial one-hot encoded data and its anomalies involve
+                                                                               aly detection through visualizing the z-space representations.
+dramatic changes. As a result, it is easy to reconstruct the input
+                                                                               OmniAnomaly is a reconstruction-based model. For an input
+data and detect anomalies. Thus, the benefit of z-space variable
+                                                                               observation, OmniAnomaly compresses it to a low dimension z-
+connection in MSL is not significant.
+                                                                               space representation and then uses the representation to reconstruct
+    Effect of Planar NF. Planar NF can capture complicated data
+                                                                               it. During model training, OmniAnomaly learns the representations
+patterns and help construct z-space variables in qnet. Fig. 5
+                                                                               of normal behaviors of the training data. If an input observation is
+compares OmniAnomaly and “C3-no planar NF”. We can see that,
+                                                                               anomalous, its z-space representation and the reconstructed value
+the performance of OmniAnomaly is improved by using planar NF.
+                                                                               are still normal, so the reconstruction probability is low.
+Instead of assuming the approximate posterior distribution in qnet
+is Gaussian [24], planar NF transforms an initial distribution (e.g.,
+Gaussian) with a sequence of invertible mappings, so it can capture
+complex and flexible distributions of input data [18] and improve
+the performance of our model. In MSL, the effect of planar NF is not
+as significant as in the other two datasets, because simple z-space
+variables can already represent its sparse input data.
+         Table 3: F1 obtained through POT vs. F1b est .                        Figure 6: (Left) The 3-dimensional z-space variables of SMD
+   Evaluation metrics for OmniAnomaly        SMAP       MSL      SMD           by OmniAnomaly (where red points are from anomalous
+        F1 obtained through POT              0.8434    0.8989   0.8857         class and blue ones are from normal class). (Right) Ran-
+                 F1be s t                    0.8535    0.9014   0.9620         domly choose a normal observation xt , “⋆” denotes µ zt and
+                                                                               the ellipsoid denotes its 2-σzt region; xt is set to zeros to
+   Effect of POT method. An effective method for anomaly threshold             obtain an anomalous sample, denoted by “+” in z-space.
+selection is very necessary and useful in practical applications.
+In OmniAnomaly, we apply the POT method to set the threshold                      The left figure in Fig. 6 shows the 3-d z-space variables learned
+automatically. From Table 3, we can see that, F1 obtained through              from SMD by OmniAnomaly. All z-space variables are sampled
+POT is only slightly lower than F1best (0.003∼0.077), indicating               from qϕ (zt |xt−T:t ). We find anomalous samples highly overlap
+that POT method is effective for anomaly threshold selection.                  with normal samples, indicating that their z-space representations
+                                                                               are quite similar. Following [24], we randomly select a normal
+5.2.3 Performance of anomaly interpretation. For a detected anom-              observation and change its values to make it an anomaly, i.e.,
+aly xt , OmniAnomaly estimates the contribution (i.e. reconstruction           setting its values to all zeros, with a change magnitude equal to
+probability) of xt ’s each dimension to this anomaly and record                385, 069 times of x’s standard deviations. As shown in the right
+all dimensions into a list, AS t , ordered by their contributions. Let         figure in Fig. 6, the z-space variables of the original observation
+GTt be the ground truth array containing the dimensions indeed                 and the manipulated one are still very close. This further demon-
+contributing to anomaly xt . Since there exist no established metrics          strates that, despite anomalies, their z-space variables learned
+to evaluate the interpretability of entity anomalies, motivated by             by OmniAnomaly are still normal. These examples illustrate z-
+the idea of HitRate@K for recommender systems [25], we define                  space variables in OmniAnomaly capture the observations’ normal
+                                  H it @ ⌊P %× |GTt | ⌋
+a new metric HitRate@P%=                 |GT |          , where|GTt | is the   patterns well.
+                                            t
+6.2     Lessons Learned                                                                 [5] Marco Fraccaro, Søren Kaae Sønderby, Ulrich Paquet, and Ole Winther. 2016.
+In this study, we learned three lessons that are in general poten-                          Sequential neural models with stochastic layers. In Advances in neural information
+                                                                                            processing systems. 2199–2207.
+tially applicable to the robust modeling of those complex time                          [6] Kyle Hundman, Valentino Constantinou, Christopher Laporte, Ian Colwell, and
+series/sequence data (e.g., speech, music, and monitoring) with                             Tom Soderstrom. 2018. Detecting Spacecraft Anomalies Using LSTMs and
+                                                                                            Nonparametric Dynamic Thresholding. In Proceedings of the 24th ACM SIGKDD
+both temporal dependence and stochasticity. First, a combination                            International Conference on Knowledge Discovery &#38; Data Mining (KDD ’18).
+of stochastic deep Bayesian model and deterministic RNN model                               ACM, New York, NY, USA, 387–395.
+is necessary. Second, the connection of stochastic variables is                         [7] Diederik P. Kingma and Max Welling. 2014. Auto-Encoding Variational Bayes. In
+                                                                                            Proceedings of the Second International Conference on Learning Representations
+necessary and effective. In particular, both the concatenation of                           (ICLR 2014).
+RNN hidden variable and z-space variable in qnetand the Linear                          [8] Genshiro Kitagawa and Will Gersch. 1996. Linear Gaussian State Space Modeling.
+Gaussian SSM connection of z-space variables in pnet help learn                             In Smoothness Priors Analysis of Time Series. Springer, 55–65.
+                                                                                        [9] Nikolay Laptev, Saeed Amizadeh, and Ian Flint. 2015. Generic and scalable
+more information from historical stochastic variables, and thus                             framework for automated time-series anomaly detection. In Proceedings of the
+improves the quality of latent representations. Third, it is necessary                      21th ACM SIGKDD International Conference on Knowledge Discovery and Data
+                                                                                            Mining. ACM, 1939–1947.
+to assume non-Gaussian distributions in z-space, which can be                          [10] Chen Luo, Jian-Guang Lou, Qingwei Lin, Qiang Fu, Rui Ding, Dongmei Zhang,
+learned through flow models such as normalizing flows.                                      and Zhe Wang. 2014. Correlating events with time series for incident diagnosis.
+   The lessons learned for multivariate time series anomaly detec-                          In Proceedings of the 20th ACM SIGKDD international conference on Knowledge
+                                                                                            discovery and data mining. ACM, 1583–1592.
+tion are the following. First, reconstruction-based models are more                    [11] Pankaj Malhotra, Anusha Ramakrishnan, Gaurangi Anand, Lovekesh Vig, Puneet
+robust than prediction-based models, as the time series data in                             Agarwal, and Gautam Shroff. 2016. LSTM-based encoder-decoder for multi-sensor
+practice could be unpredictable. Second, for reconstruction-based                           anomaly detection. arXiv preprint arXiv:1607.00148 (2016).
+                                                                                       [12] Emaad Manzoor, Sadegh M Milajerdi, and Leman Akoglu. 2016. Fast memory-
+models, it is critical to obtain robust latent representations which                        efficient anomaly detection in streaming heterogeneous graphs. In Proceedings
+can accurately capture the normal patterns of time series. Third,                           of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and
+                                                                                            Data Mining. ACM, 1035–1044.
+reconstruction-based stochastic approaches (e.g., OmniAnomaly                          [13] José-Antonio Martínez-Heras and Alessandro Donati. 2014. Enhanced telemetry
+and[16]) offer an opportunity to interpret the anomalies with                               monitoring with novelty detection. AI Magazine 35, 4 (2014), 37–46.
+physical significance, based on the reconstruction probabilities                       [14] Vinod Nair, Ameya Raul, Shwetabh Khanduja, Vikas Bahirwani, Qihong Shao,
+                                                                                            Sundararajan Sellamanickam, Sathiya Keerthi, Steve Herbert, and Sudheer
+of the anomalous observation’s individual dimensions.                                       Dhulipalla. 2015. Learning a hierarchical monitoring system for detecting and
+7     CONCLUSION                                                                            diagnosing service issues. In Proceedings of the 21th ACM SIGKDD International
+                                                                                            Conference on Knowledge Discovery and Data Mining. ACM, 2029–2038.
+Entity-level anomaly detection can greatly help operation engineers                    [15] Animesh Nandi, Atri Mandal, Shubham Atreja, Gargi B Dasgupta, and Subhrajit
+discover and troubleshoot abnormal behaviors of devices timely. In                          Bhattacharya. 2016. Anomaly detection using program control flow graph
+                                                                                            mining from execution logs. In Proceedings of the 22nd ACM SIGKDD International
+this paper, we propose OmniAnomaly, a novel stochastic recurrent                            Conference on Knowledge Discovery and Data Mining. ACM, 215–224.
+neural network for multivariate time series anomaly detection                          [16] Daehyung Park, Yuuna Hoshi, and Charles C. Kemp. 2018. A Multimodal
+that works well robustly for various devices. We believe its key                            Anomaly Detector for Robot-Assisted Feeding Using an LSTM-Based Variational
+                                                                                            Autoencoder. IEEE Robotics and Automation Letters 3 (2018), 1544–1551.
+techniques, such as stochastic variable connection, are applicable to                  [17] Daehyung Park, Hokeun Kim, Yuuna Hoshi, Zackory Erickson, Ariel Kapusta,
+other time series modeling tasks. Moreover, OmniAnomaly provides                            and Charles C Kemp. 2017. A multimodal execution monitor with anomaly
+an intuitive and effective way to interpret detected entity anomalies,                      classification for robot-assisted feeding. In Intelligent Robots and Systems (IROS),
+                                                                                            2017 IEEE/RSJ International Conference on. IEEE, 5406–5413.
+based on reconstruction probability. Through extensive experi-                         [18] Danilo Jimenez Rezende and Shakir Mohamed. 2015. Variational Inference with
+ments, OmniAnomaly outperforms state-of-the-art approaches on                               Normalizing Flows. Computer Science (2015), 1530–1538.
+                                                                                       [19] Christian Robert and George Casella. 2013. Monte Carlo statistical methods.
+three large datasets. OmniAnomaly’s excellent performance on                                Springer Science & Business Media.
+each dataset also demonstrates that it is a robust model and can be                    [20] A. Rodriguez, D. Bourne, M. Mason, G. F. Rossano, and J. Wang. 2010. Failure
+applied to various devices such as server machines and spacecrafts.                         detection in assembly: Force signature analysis. In 2010 IEEE International
+                                                                                            Conference on Automation Science and Engineering. 210–215.
+8     ACKNOWLEDGMENT                                                                   [21] Terrence J Sejnowski and Charles R Rosenberg. 1987. Parallel networks that
+We thank Wenxiao Chen, Haowen Xu, Weibin Meng, Ping Liu                                     learn to pronounce English text. Complex systems 1, 1 (1987), 145–168.
+                                                                                       [22] Alban Siffer, Pierre-Alain Fouque, Alexandre Termier, and Christine Largouet.
+and Nengwen Zhao for their helpful discussions on this work. We                             2017. Anomaly detection in streams with extreme value theory. In Proceedings of
+thank Juexing Liao for proofreading this paper. This work has been                          the 23rd ACM SIGKDD International Conference on Knowledge Discovery and Data
+                                                                                            Mining. ACM, 1067–1075.
+supported by the Beijing National Research Center for Information                      [23] Fei Wu, Pranay Anchuri, and Zhenhui Li. 2017. Structural event detection from
+Science and Technology (BNRist) key projects, and the Okawa                                 log messages. In Proceedings of the 23rd ACM SIGKDD International Conference
+Research Grant.                                                                             on Knowledge Discovery and Data Mining. ACM, 1175–1184.
+                                                                                       [24] Haowen Xu, Wenxiao Chen, Nengwen Zhao, Zeyan Li, Jiahao Bu, Zhihan Li,
+                                                                                            Ying Liu, Youjian Zhao, Dan Pei, Yang Feng, et al. 2018. Unsupervised Anomaly
+REFERENCES                                                                                  Detection via Variational Auto-Encoder for Seasonal KPIs in Web Applications.
+ [1] Junyoung Chung, Caglar Gulcehre, KyungHyun Cho, and Yoshua Bengio. 2014.               In Proceedings of the 2018 World Wide Web Conference on World Wide Web.
+     Empirical evaluation of gated recurrent neural networks on sequence modeling.          International World Wide Web Conferences Steering Committee, 187–196.
+     arXiv preprint arXiv:1412.3555 (2014).                                            [25] Xiwang Yang, Harald Steck, Yang Guo, and Yong Liu. 2012. On top-k
+ [2] Junyoung Chung, Kyle Kastner, Laurent Dinh, Kratarth Goel, Aaron C Courville,          recommendation using social networks. In Proceedings of the sixth ACM conference
+     and Yoshua Bengio. 2015. A recurrent latent variable model for sequential data.        on Recommender systems. ACM, 67–74.
+     In Advances in neural information processing systems. 2980–2988.                  [26] Arthur Zimek, Erich Schubert, and Hans-Peter Kriegel. 2012. A survey on
+ [3] Dhivya Eswaran, Christos Faloutsos, Sudipto Guha, and Nina Mishra. 2018.               unsupervised outlier detection in high-dimensional numerical data. Statistical
+     Spotlight: Detecting anomalies in streaming graphs. In Proceedings of the 24th         Analysis and Data Mining: The ASA Data Science Journal 5, 5 (2012), 363–387.
+     ACM SIGKDD International Conference on Knowledge Discovery &amp; Data             [27] Bo Zong, Qi Song, Martin Renqiang Min, Wei Cheng, Cristian Lumezanu, Daeki
+     Mining. ACM, 1378–1386.                                                                Cho, and Haifeng Chen. 2018. Deep autoencoding gaussian mixture model
+ [4] Pavel Filonov, Andrey Lavrentyev, and Artem Vorontsov. 2016. Multivariate              for unsupervised anomaly detection. In International Conference on Learning
+     industrial time series with cyber-attack simulation: Fault detection using an          Representations.
+     lstm-based predictive data model. arXiv preprint arXiv:1612.06676 (2016).
+A     DATASETS                                                           that some model parameters overflow (i.e., become NaN). To deal
+SMAP (Soil Moisture Active Passive satellite) and MSL (Mars              with such “gradient explosion”, we use gradient clipping by norm
+Science Laboratory rover) are two public datasets from NASA [6].         with 10.0 as the limit. We apply L2 regularization with a coefficient
+Each dataset has a training and a testing subsets, and anomalies in      of 10−4 to all layers of our model. During training, 30% of the
+both testing subsets have been labeled [6]. SMD (Server Machine          training data is held for validation. For POT parameters, q = 10−4
+Dataset) is a new 5-week-long dataset which was collected by us          for all data sets, low quantile is 0.07 for SMAP, 0.01 for MSL, and
+from a large Internet company, and it was publicly published on          0.0001,0.0025 and 0.005 for three subsets of SMD. All experiments
+Github. We divided the SMD into two subsets of equal size: the           in this study are conducted on NVIDIA GeForce GTX 1080 Ti 11GB
+first half is the training set and the second half is the testing set.   GDDR5X GPU. Using the above hyper-parameters, the training
+Anomalies and their anomalous dimensions in SMD testing set              time of our model for SMAP, MSL and SMD are about 48, 11 and 87
+have been labeled by domain experts based on incident reports.           minutes per epoch respectively.
+                   Table 4: Dataset Information                                                  SMAP                     MSL            SMD
+                                                                                        1.0
+    Dataset    No. of      No. of     Training    Testing    Anomaly
+                                                                                        0.9
+     name     entities   dimensions    set size   set size   ratio(%)
+
+
+
+
+                                                                               F1best
+    SMAP        55           25        135183     427617      13.13                     0.8
+     MSL        27           55         58317      73729      10.72
+     SMD        28           38        708405     708420       4.16                     0.7
+
+
+   The observations in these three datasets are all equally-spaced 1                    0.6
+                                                                                              123456    8   10 12 14 16             24    32
+minute apart. Table 4 shows the details of these datasets, including                                        Dimensions of z-space
+name, the number of entities, the number of dimensions of each           Figure 7: F1b est of OmniAnomaly with different z-space
+observation, size (number of observations) of the training and           dimensions.
+testing sets, and the ratio of anomalies in each testing subset.
+
+B     HYPER-PARAMETERS                                                   C    IMPACT OF z-SPACE DIMENSION
+We set the hyper-parameters of OmniAnomaly empirically in our            Dimension of z-space is important for OmniAnomaly. A large
+experiments as follows. The length of input data sequence is set         value would make dimension reduction have little effect so the
+to 100 (i.e., T + 1 = 100). The GRU layers and dense layers have         reconstruction probability fails to find a good posterior [24], and
+500 units. The ϵ in the standard deviation layer is set to 10−4 . The    too small of it may cause under-fitting.
+dimension of z-space variables is fixed to 3. We have conducted             Fig. 7 shows F1best of OmniAnomaly by varying different z-space
+sensitivity analysis on the dimension in Appendix C. The length          dimensions. For our three datasets, their F1best do not change
+of planar NF is 20. We set the batch size as 50 for training, and        significantly when z-space dimensions are from 3∼32, thus we
+run for 20 epochs with early stopping. We use Adam optimizer for         have a large room to choose the z-space dimension. We set z-
+stochastic gradient descent with an initial learning rate of 10−3        space dimension to 3 empirically for all three datasets. Automatic
+during model training. When back-propagating gradients through           selection of its value for other different datasets is difficult and not
+the network layers, gradient values may grow extremely large such        be studied in our paper.
+

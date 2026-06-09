@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>TraceSieve: Efficient and Robust Trace Anomaly Detection for Large-Scale Microservice Systems（ISSRE 2023）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>TraceSieve: Efficient and Robust Trace Anomaly Detection for Large-Scale Microservice Systems（ISSRE 2023）</h1>
+
+<blockquote>作者：Shenglin Zhang、Zhongjie Pan、Heng Liu、Pengxiang Jin、Yongqian Sun、Qianyu Ouyang、Jiaju Wang、Xueying Jia、Yuzhi Zhang、Hui Yang、Yongqiang Zou、Dan Pei</blockquote>
+<blockquote>机构：南开大学；海河实验室；云账户科技（天津）；清华大学</blockquote>
+<blockquote>发表年份：2023</blockquote>
+<blockquote>会议/期刊：ISSRE 2023（IEEE International Symposium on Software Reliability Engineering）</blockquote>
+<blockquote>关联 PDF：同目录下 <code>TraceSieve_ISSRE23.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>---</td><td>---</td></tr>
+<tr><td>标题</td><td>TraceSieve: Efficient and Robust Trace Anomaly Detection for Large-Scale Microservice Systems</td></tr>
+<tr><td>作者</td><td>Shenglin Zhang、Zhongjie Pan、Heng Liu、Pengxiang Jin、Yongqian Sun、Qianyu Ouyang、Jiaju Wang、Xueying Jia、Yuzhi Zhang、Hui Yang、Yongqiang Zou、Dan Pei</td></tr>
+<tr><td>机构</td><td>南开大学；海河实验室；云账户科技；清华大学</td></tr>
+<tr><td>发表年份</td><td>2023</td></tr>
+<tr><td>会议/期刊</td><td>ISSRE 2023</td></tr>
+<tr><td>分类</td><td>追踪异常检测 / 微服务 / 无监督</td></tr>
+<tr><td>核心问题</td><td>大规模微服务系统每日百万级追踪中混杂约 1% 异常；细粒度追踪特征（结构 + 处理时间 + 传输等待）未被充分利用；模型训练耗时长达 8 天</td></tr>
+<tr><td>主要贡献</td><td>(1) 基于 GAN 的噪声过滤预处理模块；(2) VGAE-EWC：把 VGAE 与弹性权重整合 EWC 增量训练结合，降低训练时间；(3) 在两个数据集上 F1 分别 0.970 和 0.925，平均提升 0.235 / 0.119</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>微服务架构带来可扩展性、复用性和独立部署的优势，但系统的可靠性问题（如服务宕机、网络拥塞、调用错误）会直接影响用户满意度和商业收益。一次微服务系统故障平均损失 $301K-$400K/小时。追踪（trace）记录了用户请求在微服务之间的调用链与执行细节（起始时间、结束时间、函数名、服务名），是故障诊断的核心数据源。Jaeger、Zipkin、SkyWalking、OpenTracing、ES-APM 等开源工具让追踪采集标准化。</p>
+
+<p>追踪异常检测与根因定位一直受关注，传统方法把追踪转为数值向量再用机器学习：有些用操作频率作为特征，有些把调用路径展开为路径特征。但这些方法大多只关注响应时间与调用结构两类特征，忽略了追踪中的"细粒度信息"——结构（structural）、服务处理时间（service processing time, PT）、传输等待时间（waiting time, WT）——而这三类信息恰恰分别对应"逻辑错误""服务内部错误""网络问题"。</p>
+
+<p>论文把追踪异常检测的痛点总结为两个：</p>
+<ol>
+<li><b>混合数据噪声</b>：追踪中正常数据占绝大多数，异常占约 1%；但手动标注昂贵、噪声大。论文 Table I 显示基线方法在原始数据上 F1 普遍下降 0.43-0.52。</li>
+<li><b>大规模数据训练耗时</b>：合作企业每日产生约 300 万条 trace，传统方法训练一周数据需 192+ 小时（8 天），无法实时更新。</li>
+</ol>
+
+<p>论文提出 TraceSieve：(1) 在数据预处理阶段用 GAN 风格的自动编码器过滤噪声；(2) 用 VGAE 编码追踪图结构与节点特征；(3) 用 EWC（Elastic Weight Consolidation）做增量训练，把训练时间从 8 天压缩到小时级。</p>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<ul>
+<li><b>混合正常/异常数据训练难</b>：GAN 风格的自动编码器在预处理阶段过滤异常 noise，提升后续训练质量。</li>
+<li><b>追踪细粒度特征未被利用</b>：PT、WT、结构三类特征联合建模，区分逻辑错误 / 服务内部错误 / 网络问题。</li>
+<li><b>大规模训练耗时</b>：VGAE-EWC 增量训练，按时间窗分段训练 + EWC 正则保留旧知识。</li>
+<li><b>在线检测实时性</b>：在噪声过滤 + 增量训练后，模型可在线部署。</li>
+<li><b>根因定位</b>：在异常检测基础上给出"是哪种异常"的诊断。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>系统总览</b>：TraceSieve 包含三阶段：(1) 数据预处理（特征提取 + 噪声过滤）；(2) 离线训练（VGAE-EWC）；(3) 在线检测。特征提取计算 PT、WT；噪声过滤用 GAN 风格自动编码器判别器对每条 trace 打"噪声分"；VGAE 在过滤后的数据上学习图嵌入与节点重建；EWC 增量训练分段迭代。</p>
+
+<p><b>关键概念</b>：</p>
+
+<ul>
+<li><b>Trace（追踪）</b>：用户请求的微服务调用链。</li>
+<li><b>Execution（执行）</b>：trace 中的单个调用单元。</li>
+<li><b>Structural Information（结构信息）</b>：调用路径与依赖。</li>
+<li><b>Processing Time (PT)</b>：服务内部处理时间。</li>
+<li><b>Waiting Time (WT)</b>：调用间等待/网络传输时间。</li>
+<li><b>Structural Anomaly</b>：调用结构异常。</li>
+<li><b>PT Anomaly</b>：服务处理时间异常。</li>
+<li><b>WT Anomaly</b>：网络等待异常。</li>
+<li><b>GAN-based Noise Filter</b>：用自动编码器重建误差作为噪声分数。</li>
+<li><b>VGAE（Variational Graph Autoencoder）</b>：图变分自编码器。</li>
+<li><b>EWC（Elastic Weight Consolidation）</b>：弹性权重整合的增量学习方法。</li>
+<li><b>VGAE-EWC</b>：VGAE + EWC 的增量训练策略。</li>
+</ul>
+
+<p><b>数学原理</b>：</p>
+
+<ul>
+<li><b>PT 与 WT 计算</b>（论文 Equation 1）：</li>
+</ul>
+
+<br>\[\]<br>
+<p>PT(E) = ST(6) - ET(5)</p>
+<br>\[\]<br>
+<br>\[\]<br>
+<p>WT(5) = ET(5) - ST(5)</p>
+<br>\[\]<br>
+
+<p>其中 $ST(i), ET(i)$ 分别是执行 $i$ 的开始/结束时间戳。</p>
+
+<ul>
+<li><b>噪声分数</b>（基于自动编码器重建误差）：</li>
+</ul>
+
+<br>\[\]<br>
+<p>s_{\text{noise}}(G) = \| G - \text{Dec}(\text{Enc}(G)) \|_2</p>
+<br>\[\]<br>
+
+<p>$s_{\text{noise}}$ 越大越可能是异常。</p>
+
+<ul>
+<li><b>VGAE 重构</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\hat{A} = \sigma(Z Z^\top), \quad Z = \text{GAT}(\text{Encoder}(A, X))</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>VGAE 损失</b>（重构 + KL）：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\mathcal{L}_{VGAE} = -\frac{1}{N} \sum_{i,j} A_{ij} \log \hat{A}_{ij} - \frac{1}{N} \sum_{i,j} (1-A_{ij}) \log(1-\hat{A}_{ij}) + D_{KL}(q(Z|A,X) || p(Z))</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>EWC 增量训练损失</b>（新任务损失 + 旧任务参数约束）：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\mathcal{L}_{EWC} = \mathcal{L}_{\text{new}}(\theta) + \sum_i \lambda \cdot F_i \cdot (\theta_i - \theta_i^*)^2</p>
+<br>\[\]<br>
+
+<p>其中 $F_i$ 是 Fisher 信息矩阵对角元，$\theta_i^*$ 是旧任务参数。</p>
+
+<ul>
+<li><b>异常分数</b>（重建概率的负对数）：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\text{Score}(G) = - \log p_\theta(A, X | G)</p>
+<br>\[\]<br>
+
+<p><b>与现有技术的差异</b>：与 TraceAnomaly（向量 + VAE）相比，TraceSieve 保留图结构并联合 PT/WT/结构三类特征；与 GTrace（组级 VAE）相比，TraceSieve 增加噪声过滤 + 增量训练；与现有 VGAE 相比，TraceSieve 引入 EWC 应对大规模数据。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：原始 trace 流。</li>
+<li>输出：每条 trace 的异常分数 + 异常类型（结构/PT/WT）。</li>
+</ul>
+
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>特征提取</b>：从 trace 中抽取 PT、WT、调用结构。</li>
+<li><b>噪声过滤</b>：用自动编码器在每条 trace 上重建，对重建误差排序，过滤高误差的异常 trace。</li>
+<li><b>VGAE</b>：把 trace 视为图（节点=执行，边=调用关系），用 GAT 编码器 + 内积解码器重建邻接矩阵和节点特征。</li>
+<li><b>EWC 增量训练</b>：把训练数据按时间窗分段，每段训练时加上 EWC 正则项保留旧段知识。</li>
+<li><b>在线检测</b>：新 trace 输入 VGAE 推断异常分数；按阈值告警。</li>
+</ul>
+
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+def preprocess_traces(traces):
+    feats = []
+    for G in traces:
+        pt = compute_pt(G)
+        wt = compute_wt(G)
+        feats.append((G.adj, pt, wt, G.struct))
+    return feats
+
+def noise_filter(features, ae):
+    scores = [ae.recon_error(f) for f in features]
+    threshold = quantile(scores, 0.99)
+    cleaned = [f for f, s in zip(features, scores) if s <= threshold]
+    return cleaned, scores
+
+def vgae_train(features, epochs=50):
+    model = VGAE(in_dim, hidden_dim)
+    for ep in range(epochs):
+        A_hat, X_hat = model(features)
+        loss = recon_loss(A_hat, features.A) + recon_loss(X_hat, features.X) + kl_loss(model)
+        loss.backward()
+    return model
+
+def vgae_ewc_incremental(model, segment, fisher, prev_params, lambda_ewc=0.1):
+    for ep in range(epochs):
+        loss = vgae_loss(model, segment) + lambda_ewc * sum(f * (p - p_prev) ** 2 for f, p, p_prev in zip(fisher, model.params, prev_params))
+        loss.backward()
+    fisher = update_fisher(model, segment)
+    prev_params = model.params.clone()
+    return model, fisher, prev_params
+
+def detect(model, G, threshold):
+    A_hat, X_hat = model.infer(G)
+    score = -recon_log_prob(G.A, A_hat) - recon_log_prob(G.X, X_hat)
+    return int(score > threshold), score
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四。</li>
+</ol>
+
+<ol>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>噪声过滤：$O(N \cdot d)$，$d$ 为特征维度；</li>
+<li>VGAE 训练：$O(|E| d)$/epoch；</li>
+<li>EWC 增量训练：每段在 GPU 上分钟级；</li>
+<li>在线检测：单条 trace 毫秒级。</li>
+</ul>
+
+<ol>
+<li><b>训练与推理</b>：</li>
+</ol>
+<ul>
+<li>训练：GAN 自动编码器 + VGAE + EWC；</li>
+<li>推理：VGAE 重建概率 → 阈值化 → 异常标签。</li>
+</ul>
+
+<ol>
+<li><b>示例</b>：电商订单追踪"Checkout → CheckPrice → ReadDB"；正常时 PT=2.5ms、WT=1ms；异常时 WT 飙到 100ms（网络拥塞）；TraceSieve 在结构/PT/WT 三个维度同时检测，定位到"等待时间异常"。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[原始 Trace 流] --> B[特征提取]
+    B --> B1[结构 Structural]
+    B --> B2[处理时间 PT]
+    B --> B3[等待时间 WT]
+    B1 --> C[GAN 风格噪声过滤]
+    B2 --> C
+    B3 --> C
+    C --> D[过滤后干净数据]
+    D --> E[VGAE 编码]
+    E --> E1[GAT 编码器]
+    E1 --> E2[重参数化 z]
+    E2 --> F[内积解码 A_hat]
+    E2 --> G[节点特征解码 X_hat]
+    F --> H[损失计算]
+    G --> H
+    H --> I[EWC 增量训练 多段]
+    I --> J[训练好的 VGAE-EWC]
+    J --> K[在线检测]
+    K --> L[异常分数 + 类型]
+    L --> M[阈值化 -> 告警]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[Trace 采集] --> S2[特征提取 PT/WT/结构]
+    S2 --> S3[GAN 风格噪声过滤]
+    S3 --> S4[干净数据]
+    S4 --> S5[VGAE 编码]
+    S5 --> S6[计算重建损失 + KL]
+    S6 --> S7[新数据段训练]
+    S7 --> S8[EWC 正则保留旧知识]
+    S8 --> S9[Fisher 信息更新]
+    S9 --> S10[训练收敛]
+    S10 --> S11[在线检测]
+    S11 --> S12[重建概率 -> 异常分数]
+    S12 --> S13[类型分类]
+    S13 --> S14[阈值化 -> 告警]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ GAN 风格噪声过滤</b>：在预处理阶段用自动编码器重建误差过滤异常，避免污染训练。</li>
+<li><b>+ VGAE-EWC 增量训练</b>：把训练从一次性大规模数据分解为多段增量，每段加上 EWC 正则保留旧知识。</li>
+<li><b>+ PT/WT/结构联合建模</b>：充分利用追踪的细粒度特征，区分多种异常类型。</li>
+<li><b>+ 在线检测实时性</b>：训练时间从 8 天压缩到小时级，推理毫秒级。</li>
+<li><b>+ 真实工业数据集</b>：在大型电商数据集上 F1 0.970 / 0.925。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>：1 个大型电商微服务系统（合作企业，1 周数据）；1 个公开/合成数据集。</li>
+<li><b>Baseline</b>：MultimodalTrace、AEVB、TraceAnomaly、TraceCRL、Sage 等。</li>
+<li><b>主要指标</b>：F1-score、Precision、Recall、训练时间。</li>
+<li><b>关键结果数字</b>：</li>
+<li>TraceSieve F1 分别 0.970 与 0.925；</li>
+<li>相对 SOTA 平均提升 0.235 与 0.119；</li>
+<li>训练时间从 192h 降到小时级（具体数字见论文 Table）；</li>
+<li>噪声过滤使 F1 提升约 0.4-0.5。</li>
+<li><b>消融实验</b>：分别去掉噪声过滤、EWC、PT/WT 特征，验证每部分贡献。</li>
+<li><b>效率分析</b>：在线检测毫秒级；训练增量分段可日更。</li>
+<li><b>可视化</b>：trace 异常类型（结构/PT/WT）混淆矩阵。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>电商订单追踪异常检测</b>：识别支付链路的网络延迟。</li>
+<li><b>金融支付链路监控</b>：定位"网络拥塞 vs 服务错误 vs 逻辑错误"。</li>
+<li><b>微服务发布后回归</b>：识别新版本引入的结构异常。</li>
+<li><b>SaaS API 网关监控</b>：检测跨服务调用异常。</li>
+<li><b>电信运营商业务监控</b>：识别业务调用链异常。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>TraceVAE</code>（追踪异常检测 VAE）</li>
+<li><code>GTrace_FSE_Industry2023_upload</code>（组级追踪异常检测）</li>
+<li><code>Chain-of-Event_Interpretable-Root-Cause-Analysis-for-MicroservicesFSE24-Camera-Ready</code>（事件级根因）</li>
+<li><code>AlertRCA_CCGRID2024_CameraReady</code>（告警级根因）</li>
+<li><code>TSC23-DiagFusion</code>（多模态故障诊断）</li>
+<li><code>CMDiagnostor</code>（调用指标根因）</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>Trace</b>：用户请求的微服务调用链。</li>
+<li><b>Execution</b>：trace 中的单个调用。</li>
+<li><b>Structural Anomaly</b>：结构异常。</li>
+<li><b>PT (Processing Time)</b>：服务处理时间。</li>
+<li><b>WT (Waiting Time)</b>：等待/传输时间。</li>
+<li><b>GAN</b>：生成对抗网络。</li>
+<li><b>AE (Autoencoder)</b>：自编码器。</li>
+<li><b>VGAE</b>：变分图自编码器。</li>
+<li><b>EWC（Elastic Weight Consolidation）</b>：弹性权重整合增量学习。</li>
+<li><b>Fisher Information Matrix</b>：Fisher 信息矩阵。</li>
+<li><b>GAN-based Noise Filter</b>：用自动编码器实现的噪声过滤。</li>
+<li><b>ES-APM</b>：企业自研的追踪采集工具。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: VGAE（Kipf & Welling, 2016）——图 VAE。</li>
+<li>Paper: TraceAnomaly（WWW 2020）——追踪异常检测 VAE。</li>
+<li>Paper: GAT（Veličković et al., 2018）——图注意力。</li>
+<li>Paper: EWC（Kirkpatrick et al., PNAS 2017）——增量学习。</li>
+<li>Paper: GAN-based Anomaly Detection。</li>
+<li>工具：Jaeger、Zipkin、SkyWalking、OpenTracing、ES-APM。</li>
+<li>相关论文：<code>TraceVAE</code>、<code>GTrace_FSE_Industry2023_upload</code>、<code>Chain-of-Event_Interpretable-Root-Cause-Analysis-for-MicroservicesFSE24-Camera-Ready</code>。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

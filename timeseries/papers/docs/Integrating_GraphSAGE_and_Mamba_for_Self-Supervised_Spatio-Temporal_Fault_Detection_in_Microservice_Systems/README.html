@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ChronoSage：基于 GraphSAGE + Mamba 的自监督微服务时空故障检测</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+
+</style>
+</head>
+<body>
+<h1>ChronoSage：基于 GraphSAGE + Mamba 的自监督微服务时空故障检测</h1>
+<blockquote>作者：Shenglin Zhang、Yingke Li、Jianjin Tang、Chenyu Zhao、Wenwei Gu、Yongqian Sun、Dan Pei<br>机构：南开大学、海河实验室、天津市软件体验与人机交互重点实验室、清华大学<br>发表年份：2026<br>会议/期刊：相关会议<br>关联 PDF：同目录下 `Integrating_GraphSAGE_and_Mamba_for_Self-Supervised_Spatio-Temporal_Fault_Detection_in_Microservice_Systems.pdf`</blockquote>
+<h2>一、文档信息速览</h2>
+<table><tr><th>字段</th><th>值</th></tr><tr><td>标题</td><td>Integrating GraphSAGE and Mamba for Self-Supervised Spatio-Temporal Fault Detection in Microservice Systems</td></tr><tr><td>作者</td><td>Shenglin Zhang, Yingke Li, Jianjin Tang, Chenyu Zhao, Wenwei Gu, Yongqian Sun, Dan Pei</td></tr><tr><td>机构</td><td>南开大学、海河实验室、清华</td></tr><tr><td>发表年份</td><td>2026</td></tr><tr><td>会议/期刊</td><td>-</td></tr><tr><td>分类</td><td>微服务故障检测 / 时空模型 / 自监督学习</td></tr><tr><td>核心问题</td><td>微服务监控数据多模态（metric+log+trace），单源信息不足、依赖标签、难建模长时空依赖</td></tr><tr><td>主要贡献</td><td>1) GraphSAGE 空间建模 + Mamba 时序建模的混合框架；2) 自监督训练；3) D1 F1=0.872、D2 F1=0.972</td></tr></table>
+<h2>二、背景（Background）</h2>
+<p>微服务系统已成为现代软件架构的主流，但组件多、依赖复杂，单实例故障可能引发级联，影响用户体验甚至造成巨大损失。2023 年 6 月 AWS US-EAST-1 故障导致 100+ 服务（API Gateway、Management Console）异常，凸显故障检测的紧迫性。</p>
+<p>本文区分两个概念：</p>
+<ul>
+<li><strong>Anomalies（异常）</strong>：偏离正常模式的数据；</li>
+<li><strong>Faults（故障）</strong>：实际系统缺陷，可能导致服务降级或宕机。</li>
+</ul>
+<p>异常常伴随故障，但单模态监控往往不足：</p>
+<ul>
+<li><strong>Metric</strong>：反映资源使用（CPU、内存），但缺乏上下文；</li>
+<li><strong>Log</strong>：反映执行细节，但不含服务依赖；</li>
+<li><strong>Trace</strong>：反映调用路径，但无性能细节。</li>
+</ul>
+<p>论文举例：CPU 耗尽故障下，trace 延迟完全无异常，metric CPU 使用率却明显飙升。单模态误报/漏报严重。</p>
+<p>现有方法分监督与无监督：</p>
+<ul>
+<li>监督：SVM、RandomForest、TimesNet 等——需要大量标注数据。</li>
+<li>无监督：BARO、Hades、Eadro、MSTGAD、ART、TraceVAE 等——监督标签稀缺的现实场景下更实用，但仍受限于长时序建模、图结构固定、对标签依赖。</li>
+</ul>
+<p>ChronoSage 提出 GraphSAGE（空间）+ Mamba（时序）+ 自监督学习的混合框架，统一解决以上痛点。</p>
+<h2>三、目的（Problems Solved）</h2>
+<ul>
+<li><strong>痛点 1：长时序依赖难建模。</strong> 现有 GNN 多基于 snapshot，忽略时序演化。</li>
+<li><strong>痛点 2：标签稀缺。</strong> 监督方法需大量人工标注。</li>
+<li><strong>痛点 3：图结构固定。</strong> 服务交互动态变化，固定图结构泛化差。</li>
+<li><strong>痛点 4：单源信息不足。</strong> metric/log/trace 互补，但融合策略不当会引入干扰。</li>
+<li><strong>解决方案</strong>：ChronoSage：</li>
+</ul>
+<p>1) 用 GraphSAGE 建模动态空间依赖； 2) 用 Mamba 状态空间模型高效建模长时序； 3) 自监督训练减少标签依赖。</p>
+<h2>四、核心原理（Principles）</h2>
+<p><strong>总览</strong>：ChronoSage 是一个多模态自监督故障检测框架。首先把 metric/log/trace 统一为时序表示（每个实例 i 在时间 t 有特征向量 F_t^(i)），然后用 GraphSAGE 提取空间 embedding，再用 Mamba 建模时序，最后用自监督重建任务训练，无需标签。</p>
+<p><strong>四大组件</strong>：</p>
+<ul>
+<li><strong>Multimodal Feature Construction</strong>：把 metric/log/trace 转换为统一时序表示。Trace 转 span duration/log count 序列；Log 转事件计数序列；Metric 保持原时间序列。</li>
+<li><strong>GraphSAGE Spatial Encoder</strong>：用 GraphSAGE 在动态调用图上聚合邻居特征，得到每个实例的空间 embedding。</li>
+<li><strong>Mamba Temporal Encoder</strong>：用 Mamba（Selective State Space Model）处理 GraphSAGE 输出的 embedding 序列，高效捕获长程时序依赖。</li>
+<li><strong>Self-Supervised Training</strong>：用重建任务或对比任务作为自监督信号，无需故障标签。</li>
+</ul>
+<p><strong>关键数学</strong>：</p>
+<p><strong>Mamba 状态更新</strong>： <code>h_t = A(x_t) h_{t-1} + B(x_t) x_t + C(x_t)</code></p>
+<p>其中 <code>A, B, C</code> 是 input-conditioned 可学习函数（区别于传统 SSM 的固定矩阵），实现"selective"信息保留。</p>
+<p><strong>GraphSAGE 邻居聚合</strong>： <code>h_v^{(k)} = \text{AGG}^{(k)}\!\left(\{h_u^{(k-1)} : u \in \mathcal{N}(v)\}\right)</code></p>
+<p><strong>自监督重建损失</strong>： <code>L_{\text{SSL}} = \| \hat X - X \|_2^2</code> 其中 <code>\hat X</code> 为模型对正常时序的重建。</p>
+<p><strong>故障分数</strong>： <code>s_t = \| \hat F_t^{(i)} - F_t^{(i)} \|_2</code> 阈值 <code>\theta</code> 自适应调整，<code>s_t > \theta</code> 判为故障。</p>
+<p><strong>为什么这么做</strong>：</p>
+<ul>
+<li>GraphSAGE 是 inductive GNN，能泛化到新节点（新增服务），适合动态微服务环境。</li>
+<li>Mamba 是 O(N) 线性复杂度的长序列模型，比 Transformer 更适合长 KPI 序列；其 selective 状态更新对异常检测至关重要。</li>
+<li>自监督避免对故障标签的依赖，训练数据只需正常时序。</li>
+</ul>
+<p><strong>与现有方法的差异</strong>：</p>
+<ul>
+<li>vs. Eadro（基于 GAT，多模态融合，监督）：ChronoSage 自监督，GraphSAGE 更可扩展。</li>
+<li>vs. MSTGAD（自监督 GAT，图固定）：ChronoSage 用 GraphSAGE 动态图 + Mamba 强时序。</li>
+<li>vs. ART（监督 Transformer+GRU+GNN）：ChronoSage 自监督且更轻量。</li>
+<li>vs. TraceVAE（变分自编码器 + 图）：ChronoSage 用 Mamba 替代 VAE 提升时序能力。</li>
+</ul>
+<h2>五、算法详解（Algorithm）</h2>
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li><strong>输入</strong>：每个实例 i 在 t 时刻的特征 $F_t^{(i)}$（含 metric、log event count、trace 统计）。</li>
+<li><strong>输出</strong>：每时刻故障分数 $s_t$，$s_t > \theta$ 判为故障。</li>
+</ul>
+<h3>2. 核心模块</h3>
+<ul>
+<li><strong>Feature Builder</strong>：多模态 → 时序。</li>
+<li><strong>GraphSAGE Encoder</strong>：每节点聚合邻居，输出 $H_t^{(i)} \in \mathbb{R}^D$。</li>
+<li><strong>Mamba Encoder</strong>：处理 $H_t^{(i)}$ 序列。</li>
+<li><strong>Reconstructor</strong>：重建 $F_t^{(i)}$。</li>
+<li><strong>Anomaly Scorer</strong>：基于重建误差打分。</li>
+</ul>
+<h3>3. 伪代码</h3>
+<pre><code>def chronosage_train(normal_metrics, normal_logs, normal_traces, K_rounds=3):
+    # 1) 特征构建
+    X = build_multimodal_ts(normal_metrics, normal_logs, normal_traces)  # (T, N, M)
+    # 2) 构建动态图
+    graphs = build_dynamic_graphs(normal_traces)  # [A_1, ..., A_T]
+    # 3) 训练
+    gsage = GraphSAGE(in_dim=M, out_dim=D)
+    mamba = Mamba(d_model=D, d_state=16)
+    recon_head = nn.Linear(D, M)
+    for epoch in range(n_epochs):
+        H_list = []
+        for t in range(T):
+            H_t = gsage(X[t], graphs[t])  # (N, D)
+            H_list.append(H_t)
+        H = torch.stack(H_list)             # (T, N, D)
+        H_enc = mamba(H)                    # (T, N, D)
+        X_hat = recon_head(H_enc)           # (T, N, M)
+        loss = F.mse_loss(X_hat, X)
+        loss.backward(); optim.step()
+    return gsage, mamba, recon_head
+
+def chronosage_detect(X_test, graphs_test, model, theta):
+    H = model.gsage(X_test, graphs_test)
+    H_enc = model.mamba(H)
+    X_hat = model.recon_head(H_enc)
+    s = ((X_test - X_hat) ** 2).mean(-1)  # 重建误差
+    fault = s &gt; theta
+    return fault, s</code></pre>
+<h3>4. 关键数学</h3>
+<ul>
+<li>见上文 "关键数学" 章节。</li>
+<li>动态图构建：用滑动窗口 trace 聚合得到每个时刻的邻接矩阵。</li>
+</ul>
+<h3>5. 复杂度分析</h3>
+<ul>
+<li>训练：每 epoch 复杂度 $O(T \cdot (N \cdot |\mathcal{N}| \cdot D + N \cdot L \cdot D))$，$L$ 为 Mamba 序列长度。</li>
+<li>推理：单时刻 $O(N \cdot |\mathcal{N}| \cdot D + N \cdot D)$，可实时。</li>
+</ul>
+<h3>6. 训练与推理</h3>
+<ul>
+<li><strong>训练</strong>：仅用正常数据，做自监督重建。</li>
+<li><strong>推理</strong>：基于重建误差 + 阈值判故障。</li>
+</ul>
+<h3>7. 示例</h3>
+<ul>
+<li>注入 CPU 耗尽故障，trace 延迟无异常，metric CPU 飙升。ChronoSage 在 metric + log（event 计数）上同时识别异常，输出 $s_t$ 显著上升，准确告警。</li>
+</ul>
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[原始多模态数据: metric/log/trace] --> B[Feature Builder]
+    B --> C[统一时序表示 X: TxNxM]
+    D[Trace 聚合] --> E[Dynamic Graph Builder]
+    E --> F[邻接矩阵序列 A_1..A_T]
+    C --> G[GraphSAGE Spatial Encoder]
+    F --> G
+    G --> H[空间 embedding H: TxNxD]
+    H --> I[Mamba Temporal Encoder]
+    I --> J[时序增强 embedding H_enc: TxNxD]
+    J --> K[Reconstructor]
+    K --> L[重建 X_hat]
+    L --> M[L_SSL = MSE(X_hat, X)]
+    M --> N[反向传播更新 GraphSAGE + Mamba]
+    J --> O[推理: 重建误差 = 故障分数]
+    O --> P[阈值比较: 故障判别]
+</div>
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[输入正常 metric/log/trace] --> S2[Feature Builder 统一时序]
+    S2 --> S3[Dynamic Graph 序列 A_t]
+    S3 --> S4[GraphSAGE 空间编码 H_t]
+    S4 --> S5[堆叠成 H: TxNxD]
+    S5 --> S6[Mamba 时序编码 H_enc]
+    S6 --> S7[Reconstructor 重建 X_hat]
+    S7 --> S8[L_SSL = MSE X_hat, X]
+    S8 --> S9[反向传播]
+    S9 --> S10[更新 GraphSAGE + Mamba]
+    S10 --> S11{训练结束?}
+    S11 -- 否 --> S2
+    S11 -- 是 --> S12[保存模型]
+    S12 --> S13[推理: 输入测试时序]
+    S13 --> S14[重建误差作为故障分数]
+    S14 --> S15[阈值比较 -> 故障判别]
+</div>
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ GraphSAGE + Mamba 混合架构</strong>：用 GraphSAGE 处理动态空间依赖，用 Mamba 替代 Transformer 处理长时序；前者 inductive 强、后者线性复杂度。</li>
+<li><strong>+ 自监督训练降低标签依赖</strong>：仅用正常数据训练重建任务，无需故障标签，部署成本低。</li>
+<li><strong>+ 动态图 + 多模态融合</strong>：trace 实时构建动态图，metric/log/trace 三模态统一为时序后融合。</li>
+<li><strong>+ 状态空间 selective 机制</strong>：Mamba 的 input-conditioned $A, B, C$ 让模型自适应保留关键时序信息，比固定 SSM 更适合异常检测。</li>
+<li><strong>+ 显著精度</strong>：D1 F1=0.872、D2 F1=0.972，超过 ART、Eadro 等 SOTA。</li>
+</ul>
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>数据集</strong>：D1（大规模微服务 benchmark）、D2（另一公开/自建数据集）。</li>
+<li><strong>Baseline</strong>：ART、Eadro、TraceVAE、MSTGAD、TimesNet、传统方法。</li>
+<li><strong>主要指标</strong>：F1-score、Precision、Recall、误报率。</li>
+<li><strong>关键结果</strong>：</li>
+<li>D1 F1=0.872，超过所有 baseline；</li>
+<li>D2 F1=0.972，几乎完美。</li>
+<li><strong>消融实验</strong>：</li>
+<li>去掉 GraphSAGE：F1 下降 ~10%（空间信息重要）；</li>
+<li>去掉 Mamba（用 Transformer 替代）：F1 下降 ~5%，训练时间翻倍；</li>
+<li>去掉自监督（用监督替代）：需要大量标签，部署不实用；</li>
+<li>去掉 log 或 trace：单模态性能下降。</li>
+<li><strong>效率分析</strong>：训练时间适中；推理实时；模型参数量小于 ART。</li>
+</ul>
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>微服务故障自动告警</strong>：电商、支付、直播等大型微服务系统的实时告警。</li>
+<li><strong>云原生 AIOps 平台</strong>：作为异常检测引擎集成到现有平台。</li>
+<li><strong>SRE 团队事件响应</strong>：缩短 MTTD（Mean Time to Detect）。</li>
+<li><strong>金融核心系统</strong>：高 SLA 要求的故障预警。</li>
+<li><strong>IoT 边缘计算</strong>：在标签稀缺场景下自监督学习。</li>
+</ul>
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li>同为异常检测系列的 <strong>DeST</strong> 用解耦时空 + DMCN 建模，ChronoSage 用 GraphSAGE + Mamba；二者在 D1/D2 上可作对比。</li>
+<li><strong>LagRCA</strong> 关注根因定位，是 ChronoSage 上游任务的典型提供者（先检测到异常再定位根因）。</li>
+<li><strong>AIOpsArena</strong> 提供微服务 AIOps 评测平台，ChronoSage 可作为 anomaly detection 类算法接入。</li>
+</ul>
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>Anomaly / Fault</strong>：异常 / 故障。</li>
+<li><strong>Mamba (Selective State Space Model)</strong>：选择性状态空间模型。</li>
+<li><strong>GraphSAGE</strong>：归纳式图神经网络，邻居采样聚合。</li>
+<li><strong>Multimodal Monitoring Data</strong>：多模态监控数据（metric/log/trace）。</li>
+<li><strong>Self-Supervised Learning (SSL)</strong>：自监督学习。</li>
+<li><strong>Trace / Span</strong>：微服务调用追踪 / 跨度。</li>
+<li><strong>Reconstruction Error</strong>：重建误差，作为异常分数。</li>
+<li><strong>Dynamic Graph</strong>：动态图，随时间变化的邻接结构。</li>
+<li><strong>Inductive Learning</strong>：归纳式学习，能泛化到新节点。</li>
+<li><strong>F1-score</strong>：精确率与召回率的调和均值。</li>
+</ul>
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Mamba（Gu & Dao, 2023）：Selective State Space Model。</li>
+<li>GraphSAGE（Hamilton et al., 2017）：Inductive Representation Learning on Large Graphs。</li>
+<li>ART（KDD '21）、Eadro（KDD '22）、MSTGAD、TraceVAE：被比较的方法。</li>
+<li>TimesNet：被替代的时序模型。</li>
+<li>GCN、GAT：GraphSAGE 的对比。</li>
+<li>自监督学习综述：Contrastive Predictive Coding、Masked Autoencoder 等。</li>
+</ul>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

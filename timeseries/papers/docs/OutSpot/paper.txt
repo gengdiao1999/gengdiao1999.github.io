@@ -1,0 +1,980 @@
+2858                                                                                          IEEE TRANSACTIONS ON COMPUTERS, VOL. 72, NO. 10, OCTOBER 2023
+
+
+
+
+          Efficient and Robust KPI Outlier Detection for
+                      Large-Scale Datacenters
+  Yongqian Sun , Member, IEEE, Daguo Cheng, Tiankai Yang , Yuhe Ji, Shenglin Zhang , Member, IEEE,
+Man Zhu, Xiao Xiong, Qiliang Fan , Minghan Liang, Dan Pei , Senior Member, IEEE, Tianchi Ma, and Yu Chen
+
+
+   Abstract—To ensure the performance of large-scale datacenters,
+operators need to monitor up to tens of millions of various-type
+KPIs, e.g., CPU utilization, memory utilization. For each KPI, it
+is crucial but challenging to detect outliers that deviate from its
+historical patterns or the patterns of other KPIs in the same period.
+In this work, we propose OutSpot, an unsupervised outlier detection
+framework that integrates hierarchical agglomerative clustering
+(HAC) with conditional variational autoencoder (CVAE), which
+significantly improves computational efficiency and comprehen-
+sively learns the above two patterns. Additionally, two simple yet
+effective techniques, soft threshold and median filter, are applied to
+precisely determine outlier KPIs. Using two real-world datasets col-
+lected from the datacenters owned by a top-tier global short video
+service provider and a top-tier domestic operator,respectively. It
+demonstrates that OutSpot achieves the best F1 score of 0.95 and
+0.91, AUC of 0.99 and 0.99 on the two datasets, significantly out-
+performing seven baseline outlier detection methods.
+  Index Terms—Outlier detection, KPI, deep generative model,
+AIOps.                                                                              Fig. 1.     Outlier type in time series (KPIs). (two-day-long data).
+
+
+                            I. INTRODUCTION                                         devices, which may be caused by hardware failures (e.g., uncor-
+     ODAY’s large-scale datacenters house tens of thousands                         rectable hardware errors, machine aging, power down), software
+T    to millions of servers, hundreds of thousands of switches
+and routers, and millions of cables and fibers [1], and the
+                                                                                    bugs (e.g., thread crash, memory leaking), or cyber-attacks,
+                                                                                    will degrade the quality of service (QoS) and may even lead
+performance of these devices is vitally important to the services                   to a drop in revenue [2], [3]. Therefore, operators carefully
+provided by datacenters. The unexpected behaviors of these                          monitor the status of these devices through various types of key
+                                                                                    performance indicators (KPIs), e.g., CPU utilization, memory
+   Manuscript received 8 July 2022; revised 6 April 2023; accepted 23 April         utilization, TCP retransmission percentage, disk I/O rate [4],
+2023. Date of publication 1 May 2023; date of current version 6 September           [5], [6], [7], [8], [9], [10]. Usually, the monitoring data of a KPI,
+2023. This work was supported in part by the National Natural Science Foun-         which is collected with a fixed time interval (e.g., 5 minutes),
+dation of China under Grants 62072264, 62272249, and in part by the Natural
+Science Foundation of Tianjin under Grant 21JCQNJC00180. Recommended                forms a univariate time series (from now on, we use “KPI” and
+for acceptance by C. Li. (Yongqian Sun and Daguo Cheng contributed equally          “KPI time series” interchangeably). Considering the significant
+to this work.) (Corresponding author: Shenglin Zhang.)                              number of devices in a large-scale datacenter, operators have to
+   Yongqian Sun, Yuhe Ji, Man Zhu, Xiao Xiong, Qiliang Fan, and Minghan
+Liang are with the College of Software, Nankai University, Tianjin 300071,          continuously monitor tens of millions of KPIs.
+China (e-mail: sunyongqian@nankai.edu.cn; jiyuhemail@foxmail.com; zhu-                 An outlier of a KPI usually denotes an unexpected behavior of
+man2019@mail.nankai.edu.cn; xiongxiao@mail.nankai.edu.cn; fanqiliang@               a device, and it can be classified into three types: a point outlier,
+mail.nankai.edu.cn; liangminghan@mail.nankai.edu.cn).
+   Shenglin Zhang is with the College of Software, Haihe Laboratory of Infor-       a subsequence outlier, or an outlier time series [11], as shown
+mation Technology Application Innovation (HL-IT), Nankai University, Tianjin        in Fig. 1. A point outlier is a data point that behaves abnormally
+300071, China (e-mail: zhangsl@nankai.edu.cn).                                      compared to the historical data points in the KPI or its adjacent
+   Daguo Cheng is with the Institute for Network Sciences and Cy-
+berspace, Tsinghua University, Beijing 100190, China (e-mail: cdg22@mails.          points. A subsequence outlier denotes consecutive data points
+tsinghua.edu.cn).                                                                   (i.e., a time segment) in a KPI whose collective behavior is
+   Dan Pei is with the Department of Computer Science, Beijing National             abnormal compared to this KPI’s historical normal pattern.
+Research Center for Information Science and Technology, Tsinghua University,
+Beijing 100190, China (e-mail: peidan@tsinghua.edu.cn).                             However, each data point of it individually is not necessarily
+   Tiankai Yang is with the Viterbi School of Engineering, University of Southern   a point outlier. Moreover, an outlier time series denotes that the
+California, Los Angeles, CA 90007 USA (e-mail: tiankaiy@usc.edu).                   entire time series is an outlier compared to other KPIs in the same
+   Tianchi Ma and Yu Chen are with the Kuaishou Technology, Beijing 100085,
+China (e-mail: matianchi@kuaishou.com; chenyu11@kuaishou.com).                      period. Due to the auto-recovery and load balancing mechanisms
+   Digital Object Identifier 10.1109/TC.2023.3272288                                of datacenters, usually, a point outlier does not imply a device
+                          0018-9340 © 2023 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission.
+                                        See https://www.ieee.org/publications/rights/index.html for more information.
+
+
+        Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+SUN et al.: EFFICIENT AND ROBUST KPI OUTLIER DETECTION FOR LARGE-SCALE DATACENTERS                                                                   2859
+
+
+
+failure, and operators often ignore it. However, a subsequence                data point is an outlier/anomaly [4], [5], [12], [14], [15], [19],
+outlier or an outlier time series denotes that a device suffers from          [20], [21], [23]. The lower the reconstruction probability of a
+abnormal behaviors or becomes poorly managed for an extended                  data point, the more likely it is to be an outlier. However, the
+period. Operators should take measures to mitigate it.                        reconstruction probability-based methods can frequently assign
+   Over the years, a large number of point outlier/anomaly                    a higher reconstruction probability to outliers and thus suffer
+detection methods have been proposed in the literature [8], [9],              from low accuracy in outlier determination for high-dimensional
+[12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23],       data [15]. Therefore, they are inappropriate for subsequence out-
+[24], [25]. These methods cannot be easily improved to detect                 liers and outlier time series, both of which are high-dimensional
+subsequence outlier or outlier time series because: 1) they focus             data containing multiple data points.
+on the abnormal behavior of each data point instead of a time                    4) Lack of Labels. Although there is no need to obtain labels
+segment, and 2) they do not compare a KPI with other KPIs                     to train a model for unsupervised methods, we still have to
+in the same period. Although a few works have been proposed                   label a collection of KPIs to verify or improve outlier detection
+for subsequence outlier detection through learning the historical             methods’ performance. To determine an outlier KPI, operators
+pattern for each KPI [26], [27], or outlier time series detection by          have to check the historical pattern of each KPI and the pattern
+learning the pattern of all KPIs in the same period [28], none of             of all KPIs in the same period. It is labor-intensive and time-
+these methods can detect the above two outliers simultaneously.               consuming if no labeling tool is applied.
+Considering the massive number of KPIs, these subsequence                        To tackle the above challenges, we propose an efficient and
+outlier detection methods are computationally intensive because               robust unsupervised outlier detection framework, OutSpot. It
+they have to train a separate model for each KPI. Additionally,               can detect both subsequence outlier and outlier time series for
+outlier time series detection methods can miss subsequence                    large-scale datacenters. Specifically, it applies the hierarchical
+outliers, which behave normally compared to other KPIs in the                 agglomerative clustering (HAC) method to cluster KPIs based
+same period but abnormally compared with the KPI’s historical                 on their patterns. For learning both the historical pattern of each
+pattern. Therefore, we aim to design a framework to efficiently               KPI and the pattern of all KPIs in the same period, it then encodes
+and accurately detect both subsequence outlier and outlier time               the clustering information into the generative model using the
+series of KPIs.                                                               conditional variational autoencoder (CVAE) method. Finally, it
+   Due to the large number of KPIs in large-scale datacenters,                compares the reconstructed and original KPI shapes to determine
+we cannot deploy supervised methods requiring a considerable                  whether a KPI is an outlier.
+amount of labeling effort to detect KPI outliers (hereinafter, a                 The main contributions can be summarized as follows:
+KPI outlier refers to a subsequence outlier or an outlier time                   1) To address the first and second challenges, we propose
+series). Consequently, we apply unsupervised methods, which                   integrating HAC with CVAE. Specifically, we first apply HAC
+automatically learn KPI’s normal patterns and need no labels,                 to cluster KPIs according to their patterns and then embed the
+for KPI outlier detection. Recently, deep generative models have              cluster information of each KPI into the CVAE method. Since
+shown its superior performance for KPI outlier detection in an                the number of clusters is much smaller than that of KPIs (three in
+unsupervised manner [4], [5], [12], [14], [15], [19], [20], [21],             our scenario), and the KPIs of each cluster resemble in pattern,
+[23]. We thus also apply deep generative models to comprehen-                 OutSpot can detect outliers for the large-scale KPIs with diverse
+sively learn KPI’s normal patterns and accurately detect KPI                  patterns. Additionally, the cluster-information-encoded CVAE
+outliers. However, applying deep generative models for KPI                    method has learned both the historical pattern of each KPI
+outlier detection faces the following four challenges.                        and the pattern of all KPIs in the same period, facilitating the
+   1) A Considerable Number of KPIs With Various Types. In                    detection of both subsequence outliers and outlier time series.
+large-scale datacenters, operators should detect outliers for tens               2) To tackle the third challenge, we determine whether a
+of millions of KPIs. However, a deep generative model usually                 KPI is an outlier by comparing the original and reconstructed
+consumes high computational resources in the training stage [6],              KPI shapes instead of calculating the reconstruction probability.
+[7]. Therefore, training a separate outlier detection model for               Additionally, we propose to combine soft threshold (ST) and
+each KPI is almost infeasible. However, the various types of                  median filter (MF) for improving OutSpot’s accuracy.
+KPIs can have very different patterns, and one outlier detection                 3) To demonstrate OutSpot’s performance, we conduct ex-
+model ignoring these differences is not expressive enough by                  tensive experiments on the dataset A from a top global short
+nature. Therefore, training one model for all KPIs would bound                video service provider and B from one of the three major
+the accuracy.                                                                 domestic communication operators of China. OutSpot achieves
+   2) Detect Both Subsequence Outliers and Outlier Time Series.               the best F1 score of 0.95 and 0.91, AUC of 0.99 and 0.99 on the
+To detect both subsequence outlier and outlier time series, a deep            two datasets, significantly outperforming seven baseline outlier
+generative model has to learn both the historical pattern of each             detection methods.
+KPI and the pattern of all KPIs in the same period. It introduces                4) For addressing the fourth challenge, we release a labeling
+a significant challenge to the deep generative model because it               tool for KPI outlier detection.1 Additionally, to get readers better
+usually learns one type of pattern at a time [29].                            understand our work, we also make our labeled dataset A2
+   3) Determine Outliers. Existing point outlier/anomaly detec-
+tion works usually apply the reconstruction probability (density                1 https://github.com/OutlierDetection-OutSpot/Label-tool
+
+estimate) of deep generative models to determine whether a                      2 https://github.com/OutlierDetection-OutSpot/Dataset
+
+
+
+
+        Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+2860                                                                                       IEEE TRANSACTIONS ON COMPUTERS, VOL. 72, NO. 10, OCTOBER 2023
+
+
+
+                                TABLE I                                              First of all, setting the window size = one day because the KPI of
+                 DETAILED INFORMATION ABOUT THE 18 KPIS
+                                                                                     a machine is usually periodical, and its period is one day. This is
+                                                                                     because it changes as the user workload of the machine changes,
+                                                                                     which conforms to the pattern of user behavior typically having
+                                                                                     a one-day-long period. As shown in Figs. 1 and 7, we can see
+                                                                                     that the real-world KPI data is periodical with a one-day-long
+                                                                                     period. In addition, the KPIs of different machines can have
+                                                                                     different periodic characteristics (i.e., patterns described in the
+                                                                                     paper). For example, the KPIs of machine 1 and machine 2 are all
+                                                                                     periodic but have different periodic characteristics (patterns), so
+                                                                                     OutSpot will group them into different clusters and process them
+                                                                                     separately. Second, setting the step size = 1.5 hours because:
+                                                                                        1) Both subsequence outliers and outlier time series are out-
+                                                                                     liers that last a long time, and we need a relatively long time to
+                                                                                     determine a subsequence outlier or an outlier time series. In our
+                                                                                     scenario, for example, the operators think that an outlier KPI
+                                                                                     should have continuous abnormal values of 1.5 hours (18 points
+                                                                                     for the interval of 5 minutes) at least.
+                                                                                        2) Outlier detection differs from anomaly detection [6], [9],
+                                                                                     [12], [13] in that it does not need to detect outlier KPIs as quickly
+                                                                                     as possible. In our work, KPI outlier detection aims to find the
+                                                                                     devices/services suffering from abnormal behaviors or becom-
+                                                                                     ing poorly managed for an extended period. Note that collecting
+                                                                                     KPI data more frequently does not help shorten the latency of
+                                                                                     detecting outliers. For example, the KPI data collection intervals
+                                                                                     of the two datasets are 5 minutes and 15 minutes, respectively.
+                                                                                     However, both datasets have window size = one day and step
+                                                                                     size = 1.5 hours. This is mainly because we need a relatively
+Fig. 2. Examples of KPIs in our scenario. The red area refers to the KPIs to
+be detected and the green area refers to the historical KPIs. “...” indicates that   long time (1.5 hours) to determine a subsequence outlier or an
+the similar information is hidden due to space limit.                                outlier time series.
+
+
+and code3 publicly available. Dataset B is not public due to
+                                                                                     B. Basics of HAC and CVAE
+commercial issues.
+                                                                                        HAC first treats each sample as a singleton cluster. It then
+                            II. PRELIMINARIES                                        successively agglomerates closer pair of clusters and returns the
+                                                                                     clustering result according to the number of clusters to be found
+A. Problem Statement
+                                                                                     or the linkage distance threshold above which clusters will not
+   Servers are the most prevalent devices in datacenters, and                        be merged. Compared with other clustering algorithms (e.g.,
+the KPIs of other types of devices, including routers, switches,                     DBSCAN), HAC is not sensitive to the choice of the distance
+firewalls, etc., resemble those of servers. The outlier detection                    metric because it combines two nodes based on the rank of
+methods proposed for server KPI can be easily generalized to                         distances instead of their absolute distance values. Therefore,
+other types of devices. Therefore, in this paper, we mainly focus                    we adopt HAC for clustering in OutSpot.
+on the KPIs of servers in large-scale datacenters, e.g., CPU                            Deep generative models, especially variational autoencoder
+idle, memory utilization, as listed in Table I. The KPI values                       (VAE) based models, have shown their superior performance
+are usually collected with a fixed time interval, like one or                        in point outlier/anomaly detection [4], [5], [12], [14], [15],
+five minutes. For example, as shown in Fig. 2, in the studied                        [19], [20], [21], [23]. A generative model usually learns the
+datacenters, operators monitor 18 KPIs for each server, and the                      low-dimensional representations of complex data through an
+monitoring data of these KPIs are collected every five minutes.                      encoder and generates new samples following it by a decoder.
+Thus a one-day-long KPI has 288 data points.                                         Compared to VAE, CVAE generates new samples of specified
+   In this paper, we determine that a one-day-long KPI is an                         categories by condition variable [30], [31]. As shown in Fig. 3,
+outlier KPI because it contains one or more outliers (e.g., subse-                   CVAE also consists of an encoder and a decoder.
+quence outliers or outlier time series). To find out the outlier KPIs                   1) Encoder. Map the input x with category information y
+more frequently, we use a sliding window technique to divide the                           to the latent variable distribution z (i.e., z ∼ pθ (z|x, y)).
+KPI data with window size = one day and step size = 1.5 hours.                             pθ (z) is the prior distribution of z.
+                                                                                        2) Decoder. Generate an x with known category information,
+  3 https://github.com/OutlierDetection-OutSpot/Code                                       i.e., x ∼ pθ (x|z, y).
+
+        Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+SUN et al.: EFFICIENT AND ROBUST KPI OUTLIER DETECTION FOR LARGE-SCALE DATACENTERS                                                                    2861
+
+
+
+                                                                                   by the dot-and-dash line). Data Preparation standardizes all the
+                                                                                   KPIs at the same magnitude through z-score normalization [5].
+                                                                                   In the Clustering and Encoding module, the KPIs are clustered
+                                                                                   based on their patterns through HAC, and then the cluster
+                                                                                   information is encoded as the condition variable y of CVAE.
+                                                                                   Model Training captures the normal patterns of each cluster
+                                                                                   using CVAE, and Outlier Detectin determines whether a KPI
+                                                                                   is an outlier.
+Fig. 3. The architecture of CVAE. The dash lines denote encoding. The solid
+lines denote decoding.                                                                The core idea of OutSpot is combining HAC with CVAE,
+                                                                                   and then using the CVAE model to detect two types of outliers:
+                                                                                   subsequence outlier and outlier time series. For some KPI’s
+                                                                                   one-day-long monitoring data x, we first cluster KPIs into fewer
+                                                                                   clusters according to the patterns of x and other KPIs in current
+                                                                                   period (i.e., the red area of Fig. 2), and then obtain x’s cluster
+                                                                                   information. After that, we encode this information into CVAE
+                                                                                   as conditional variables and train the model using all KPIs’
+                                                                                   historical data (i.e., the green area of Fig. 2) of this cluster. Next
+                                                                                   we explain how can we use one model to detect the two types
+                                                                                   of outliers. Since the outlier KPIs usually account for a small
+Fig. 4. The overall framework of OutSpot. The dash lines denote the training
+procedure, the solid lines denote the detection procedure, and the dot-and-dash    proportion, keeping the number of clusters τc relatively small can
+line denotes the modules shared by the two procedures.                             ensure that normal data dominate each cluster, and the outlier
+                                                                                   KPIs can be clustered into a “normal cluster” instead of separate
+                                                                                   clusters. Intuitively, to judge whether a KPI x is a subsequence
+   Note that the true posterior pθ (z|x, y) is intractable [30]. We                outlier, we should compare the x’s current pattern with its histor-
+alternatively get its approximate distribution qφ (z|x, y) through                 ical pattern and calculate the difference, and compare x’s current
+variational inference. Now we can trace the integral of the                        pattern with other KPIs’ to verify whether it is an outlier time
+marginal log-likelihood                                                            series. For cluster C, OutSpot trains a model using the historical
+                                                                                  KPIs to learn the historical pattern. Note that this model contains
+    log pθ (x|y) = qφ (x|z, y) log pθ (z|y)dz                                      not only the historical patterns of this cluster but also the current
+                           z                                                       patterns of other KPIs (most KPIs are normal, so their historical
+                       
+                                                 pθ (x, z|y)qφ (z|x, y)            patterns are similar to current’s.). Detecting outlier KPIs through
+                   =           qφ (x|z, y) log                          dz
+                           z                     qφ (z|x, y)pθ (z|x, y)            historical patterns is straightforward. However, if the current
+                                                                                  pattern is consistent with the historical pattern of a KPI that have
+                                                 pθ (x, z|y)                       outliers for multiple days, it is not enough to rely on the historical
+                   =           qφ (x|z, y) log               dz
+                           z                     qφ (z|x, y)                       pattern alone. Actually, when the model also captures the normal
+                                 + KL[qφ (z|x, y)  pθ (z|x, y)].            (1)   patterns of other KPIs in the same period, these outlier KPIs can
+                                                                                   be easily detected because they are significantly different from
+   The first term in (1) is the evidence lower bound (i.e., ELBO),                 the normal patterns of other KPIs in the same period. Therefore,
+and KL refers to Kullback-Leibler divergence which measures                        when we obtain the reconstructed x by inputting x into this
+the distance between two probability distributions. Because                        model, x represents the historical pattern of x and the current
+KL loss is always greater than zero, CVAE is trained through                       patterns of other KPIs. Thus, OutSpot determines whether x is a
+maximizing ELBO                                                                    subsequence outlier or an outlier time series just by comparing
+                                                                                   the difference of x and x .
+     L(x, y) = log pθ (x|y) − KL[qφ (z|x, y)  pθ (z|x, y)]
+                                       pθ (x|z, y)pθ (z|y)
+               = Eqφ (z|x,y) log                           .                 (2)   B. Clustering and Encoding
+                                           qφ (z|x, y)
+                                                                                      Clustering. As mentioned in Section II-B, we adopt HAC for
+                                   III. DESIGN                                     clustering in this work. Since HAC is insensitive to distance
+                                                                                   metrics, we choose one of the most popular metrics, euclidean
+A. Overall Framework
+                                                                                   Distance [32]. With a cluster number threshold, τc , KPIs are
+  We propose OutSpot, integrating HAC with CVAE, to ac-                            divided into at least τc clusters according to Ward linkage [33]
+curately and efficiently detect both subsequence outlier and                       (τc = 3 in our scenario, and more details can be seen in Sec-
+outlier time series simultaneously for large-scale datacenters.                    tion IV-E). A cluster represents the pattern of a type of normal
+The framework of OutSpot is shown in Fig. 4. It consists of two                    KPI, and it may contain outlier KPIs (more details can be seen
+procedures: model training (the dash lines) and detection (the                     in Section V-B).
+solid lines). The two modules, i.e., Data Preparation, Clustering                     Encoding. We encode the cluster information as a set of
+and Encoding, are shared by the above two procedures (linked                       one-hot vectors [21]. One-hot encoding converts the positive
+
+         Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+2862                                                                                      IEEE TRANSACTIONS ON COMPUTERS, VOL. 72, NO. 10, OCTOBER 2023
+
+
+
+                                                                                    D. Model Training
+                                                                                      The model of CVAE in OutSpot is trained by maximizing the
+                                                                                    ELBO (i.e., the loss function) on the marginal log-likelihood
+                                                                                                                           pθ (x, z|y)
+                                                                                              L(x, y) = Eqφ (z|x,y) log
+                                                                                                                           qφ (z|x, y)
+                                                                                                                           pθ (z|y)pθ (x|z, y)
+                                                                                                       = Eqφ (z|x,y) log
+                                                                                                                               qφ (z|x, y)
+                                                                                                                              pθ (z)
+                                                                                                       = Eqφ (z|x,y) log
+                                                                                                                           qφ (z|x, y)
+                                                                                                           + Eqφ (z|x,y) log pθ (x|z, y).             (3)
+                                                                                       The encoder of CVAE defines the approximate posterior dis-
+                                                                                    tribution as a multivariate Gaussian distribution: qφ (z|x, y) ∼
+                                                                                    N (μz , σz2 I), while the decoder defines the conditional distri-
+                                                                                    bution of the KPIs to be detected: pθ (x|z, y) ∼ N (μx , σx2 I).
+Fig. 5. The network architecture of OutSpot consisted of Encoder and Decoder.       Besides, as [35] suggests, we can make the latent variable z
+x is the input data, x is reconstructed output; k is the number of layers of 1D-   independent of condition variable y, i.e., pθ (z|y) = pθ (z).
+convolution and 1D-deconvolution, respectively; z and y are latent and condition
+variables, respectively; hx is the output of k 1D-convolutions; hz is the output       With further analysis to (3), the first term is the regularization
+of k 1D-deconvolutions; hy is the one-hot vectors of condition variables. We        (i.e., Kullback-Leibler loss) on z, which minimizes the differ-
+concatenate hx and hy , hz and hy as new tensors in the network, respectively.      ence between the approximate posterior distribution qφ (z|x, y)
+                                                                                    and the prior distribution pθ (z) (i.e., regularize the true posterior
+                                                                                    distribution pθ (z|x, y) by the prior distribution pθ (z)). The
+integer which represents the cluster information to a binary                        second term is the reconstruction probability which maximizes
+vector with τc dimensions. For example, if τc = 3, we will get 3                    the likelihood of x.
+one-hot vectors: (1, 0, 0), (0, 1, 0), (0, 0, 1). Each of the one-hot                  We then optimize the single sample Monte Carlo estimate of
+vectors corresponds to a cluster. The one-hot vectors of cluster                    ELBO (3)
+information are treated as the condition variable y in CVAE,
+                                                                                                               pθ (z(l) )
+i.e., the condition variable y represents the category of the input                         L(x, y) = log                   + log pθ (x|z(l) , y),    (4)
+KPI. Please note that the Encoding here is a preprocessing step                                             qφ (z(l) |x, y)
+for the encoder of CVAE.                                                            where z(l) is sampled from qφ (z(l) |x, y).
+                                                                                       For each cluster, OutSpot can learn the major patterns, which
+C. Network Architecture                                                             are essentially normal patterns, because most KPIs of each clus-
+                                                                                    ter are normal (in our scenario, 82.4% of KPIs are normal). Here,
+   OutSpot is a reconstruction-based model that consists of an
+                                                                                    OutSpot learns the approximate pattern of historical workload so
+encoder (i.e., qφ (z|x, y)) and a decoder(i.e., pθ (x|z, y)). As
+                                                                                    that the detection results will not be affected when there are small
+shown in Fig. 5(a), in the encoder, OutSpot first extracts the
+                                                                                    differences between historical and current workload patterns. In
+shape features of the input KPIs through k 1D-convolution
+                                                                                    addition, we observe that the periodicity of KPIs on a machine
+(i.e., one-dimensional convolutional neural network) layers.
+                                                                                    does not frequently change since the workload pattern of the
+Then a fully-connected layer maps the shape features (e.g.,
+                                                                                    machine is pretty stable. Moreover, even if the workload pattern
+seasonality, trend and stationarity, etc [34].) of input KPIs
+                                                                                    changes, we can retrain the model to adapt to the new pattern.
+x (i.e., hx ) combined with the cluster information y (i.e.,
+hy ) to the low-dimensional latent space as a stochastic latent
+variable z.                                                                         E. Outlier Detection
+   For the decoder as shown in Fig. 5(b), OutSpot uses 1D-                             As mentioned above, OutSpot learns the normal patterns due
+deconvolution layers followed by fully-connected layers. The                        to the normal KPIs are the majority. Therefore, a normal KPI can
+decoder takes the latent variable z (i.e., hz ) as input and outputs                be easily reconstructed with little difference to the original one,
+the reconstructed data, x , with the cluster information y (i.e.,                  because the KPI entered during reconstruction is normal and
+hy ). Detailedly, the latent variable z represents the variational                  the model represents the normal patterns. However, an outlier
+distribution in latent space and x represents the KPIs’ distribu-                  KPI, containing lots of abnormal values which have been get
+tion. The probabilities of z and x are assumed to be Gaussian                      rid of during reconstruction, is supposed to be significantly dif-
+distributions. Therefore, z and x are generated by their mean μ                    ferent from its reconstructed data. Consequently, we determine
+and standard deviation σ instead (i.e., μz , σz and μx , σx ). Since                whether KPI x is an outlier by measuring the difference between
+σ is always greater than zero, we apply Softplus as the activation                  x and its reconstructed data x . The greater the distance, the more
+function: Sof tplus(x) = log(1 + exp(x)).                                           likely x is an outlier.
+
+
+        Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+SUN et al.: EFFICIENT AND ROBUST KPI OUTLIER DETECTION FOR LARGE-SCALE DATACENTERS                                                                    2863
+
+
+
+
+                                                                                    Fig. 7.   The interface of the labeling tool.
+
+
+
+                                                                                    these problems, we first apply a soft threshold technique to r
+                                                                                    to reduce the impact of unexpected decreasing and noises, and
+                                                                                    then apply median filtering to r to remove the spikes (or dips).
+                                                                                       The soft threshold technique makes smooth transitions be-
+Fig. 6. An example of outliers. The red point s in (a) and (b) is the point
+outlier. The red area in (a) and (b) is the subsequence outlier. Zero baseline z0
+                                                                                    tween the original and deleted values. It sets values below the
+is a line with a value of zero which means the original and reconstructed time      threshold τs to zero and subtracts the τs from original values
+series (x and x ) are identical.                                                   above τs (or adds τs to original values below −τs )
+                                                                                                          ⎧
+                                                                                                          ⎨0          for |v| ≤ τs
+                                                                                                    vs = v − τs for v > τs         ,             (5)
+                                                                                                          ⎩
+   Unfortunately, the reconstructed data does not always work                                               v + τs for v < −τs
+well as expected, especially for an outlier KPI experiencing long-
+                                                                                    where v and vs represents the value of a sequence before and
+period abnormal behaviors. For example, as shown in Fig. 6(a),
+                                                                                    after applying soft threshold (r in OutSpot), respectively.
+the original KPI suffers from a long time decline (i.e., the
+                                                                                       Median filtering can effectively remove impulse noise in-
+area C), while the reconstructed data has a slightly decreasing
+                                                                                    cluding point outliers. Its process is accomplished by sliding
+trend (i.e., the area B) in front of the decline area which is
+                                                                                    a window over the KPI, and replacing the original value at the
+unexpected. This will affect the measurement of their difference.
+                                                                                    center of the window with the median value in the window [36].
+The main reason is that the generative model reconstructs the
+                                                                                       Now we get a new residual sequence r . Then we compute the
+entire one-day-long KPI data rather than part of the KPI data.
+                                                                                    Manhattan distance d(r , z0 ) between the new residual sequence
+The reconstruction process can be impacted by every part of
+                                                                                    r and zero baseline z0 . Finally, with a distance threshold τd ,
+the one-day-long KPI data, including the decline in area C.
+                                                                                    we determine the KPI x is an outlier if d(r , z0 ) > τd . τd is an
+Therefore, the decline of area C may also cause the decline of its
+                                                                                    empirical value, which can vary according to different scenarios.
+adjacent area B. In addition, it is normal for the reconstruction
+                                                                                    In our scenario, for example, the operators think that an outlier
+data to decline slightly in area C, because this input KPI is
+                                                                                    KPI should have continuous abnormal values of 1.5 hours (18
+the outlier in area C (i.e., decline), which will partially affect
+                                                                                    points for the interval of 5 minutes) at least, and the abnormal
+the reconstruction KPI, resulting in some deviations from the
+                                                                                    range should be greater than 20%. Then we calculate this thresh-
+normal patterns. However, it does not affect outlier detection
+                                                                                    old in this way: τd = (20% − τs ) × 18. We set the value of the
+because the reconstructed KPI x is still very different from the
+                                                                                    threshold for all the machines of a datacenter instead of for each
+original KPI x. Moreover, we do not intend to detect the point
+                                                                                    machine. It is because the value represents the normal patterns
+outlier, so how to ignore the spike (or dip) points (i.e., the spike
+                                                                                    of all the machines in the datacenter.
+point s) when measuring the difference is a vital problem. In
+addition, noises are not unusual even in the normal part of an
+                                                                                    F. Labeling Tool
+outlier KPI (i.e., the area A in Fig. 6(b)), which can affect the
+distance measuring.                                                                    Although OutSpot is an unsupervised method, we still need
+   To measure the distance, OutSpot first gets the residual se-                     labeled data to verify or improve its performance. Therefore, we
+quence by calculating the absolute values of the original KPI                       develop a labeling tool with a friendly graphical user interface
+and the reconstructed one, i.e., r = |x − x |, and then OutSpot                    (GUI), with which operators can label KPI outliers visually. This
+employs Manhattan distance [32] of              the residual sequence r            labeling tool is implemented in Python with Vue.js and FLASK,
+and the zero baseline z0 : d(r, z0 ) = ni=1 |ri − z0i |, where r is                 with about 1000 lines of code. The interface of this labeling tool
+(r1 , r2 , . . ., rn ) and z0 is (z01 , z02 , . . ., z0n ).                         is shown in Fig. 7, and its workflow is as follows:
+   Now the problems of unexpected decreasing, the spike point                          1) Users (i.e., operators) upload the original data to be la-
+and the noises are reflected in the residual sequence r. To solve                         beled.
+
+
+         Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+2864                                                                                 IEEE TRANSACTIONS ON COMPUTERS, VOL. 72, NO. 10, OCTOBER 2023
+
+
+
+                                                                   TABLE II
+                     STATISTICS FOR THE DATASET (AN OUTLIER KPI IS A ONE-DAY-LONG KPI CONTAINING ONE OR MORE OUTLIERS)
+
+
+
+
+   2) Users use the labeling tool to visualize the data to be                 China that provide network services to billions of users. It is
+      labeled and its historical data. They can now visualize,                composed of the eight-day-long monitoring data from 54 work
+      drag, zoom in, or zoom out any segment.                                 orders (from the wireless base station), each work order includes
+   3) Users select the beginning and end of a segment for outlier             37 KPIs.
+      labeling, and the labeled segment will be highlighted in                   For the above two datasets, we take the same processing, i.e.,
+      the labeling tool. At the same time, the labeling results               divide them into two parts: the data from the first 7 days consti-
+      will also be recorded.                                                  tute the training set, and the data from the last day constitute the
+   4) Users can download the labeled result after the data label-             test set, which has been labeled by experienced operators using
+      ing process.                                                            the labeling tools developed by us (see Section III-F). Operators
+   For the example shown in Fig. 7, the data of Day 4 and Day                 use this tool to compare the KPI on the day of detection with
+5 of the two KPIs (kpi0 and kpi3) are visualized, respectively.               its historical data and other KPI data in the same period. Then,
+Comparing it with its historical data shows that kpi3 experiences             outliers are labeled by three experienced operators: Two opera-
+an outlier (a subsequence outlier) around 21:30 on Day 5, so                  tors label the outliers independently; When their labels diverge,
+operators label this segment an outlier. In addition, the Day 1               the third operator is involved and makes the final decision. For
+to Day 4 displayed without zooming in is also an outlier, and                 the two datasets in this paper, it takes the three operators about
+the outlier type is the outlier time series. On the one hand, the             four weeks to complete the labeling work. At last, we count the
+labeling tool helps us observe and label data more conveniently.              number of outlier KPIs.
+In this paper, three experienced operators utilize this labeling                 2) Evaluation Metrics: We use two metrics, the best
+tool to label the datasets, ensuring accurate labeling results.               F 1 Score (F 1best ) and Area Under receiver operating charac-
+On the other hand, the labeled data is used to evaluate the                   teristic curve (AUC), to evaluate how accurate each method is
+performance of OutSpot from many aspects, such as the overall                 for outlier detection. To obtain more reliable results, we repeat
+accuracy, computational efficiency, and the effects of the main               all the experiments ten times to calculate the average F 1best and
+components (more details can be seen in Section IV).                          AUC.
+                                                                                 Specifically, KPI outlier detection is essentially a two-class
+                          IV. EVALUATION                                      classification problem, i.e., classifying KPIs into outlier KPIs
+                                                                              and normal KPIs. F 1 Score, taking both precision and recall
+   To evaluate the effectiveness and efficiency of OutSpot, we
+                                                                              into account, is usually applied to evaluate the effectiveness
+perform extensive experiments to answer the following four
+                                                                              of a two-class classification method. Therefore, we choose
+research questions.
+   r RQ1 (Overall accuracy): How accurate is OutSpot in out-                  F 1 Score as our evaluation metric. It is calculated as follows:
+                                                                              F 1 score = 2×P P recision+Recall , where P recision = T P +F P ,
+                                                                                                 recision×Recall                           TP
+     lier detection compared to baseline methods?
+   r RQ2 (Computational efficiency): Is OutSpot computation-                  Recall = T PT+F P
+                                                                                                 N . After enumerating all possible thresholds,
+     ally efficient enough for large-scale datacenters?                       we can get the best F 1 Score, i.e., F 1best , for each method.
+   r RQ3 (Effect of main components): In this work, we propose                F 1best represents the best performance of a method on a dataset.
+     to combine HAC with CVAE, and present soft threshold                        An ROC curve is plotted based on the true positive rate
+     and median filter for outlier determination. How promi-                  (T P R = T PT+F P
+                                                                                                N ) and false positive rate (F P R = T N +F P )
+                                                                                                                                           FP
+
+     nently do they impact the effectiveness of OutSpot?                      by enumerating all the thresholds. AUC is the area under the
+   r RQ4 (Effect of hyper-parameters): How do the hyper-                      ROC curve, and it denotes a method’s overall performance on a
+     parameters of OutSpot impact its effectiveness?                          dataset.
+                                                                                 3) Compared Methods: We compare OutSpot with some rep-
+                                                                              resentative outlier detection methods to demonstrate its perfor-
+A. Experimental Setup
+                                                                              mance. Since OutSpot is designed to detect both subsequence
+   1) Datasets: To verify the effectiveness of OutSpot, we col-               outlier and outlier time series, we compare it with EDBT-
+lect data from two different datacenters. The statistics of the two           15 [26], a representative subsequence outlier detection method,
+datasets are shown in Table II, which are A and B, respectively.              and ICDMW-15 [28], a typical outlier time series detection
+   Dataset A comes from a top global short video service                      method. At the same time, we also compare it with DOMI [5], a
+provider that provides services for hundreds of millions of DAU.              method for detecting outlier machine instances. Additionally, we
+It consists of the eight-day-long monitoring data of 18 KPIs                  also compare it with four state-of-the-art point outlier/anomaly
+collected from 200 different servers. Dataset B is collected from             detection methods, including CTF [6], Donut [12], AE-
+one of the three major domestic communication operators of                    RNN [13], and SR [9].
+
+       Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+SUN et al.: EFFICIENT AND ROBUST KPI OUTLIER DETECTION FOR LARGE-SCALE DATACENTERS                                                                     2865
+
+
+
+                                                                     TABLE III
+                                 THE F 1best AND ITS CORRESPONDING PRECISION, RECALL, AND THE AUC OF EACH METHOD
+
+
+
+
+Fig. 8.   The ROC curves and PR curves of each method.
+
+
+   4) Hyper-Parameters: For A, we set the hyper-parameters                      B. Overall Accuracy (RQ1)
+of OutSpot as follows. The cluster number threshold τc = 3.                        For each method, Table III lists the F 1best , AUC and its
+In CVAE, both the convolutional and deconvolutional archi-                      corresponding precision and recall on the test sets of A and B.
+tectures have two layers, the kernel sizes and strides of which
+                                                                                We can see that OutSpot outperforms the seven baseline methods
+are {6 × 1, 3 × 1} and {2 × 1, 1 × 1}, respectively. Moreover,                  in terms of both F 1best and AUC. More specifically, in A, its
+we apply L2 regularization with a coefficient of 10−4 for all
+                                                                                F 1best and AUC are 0.95 and 0.99, which are 0.17 and 0.05
+layers, and the dimension size of z-space is four. We use Adam
+                                                                                higher than the best baseline method, respectively. In B, its
+optimizer [37], which is reduced by a factor of 0.5 every five                  F 1best and AUC are 0.91 and 0.99, which are 0.59 and 0.13
+epochs, with an initial learning rate of 10−3 . Additionally, we
+                                                                                higher than the best baseline method, respectively. Addition-
+run ten epochs for training with early stopping, and the batch
+                                                                                ally, their precision-recall (PR) curves and receiver operating
+size is 18. We set the soft threshold τs = 0.05 and the window                  characteristic (ROC) curves are shown in Fig. 8, respectively.
+length of median filter ω = 11. Besides, for B, we set τc = 5,
+                                                                                OutSpot achieves better performance than the seven baseline
+batch size = 37 and ω = 5. Other parameters are the same as                     methods in both ROC curves and PR curves, demonstrating that
+A. The choices of hyper-parameters are detailedly discussed in                  it obtains high TPR, low FPR, high precision, and high recall
+Section IV-E.
+                                                                                simultaneously.
+   For the setting of some important parameters in the baseline                    Donut [12], CTF [6], AE-RNN [13], and SR [9] are both
+methods, we also made some attempts during the experiment and                   point outlier/anomaly detection methods. They treat each point
+finally set them to the best for F 1best and AUC. For Dount, we
+                                                                                deviating from normal behavior compared to its historical or
+set the size of the window to 120, the latent dimension to 8, batch             adjacent data points as outliers. However, these individual outlier
+size = 256 and epochs = 250. For DOMI, we set the dimension                     data points usually do not imply a device failure because of
+of z-space variables to 10 and the number of components of c
+                                                                                auto-recovery and load balancing mechanisms. Thus we do not
+to 4, epoch = 10. For CTF, we set the dimension of z-space                      label them as outliers in our scenario. Therefore, they all generate
+variables to 3, the length of input data sequence to 60, batch
+                                                                                a large number of false alarms and suffer from low precision.
+size = 50 and epochs = 20. For AE-RNN, we set the number
+                                                                                   DOMI [5] is designed for detecting outlier machine instances.
+of hidden LSTM units to 8 and the number of autoencoders to                     Because all KPIs of a machine instance at the same time can
+40. For SR, we set the size of the sliding window to 40 and
+                                                                                represent the state of the machine, it is more concerned with
+the estimated points number to 5. For EDBT-15, we set the
+                                                                                the overall KPI of a machine rather than each KPI. When we
+length of the sliding window to 5, PAA size to 3 and alphabet                   apply it to determine whether each KPI is outlier, the effect is not
+size = 3. For ICDMW, we set the number of extracted features
+                                                                                good, especially the F 1best in B is only 0.12. EDBT-15 [26] and
+to 10.
+
+
+          Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+2866                                                                                 IEEE TRANSACTIONS ON COMPUTERS, VOL. 72, NO. 10, OCTOBER 2023
+
+
+
+                                                               TABLE IV
+   THE F 1best AND CORRESPONDING PRECISION, RECALL UNDER DIFFERENT OUTLIER TYPES. (T1 REPRESENTS SUBSEQUENCE OUTLIERS, T2 REPRESENTS
+                  OUTLIER TIME SERIES, T1+T2 MEANS THE COMBINATION OF EDBT-15 (FOR T1) AND ICDMW-15 (FOR T2) RESULTS)
+
+
+
+
+ICDMW-15 [28] are designed for detecting subsequence outliers                                              TABLE V
+                                                                               THE TRAINING TIME OF OUTSPOT, DONUT, AND DAGMM ON THE TRAINING
+and outlier time series, respectively. For a KPI, EDBT-15 detects                       SET AND ON ONE MILLION KPIS IN DATASET A AND B
+outliers only according to its historical patterns, while ICDMW-
+15 conducts outlier detection merely based on the patterns of
+other KPIs in the same period, and neither of them learns the
+two types of patterns simultaneously. Therefore, both methods
+miss many outliers, generate many false positives, and thus have
+low precision.
+   To verify the ability of OutSpot to detect two types of outliers
+(i.e., subsequence outliers and outlier time series), we have listed
+the precisions, recalls, and F 1best of OutSpot in detecting either
+type of outliers in Table IV on the two datasets, respectively.
+Additionally, for the two datasets, we have also listed in Table IV
+                                                                              improved. However, the previously-proposed deep generative
+the precisions, recalls, and F 1best of EDBT-15 [26] in detecting
+                                                                              model-based methods, including Donut and AE-RNN, have to
+subsequence outliers and of ICDMW-15 [28] in detecting outlier
+                                                                              train a separate model for each KPI, and thus consume much
+time series, respectively. Moreover, we combine EDBT-15 and
+                                                                              more computational resources and suffer from low computa-
+ICDMW-15 by adopting EDBT-15 for detecting subsequence
+                                                                              tional efficiency.
+outliers and ICDMW-15 for detecting outlier time series and
+                                                                                 More specifically, we implement OutSpot, Donut, DOMI,
+determining outliers whenever either model detects any outliers.
+                                                                              CTF and AE-RNN with Python, and run them on a server
+   As seen from Table IV, OutSpot outperforms EDBT-15,
+                                                                              with 2*16-Core Intel(R) Xeon(R) Gold 5218 CPU @2.30 GHz
+ICDMW-15, and their combination in detecting both outlier
+                                                                              and 192 G RAM. As shown in Table V, for the training set
+types. Since there are many noisy data points in our scenario, and
+                                                                              containing 3600 (A) and 1998 (B) KPIs, it takes OutSpot 63.3 s
+EDBT-15 is sensitive to them, it generates many false positives
+                                                                              and 23.36 s to train the model, which is the least among the
+and suffers from low precision. In addition, ICDMW-15 is
+                                                                              above methods. To more intuitively compare the five methods’
+based on principal component analysis (PCA), and the features
+                                                                              efficiency, we calculate the training time of the five methods
+(principal components) extracted by PCA can only sketch out
+                                                                              when we apply them to conduct outlier detection for one million
+the KPI patterns. Therefore, it cannot accurately quantify the
+                                                                              KPIs. OutSpot costs 4.89 h and 3.24 h to finish training for two
+difference between the various KPI patterns in our scenario. In
+                                                                              training sets, which is quite acceptable in practice. However,
+some cases, the normal KPIs cannot be distinguished from the
+                                                                              both Donut, DOMI, CTF and AE-RNN take a long time for
+outlier KPIs, resulting in high false negatives (i.e., low recall).
+                                                                              training, making them inappropriate in our scenario, especially
+Finally, the combination of the two methods cannot mitigate
+                                                                              Donut and AE-RNN. In addition, we can see that the efficiency
+the intrinsic shortcomings of these two methods and still suffers
+                                                                              of DOMI is close to that of OutSpot, which is mainly due to the
+from a low F 1best .
+                                                                              fact that it is mainly aimed at machine instances, not every KPI.
+   Furthermore, it can be seen from Tables III and IV that all
+                                                                              Please note that none of SR, EDBT-15, or ICDMW-15 needs
+methods (including OutSpot) perform worse in B than A. The
+                                                                              model training. However, as we can see from Table III, all the
+more important reason is that the B has a large monitoring
+                                                                              three methods suffer from low precision and low recall, and none
+interval (15 min), resulting in a small amount of data. At the
+                                                                              of them can be used for outlier detection in practice.
+same time, the B comes from the wireless base station, so
+compared with the A from the Web service, its KPI data is more
+complicated.                                                                  D. Effect of Main Components (RQ3)
+                                                                                 As aforementioned, the main technical contributions of this
+C. Computational Efficiency (RQ2)
+                                                                              work are: 1) we propose to integrate HAC with CVAE to detect
+  As aforementioned, to detect outliers for the massive number                both subsequence outlier and outlier time series for a consid-
+of KPIs in large-scale datacenters, we propose to combine                     erable number of KPIs with various types, and 2) we design
+HAC with CVAE in OutSpot. Because OutSpot trains only one                     two simple yet effective techniques, ST and MF, to accurately
+model for all KPIs, the computational efficiency is significantly             determine outlier KPIs. Therefore, we evaluate the effect of
+
+       Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+SUN et al.: EFFICIENT AND ROBUST KPI OUTLIER DETECTION FOR LARGE-SCALE DATACENTERS                                                                     2867
+
+
+
+                                                                        TABLE VI
+                                                       THE F 1best AND AUC OF DIFFERENT METHODS
+
+
+
+
+Fig. 9.   The ROC curves and PR curves of different methods.
+
+
+these main components on OutSpot’s overall performance by                       E. Effect of Hyper-Parameters (RQ4)
+removing one or two of them from OutSpot as follows.
+   r “OutSpotw/o C”: We replace the combination of HAC and                         Several essential hyper-parameters may impact the perfor-
+                                                                                mance of OutSpot, including τc (cluster number threshold),
+      CVAE with VAE in OutSpot.
+   r “OutSpotw/o ST”: We remove ST from OutSpot.                                dimension size of z-space, number of epochs, ω (window size
+   r “OutSpotw/o MF”: We remove MF from OutSpot.                                of median filter), and τs (soft threshold). To measure these
+   r “OutSpotw RP”: We replace the combination of ST and                        hyper-parameters’ effect on OutSpot, we calculate OutSpot’s
+                                                                                F 1best and AUC as the values of them vary, as shown in Figs. 10
+      MF with “reconstruction probability” (RP).                                and 11. More specifically, a larger dimension size of z usually
+   Table VI lists, for each above method, the AUC as well as
+                                                                                leads to a stronger representation ability, but it can lead to higher
+F 1best and its corresponding precision and recall. Moreover,                   training overhead. Similarly, the number of epochs indicates the
+Fig. 9 shows the ROC curves and PR curves of different methods,                 number of complete passes through the training set. A smaller
+respectively. OutSpot outperforms all the other methods in terms
+                                                                                number of epochs may result in insufficient model training,
+of F 1best and AUC.                                                             but a larger number of epochs will degrade the computational
+   Without the clustering information embedded in the deep                      efficiency.
+generative model, VAE merely learns the historical pattern of
+                                                                                   For A (Fig. 10), we can see that τc impacts little on the
+all types of KPIs, and cannot comprehensively capture the                       effectiveness (in terms of F 1best and AUC) of OutSpot, and
+patterns of historical KPIs and those of KPIs in the same period,
+                                                                                OutSpot achieves relatively high F 1best and AUC when τc = 3
+likely leading to more false alarms and miss more true outliers.
+                                                                                or τc = 6. Therefore, we set τc = 3 in our scenario. As the
+Therefore, “OutSpot w/o C” achieves lower precision and lower                   dimension size of z-space increases, the effectiveness of OutSpot
+recall than OutSpot.
+                                                                                improves and becomes stable when its value reaches four. Thus
+   Since ST and MF respectively alleviate the impact of rea-
+                                                                                the dimension size of z-space is four in our scenario. Similarly,
+sonable variance and point outliers on the performance of                       the number of epochs is eight, ω = 11, and τs = 0.05 in our
+OutSpot, removing them leads to that both “OutSpot w/o ST” and
+                                                                                scenario.
+“OutSpot w/o MF” suffer from more false alarms and lower pre-                      For B (Fig. 11), relative to A, we can see that τc , the di-
+cision. Additionally, the reconstruction probability-based meth-                mension size of z and the number of epochs have a greater
+ods can frequently assign a higher reconstruction probability
+                                                                                impact on the effectiveness of OutSpot, but the optimal pa-
+to outliers and thus suffer from low accuracy in outlier deter-                 rameters appear in a similar range to A. As the parameter size
+mination for high-dimensional data [15]. Therefore, they are                    increases, the optimal parameters are quickly found, i.e., τc = 5,
+inappropriate for subsequence outliers and outlier time series,
+                                                                                the dimension size of z is four and the number of epochs is
+both of which are high-dimensional data containing multiple                     eight. In addition, we can see that the parameters ω and τs
+data points. As shown in Table VI and Fig. 9, our experiments                   have little effect on the effectiveness of OutSpot, and the best
+have verified this point, because “OutSpot w PR” degrade both
+                                                                                results are achieved when taking 5 and 0.05 in our scenario,
+the precision and recall of OutSpot.                                            respectively.
+
+
+          Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+2868                                                                                     IEEE TRANSACTIONS ON COMPUTERS, VOL. 72, NO. 10, OCTOBER 2023
+
+
+
+
+Fig. 10.     The F 1best and AUC of OutSpot as the values of hyper-parameters vary in dataset A.
+
+
+
+
+Fig. 11.     The F 1best and AUC of OutSpot as the values of hyper-parameters vary in dataset B.
+
+
+
+                                                                                  shown in Fig. 12(b). OutSpot determined this KPI as an outlier
+                                                                                  because its pattern deviated significantly from other KPIs in
+                                                                                  the same period. After careful investigations, operators found
+                                                                                  that this server had been poorly managed for one week. The
+                                                                                  Spark software on this server failed one week ago, and the Spark
+                                                                                  system randomly assigned jobs to this server. Since this server
+                                                                                  had been experiencing outlier for a week, the outlier/anomaly de-
+                                                                                  tection methods according to only a specific KPI’s historical pat-
+                                                                                  terns, including Donut [12], AE-RNN [13], and SR [9], EDBT-
+                                                                                  15 [26], etc., can hardly find this type of outliers (outlier time
+                                                                                  series).
+
+
+                                                                                  B. The Limitations of OutSpot
+Fig. 12.     Two real-world KPI outlier cases detected by OutSpot.
+                                                                                     OutSpot has two main limitations as follows:
+                                                                                     1) After clustering KPIs through HAC, a cluster usually
+                               V. DISCUSSION                                      represents a normal pattern. The main reasons are:
+                                                                                     a) A subsequence outlier KPI still has many similarities with
+A. Case Study
+                                                                                  the normal KPIs. Therefore, the subsequence outlier KPIs often
+   OutSpot is being deployed on the datacenters of a top-tier                     do not form a specific cluster but are assigned to different
+global short video service provider that provides services for                    clusters, most of which are normal KPIs.
+hundreds of millions of DAU. During the process of deployment,                       b) The patterns of outlier time series KPIs are so different that
+we find the following two interesting cases.                                      they tend to be clustered into a close cluster, most of which are
+   The monitoring data of rx_pkts_eth0, representing the number                   normal KPIs. In extreme cases, when the outlier KPIs occupy a
+of received packets, suffered from a 2.5-hour-long subsequence                    large portion of all KPIs, one or more clusters may contain only
+outlier, as shown in the red dash line of Fig. 12(a). OutSpot                     outlier ones. But in this case, operators can easily find them.
+believed that the pattern of this outlier segment deviated from                   For example, operators can determine whether outlier patterns
+normal patterns, according to the historical patterns of all the                  dominate a cluster by manually checking its central KPI through
+KPIs that share the same cluster with this KPI. The outlier                       a labeling tool like the one introduced in Section III-F. Operators
+score generated by OutSpot is 8.80, significantly higher than                     can determine that outlier patterns dominate the cluster if its
+the threshold (2.30 in our scenario). Operators confirmed this                    central KPI is an outlier KPI. Then we use the remaining clusters
+KPI outlier, and found that it was caused by a top-of-rack (ToR)                  to train the model. Furthermore, after investigating extensive
+switch failure. After operators mitigated the switch failure, the                 real-world KPIs, we find outlier KPIs rarely dominate a cluster.
+KPI returned to normal status.                                                    For example, in our scenario, the outlier KPIs occupy 17.58%
+   Additionally, OutSpot detected an outlier time series on                       and 4.9% of all KPIs in A and B, respectively. No outlier clusters
+cpu_user, which denotes the CPU utilization at user level, as                     appear when we increase τc from 2 to 10.
+
+
+           Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+SUN et al.: EFFICIENT AND ROBUST KPI OUTLIER DETECTION FOR LARGE-SCALE DATACENTERS                                                                        2869
+
+
+
+   2) A subsequence outlier of ε may be missed by OutSpot in                  main target is the entire machine instance rather than each KPI,
+the following scenario. ε has different patterns with its historical          so it is inappropriate to our scenario either.
+patterns, but its pattern resembles one of the historical patterns of
+another KPI sharing the same cluster with ε. In this case, OutSpot                                        VII. CONCLUSION
+believes that ε does not suffer from an outlier, because OutSpot is
+trained according to the historical patterns of the KPIs having the              In large-scale datacenters, outlier detection for a large num-
+same cluster-ID with ε. Nevertheless, after careful investigation             ber of various-type KPIs is vitally important. In this work,
+on the 3,600 KPIs in the experiment, we do not find any such ε.               we propose OutSpot, an efficient and robust outlier detection
+We will design a method to address the challenge imposed by                   framework, which can detect subsequence outlier and outlier
+such ε in the future.                                                         time series simultaneously. OutSpot combines HAC and CVAE
+                                                                              to learn the historical pattern of each KPI and the patterns of
+                                                                              all KPIs in the same period. We applied ST and MF to solve
+                        VI. RELATED WORK                                      the challenges introduced by point outliers and reasonable vari-
+   Recently, a large number of time-series outlier detection                  ance during the detection process. Moreover, we also develop
+methods have been proposed in the literature. The majority                    a labeling tool to help operators label KPI outliers. Extensive
+of these works focus on point outlier detection [4], [5], [6],                experiments using two real-world datasets (including 3600 and
+[7], [8], [9], [10], [11], [12], [13], [14], [16], [18], [19], [20],          1988 KPIs, respectively) demonstrate that OutSpot achieves that
+[21], [22], [23], [24], [25], [34]. Additionally, a few works have            F 1best = 0.95 and 0.91, AU C = 0.99 and 0.99, significantly
+been conducted on subsequence outlier detection [26], [27],                   outperforming the seven baseline methods. The core idea of
+[38], [39], outlier time series detection [16], [17], [28], [40] and          OutSpot can be applied for more scenarios beyond large-scale
+machine instance outlier detection [5]. However, none of these                datacenters, e.g., IoT devices and mobile devices. In the future,
+works can detect both subsequence outlier and outlier time series             we will verify OutSpot’s performance in more scenarios.
+simultaneously.
+   Among the point outlier detection methods, Donut [12] ap-                                                     REFERENCES
+plied VAE, a typical generative model, for KPI point out-                      [1] C. Guo et al., “Pingmesh: A large-scale system for data center network
+lier/anomaly detection for the first time. It learned the normal                   latency measurement and analysis,” in Proc. ACM Conf. Special Int. Group
+patterns of historical data using VAE and determined whether                       Data Commun., 2015, pp. 139–152.
+                                                                               [2] S. Moss, “Visa details cause of widespread outage, blames data
+a KPI data point was anomalous through reconstruction prob-                        center switch failure,” 2018. [Online]. Available: https://www.
+ability. CTF [6] combined clustering and transfer learning to                      datacenterdynamics.com/en/news/visa-details-cause-of-widespread-
+improve the scalability of existing anomaly detection algo-                        outage-blames-data-center-switch-failure/
+                                                                               [3] Incident review: Core router outages, 2020. [Online]. Available: https:
+rithms, which makes it efficient to detect a large number of KPIs                  //www.freistil.it/incident-review-core-router-outage/
+simultaneously. AE-RNN [13] integrated multiple autoencoders                   [4] L. Dai et al., “SDFVAE: Static and dynamic factorized VAE for anomaly
+(AE) through RNN. It applied the median reconstruction error                       detection of multivariate CDN KPIs,” in Proc. Web Conf., 2021, pp. 3076–
+                                                                                   3086.
+of multiple autoencoders to determine whether a KPI was an                     [5] Y. Su et al., “Detecting outlier machine instances through Gaussian mix-
+outlier. SR [9] applied the spectral residual model to obtain the                  ture variational autoencoder with one dimensional CNN,” IEEE Trans.
+significant part of the time series, i.e., the outlier part. However,              Comput., vol. 71, no. 4, pp. 892–905, Apr. 2022.
+                                                                               [6] M. Sun et al., “CTF: Anomaly detection in high-dimensional time series
+none of the above methods could learn the pattern of all KPIs                      with coarse-to-fine model transfer,” in Proc. IEEE Conf. Comput. Com-
+in the same period and accurately detect outlier time series.                      mun., 2021, pp. 1–10.
+Additionally, they were designed mainly for detecting point                    [7] M. Ma et al., “Jump-starting multivariate time series anomaly detection
+                                                                                   for online service systems,” in Proc. USENIX Annu. Tech. Conf., 2021,
+outliers, which are ignored in our scenario.                                       pp. 413–426.
+   The subsequence outlier detection methods usually conducted                 [8] X. Zhang et al., “Cross-dataset time series anomaly detection for cloud
+outlier detection through learning KPIs’ historical patterns [26],                 systems,” in Proc. USENIX Annu. Tech. Conf., 2019, pp. 1063–1076.
+                                                                               [9] H. Ren et al., “Time-series anomaly detection service at Microsoft,” in
+[27], [38], [39]. However, they did not learn the pattern of all                   Proc. 25th ACM SIGKDD Int. Conf. Knowl. Discov. Data Mining, 2019,
+KPIs in the same period. For example, EDBT-15 [26], a typical                      pp. 3009–3017.
+subsequence outlier detection method, discretized a time series               [10] Z. He et al., “A spatiotemporal deep learning approach for unsupervised
+                                                                                   anomaly detection in cloud systems,” IEEE Trans. Neural Netw. Learn.
+into symbolic form, and performed numerical reduction and                          Syst., vol. 34, no. 4, pp. 1705–1719, Apr. 2023.
+grammatical induction to obtain variable-length strings. More-                [11] A. Blázquez-García, A. Conde, U. Mori, and J. A. Lozano, “A review on
+over, the outlier time series detection methods detected outliers                  outlier/anomaly detection in time series data,” 2020, arXiv:2002.04236.
+                                                                              [12] H. Xu et al., “Unsupervised anomaly detection via variational auto-encoder
+based on the patterns of all the time series in the same period [16],              for seasonal KPIs in web applications,” in Proc. World Wide Web Conf.,
+[17], [28], [40]. For instance, ICDMW-15 [28], a representative                    2018, pp. 187–196.
+outlier time series detection method, integrated principal compo-             [13] T. Kieu, B. Yang, C. Guo, and C. S. Jensen, “Outlier detection for time
+                                                                                   series with recurrent autoencoder ensembles,” in Proc. 28th Int. Joint Conf.
+nents analysis (PCA) with α-convex hulls. Nevertheless, none of                    Artif. Intell., 2019, pp. 2725–2732.
+the above methods can detect both subsequence outlier and out-                [14] B. Zong et al., “Deep autoencoding gaussian mixture model for unsu-
+lier time series simultaneously, and thus they are inappropriate                   pervised anomaly detection,” in Proc. Int. Conf. Learn. Representations,
+                                                                                   2018.
+to our scenario. Besides, DOMI [5] is a typical machine instance              [15] Z. Wang, B. Dai, D. Wipf, and J. Zhu, “Further analysis of outlier detection
+outlier detection method, which learns normal machine instance                     with deep generative models,” in Proc. 34th Int. Conf. Neural Inf. Process.
+patterns through GMVAE to find outlier machines. However, its                      Syst., 2020, Art. no. 753.
+
+
+        Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+2870                                                                                       IEEE TRANSACTIONS ON COMPUTERS, VOL. 72, NO. 10, OCTOBER 2023
+
+
+
+[16] L. Beggel, B. X. Kausler, M. Schiegg, M. Pfeiffer, and B. Bischl, “Time        [40] J. A. Lara, D. Lizcano, V. Rampérez, and J. Soriano, “A method for outlier
+     series anomaly detection based on shapelet learning,” Comput. Statist.,             detection based on cluster analysis and visual expert criteria,” Expert Syst.,
+     vol. 34, no. 3, pp. 945–976, 2019.                                                  vol. 37, no. 5, 2020, Art. no. e12473.
+[17] S.-E. Benkabou, K. Benabdeslem, and B. Canitia, “Unsupervised outlier
+     detection for time series by entropy and dynamic time warping,” Knowl.
+     Inf. Syst., vol. 54, no. 2, pp. 463–486, 2018.
+[18] D. Liu et al., “Opprentice: Towards practical and automatic anomaly
+     detection through machine learning,” in Proc. ACM Internet Meas. Conf.,
+     2015, pp. 211–224.
+                                                                                                               Yongqian Sun (Member, IEEE) received the BS de-
+[19] W. Chen et al., “Unsupervised anomaly detection for intricate KPIs via
+                                                                                                               gree in statistical specialty from Northwestern Poly-
+     adversarial training of VAE,” in Proc. IEEE Conf. Comput. Commun.,
+                                                                                                               technical University, Xi’an, China, in 2012, and the
+     2019, pp. 1891–1899.
+                                                                                                               PhD degree in computer science from Tsinghua Uni-
+[20] Y. Su, Y. Zhao, C. Niu, R. Liu, W. Sun, and D. Pei, “Robust anomaly
+                                                                                                               versity, Beijing, China, in 2018. He is currently an
+     detection for multivariate time series through stochastic recurrent neural
+                                                                                                               assistant professor with the College of Software,
+     network,” in Proc. 25th ACM SIGKDD Int. Conf. Knowl. Discov. Data
+                                                                                                               Nankai University, Tianjin, China. His research in-
+     Mining, 2019, pp. 2828–2837.
+                                                                                                               terests include anomaly detection and root cause lo-
+[21] Z. Li, W. Chen, and D. Pei, “Robust and unsupervised KPI anomaly
+                                                                                                               calization in service management.
+     detection based on conditional variational autoencoder,” in Proc. IEEE
+     37th Int. Perform. Comput. Commun. Conf., 2018, pp. 1–9.
+[22] N. Laptev, S. Amizadeh, and I. Flint, “Generic and scalable framework for
+     automated time-series anomaly detection,” in Proc. 21th ACM SIGKDD
+     Int. Conf. Knowl. Discov. Data Mining, 2015, pp. 1939–1947.
+[23] C. Zhou and R. C. Paffenroth, “Anomaly detection with robust deep
+     autoencoders,” in Proc. 23rd ACM SIGKDD Int. Conf. Knowl. Discov.                                         Daguo Cheng received the BS degree in informa-
+     Data Mining, 2017, pp. 665–674.                                                                           tion security from the School of Computer Science
+[24] J. Bu et al., “Rapid deployment of anomaly detection models for large                                     and Cyberspace Security, Hainan University, Haikou,
+     number of emerging KPI streams,” in Proc. IEEE 37th Int. Perform.                                         China, in 2019, and the MS degree from the College of
+     Comput. Commun. Conf., 2018, pp. 1–8.                                                                     Software, Nankai University, Tianjin, China, in 2022.
+[25] G. Pang, C. Shen, and A. van den Hengel, “Deep anomaly detection with                                     He is currently working toward the PhD degree with
+     deviation networks,” in Proc. 25th ACM SIGKDD Int. Conf. Knowl. Discov.                                   the Institute for Network Sciences and Cyberspace,
+     Data Mining, 2019, pp. 353–362.                                                                           Tsinghua University, Beijing, China. His research
+[26] P. Senin et al., “Time series anomaly discovery with grammar-based                                        interests include anomaly detection, root cause lo-
+     compression,” in Proc. 18th Int. Conf. Extending Database Technol., 2015,                                 calization.
+     pp. 481–492.
+[27] D. Carrera, B. Rossi, P. Fragneto, and G. Boracchi, “Online anomaly
+     detection for long-term ECG monitoring using wearable devices,” Pattern
+     Recognit., vol. 88, pp. 482–492, 2019.
+[28] R. J. Hyndman, E. Wang, and N. Laptev, “Large-scale unusual time
+     series detection,” in Proc. IEEE Int. Conf. Data Mining Workshop, 2015,                                   Tiankai Yang received the BS degree in software
+     pp. 1616–1619.                                                                                            engineering from the College of Software, Nankai
+[29] A. Pol, V. Berger, G. Cerminara, C. Germain, and M. Pierini, “Trigger rate                                University, Tianjin, China, in 2021. He is currently
+     anomaly detection with conditional variational autoencoders at the CMS                                    working toward the MS degree with Viterbi School
+     experiment,” in Proc. Int. Conf. Neural Inf. Process. Syst., 2019.                                        of Engineering, University of Southern California,
+[30] K. Sohn, X. Yan, and H. Lee, “Learning structured output representa-                                      California. His research interests include anomaly
+     tion using deep conditional generative models,” in Proc. 28th Int. Conf.                                  detection, machine learning and data science.
+     Neural Inf. Process. Syst., Cambridge, MA, USA, MIT Press, 2015,
+     pp. 3483–3491.
+[31] D. P. Kingma, D. J. Rezende, S. Mohamed, and M. Welling, “Semi-
+     supervised learning with deep generative models,” in Proc. 27th Int.
+     Conf. Neural Inf. Process. Syst., Cambridge, MA, USA, MIT Press, 2014,
+     pp. 3581–3589.
+[32] Deeksha and S. Sahu, “Finding similarity in articles using various cluster-
+     ing techniques,” in Proc. IEEE 6th Int. Conf. Rel. Infocom Technol. Optim.                                Yuhe Ji received the BS degree in software engineer-
+     (Trends Future Directions), 2017, pp. 344–347.                                                            ing from the College of Software, Nankai University,
+[33] A. Großwendt, H. Röglin, and M. Schmidt, “Analysis of ward’s method,”                                     Tianjin, China, in 2022. He is currently working
+     in Proc. 30th Annu. ACM-SIAM Symp. Discrete Algorithms, SIAM, 2019,                                       toward the MS degree with the College of Software,
+     pp. 2939–2957.                                                                                            Nankai University. His research interests include data
+[34] Y. Su et al., “CoFlux: Robustly correlating KPIs by fluctuations for service                              science and anomaly detection.
+     troubleshooting,” in Proc. IEEE/ACM 27th Int. Symp. Qual. Service, 2019,
+     pp. 1–10.
+[35] K. Sohn, H. Lee, and X. Yan, “Learning structured output representation
+     using deep conditional generative models,” in Proc. 28th Int. Conf. Neural
+     Inf. Process. Syst., 2015, pp. 3483–3491.
+[36] C. T. Leondes, Multidimensional Systems: Signal Processing and Mod-
+     eling Techniques: Advances in Theory and Applications. Amsterdam,
+     Netherlands: Elsevier, 1995.                                                                              Shenglin Zhang (Member, IEEE) received the BS
+[37] S. Li, H. Chen, M. Wang, A. A. Heidari, and S. Mirjalili, “Slime mould                                    degree in network engineering from the School of
+     algorithm: A new method for stochastic optimization,” Future Gener.                                       Computer Science and Technology, Xidian Univer-
+     Comput. Syst., vol. 111, pp. 300–323, 2020.                                                               sity, Xi’an, China, in 2012, and the PhD degree in
+[38] P. M. Chau, B. M. Duc, and D. T. Anh, “Discord discovery in streaming                                     computer science from Tsinghua University, Beijing,
+     time series based on an improved HOT SAX algorithm,” in Proc. 9th Int.                                    China, in 2017. He is currently an associate professor
+     Symp. Inf. Commun. Technol., 2018, pp. 24–30.                                                             with the College of Software, Nankai University,
+[39] V. Losing, B. Hammer, and H. Wersing, “Incremental on-line learning: A                                    Tianjin, China. His current research interests include
+     review and comparison of state of the art algorithms,” Neurocomputing,                                    failure detection, diagnosis and prediction for service
+     vol. 275, pp. 1261–1274, 2018.                                                                            management.
+
+
+
+        Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+SUN et al.: EFFICIENT AND ROBUST KPI OUTLIER DETECTION FOR LARGE-SCALE DATACENTERS                                                                    2871
+
+
+
+                       Man Zhu received the BS degree in electronic in-                               Dan Pei (Senior Member, IEEE) received the BE and
+                       formation science and technology from Qufu Normal                              MS degrees in computer science from the Department
+                       University, Rizhao, China, in 2019. She is currently                           of Computer Science and Technology, Tsinghua Uni-
+                       working toward the master’s degree with the College                            versity, in 1997 and 2000, respectively, and the PhD
+                       of Software, Nankai University, Tianjin, China. Her                            degree in computer science from the Computer Sci-
+                       research interests include anomaly detection and root                          ence Department, University of California, Los An-
+                       cause localization.                                                            geles (UCLA), in 2005. He is currently an associate
+                                                                                                      professor with the Department of Computer Science
+                                                                                                      and Technology, Tsinghua University. His research
+                                                                                                      interests include network and service management in
+                                                                                                      general. He is an ACM senior member.
+
+
+
+                       Xiao Xiong received the BS degree in software
+                       engineering from the College of Software, Nankai
+                       University, Tianjin, China, in 2022. He is currently
+                       working toward the MS degree with the College of
+                       Software, Nankai University. His research interests
+                       include machine learning and failure diagnosis.
+
+                                                                                                      Tianchi Ma received the BS degree from the Beijing
+                                                                                                      University of Posts and Telecommunications. He has
+                                                                                                      worked on Big Data area in internet companies for
+                                                                                                      more than 10 years. Now he is a technical specialist
+                                                                                                      in Kuaishou Technology, working on DataOps.
+
+                       Qiliang Fan received the BS degree in software
+                       engineering from the College of Software, Nankai
+                       University, Tianjin, China, in 2021. He is currently
+                       working toward the MS degree with the College of
+                       Software, Nankai University. His research interests
+                       include anomaly detection and root cause localiza-
+                       tion.
+
+
+
+
+                       Minghan Liang received the BS degree in software                               Yu Chen received the BS and MS degrees in com-
+                       engineering from the College of Software, Nankai                               puter science from Peking University, in 1998 and
+                       University, Tianjin, China, in 2021. He is currently                           2001, respectively. Then he worked as a researcher in
+                       working toward the MS degree with the College of                               Microsoft Research Asia, during which his research
+                       Software, Nankai University. His research interests                            interests include distributed systems and information
+                       include anomaly detection and root cause localiza-                             retrieval. He is now a SRE specialist in Kuaishou
+                       tion.                                                                          Technology, working on algorithms on AIOps.
+
+
+
+
+       Authorized licensed use limited to: NANKAI UNIVERSITY. Downloaded on October 16,2023 at 05:23:06 UTC from IEEE Xplore. Restrictions apply.
+

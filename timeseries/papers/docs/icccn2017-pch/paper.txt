@@ -1,0 +1,643 @@
+    How Much Are Your Neighbors Interfering with
+                Your WiFi Delay?
+                      Changhua Pei† , Youjian Zhao† , Guo Chen§ , Yuan Meng† , Yang Liu‡ , Ya Su† ,
+                                     Yaodong Zhang† , Ruming Tang† , Dan Pei†∗
+            † Tsinghua University § Microsoft Research Asia ‡ University of Illinois Urbana-Champaign
+                   † Tsinghua National Laboratory for Information Science and Technology (TNList)
+
+
+
+   Abstract—Previous studies have shown the WiFi, as the domi-        enterprise WiFi networks. These WiFi APs are autonomously
+nant last hop access to Internet, has become the weakest link         managed or not managed at all, and do not coordinate with
+in the round-trip network delay. Therefore it is critical to          each other, in sharp contrast to the well-engineered last-mile,
+understand and minimize the WiFi interference in order to
+reduce the WiFi hop delay. For the first time in the literature,      backbone and data center networks. Yet, more and more WiFi
+this paper defines an intuitive and accurate metric to quantify the   devices come online and compete for the same limited wireless
+impact of interference on each actual packet. For each packet         spectrum, and the interference is the usual suspect for the poor
+traveling through the access point, it measures the percentage        WiFi hop latency [1], [13]. Therefore, there is a great need for
+of MAC layer delay wasted due to neighbor APs’ interference.          minimizing the WiFi interference in order to achieve a low
+This metric is defined based on a packet’s various (measured or
+inferred) timestamps and can be measured with a small kernel          WiFi hop delay that matches the QoE requirement of modern
+modification on a commodity AP with little overhead. Our 29-          Internet.
+AP two-month measurement results in the wild show that this              There are many existing approaches for minimizing the
+metric is a strong indicator of interference’s impact on WiFi hop     WiFi interference, but unfortunately they all fall short when
+delay. Using this metric as input, distributed channel selection on   faced with above delay requirements and the autonomously
+individual APs reduces the median WiFi hop delay by up to 5×.
+Collaborative optimization on multiple APs reduces the overall        managed APs. On the one hand, there are some ap-
+WiFi hop delay by 5× compared to the default channel.                 proaches [14]–[16] that try to centrally schedule packet trans-
+                                                                      mission at microsecond granularity among multiple APs, but
+                         I. I NTRODUCTION                             these approaches are impractical when coordinating APs that
+   Recently, it has been a very active research topic to reduce       might be milliseconds away from each other. On the other
+the delays throughout the end-to-end Internet paths, from the         hand, the distributed channel selection algorithms such as
+last hop [1] to last mile [2] to backbone [3], [4] to data            LCCS [17] commonly use metrics such as airtime utilization,
+centers [5]–[9]. This is because the end-to-end application           which cannot capture the fine-grained dynamics of packet
+delay highly affects the user-perceived quality of experience         level WiFi interference. Similar for active measurement based
+(QoE), which in turn impacts Internet company’s revenue. For          approaches [18].
+example, 100ms to 500ms delay will cause 0.74% to 1.2%                   We use a real trace in Fig. 1 to illustrate why. We deployed
+revenue loss in Amazon, Bing, and Google [10]. In addition,           an AP in a graduate student lab, where all clients have
+many popular interactive applications (Web browsing, voice            good RSSI. The detailed measurement methodology will be
+chatting, video chatting, instant messaging, etc.) are very           explained in detail later in the paper. The MAC layer delay
+sensitive to delay. One key observation by recent studies is          experienced by the downlink WiFi packets (upper panel), the
+that network layer delay [2], [10] can be amplified by up to          airtime utilization and packet loss ratio (bottom panel) are
+100 times in application layer delay. For example, Web page           all averaged every minute and shown as time series. We can
+load time can increase thousands of ms when the last hop              observe that the MAC layer delay, and the packet loss ratio
+delay increases tens of ms [2]. Therefore it is very important        all vary a lot over time. The MAC layer delay even varies
+to reduce network layer delay [10].                                   from a few milliseconds to more than 100ms. While the
+   Along the end-to-end path from last hop to the data centers,       airtime utilization can capture the coarse-grained probability
+WiFi, as the primary last hop for Internet access [11], [12],         for interference, it apparently cannot capture the packet or
+has become the weakest link in terms of network layer delay           minute level inference and its impact. For example, the middle
+according to the recent studies [1], [13]. For example, In [1],       vertical line ⃝
+                                                                                    1 in Fig. 1 shows a case where high loss ratio in
+they observe that more than 50% (10%) of TCP packets suffer           the RR curve causes the delay to spike. These real examples
+from WiFi hop latency larger than 20ms (100ms), and WiFi              show that airtime utilization or active measurement sampling
+hop latency occupies more than 60% in more than half of the           cannot capture the fine-grained dynamics of interference.
+round trip network latency. The primary reason is due to the             Therefore, our problem statement is to quantify the the time-
+chaotic deployment of residential APs and rogue APs around            variant and empirical impact of interference on the delay
+                                                                      experienced by the user’s actual individual packets, and then
+  ∗ Dan Pei is the corresponding author.                              take a data-driven approach for minimizing the interference
+            0.2                                                     that this metric is a strong indicator of WiFi hop delay.
+                                                                       Second, in §IV we conducted the first measurement study
+Delay (s)
+
+
+                                                                    on interference-induced wasted time of packets in the wild.
+            0.1                                                     We distribute 29 APs which equipped with WING method to
+                                                                    different students in campus to let them use the APs as their
+                                                                    primary access to the Internet for 2 months. Our measurement
+              0
+            20:00:00   20:20:00        20:40:00        21:00:00     show that in some cases the 90𝑡ℎ percentile of wasted time
+                                                                    can reach 50ms and for more than 50% of packets, 80% of
+                         RR       AU    Ir                          the time are wasted because of interference.
+              1                                                        Third, we use 𝐼𝛾 to guide individual wAP to select the chan-
+                                                                    nel in §V. We use 𝐼𝛾 and airtime utilization as two different
+            0.5                                                     inputs of LCCS [17] algorithm. Our real-world deployment
+                                                                    results show that 𝐼𝛾 consistently perform better than airtime
+              0                                                     utilization, and sometimes 5 times better. This improves shows
+            20:00:00   20:20:00        20:40:00        21:00:00     the power of time-variant and empirical interference metric.
+Fig. 1: The minutely average time series on an access point            Fourth, in §VI we extend our definition 𝐼𝛾 to 𝐼𝛾𝑘 such that
+from 8:00pm to 9:00pm on Dec.1𝑠𝑡 . 𝐼𝑟 is the metric we              it can distinguish different neighboring interfering APs. The
+proposed to represent the impact of interference on delay. AU       idea is very intuitive: the wasted time of packet 𝑝 is attributed
+is short for airtime utilization. RR is short for the retry ratio   to a neighbor AP 𝑘 if the wAP overhears a packet from
+(or loss ratio). Delay is short for the MAC layer delay.            𝑘 while 𝑝 is waiting for the channel to be cleared. 𝐼𝛾𝑘 can
+                                                                    then be used to build an interference graph, which is a key
+                                                                    enabler for coordinated channel/power optimization in a SDN
+                                                                    fashion [21]–[25]. In this paper, we use a 4-wAP testbed driven
+and improving the packet level WiFi delay. It faces two major
+                                                                    by real packet traces to show the potential for such coordinated
+challenges. First, we have to define an accurate metric, since
+                                                                    optimization. The delay of wAP can be reduced by up to
+there is no existing such metric. Second, such a metric should
+                                                                    5× compared to the default channel, and our approach can
+be able to be passively measured with low overhead for each
+                                                                    converges much faster (𝑂(1)) than exhaustive channel search
+packet on commodity AP devices to maximize deployment
+                                                                    𝑂(3𝑛 ) for a topology with 𝑛 APs.
+opportunities. A commodity AP device typically has only one
+NIC per frequency band and cannot have a dedicated sniffer             II. Q UANTIFYING THE I NTERFERENCE ’ S I MPACT ON
+NIC such as those used in [18]–[20].                                                       D ELAY
+   This paper proposes a novel approach which solves the                In this section, we first give the model to break down the
+problem defined above and addresses its two challenges. We          lifetime of packets in wAP. Then we summarize the critical
+call our methodology WING (WiFi INterference Graph), and            path delays of one certain packet. Based on the critical patch
+an AP with WING deployed is a WING AP (or wAP for                   delay, we give the definition of 𝐼𝛾 and equation to calculate
+short hereinafter). Our core idea is to define a metric 𝐼(𝑝)        it. At last, we detailedly discuss two key techniques which are
+which quantifies the percentage of MAC layer delay wasted           used when calculating 𝐼𝛾 .
+by each packet 𝑝 on a wAP due to neighbor APs’ interference,
+including waiting time for channel contention or retransmis-        A. Lifetime of One Packet
+sion due to packet loss. To passively measure this metric,              We use an example in Fig. 2 to show how to measure the
+we make a small kernel modification such that the critical          lifetime of one packet. We track one packet (denoted by a
+path timestamps of packet 𝑝 can be tagged by the wAP to             square) which is sent by wAP to its client to reveal the critical
+the packet 𝑝. Then 𝐼(𝑝) can be accurately calculated based          path delay of this packet. Fig. 2(a) shows the carrier sensing
+on the timestamps that are directly measured or inferred. The       scenario. Fig. 2(b) shows the packet collision scenario. The
+metric 𝐼(𝑝) can be aggregated into 𝐼𝛾 for time period 𝛾 for         corresponding notations are listed in Table I. 𝑡𝑤 (𝑝𝑖 ) represents
+different channels and serve as the input for distributed channel   the time when packet 𝑝𝑖 arrives at the wired interface of wAP.
+selection algorithm [17] so that an individual wAP can select       𝑡𝑠 (𝑝𝑖 ) represents the time when the first byte of packet 𝑝𝑖 is
+its best channel.                                                   sent into the air. 𝑡𝑒 (𝑝𝑖 ) is the time when 𝑝𝑖 is successfully
+   Our major contributions are summarized as follows.               sent by wAP and acknowledged in MAC layer, and removed
+   First, for the first time in the literature, in §II we define    from the wAP ’s transmission queue. 𝑡𝑟 (𝑞𝑖 ) is the time when
+an intuitive and accurate metric 𝐼(𝑝) to quantify the impact        wAP hears packet 𝑞𝑖 , where 𝑞𝑖 is the overheard packet of
+of interference on each actual packet. This metric is defined       other APs. The rest of the notations listed in Table I will be
+based on a packet’s various timestamps. This metric can be          explained in the following text when we trace the life time of
+measured with a small kernel modification on a commodity            packet 𝑝1 and 𝑝2 . The packet 𝑝1 may experience the following
+AP with little overhead (§III), to maximize the deployment          parts of delay when it enters wAP from the Internet at time
+opportunities. Our measurement results in the wild (§IV) show       𝑡𝑤 (𝑝1 ).
+      AP2                                                q2
+     AP1                                           q1                                                                                             q3
+                                                                                                       AP3
+                        Access Point                    Busywait                                                                                       Collision
+                                                                                                                       Access Point
+              p1              Tx Queue                                p1       ACK                           p2              Tx Queue             p2                last
+                                                                                                                                                                             ACK
+     wAP                                                                                                                                                             try
+                                                                                                      wAP
+                   Broadcast Queue                                                                                Broadcast Queue
+                       PSM Queue                         tr(q1)                                                       PSM Queue
+
+                         QUEUING            DIFS   extra time         Tp1 SIFS Tack       Timeline                      QUEUING          DIFS    extra time         Tp2 SIFS Tack       Timeline
+              tw(p1)                     th(p1)                   ts(p1)         te(p1)                      tw(p2)                   th(p2)                   ts(p2last)      te(p2)
+
+                              (a) Carrier sensing scenario.                                                                       (b) Packet collision scenario.
+
+                                                        Fig. 2: The lifetime of one packet from AP to client.
+
+             Variables                                               Notations                                                                             Directly Measured
+               𝑡𝑤 (𝑝)                                The time when packet 𝑝 arrives at AP.                                                                         Yes
+            QUEUING                                  Time spent on buffering in the Queue.                                                                         No
+               𝑡ℎ (𝑝)               The time when packet 𝑝 arrives at head of Tx Queue and ready to be sent.                                                       No
+              𝐷𝐼𝐹 𝑆                             Constants. E.g., for 802.11n protocol, DIFS=28us.                                                                  Yes
+               𝑡𝑟 (𝑞)                         The time when receiving the neighbor AP’s packet 𝑞.                                                                  Yes
+               𝑡𝑠 (𝑝)                     The time when the first byte of non-retrying packet 𝑝 is sent.                                                           No
+             𝑡𝑠 (𝑝𝑙𝑎𝑠𝑡 )               The time when the first byte of retrying packet 𝑝’s last retry is sent.                                                     No
+                 𝑇𝑝                                    The transmission time of packet p.                                                                          Yes
+              𝑆𝐼𝐹 𝑆                             Constants. E.g., for 802.11n protocol, SIFS=10us.                                                                  Yes
+                𝑇𝑎𝑐𝑘                           Constants. E.g., for 802.11n protocol, 𝑇𝑎𝑐𝑘 = 44𝑢𝑠.                                                                 Yes
+               𝑡𝑒 (𝑝)           The time when 𝑝 is ACKed. For a retried packet, it’s the ACK time of the last retry.                                               Yes
+                                                                       TABLE I: Notations used in Figure 2.
+
+   Reaching the head of Tx Queue: For the broadcast or                                               𝑡𝑠 (𝑝1 ) is the moment when the first byte of 𝑝1 is sent, also
+multicast packets, such as beacons, AP will send them into                                           when the timer 𝒯 is decreased to 0. Time interval 𝑡𝑠 (𝑝1 ) -
+the Broadcast Queue and flush them into Tx Queue at the next                                         𝑡ℎ (𝑝1 ) varies according to the carrier sensing interference. If
+beacon time. For Power Saving Mode (PSM) [20] packets,                                               there is no other AP occupying the channel, 𝑡𝑠 (𝑝1 ) − 𝑡ℎ (𝑝1 ) =
+they will be buffered in PSM Queue until receiving the next                                          𝐷𝐼𝐹 𝑆.
+delivery traffic indication message (DTIM). Note that in this                                            Transmitted and waiting for ACK: It will take time
+paper, we only care about the unicast packet to a certain client.                                    to send 𝑝1 , i.e., , the transmission time 𝑇𝑝1 . After 𝑝1 is
+After queuing in the Tx Queue, 𝑝1 arrives at the head of the                                         sent out into the air, wAP waits for the return of MAC-
+wAP ’s Tx Queue at 𝑡ℎ (𝑝1 ) and is ready to be sent. 𝑡ℎ (𝑝1 ) is                                     layer acknowledgement from the client which indicates the
+also the time when wAP starts accessing the channel.                                                 successful receipt of 𝑝1 . Theoretically, as soon as wAP sends
+   Competing for the channel and sending the first byte:                                             the last byte of 𝑝1 into the air, wAP ’s client can receive and
+When 𝑝𝑖 arrives at the head of Tx Queue, wAP first waits                                             decode the whole packet 𝑝1 , because the propagation time of
+for a small period of time (DIFS). Then wAP detects whether                                          the signal from wAP to its client is very short. After 10us
+the channel is busy or not1 . If the channel is free, wAP sends                                      (SIFS which is listed in Table I), the client should send the
+𝑝1 out directly. If the channel is busy, wAP waits for a timer                                       first byte of acknowledgement into the air.
+𝒯 which is randomly set to be 𝒯 = 𝑏0 ∗ 𝑠𝑙𝑜𝑡 𝑡𝑖𝑚𝑒. 𝑏0 is a                                                After wAP receives the acknowledgement from the client,
+random number that ranges in [0, 𝑎𝐶𝑊 𝑚𝑖𝑛]. 𝑎𝐶𝑊 𝑚𝑖𝑛 is the                                            it means 𝑝1 has been successfully delivered to its client. Then
+minimum random window size. 𝑠𝑙𝑜𝑡 𝑡𝑖𝑚𝑒 and 𝑎𝐶𝑊 𝑚𝑖𝑛 vary                                               wAP removes 𝑝1 away from the Tx Queue and 𝑝1 ends its life
+with different IEEE802.11 protocols. For 802.11n protocol,                                           in wAP . We label this time as 𝑡𝑒 (𝑝1 ).
+𝑠𝑙𝑜𝑡 𝑡𝑖𝑚𝑒 is 9 or 20us in 2.4GHz and 𝑎𝐶𝑊 𝑚𝑖𝑛 is 15. After                                                Retrying: If wAP waits for an ACK-timeout time and still
+wAP setting the timer 𝒯 , it continuously senses the channel                                         has not received the acknowledgement from the client, it
+and decreases 𝒯 when the channel is sensed as free. However,                                         regards the packet as lost and begins retrying. Packet loss is
+when wAP finds channel is busy (e.g., wAP senses that another                                        mainly caused by collision, e.g., hidden terminal interference,
+packet is being transmitted, denoted by circles in Fig. 2(a)),                                       which is shown in Fig. 2(b).
+the timer 𝒯 will be frozen until the channel is sensed to be free                                        We use another packet 𝑝2 in Fig. 2(b) to explain the retrying
+again. wAP sends 𝑝1 when 𝒯 is decreased to 0. In Fig. 2(a),                                          procedure. After getting the access to the channel, AP sends
+                                                                                                     𝑝2 out and waits for the ACK from its client. Based on 802.11
+  1 Based on 802.11 protocol, the NIC of wAP can detect whether the received
+                                                                                                     protocol [26], once wAP occupies the channel, all the other
+power strength is above Carrier Sense Threshold (CST) or not. If the Received
+Signal Strength Indication (RSSI) is above CST, wAP determines that the                              APs cannot send packets until wAP receives ACK from its
+channel is busy.                                                                                     client. However, if wAP is out of the carrier sensing range
+                                                                              Latency                    Calculation                     Notations
+of another AP (𝐴𝑃𝑘 ), 𝐴𝑃𝑘 regards the channel as free while
+wAP is sending 𝑝2 and sends packet 𝑞3 at the same time. As a                                          𝑡𝑒 (𝑝𝑖 ) − 𝑡ℎ (𝑝𝑖 )        The part of “wasted” time
+                                                                             𝑑𝑖𝑚𝑎𝑐 (𝑝𝑖 )
+                                                                                                          −𝑇𝑝𝑖 − 𝒞                caused by interference.
+result, the client of wAP will receive two overlapping signals                                                                       The overall WiFi
+and cannot decode the packet at the client-side, i.e., collision             𝑑𝑚𝑎𝑐 (𝑝𝑖 )               𝑡𝑒 (𝑝𝑖 ) − 𝑡ℎ (𝑝𝑖 )
+                                                                                                                                     MAC-layer delay.
+happens.                                                                        𝑇𝑝 𝑖             𝑠𝑖𝑧𝑒(𝑝𝑖 )/𝑟𝑎𝑡𝑒(𝑝𝑖 )                Sending time of 𝑝𝑖 .
+    When the collision happens, wAP will not receive ACK                                                                          Fixed time each packet
+                                                                                                  𝐷𝐼𝐹 𝑆 + 𝑆𝐼𝐹 𝑆
+before the ACK-timeout. Then wAP will retransmit 𝑝2 until it                     𝒞                                               spends which contributed
+                                                                                                     +𝑇𝑎𝑐𝑘
+                                                                                                                                    by 802.11 protocol.
+is acknowledged by its client or the retry counts exceed the
+maximum threshold. The retrying of 𝑝2 is the same with the                TABLE II: Notations of different kinds of latency, each value
+first transmission of 𝑝2 which is explained before. The only              is for one packet 𝑝𝑖 . The bottom part of the table is the
+difference is that the 𝑎𝐶𝑊 𝑚𝑖𝑛 will be doubled after each                 essential variables needed to calculate 𝑑𝑚𝑎𝑐 and 𝑑𝑖𝑚𝑎𝑐 .
+retrying.
+    It is noteworthy that low RSSI can also cause packet loss,
+
+
+
+
+                                                                                 Space
+                                                                                 User
+but in this paper, we focus on the delay problem caused by                                                                  Ir
+interference. Thus we continuously monitor the RSSI of client
+at AP side, and only study those clients with strong RSSI and                                                                    Debugfs
+filter those ones with low RSSI.
+                                                                                                MAC80211
+
+
+
+
+                                                                                 Kernel
+                                                                                 Space
+B. Definition and Calculation of 𝐼𝛾                                                                    Tx           Rx            Status      Wing
+    After tracing the lifetime of packet 𝑝1 and detailedly break-
+ing down its WiFi lifetime, we can calculate the “wasted” time
+
+
+
+                                                                                     Hardware
+due to interference for a certain packet. For easy reference,                                   NIC
+we listed the corresponding notations used for calculation in
+Table II. In Table II, we summarize 𝑑𝑚𝑎𝑐 (𝑝𝑖 ) as the overall
+WiFi MAC-layer delay. 𝑑𝑖𝑚𝑎𝑐 (𝑝𝑖 ) is the “wasted” time caused                   Fig. 3: The WING kernel measurement structure.
+by interference.
+    Here we first give the formal definition of the interference          C. Approximating timestamp 𝑡ℎ (𝑝𝑖 )
+metric 𝐼(𝑝𝑖 ) and 𝐼𝛾 :
+    𝐼(𝑝𝑖 ) is the metric to measure the extent of Interference               𝑡ℎ (𝑝𝑖 ) denotes the timestamp when packet 𝑝𝑖 is ready to be
+on packet 𝑝𝑖 ’s WiFi MAC-layer delay. 𝐼𝛾 is the metric to                 sent after arriving at the head of Tx Queue (labeled as TQ for
+measure the impact of Interference on wAP’s WiFi MAC-                     brevity). The main challenge to get 𝑡ℎ (𝑝𝑖 ) is that TQ is in
+layer delay in time interval 𝛾.                                           physical layer and there is no information about the change of
+    The calculation of these two metrics can be conceptually              TQ from the kernel of wAP. Thus we use the following method
+expressed using Equation 1 and Equation 2. 𝐼(𝑝𝑖 ) is the ratio            to infer the behavior of TQ. Once a packet is delivered to the
+of “wasted time” to the overall WiFi MAC-layer delay of                   physical layer by wAP , it will be appended to the tail of TQ.
+packet 𝑝𝑖 . 𝐼𝛾 is the average of 𝐼(𝑝𝑖 ) of over all packets               For a unicast packet, this time is labeled as 𝑡𝑤 (𝑝𝑖 ). Once a
+𝑝𝑖 , (𝑖 = 1, ..., 𝑛) whose completion time is within the time             packet 𝑝𝑖 is successfully sent by wAP to its client, it will be
+interval 𝛾.                                                               removed from the TQ, which is labeled as 𝑡𝑒 (𝑝𝑖 ) in Table I.
+                                                                             The time of 𝑝𝑖 ’s arrival at the head of TQ ( i.e., 𝑡ℎ (𝑝𝑖 ) ) is
+                                                                          decided by two aspects: when 𝑝𝑖 enters the TQ and when the
+                   𝑑𝑖𝑚𝑎𝑐 (𝑝𝑖 )   𝑡𝑒 (𝑝𝑖 ) − 𝑡ℎ (𝑝𝑖 ) − 𝑇𝑝𝑖 − 𝒞            previous packet ( 𝑝𝑖−1 ) leaves the TQ. If 𝑝𝑖 is blocked by 𝑝𝑖−1
+        𝐼(𝑝𝑖 ) =               =                                   (1)
+                   𝑑𝑚𝑎𝑐 (𝑝𝑖 )           𝑡𝑒 (𝑝𝑖 ) − 𝑡ℎ (𝑝𝑖 )               when it arrives, i.e., 𝑡𝑤 (𝑝𝑖 ) < 𝑡𝑒 (𝑝𝑖−1 ), then 𝑝𝑖 will reach the
+                                                                          head of TQ as soon as 𝑝𝑖−1 is removed from TQ. If 𝑝𝑖 arrives
+           𝐼𝛾 = 𝐴𝑣𝑒𝑟𝑎𝑔𝑒(𝐼(𝑝𝑖 )), 𝑝𝑖 𝑐𝑜𝑚𝑝𝑙𝑒𝑡𝑒𝑑 𝑖𝑛 𝛾                 (2)    at TQ and finds TQ being empty, i.e., 𝑡𝑤 (𝑝𝑖 ) > 𝑡𝑒 (𝑝𝑖−1 ), 𝑝𝑖
+                                                                          will directly reach the head of TQ, i.e., 𝑡ℎ (𝑝𝑖 ) = 𝑡𝑤 (𝑝𝑖 ). In
+   All the notations are summarized in Table II. The reason               summary, 𝑡ℎ (𝑝𝑖 ) can be represented using Equation 3.
+why we use 𝑑𝑚𝑎𝑐 = 𝑡𝑒 (𝑝𝑖 ) − 𝑡ℎ (𝑝𝑖 ) in Table II to calculate
+𝐼𝑝𝑖 instead of 𝑡𝑒 (𝑝𝑖 ) − 𝑡𝑤 (𝑝𝑖 ) is that 𝑡𝑒 (𝑝𝑖 ) − 𝑡𝑤 (𝑝𝑖 ) includes                          𝑡ℎ (𝑝𝑖 ) = 𝑚𝑎𝑥{𝑡𝑤 (𝑝𝑖 ), 𝑡𝑒 (𝑝𝑖−1 )}.                       (3)
+the queuing time of 𝑝𝑖 , which is shown in Fig. 2. Packet 𝑝𝑖
+will be blocked in the Tx Queue if the previous packet 𝑝𝑖−1               Here 𝑡𝑤 (𝑝𝑖 ) is the time when packet 𝑝𝑖 arrives the TQ.
+takes too long to be sent out. Thus 𝑡𝑒 (𝑝𝑖 ) − 𝑡𝑤 (𝑝𝑖 ) includes          𝑡𝑒 (𝑝𝑖−1 ) is the time when the previous packet is removed from
+the cumulative influence of interference on all the previous              the TQ. For AGGREGATION packets, multiple MPDUs form
+packet waiting in the queue. In order to measure the impact               one large A-MPDU and only need to compete for the channel
+of interference on each packet independently, we use 𝑡ℎ (𝑝𝑖 )             once. In WING system, we regard different MPDUs in a same
+to exclude the queuing time of packet 𝑝𝑖 .                                A-MPDU as one and calculate the WiFi hop delay as a whole.
+                 III. S YSTEM I MPLEMENTATION                                    was stable at around 22% since they were mostly used for
+A. Implementation                                                                buffer of packet capture. Overall, the extra CPU, memory and
+                                                                                 bandwidth overheads introduced by WING are all insignificant
+    WING is implemented as an AP-side kernel module as
+                                                                                 on this hardware model.
+shown in Fig. 3. Our WING kernel measurement is located
+in the linux wireless driver layer. The MAC80211 module                                       IV. M EASUREMENT IN THE W ILD
+[27], a middle layer between the hardware layer and the user
+                                                                                    We distribute 29 APs equipped with WING system in
+space layer, has three components. 𝑇𝑥 module is responsible
+                                                                                 different places at campus, covering multiple dormitory and
+for handing a packet to the physical layer when this packet is
+                                                                                 department buildings. We let students use these APs as their
+transmitted to the WiFi client; 𝑅𝑥 module is responsible for
+                                                                                 primary access to the Internet. We continuously measure
+receiving the incoming packets from each wireless network
+                                                                                 𝐼𝛾 , airtime utilization and 𝑑𝑖𝑚𝑎𝑐 to see the severity of the
+device. 𝑆𝑡𝑎𝑡𝑢𝑠 module is a callback function, called by each
+                                                                                 interference in the wild.
+successful transmission of a packet in the physical layer.
+                                                                                    𝑑𝑖𝑚𝑎𝑐 is the “wasted” time in WiFi MAC-layer delay caused
+    The WING kernel measurement is performed by monitoring
+                                                                                 by interference. Our distributed wAPs can be classified into
+the timestamps of a packet going through the above three
+                                                                                 two different categories: wAPs in dormitory and wAPs in
+components. First, each packet 𝑝𝑖 entering 𝑇𝑥 module is
+                                                                                 department building. Department buildings have more access
+tagged with a timestamp, approximating the time 𝑡𝑤 (𝑝𝑖 ) when
+                                                                                 points as well as larger trunk of traffic, i.e., the airtime
+𝑝𝑖 enters the AP from the wire interface 2 . 𝑡𝑤 (𝑝𝑖 ) will be kept
+                                                                                 utilization there is higher than that in dormitories. We choose
+along with 𝑝𝑖 until the corresponding acknowledged (𝑝𝑖 ’s ack)
+                                                                                 one representative dormitory wAP and one representative
+is received from the client. Then 𝑝𝑖 will be delivered to the
+                                                                                 department wAP to draw the CDF in Fig. 4, based on measure-
+𝑆𝑡𝑎𝑡𝑢𝑠 module, where the packet 𝑝𝑖 will be timestamped as
+                                                                                 ments lasting for one month. From Fig. 4(c) we can see that
+𝑡𝑒 (𝑝𝑖 ).
+                                                                                 almost every packet in department (over 99%) wastes at least
+    In order to sniff the neighboring packets, we virtualize a
+                                                                                 100 microseconds when sending. The 90𝑡ℎ percentile 𝑑𝑖𝑚𝑎𝑐
+wireless network device “mon0” working in the monitor mode
+                                                                                 exceeds 50ms in the department. The 50𝑡ℎ percentile 𝑑𝑖𝑚𝑎𝑐 of
+in 𝑅𝑥 module. The command to create “mon0” is shown as
+                                                                                 department is 10× larger than dormitory, i.e., 2000us vs 200us.
+follows.
+                                                                                 This is mainly caused by the larger potential interference
+root@Openwrt# iw dev wlan0 add interface mon0                                    in department buildings, which is confirmed by the CDF of
+     type monitor flags none                                                     airtime utilization in Fig. 4(a).
+root@Openwrt# ifconfig mon0 up
+                                                                                    Besides 𝑑𝑖𝑚𝑎𝑐 , we also draw the CDF of 𝐼𝛾 in Fig. 4(b). 𝐼𝛾
+   “mon0” can sniff a packet 𝑞𝑖 from wAP ’s neighboring AP3 ,                    is the ratio of wasted time 𝑑𝑖𝑚𝑎𝑐 to the overall WIFi mac-layer
+and the sniffed timestamp is labeled as 𝑡𝑟 (𝑞𝑖 ). Besides, we                    time 𝑑𝑚𝑎𝑐 . Fig. 4(b) shows that in the dormitory, half of the
+can also get the packet size, the transmission rate and RSSI                     time are wasted because of interference for over 50% packets,
+(received signal strength indicator) for both wAP ’s packet 𝑝𝑖                   i.e., 𝐼𝛾 ≤ 0.5. In the department, this number increases to
+and its neighboring AP’s packet 𝑞𝑖 . Note that wAP timestamps                    about 80%.
+its own packets 𝑝𝑖 and the neighboring AP’s packet 𝑞𝑖 with
+the same system clock. Therefore, there is no need for time                                     V. O PTIMIZATION IN R EALITY
+synchronization. Such technique is different from the other                         Channel selection is the most effective and simplest way
+methods requiring extra sniffers such as WISE [18] and                           to improve an AP’s performance under interference con-
+PIE [16]. Overall, our WING method enables us to conduct                         dition [25]. In practice, Least Congestion Channel Search
+passive measurement on a single COTS APs and makes it                            (LCCS) [17] is the most popular channel selection algorithm
+possible for large scale deployment for the first time.                          used by single AP. The main idea of this algorithm is that each
+                                                                                 AP independently scans for different channels and selects the
+B. Measurement overhead                                                          least congested channel to use. There may be different metrics
+   We implemented WING as a software package on one                              to describe the least congested channel, the most commonly
+OpenWrt-based AP (Netgear 4300), which has a 0.6 GHz                             used in practice is the smallest airtime utilization (labeled
+CPU and 128 MB memory. In our stress test in which we                            as AU). However, none of these metrics directly reflects the
+have constant download throughput of at least 10MBps going                       impact of interference on WiFi hop delay. We show in this
+through the wAP, the CPU utilization remains below 60%.                          section that using WING ’s measurement of delay-oriented,
+For the wAP which is deployed in a CS graduate student lab,                      time-variant, empirical WiFi interference, i.e., 𝐼𝑟 , LCCS can
+with a relative high density of wireless devices and APs, and                    achieve a much better optimization on delay performance than
+high user traffic, the CPU cost remained under 20% while                         using the AU.
+the average CPU usage was 12%. The usage of memory
+                                                                                 A. Optimization Environment
+  2 The time spent on traveling from the wired interface to 𝑇 function consist
+                                                             𝑥                      We picked 7 most active wAPs among our 29 deployed ones,
+of processing delay of operating system, and can be neglected.
+  3 As we only need to extract the MAC addresses from neighboring packets,       and conducted the optimization on these 7 wAPs. They are
+WING can also work in non open-network.                                          located at different students’ dormitory buildings. To ensure
+                  100                                                                   100                                                           100
+                   80                                                                    80                                                            80
+    CDF(%)
+
+
+
+                   60                                                                    60                                                            60
+                   40                                                                    40                                                            40
+                   20                                                                    20                                                            20
+                    0                                                                        0
+                        0    0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9            1                    0    0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9   1           1e-05   0.0001     0.001      0.01      0.1   1
+                                  (a) 2.4GHz Airtime Utilization                                                  (b) 2.4GHz Ir                                          (c) 2.4GHz dimac (s)
+                  100                                                                   100                                                           100
+                   80                                                                    80                                                            80
+    CDF(%)
+
+
+
+
+                   60                                                                    60                                                            60
+                   40                                                                    40                                                            40
+                   20                                                                    20                                                            20
+                    0                                                                        0
+                        0       0.01    0.02   0.03    0.04      0.05     0.06                   0    0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9   1           1e-05   0.0001      0.001     0.01      0.1   1
+                                   (d) 5.0GHz Airtime Utilization                                                 (e) 5.0GHz Ir                                          (f) 5.0GHz dimac (s)
+                                                                                                     dormitory           department
+
+                   Fig. 4: The CDF of different metrics of a department wAP and a dormitory wAP both on 2.4GHz and 5GHz.
+
+
+             80                                                                                      66.4                                       wAP               wAP                      wAP
+                AU                                                                                                                                   Interference
+ dmac (ms)
+
+
+
+
+             60 WING                                                                                                                                    Graph
+             40                                                                       26.8
+                                                                                                                                         Configuration
+                                                                                                                                                               Centralized
+             20                       9.4         11.4 9.0   13.1
+                                                                    9.2
+                                                                          13.2 11.8          11.2           13.2                                            Controller Server
+                            4.9 3.9         2.1
+
+             0                                                                                                                        Fig. 6: The architecture of upgraded WING.
+                             AP0        AP1        AP2        AP3          AP4         AP5             AP6
+
+Fig. 5: The average WiFi hop delay under different dynamic
+channel selection algorithms on 7 deployed APs for two                                                                  algorithm in AP6. This better performance compared with
+weeks. 𝐴𝑈 represents the LCCS algorithm using airtime                                                                   AU comes from that 𝐼𝛾 is a direct metric reflecting the
+utilization as input. WING represents the LCCS algorithm                                                                instant impact of interference on packet level WiFi hop delay.
+using our WING’s measurement results as input.                                                                          However, AU, which records the WiFi airtime utilization, is
+                                                                                                                        an indirect metric for interference and is often inaccurate in
+                                                                                                                        quantifying the impact of interference on WiFi hop delay.
+the fairness of comparison between two different algorithms,
+we run one certain algorithm for the same day (i.e., AU                                                                      VI. U PGRADING WING: P OWER OF I NTERFERENCE
+or WING) across two different weeks. This is because there                                                                                     G RAPH
+are weekly pattern for our deployed wAP in school. In each                                                                 Our WING method can also be extended to help collab-
+day, the corresponding algorithm either measuring the current                                                           orative channel selection of multiple APs, by quantifying
+channel or switch to another channel. Each channel measuring                                                            the impact of different interferers. In this section, we first
+lasts for a half hour. After three orthogonal channels are all                                                          introduce interference graph (labeled as IG hereinafter), which
+measured, the LCCS algorithm runs on the wAP will decide                                                                is the more fine-grained metric of the current 𝐼𝛾 . Then we
+which channel is the best one based on the different metrics,                                                           briefly introduce the methodology of measuring IG. At last,
+such as smallest airtime utilization, or smallest 𝐼𝛾 measured                                                           we use a testbed consisting of 4 wAPs to show the power of
+by WING. After the decision is made, the wAP stays on                                                                   upgraded WING , which utilizes IG to conduct collaborative
+the channel for a half hour. After a half hour, the LCCS                                                                optimization. Our experiment results show that our method
+algorithm will restart another round of optimization: scanning                                                          performs much better than the default channel selection al-
+each orthogonal channel for a half hour and making new                                                                  gorithm, and reaches near-optimal only needing a very short
+decision based on the latest measurement results. We use                                                                constant convergence time.
+packet level latency, i.e., 𝑑𝑚𝑎𝑐 to evaluate the performance
+of WiFi hop delay for each algorithm.                                                                                   A. Definition of IG
+                                                                                                                           Although the overall interference metric 𝐼𝛾 shows great
+B. Results                                                                                                              potential in helping single AP to select the channel (§V),
+   Fig. 5 shows the average WiFi hop delay for different                                                                when there are multiple APs which change and select channel
+algorithms (i.e., using different metrics as input for LCCS to                                                          independently, it may become unstable and can not converge
+select channel). We can see that our WING metric, i.e., delay-                                                          quickly. It will be greatly helpful if we can measure the
+oriented, time-variant, empirical WiFi interference 𝐼𝑟 , outper-                                                        interference of each certain neighbor AP to a wAP and
+forms AU consistently for all the wAPs. The largest reduction                                                           collect the measured results together to make the decision
+ratio of WiFi hop delay is 5× when compared with AU                                                                     centrally, which is shown in Fig. 6. Luckily, by extending
+the measurement methodology we present before, we can
+                                                                                  p1        Own packets            qi     Neighbor APi’s packets
+distinguish different neighbor APs and measure the extent
+of the interference. Formally, we define a new metric called                           q1    q2   p1          q3          p2             p3 Timeline
+interference graph (IG) as shown in Table III. IG is a table in                0 th(p1)        te(p1)    th(p2)         te(p2) th(p3) te(p3)
+which each column belongs to one single interferer (denoted                      1ms           4ms       5ms            8ms 9ms 11ms
+as 𝐴𝑃𝑖 ). Each row belongs to one time interval (denoted as
+𝛾𝑖 ). Each element in IG (denoted as 𝐼𝛾𝑘𝑖 ), represents 𝐴𝑃𝑘 ’s                                                    (a)
+quantified interference to wAP’s delay, in the time interval 𝛾𝑖 .                                          𝐴𝑃1                  𝐴𝑃2        𝐴𝑃3
+                                                                                 𝑑𝑖𝑚𝑎𝑐 (𝑝𝑖 )               1
+                                                                                                           2
+                                                                                                             𝑚𝑠                 1
+                                                                                                                                2
+                                                                                                                                  𝑚𝑠       1𝑚𝑠
+                         TABLE III: IG                                           𝑑𝑚𝑎𝑐 (𝑝𝑖 )                3𝑚𝑠                  3𝑚𝑠        2𝑚𝑠
+                        𝐴𝑃1     𝐴𝑃2    ...   𝐴𝑃𝑛                                    𝐼𝛾𝑘                   0.5𝑚𝑠
+                                                                                                       3𝑚𝑠+3𝑚𝑠+2𝑚𝑠
+                                                                                                                                0.5𝑚𝑠
+                                                                                                                                 8𝑚𝑠
+                                                                                                                                           1𝑚𝑠
+                                                                                                                                           8𝑚𝑠
+
+                 𝛾1     𝐼𝛾11    𝐼𝛾21   ...   𝐼𝛾𝑛1                                                                 (b)
+                 𝛾2     𝐼𝛾12    𝐼𝛾22   ...   𝐼𝛾𝑛2                     Fig. 7: Example of transmitting procedure of wAP’s packets
+                  ...
+                                                                      (𝑝𝑖 , 𝑖 = 1, 2, 3) in time interval 𝛾.
+                 𝛾𝑚     𝐼𝛾1𝑚    𝐼𝛾2𝑚   ...   𝐼𝛾𝑛𝑚
+
+
+                                                                      C. Application of IG
+B. How to calculate IG
+                                                                         In this section, we propose an upgraded WING, which
+    In this paper, we define 𝐼𝛾𝑘𝑖 as the ratio of the wasted
+                                                                      utilizes IG and conducts collaborative optimization with the
+time caused by interferer k to the overall WiFi MAC-layer
+                                                                      help of centralized control server. The architecture of upgraded
+delay. For example, wAP spends 2ms to send a packet out
+                                                                      WING is shown in Fig. 6. All wAP’s continuously measure
+from sensing the channel to being acknowledged by its client,
+                                                                      the IG from its own perspective, and upload the measurement
+in which 1ms is spent on waiting for the 𝐴𝑃𝑘 to finish its
+                                                                      results to the control server, meanwhile receive collaborative
+sending. We regard this 1ms time as wasted time caused by
+                                                                      optimization command.
+the interference of 𝐴𝑃𝑘 . Then 𝐼𝛾𝑘𝑖 should be calculated using
+1𝑚𝑠/2𝑚𝑠 = 0.5. More generally, 𝐼𝛾𝑘𝑖 can be calculated using              1) Problem Statement: For a dense deployment scenario
+Equation. 4. 𝑝𝑖 is a packet sent by wAP in the time interval          such as office, multiple APs are commonly located nearly in
+𝛾𝑖 . 𝑑𝑚𝑎𝑐 (𝑝𝑖 ) is the overall time spent on the WiFi MAC-layer       the same place and carrier sense each other. These APs often
+to send the packet 𝑝𝑖 out to the client. 𝑑𝑖𝑚𝑎𝑐 (𝑘)(𝑝𝑖 ) means the     have fixed locations and their owners often are not willing
+“wasted” part of 𝑑𝑚𝑎𝑐 (𝑝𝑖 ) because of the interference of 𝐴𝑃𝑘 .      to move them. Heavy interference impairs their performance
+                                                                      when they are in the same channel. The most direct and
+                        ∑ 𝑖
+                           𝑝 𝑑𝑚𝑎𝑐 (𝑘)(𝑝𝑖 )
+                                                                      effective way to reduce the interference is channel selection.
+                   𝑘
+                  𝐼𝛾𝑖 = ∑𝑖                 , 𝑝𝑖 ∈ 𝛾 𝑖 .       (4)     As there are only three orthogonal channels, it is impossible
+                             𝑝𝑖 𝑑𝑚𝑎𝑐 (𝑝𝑖 )
+                                                                      to assign each AP with a distinct channel as long as there are
+   Here we use an example in Fig. 7 to explain the core idea of       more than 3 APs. Thus, in order to minimize the interference,
+calculating IG. In Fig. 7, wAP sends three packets, 𝑝1 , 𝑝2 and       we need to re-configure these APs using a smart channel
+𝑝3 in sequence in the time interval 𝛾. 𝑞1 , 𝑞2 and 𝑞3 are three       combination. Assuming all these APs are wAPs deployed with
+neighboring packets sent by 𝐴𝑃1 , 𝐴𝑃2 and 𝐴𝑃3 respectively.           upgraded WING , using IG measured, we can help these APs
+The three bold lines in the timeline respectively refer to the        to collaboratively select the optimal channel. More generally,
+time period from the moment that 𝑝1 , 𝑝2 , 𝑝3 are ready to be         we give the formal statement of this kind of problem we want
+sent out by wAP, to the moment that wAP has successfully              to solve:
+received the acknowledgement of 𝑝1 , 𝑝2 , 𝑝3 . In the ideal case,        Given n wAPs which are carrier sensing with each other,
+i.e., there is no interference, wAP will spend a fixed time           how can we collaboratively assign the channel for each of
+successfully delivering 𝑝𝑖 to its client, i.e., 𝑝3 , which consumes   them to achieve the minimum WiFi hop delay?
+2𝑚𝑠. However, for packet 𝑝1 , it encounters interfering packets          2) Three Steps for Optimization using IG : To address the
+𝑞1 and 𝑞2 . As a result, wAP “wastes” 1ms to send 𝑝1 out as           above problem, we propose a general three-step solution in
+compared to the ideal case (𝑝3 ). Similarly, the existence of         our upgraded WING, as follows: 1. Set all the wAPs, which
+𝐴𝑃3 causes an extra 1ms when wAP is sending 𝑝2 . The overall          we want to collaboratively optimize, into the same channel
+results of IG is shown in the table of Fig. 7(b).                     and measure the interference graph, i.e., IG at each wAP. 2.
+   It is noteworthy that 𝐼𝛾𝑘 ranges from 0 to 1. The closer to        Merge the IG from different wAPs together in a central server
+1, the heavier the interference. If 𝐼𝛾𝑘 = 0.5, it means that          to generate the bidirectional complete graph. 3. Use the graph
+because of the existence of 𝐴𝑃𝑘 , wAP spends 50% of the               color algorithm in [28] on the bidirectional complete graph,
+current overall transmitting time to wait for the 𝐴𝑃𝑘 sending         to assign channel for each wAP.
+packets. If 𝐼𝛾𝑘 = 0, it means the existence of 𝐴𝑃𝑘 has no                Next we use a small testbed as an example to illustrate how
+impacts to wAP in time interval 𝛾.                                    the above three steps works.
+       10                                                             all the channel combinations. Our WING method only needs
+                                               Default Channel
+            8                                                         a const convergence time to find the final channel combina-
+dmac (ms)
+
+                                               WING
+            6                                  Exhaustive Search      tion according to the IG, which consists of one iteration of
+            4                                                         measurement and the execution time of graph coloring [28].
+            2                                                         A typical measurement iteration period is 5 minutes [25], and
+            0
+                                                                      the algorithm execution time in central server is much less
+                Scenario1 Scenario2 Scenario3 Scenario4 Scenario5     compared with the measurement iteration period. However,
+Fig. 8: The average WiFi hop delay under five random selected         for the exhaustive search algorithm, although it can find the
+scenario using different channel assignment algorithms.               best channel combination, it has to measure every possible
+                                                                      combinations to get the optimal one. As there are 3 orthogonal
+TABLE IV: IG measured at 𝐴𝑃𝑖 , 𝑖 ∈ {1, 2, 3, 4} in scenario1          channels, it has to iterate for 3𝑛 for 𝑛 collaborative APs. The
+of Fig.8. The % value (𝐼𝛾 )𝑗𝑖 in column 𝑖 and row 𝑗 represents        long convergence time makes it hardly usable in practice.
+the interference value of wAP𝑖 to wAP𝑗 .
+                                                                                          VII. R ELATED W ORK
+                         𝑤𝐴𝑃1      𝑤𝐴𝑃2     𝑤𝐴𝑃3     𝑤𝐴𝑃4
+                𝑤𝐴𝑃1                6.4      12.1     5.7                Active interference measurement. [29]–[31] measure the
+                𝑤𝐴𝑃2       4.8               9.6      7.0             conflict graph in an active way. In [29], [31], they use either
+                𝑤𝐴𝑃3       5.8      7.2               5.6             a small probe or active method to measure the interference,
+                𝑤𝐴𝑃4       9.4      9.9      11.8                     which could interrupt the normal usage of residents and do
+                                                                      not reflect the actual delay experience by the user traffic.
+                                                                         Passive interference measurement. [32] decode the packet
+   3) Testbed using Collaborative Optimization: Testbed               header information at the user side to predict the packet
+setup: we build a testbed with 4 wAPs as an example to show           delivery probability and the throughput. The conflict graph is
+how upgraded WING uses the above methodology (§VI-C2)                 static which cannot reflect the interference between the APs
+to collaboratively optimize the channel selection. Note that          caused by the actual traffic. PIE [16] also uses the packet level
+the above methodology is also applicable to more wAPs, and            information to passively get empirical conflict graph between
+each step works the same regardless the number of wAPs.               enterprise WLAN APs. However, APs’ packet timestamps
+The traffic in each wAP of the testbed is derived from the real       have to be highly synchronized at packet level, which is hard to
+measured traffic pattern from the deployed wAPs in the wild.          achieve with many autonomous APs. [33] acquires the conflict
+In this section, we randomly select 20 types of real traffic          graph based on the measurement-calibrated propagation mod-
+patterns to show the generality of our solution. For each run,        els, but not the actual traffic. [34] estimates the interference
+we assign 4 types of traffic patterns to 4 wAPs respectively          between APs and links in a live wireless network by additional
+and we conduct 5 runs labeled as scenario 1∼5. Note that              deployment of multiple sniffers across the network. In contrast
+4 wAPs can carrier sense each other in each scenario. The             to these works, WING can be deployed in each independent
+IG measured under certain scenario is shown in Table IV.              AP to passively measure the interference without the help of
+   Schemes compared: the first algorithm we used to compare           users and the measurement is based on the actual traffic.
+with our method is called “Default Channel” algorithm.                   WiFi monitoring tool. [18]–[20], [35] provides diagnosing
+“Default Channel” represents that there is not any optimization       methods and tools in the WiFi network, which inspired the
+algorithms on 4 wAPs, i.e., they are using the same channel           design of WING. These monitoring methods need extra NICs
+by default since they are set up. For our wAPs, the default           or boxes for sniffing packets in the WiFi network, while WING
+channel is channel 1.                                                 method act as a software package which can work on any
+   The second algorithm we used to compare with our method            OpenWrt-compatible APs and does not need any extra NICs
+is called “Exhaustive Search” algorithm. This is the optimal          or boxes used for sniffering.
+algorithm, where 4 wAP try every possible channel combi-
+nations and select the combination which has the minimum                                   VIII. C ONCLUSION
+average WiFi hop delay. As there are four wAPs and three                 Previous studies have shown that WiFi, as the dominant last
+orthogonal channels, it needs potentially 34 = 81 iterations          hop access to the Internet, has become the weakest link in the
+to exhaustively search all the combinations to get the optimal        round trip network delay. Therefore it is critical to understand
+result. We call each search of combination as a measurement           and minimize the WiFi interference in order to reduce the
+iteration. In this controlled experiment, we replay the same          WiFi hop delay. For the first time in the literature, this paper
+traffic for each iteration to ensure that it finds the best channel   defines an intuitive and accurate metric to quantify the impact
+combination.                                                          of interference on each actual packet on a commodity AP,
+   Results: Fig. 8 shows the average WiFi hop delay under             and it can be measured with a small kernel modification and
+different channel combinations calculated by the three algo-          with little overhead. Our 29-AP two-month measurements in
+rithms, under five random selected traffic scenarios. We can          the wild confirms this metric’s accuracy, and the individual
+see that WING achieves almost the same performance as the             AP optimization results based on this metric show significant
+optimal exhaustive search, but with no need of brutally search        performance improvement over other approaches.
+   We believe that this paper is an important towards the vision                 [14] V. Shrivastava, N. Ahmed, S. Rayanchu, S. Banerjee, S. Keshav,
+[21]–[25] in which hundreds of millions of APs in the world                           K. Papagiannaki, and A. Mishra, “Centaur: realizing the full potential of
+                                                                                      centralized wlans through a hybrid data path,” in Proceedings of the 15th
+all measure their empirical and time-variant interference and                         annual international conference on Mobile computing and networking.
+coordinate with their neighbors to jointly determine their best                       ACM, 2009, pp. 297–308.
+channels, power, or even locations.                                              [15] J. Manweiler, P. Franklin, and R. R. Choudhury, “Rxip: Monitoring the
+                                                                                      health of home wireless networks,” in INFOCOM, 2012 Proceedings
+                                                                                      IEEE. IEEE, 2012, pp. 558–566.
+                        ACKNOWLEDGMENTS                                          [16] V. Shrivastava, S. Rayanchu, S. Banerjee, and K. Papagiannaki, “Pie in
+   We thank the anonymous reviewers for their valuable feed-                          the sky: online passive interference estimation for enterprise wlans,” in
+                                                                                      Proc. of NSDI, 2011.
+backs. We thank Juexing Liao for her proofreading. This work                     [17] J. Geier, “Assigning 802.11b access point channels,” in WiFi Planet,
+has been supported by National Natural Science Foundations                            2004.
+of China (NSFC) under Grant 61472210 & 61472214, the                             [18] A. Patro, S. Govindan, and S. Banerjee, “Observing home wireless
+                                                                                      experience through WiFi APs,” in Proceedings of the 19th annual
+Sate Key Program of National Science of China under Grant                             international conference on Mobile computing & networking. ACM,
+No.61233007, the Tsinghua National Laboratory for Informa-                            2013, pp. 339–350.
+tion Science and Technology key projects, the National Key                       [19] Y.-C. Cheng, J. Bellardo, P. Benkö, A. C. Snoeren, G. M. Voelker, and
+                                                                                      S. Savage, Jigsaw: solving the puzzle of enterprise 802.11 analysis.
+Basic Research Program of China (973 program) under Grant                             ACM, 2006, vol. 36, no. 4.
+No.2013CB329105, the Global Talent Recruitment (Youth)                           [20] Y.-C. Cheng, M. Afanasyev, P. Verkaik, P. Benkö, J. Chiang, A. C. Sno-
+Program and the Cross-disciplinary Collaborative Teams Pro-                           eren, S. Savage, and G. M. Voelker, Automating cross-layer diagnosis
+                                                                                      of enterprise wireless networks. ACM, 2007, vol. 37, no. 4.
+gram for Science, Technology and Innovation, of Chinese                          [21] A. Patro, S. Govindan, and S. Banerjee, “Outsourcing home ap manage-
+Academy of Sciences-Network and system technologies for                               ment to the cloud through an open api,” Traffic (in Mbps), vol. 2, p. 4,
+security monitoring and information interaction in smart grid.                        2013.
+                                                                                 [22] Raychaudhuri, “Savant – high performance dynamic spectrum
+                                                                                      access via inter network collaboration,” http://www.winlab.rutgers.edu/
+                              R EFERENCES                                             pub/docs/focus/documents/SAVANT focus sheet 7.14.pdf.           [Online].
+ [1] C. Pei, Y. Zhao, G. Chen, R. Tang, Y. Meng, M. Ma, K. Ling, and                  Available:      http://www.winlab.rutgers.edu/pub/docs/focus/documents/
+     D. Pei, “Wifi can be the weakest link of round trip network latency,” in         SAVANT focus sheet 7.14.pdf
+     INFOCOM, 2016 Proceedings IEEE, 2016.                                       [23] N. Feamster, “Managing the home network,” http://www.gcatt.
+ [2] S. Sundaresan, N. Feamster, R. Teixeira, N. Magharei et al., “Measur-            gatech.edu/news/Feamster broadband2020.pdf. [Online]. Available:
+     ing and mitigating web performance bottlenecks in broadband access               http://www.gcatt.gatech.edu/news/Feamster broadband2020.pdf
+     networks,” in ACM Internet Measurement Conference, 2013.                    [24] M. S. Seddiki, M. Shahbaz, S. Donovan, S. Grover, M. Park, N. Feam-
+ [3] A. Balachandran, V. Aggarwal, E. Halepovic, J. Pang, S. Seshan,                  ster, and Y.-Q. Song, “Flowqos: Qos for the rest of us,” in Proceedings
+     S. Venkataraman, and H. Yan, “Modeling web quality-of-experience                 of the third workshop on Hot topics in software defined networking.
+     on cellular networks,” in Proceedings of the 20th annual international           ACM, 2014, pp. 207–208.
+     conference on Mobile computing and networking. ACM, 2014, pp.               [25] A. Patro and S. Banerjee, “Coap: A software-defined approach for
+     213–224.                                                                         managing residential wireless gateways.”
+ [4] W. Mühlbauer, S. Uhlig, A. Feldmann, O. Maennel, B. Quoitin, and           [26] I. C. S. L. M. S. Committee et al., “Wireless lan medium access control
+     B. Fu, “Impact of routing parameters on route diversity and path                 (mac) and physical layer (phy) specifications,” 1997.
+     inflation,” Computer Networks, vol. 54, no. 14, pp. 2506–2518, 2010.        [27] “MAC80211,”         http://linuxwireless.org/en/developers/Documentation/
+ [5] M. Alizadeh, A. Greenberg, D. A. Maltz, J. Padhye, P. Patel, B. Prab-            mac80211/, accessed: 2015-12-01.
+     hakar, S. Sengupta, and M. Sridharan, “Data center tcp (dctcp),” ACM        [28] E. Rozner, Y. Mehta, A. Akella, and L. Qiu, “Traffic-aware channel
+     SIGCOMM computer communication review, vol. 41, no. 4, pp. 63–74,                assignment in enterprise wireless lans,” in Network Protocols, 2007.
+     2010.                                                                            ICNP 2007. IEEE International Conference on. IEEE, 2007, pp. 133–
+ [6] D. Zats, T. Das, P. Mohan, D. Borthakur, and R. Katz, “Detail: reducing          143.
+     the flow completion time tail in datacenter networks,” ACM SIGCOMM          [29] N. Ahmed, U. Ismail, S. Keshav, and K. Papagiannaki, “Online esti-
+     Computer Communication Review, vol. 42, no. 4, pp. 139–150, 2012.                mation of rf interference,” in Proceedings of the 2008 ACM CoNEXT
+ [7] Y. Zhu, H. Eran, D. Firestone, C. Guo, M. Lipshteyn, Y. Liron, J. Padhye,        Conference. ACM, 2008, p. 4.
+     S. Raindel, M. H. Yahia, and M. Zhang, “Congestion control for large-       [30] N. Ahmed and S. Keshav, “Smarta: a self-managing architecture for thin
+     scale rdma deployments,” in Proceedings of the 2015 ACM Conference               access points,” in Proceedings of the 2006 ACM CoNEXT conference.
+     on Special Interest Group on Data Communication. ACM, 2015, pp.                  ACM, 2006, p. 9.
+     523–536.                                                                    [31] P. Kanuparthy, C. Dovrolis, K. Papagiannaki, S. Seshan, and
+ [8] G. Chen, Y. Zhao, D. Pei, and D. Li, “Rewiring 2 links is enough:                P. Steenkiste, “Can user-level probing detect and diagnose common
+     Accelerating failure recovery in production data center networks,” in            home-wlan pathologies,” ACM SIGCOMM Computer Communication
+     Distributed Computing Systems (ICDCS), 2015 IEEE 35th International              Review, vol. 42, no. 1, pp. 7–15, 2012.
+     Conference on. IEEE, 2015.                                                  [32] S. Liu, G. Xing, H. Zhang, J. Wang, J. Huang, M. Sha, and L. Huang,
+ [9] G. Chen, Y. Zhao, and D. Pei, “Alleviating flow interference in data cen-        “Passive interference measurement in wireless sensor networks,” in
+     ter networks through fine-grained switch queue management,” Computer             Network Protocols (ICNP), 2010 18th IEEE International Conference
+     Networks, 2015.                                                                  on. IEEE, 2010, pp. 52–61.
+[10] A. Singla, B. Chandrasekaran, P. Godfrey, and B. Maggs, “The internet       [33] X. Zhou, Z. Zhang, G. Wang, X. Yu, B. Y. Zhao, and H. Zheng, “Practi-
+     at the speed of light,” in Proceedings of the 13th ACM Workshop on               cal conflict graphs for dynamic spectrum distribution,” in Proceedings of
+     Hot Topics in Networks. ACM, 2014, p. 1.                                         the ACM SIGMETRICS/international conference on Measurement and
+[11] I. Cisco, “Cisco visual networking index: Forecast and methodology,              modeling of computer systems. ACM, 2013, pp. 5–16.
+     2013–2018,” CISCO White paper, 2013.                                        [34] U. Paul, A. Kashyap, R. Maheshwari, and S. R. Das, “Passive measure-
+[12] S. Biswas, J. Bicket, E. Wong, R. Musaloiu-E, A. Bhartia, and                    ment of interference in wifi networks with application in misbehavior
+     D. Aguayo, “Large-scale measurements of wireless network behavior,”              detection,” Mobile Computing, IEEE Transactions on, vol. 12, no. 3, pp.
+     in Proceedings of the 2015 ACM Conference on Special Interest Group              434–446, 2013.
+     on Data Communication. ACM, 2015, pp. 153–165.                              [35] S. Grover, M. S. Park, S. Sundaresan, S. Burnett, H. Kim, and N. Feam-
+[13] S. Sundaresan, N. Feamster, and R. Teixeira, “Measuring the perfor-              ster, “Peeking behind the nat: an empirical study of home networks,” in
+     mance of user traffic in home wireless networks,” in Passive and Active          Proceedings of the 2013 conference on Internet measurement conference.
+     Network Measurement Conference, 2015.                                            ACM, 2013, pp. 377–390.
+

@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>RC-LIR - 方案说明</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>RC-LIR：面向多维根因分析的高效属性选择</h1>
+<blockquote>
+<p>作者：Yiran Cheng, Bo Cheng, Pengxiang Jin, Yongqian Sun, Xiaohui Nie, Nengwen Zhao, Shenglin Zhang, Dan Pei<br>
+机构：清华大学；BizSeer；南开大学；海河实验室<br>
+发表年份：2022<br>
+关联 PDF：同目录下 <code>RC-LIR.pdf</code></p>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Effective Attribute Selection for Multi-dimensional Root Cause Analysis</td></tr>
+<tr><td>作者</td><td>Yiran Cheng, Bo Cheng, Pengxiang Jin, Yongqian Sun, Xiaohui Nie, Nengwen Zhao, Shenglin Zhang, Dan Pei</td></tr>
+<tr><td>机构</td><td>清华大学；BizSeer；南开大学；海河实验室</td></tr>
+<tr><td>发表年份</td><td>2022</td></tr>
+<tr><td>分类</td><td>根因分析 / 属性选择 / 特征工程 / 多维数据</td></tr>
+<tr><td>核心问题</td><td>多维根因分析（MDRCA）算法如 iDice、Hotspot、Squeeze 在维度 &gt; 10 时计算/内存爆炸（10 维已需 146× 算力，13+ 维 OOM），需要先做"根因导向属性选择（RCOAS）"过滤掉无关/冗余维度</td></tr>
+<tr><td>主要贡献</td><td>1) 首次明确提出 RCOAS 问题并形式化定义；2) RC-LIR = 4 条规则初筛 + 改进 LIR（Relief-based FS）算法：定义分类距离、加 augmentation 系数、加 redundant cost；3) 在 1000 真实故障案例上 F1=0.88，比 baseline 高至少 0.15；4) 把 RC-LIR 接入 4 种主流 MDRCA 算法，效率与效果同时显著提升</td></tr>
+</tbody>
+</table>
+
+<h2>二、背景（Background）</h2>
+<p>在线软件服务每天产生海量多维日志（如访问日志：用户、URL、客户端、CDN、服务器、HTTP 状态码等），运维人员将原始日志按 (timestamp, 多个属性) 聚合后形成"多维数据"。当核心 KPI（如 <code>is_success</code>）异常时，需要从异常维度组合中定位根因 — 即多维根因分析（Multi-Dimensional Root Cause Analysis, MDRCA）。</p>
+<p>经典 MDRCA 算法（Apriori、iDice、Hotspot、Squeeze）通过枚举属性子集寻找"贡献最大的属性-值组合"。但这些算法对维度数高度敏感：论文 Fig. 1 显示 Squeeze 在 10 维时已经需要 146× 算力，13 维直接 OOM。这是由于多维分析需要枚举 \( 2^m-2 \) 个有效子集（\( m \) 为属性数），呈指数增长。</p>
+<p>论文类比机器学习中的"特征选择（FS）"概念，提出"根因导向属性选择（RCOAS）"：在 MDRCA 之前先用 FS 思想过滤掉与根因无关或冗余的属性，把维度从几十压到 10 以下。但直接把现成 FS 算法套过来遇到三大挑战：</p>
+<ul>
+<li><strong>挑战 1：原生 FS 不适合 RCOAS</strong>：很多 filter FS（Laplacian Score、Relief）需要均值/方差/距离等连续值运算，对 user_id、request_type 等枚举/分类值不友好；embedded / wrapper FS 依赖具体 ML 算法的拟合度，但 MDRCA 目标是定位根因（KPI 拟合度高 ≠ 根因定位准）。</li>
+<li><strong>挑战 2：数据不平衡</strong>：故障率通常 &lt; 5%，FS 把 KPI 当二分类标签时严重偏斜。</li>
+<li><strong>挑战 3：新型根因属性（0-day 故障）</strong>：历史故障不能覆盖所有可能的根因属性，需要 FS 不仅从"故障"中学习，还要考虑"无故障值"的冗余。</li>
+</ul>
+<p>论文提出 RC-LIR：(1) 4 条简单规则（唯一值去重、单值去重、信息增益为 0 去重、保留 timestamp）做初筛；(2) 改进 LIR（Logistic Iterative Relief）—— 把分类距离明确定义、引入 augmentation 系数平衡不平衡数据、加入 redundant cost 鼓励去掉冗余。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<ul>
+<li><strong>痛点 1：高维多维数据让 MDRCA 算法爆炸</strong> → <strong>方案</strong>：RCOAS 把维度从几十压到 &lt; 10。</li>
+<li><strong>痛点 2：原生 FS 不适用枚举型属性</strong> → <strong>方案</strong>：改进 LIR，自定义 \( d(x, y|w) = \sum_{x_i \ne y_i} w_i \) 的分类距离。</li>
+<li><strong>痛点 3：FS 假设平衡数据</strong> → <strong>方案</strong>：引入 augmentation 系数 \( A \)，放大正样本（故障）对权重的影响。</li>
+<li><strong>痛点 4：FS 漏掉 0-day 根因属性</strong> → <strong>方案</strong>：加入 redundant cost \( \lambda\|w\|_1 \)，在 LIR 的 logistic 损失基础上促使冗余属性权重衰减为 0。</li>
+<li><strong>痛点 5：FS 仍依赖具体 ML 算法</strong> → <strong>方案</strong>：选用 Relief-based LIR，与具体下游算法解耦，对任何 MDRCA 算法都有效。</li>
+<li><strong>痛点 6：FS 改变属性语义</strong> → <strong>方案</strong>：不做 PCA / 因子分析，只做"属性子集选择"，保留物理含义。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<p>系统总览（论文图 4）：RC-LIR 包含两步：</p>
+<ol>
+<li><strong>Rule-Based Selecting</strong>：4 条简单规则快速去重/降维。</li>
+<li><strong>Improved LIR</strong>：在 LIR（Logistic Iterative Relief）基础上做 3 处改进——定义分类距离、加 augmentation、加 redundant cost。</li>
+</ol>
+<p>关键概念：</p>
+<ul>
+<li><strong>RCOAS</strong>：根因导向属性选择，是 FS 的一种特殊形式。</li>
+<li><strong>Fault Case</strong>：一段 KPI 退化的时段，一个 case 对应一个根因（可由多属性+值组成）。</li>
+<li><strong>System Level vs Case Level</strong>：RCOAS 关心"系统层面哪些属性是潜在根因"，不是"单个 case 根因是什么"。</li>
+<li><strong>Rule 1</strong>：所有值都唯一（unique）→ 信息增益低，删除（如 access_digest）。</li>
+<li><strong>Rule 2</strong>：所有值都相同 → 信息增益为 0，删除（如 home_page 总是 example.com）。</li>
+<li><strong>Rule 3</strong>：两属性互为信息增益 0 → 一对多映射，删其一（如 user_id 与 user_name 一一对应）。</li>
+<li><strong>Rule 4</strong>：保留 timestamp。</li>
+<li><strong>LIR</strong>：用 EM 算法迭代求解 \( w \)，目标函数 \( \min_w \sum_n \log(1 + \exp(-w^T z_n)) + \lambda\|w\|_1 \)。</li>
+<li><strong>Augmentation Coefficient \( A \)</strong>：放大正样本（故障）影响力。</li>
+<li><strong>Redundant Cost \( \lambda\|w\|_1 \)</strong>：L1 正则化，迫使部分 \( w_i \) 衰减为 0。</li>
+</ul>
+<p>数学原理：</p>
+<ul>
+<li>Relief 权重更新：\( w = w + |x - NM(x)| - |x - NH(x)| \)。</li>
+<li>I-Relief 目标：\( \min_w \sum_n w^T z_n^2 \)，s.t. \( \|w\|_2 = 1, w \ge 0 \)，\( z_n = d(x_n, NM(x_n)|w) - d(x_n, NH(x_n)|w) \)。</li>
+<li>分类距离：\( d(x, y|w) = \sum_{x_i \ne y_i} w_i \)。</li>
+<li>LIR 损失（logistic regression + L1）：\[ \min_w \sum_n \log(1 + \exp(-w^T z_n^-)) + \lambda \|w\|_1 \]，其中 \( z_n^- = \sum_{x_i \in M_n^-} P(x_i = NM(x_n)|w) d(x_n, x_i|w) - \sum_{x_i \in M_n^+} P(x_i = NH(x_n)|w) d(x_n, x_i|w) \)。</li>
+<li>RC-LIR 改进：在 \( z_n^- \) 的近 miss 项上加 augmentation 系数 \( A \)（如 \( A=10 \)），放大正样本影响。</li>
+</ul>
+<p>与现有技术的差异：相对 PCA / 因子分析（改变属性语义），RC-LIR 只做属性子集选择；相对 Laplacian Score / Relief（不擅长枚举数据），RC-LIR 自定义分类距离；相对 SVM-RFE / LASSO（依赖具体 ML 算法），RC-LIR 是 Relief-based，可与任何 MDRCA 算法解耦；相对 KL Divergence 单独使用（Fig. 3 表明需要 34+ 属性才能覆盖 80% 故障），RC-LIR 只需 &lt; 10。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li><strong>输入</strong>：多维数据（每条记录 = timestamp + 多个属性 + KPI 标签），属性全集 \( A \)。</li>
+<li><strong>输出</strong>：根因相关属性子集 \( S \)（\( |S| \ll |A| \)，通常 &lt; 10）。</li>
+</ul>
+<h3>2. 核心模块</h3>
+<ul>
+<li>4 条规则初筛。</li>
+<li>改进 LIR：自定义分类距离。</li>
+<li>Augmentation 系数 \( A \)。</li>
+<li>Redundant cost \( \lambda\|w\|_1 \)。</li>
+<li>阈值 \( \tau_w \)（如 \( \tau_w=1 \)）选择属性。</li>
+</ul>
+<h3>3. 伪代码</h3>
+<pre><code>def RC_LIR(data, lambda_=0.1, A=10, tau_w=1.0):
+    attrs = data.attributes
+    # 1) 规则初筛
+    for a in attrs:
+        if a == 'timestamp': continue
+        if all_unique(data[a]):
+            attrs.remove(a)  # Rule 1
+        elif all_same(data[a]):
+            attrs.remove(a)  # Rule 2
+    # Rule 3: 信息增益为 0 的成对冗余
+    for a1, a2 in pairs(attrs):
+        if mutual_info(data[a1], data[a2]) == 0:
+            attrs.remove(a1)
+    # 2) 改进 LIR
+    w = init_weights(attrs)  # 全 1
+    for epoch in range(E):
+        for x in sample(data, N):
+            NH = nearest_hit(x, attrs)  # 同类最近邻
+            NM = nearest_miss(x, attrs)  # 异类最近邻
+            # 自定义分类距离
+            d_NH = sum(w[i] for i in attrs if x[i] != NH[i])
+            d_NM = sum(w[i] for i in attrs if x[i] != NM[i])
+            # 改进 z (含 augmentation)
+            z = A * NM_contrib(w, d_NM) - NH_contrib(w, d_NH)
+            # EM 步更新 w
+            grad = sigmoid(-w @ z) * (-z)
+            w = w - lr * grad
+            w = soft_threshold(w, lambda_)  # L1
+            w = max(w, 0)  # 权重非负
+    # 3) 阈值选择
+    S = [a for a, wi in zip(attrs, w) if wi &gt; tau_w]
+    return S
+</code></pre>
+<h3>4. 关键数学</h3>
+<ul>
+<li>自定义分类距离：\( d(x, y|w) = \sum_{x_i \ne y_i} w_i \)。</li>
+<li>LIR 损失：\( \min_w \sum_n \log(1 + \exp(-w^T z_n^-)) + \lambda\|w\|_1 \)。</li>
+<li>Augmentation：正样本 \( z_n^- \) 乘以 \( A \)。</li>
+<li>L1 软阈值：\( w_i = \text{sign}(w_i) \cdot \max(|w_i| - \lambda, 0) \)。</li>
+</ul>
+<h3>5. 复杂度分析</h3>
+<ul>
+<li>规则初筛：\( O(N \cdot d) \)，\( N \) 是记录数，\( d \) 是属性数。</li>
+<li>LIR：\( O(E \cdot N \cdot d \cdot k) \)，\( k \) 是近邻数，\( E \) 是 epoch。</li>
+<li>论文报告：32.2 s 降到 24.6 s（规则初筛后）。</li>
+</ul>
+<h3>6. 训练与推理</h3>
+<ul>
+<li>无显式训练；EM 迭代直到收敛。</li>
+<li>推理即"算 \( w \)、按阈值选属性"。</li>
+</ul>
+<h3>7. 示例</h3>
+<p>对包含 user_id、user_name、request_type、src、dst、home_page、timestamp、is_success 的访问日志：规则初筛删 home_page（值都相同）→ 改进 LIR 算 \( w_{user\_id} \approx 0 \)（与 user_name 冗余）→ 阈值筛选后保留 timestamp、request_type、src、dst、user_name 共 5 个属性，喂给 Squeeze 等 MDRCA 算法，定位 (request_type=1, src=host2) 根因。</p>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[多维数据 D] --> B[Rule 1: 唯一值去重]
+    B --> C[Rule 2: 单值去重]
+    C --> D[Rule 3: 信息增益为 0 去重]
+    D --> E[Rule 4: 保留 timestamp]
+    E --> F[改进 LIR: 分类距离 d x y w]
+    F --> G[Augmentation 系数 A 放大正样本]
+    G --> H[EM 迭代 w + L1 redundant cost]
+    H --> I[soft threshold: w_i > 0]
+    I --> J{wi > tau_w?}
+    J -- 是 --> K[保留属性, 加入 S]
+    J -- 否 --> L[剔除]
+    K --> M[输出: 属性子集 S, |S| < 10]
+    L --> M
+    M --> N[下游 MDRCA: Squeeze / iDice / Hotspot / Apriori]
+    N --> O[根因: (attr=val, attr=val, ...)]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[输入多维数据] --> S2[Rule 1: 唯一值去重]
+    S2 --> S3[Rule 2: 单值去重]
+    S3 --> S4[Rule 3: 信息增益为 0 去重]
+    S4 --> S5[Rule 4: 保留 timestamp]
+    S5 --> S6[初始化 w = 1]
+    S6 --> S7[采样 x, 找 NH, NM]
+    S7 --> S8[计算分类距离 d NH, d NM]
+    S8 --> S9[计算 z = A * d_NM - d_NH]
+    S9 --> S10[EM 更新 w + L1]
+    S10 --> S11[soft threshold]
+    S11 --> S12{w 收敛?}
+    S12 -- 否 --> S7
+    S12 -- 是 --> S13[按阈值 tau_w 选属性]
+    S13 --> S14[输出 S]
+    S14 --> S15[下游 MDRCA 算法]
+    S15 --> S16[根因定位]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 首次系统化提出 RCOAS 概念</strong>：把 FS 与 MDRCA 解耦，下游算法零修改。</li>
+<li><strong>+ 4 条规则初筛</strong>：把 45 维快速降到 10 维以下，运行时间减少 24%。</li>
+<li><strong>+ 改进 LIR 三处</strong>：分类距离 + augmentation + redundant cost，覆盖三大挑战。</li>
+<li><strong>+ 工业级数据集</strong>：1000 真实故障案例（45 属性），验证 RC-LIR 实用性。</li>
+<li><strong>+ 即插即用</strong>：与 4 种主流 MDRCA 算法（Squeeze/iDice/Hotspot/Apriori）解耦，可直接嵌入任何多维 RCA 管线。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>数据集</strong>：某企业真实生产环境 1000 故障案例 + 45 属性（含 6 类根因属性），由经验丰富的运维工程师标注。</li>
+<li><strong>Baseline</strong>：KL Divergence、Relief、Laplacian Score、LASSO、SVM-RFE、随机选择。</li>
+<li><strong>主要指标</strong>：F1、Precision、Recall、运行时间。</li>
+<li><strong>关键结果数字</strong>：
+  <ul>
+    <li><strong>F1=0.88</strong>，比最强 baseline（LASSO / KL Divergence）高至少 0.15。</li>
+    <li><strong>平均运行时间 24.6 s</strong>（规则初筛后），完整 32.2 s。</li>
+    <li><strong>下游 MDRCA 提升</strong>：把 RC-LIR 选出的 &lt; 10 属性接入 Squeeze，效率提升 100×+（避免 OOM），F1 提升 5~15%。</li>
+    <li>消融（论文 § 4）：去掉规则初筛 → 时间增加 30%、F1 持平；去掉 augmentation → F1 掉 0.1；去掉 redundant cost → 0-day 根因属性漏选，F1 掉 0.08；去掉自定义距离改 Euclidean → 枚举属性距离全为 0，F1=0。</li>
+    <li>超参数：\( \lambda=0.1 \)、\( A=10 \)、\( \tau_w=1.0 \) 最佳。</li>
+  </ul>
+</li>
+<li><strong>效率分析</strong>：单系统 24.6 s，与 4 种下游 MDRCA 算法解耦，可周期性调用。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>在线服务多维日志根因分析</strong>：访问日志、错误日志、链路日志的多维 RCA。</li>
+<li><strong>微服务可观测性</strong>：trace 维度（service、pod、host、region、http_status）根因定位。</li>
+<li><strong>CDN 边缘节点质量分析</strong>：按节点 × 运营商 × 码率 × URL 等维度组合定位异常节点。</li>
+<li><strong>电商订单异常</strong>：按用户、品类、支付方式、地区等维度组合定位异常订单流。</li>
+<li><strong>金融交易风控</strong>：按金额、渠道、银行、IP 等维度组合定位异常交易。</li>
+<li><strong>AIOps 平台</strong>：作为"多维数据前置属性选择"模块嵌入 RCA 管线。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>Robust_Anomaly_Clue_孙永谦2022.pdf</code> (RobustSpot)、<code>卢香琳2022.pdf</code> (CauseRank)：根因定位类工作，RC-LIR 可作前置维度选择。</li>
+<li><code>DEXA22-FPG-Miner.pdf</code>：FPG 构造，RC-LIR 可辅助减少指标数。</li>
+<li><code>KDD22-CIRCA.pdf</code>、<code>DejaVu-paper.pdf</code>、<code>WWW22-OmniCluster张圣林.pdf</code>：根因 / 聚类相关。</li>
+<li><code>paper-ISSRE21-PUAD.pdf</code>、<code>kontrast-paper.pdf</code>：KPI 异常检测方向。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>MDRCA (Multi-Dimensional Root Cause Analysis)</strong>：多维根因分析。</li>
+<li><strong>RCOAS (Root-Cause-Oriented Attribute Selection)</strong>：根因导向属性选择。</li>
+<li><strong>FS (Feature Selection)</strong>：特征选择。</li>
+<li><strong>Relief</strong>：经典 filter FS 算法。</li>
+<li><strong>I-Relief</strong>：Relief 的迭代扩展，用 EM 求 \( w \)。</li>
+<li><strong>LIR (Logistic Iterative Relief)</strong>：用 logistic regression 的 Relief 变体。</li>
+<li><strong>NH / NM (Nearest Hit / Miss)</strong>：同类 / 异类最近邻。</li>
+<li><strong>Augmentation Coefficient A</strong>：放大正样本（故障）影响力的系数。</li>
+<li><strong>Redundant Cost \( \lambda\|w\|_1 \)</strong>：L1 正则化，强制稀疏。</li>
+<li><strong>0-day Root Cause Attribute</strong>：历史故障未覆盖的根因属性。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Kira K., Rendell L., "A Practical Approach to Feature Selection" (ML 1992)，Relief 原始论文。</li>
+<li>Sun Y., Li J., "Iterative RELIEF" (I-Relief)，Relief 改进。</li>
+<li>Li J. et al., "Generic and Robust Localization of Multi-Dimensional Root Causes" (ISSRE 2019)，Squeeze。</li>
+<li>Li J. et al., "iDice: Problem Identification for Emerging Issues" (ICSE 2016)，iDice。</li>
+<li>Agarwal P. et al., "Discovering Critical Root Causes of Operational Issues" (HotSpot, KDD 2018)。</li>
+<li>Li J. et al., "Generic and Robust Localization of Multi-Dimensional Root Causes via Reinforcement Learning" (ISSRE 2020)，Hotspot 增强版。</li>
+<li>Tibshirani R., "Regression Shrinkage and Selection via the Lasso" (JRSS B 1996)，LASSO 原始论文。</li>
+<li>代码：论文 GitHub 仓库（公开 RC-LIR 实现）。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

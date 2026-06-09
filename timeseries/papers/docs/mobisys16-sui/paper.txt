@@ -1,0 +1,1287 @@
+                          Characterizing and Improving WiFi Latency
+                            in Large-Scale Operational Networks
+
+                                      Kaixin Sui†‡ , Mengyu Zhou† , Dapeng Liu†‡ , Minghua Ma†‡ ,
+                                      Dan Pei†‡∗, Youjian Zhao†‡ , Zimu Li† , Thomas Moscibroda§
+                                                  †
+                                                    Tsinghua University § Microsoft Research
+                             ‡
+                                 Tsinghua National Laboratory for Information Science and Technology (TNList)
+
+
+ABSTRACT                                                                                        latency is as low as 3 ms, its 90th and 99th percentiles are around
+WiFi latency is a key factor impacting the user experience of                                   20 ms and 250 ms, respectively.
+modern mobile applications, but it has not been well studied at large                              Characterizing WiFi latency using WiFi-related metrics (e.g.,
+scale. In this paper, we design and deploy WiFiSeer, a framework                                channel utilization) is a key first step towards mitigating these
+to measure and characterize WiFi latency at large scale. WiFiSeer                               problems. Understanding the reasons for high WiFi latency oc-
+comprises a systematic methodology for modeling the complex                                     currences can lead to better designs of wireless protocols/hardware
+relationships between WiFi latency and a diverse set of WiFi                                    as well as better diagnosis and improvements in operational WiFi
+performance metrics, device characteristics, and environmental                                  networks. However, measuring and characterizing WiFi latency at
+factors. WiFiSeer was deployed on Tsinghua campus to conduct a                                  large scale is challenging, and to the best of our knowledge, there
+WiFi latency measurement study of unprecedented scale with more                                 exists no comprehensive attempt at this problem. The reasons are
+than 47,000 unique user devices. We observe that WiFi latency                                   manifold. First, measuring WiFi latency directly in an enterprise-
+follows a long tail distribution and the 90th (99th ) percentile is                             or campus-scale WiFi network is difficult because i) WiFi latency is
+around 20 ms (250 ms). Furthermore, our measurement results                                     not reported in commonly used wireless products; ii) sniffer-based
+quantitatively confirm some anecdotal perceptions about impacting                               measurement methods are too costly or inconvenient to deploy in
+factors and disapprove others. We deploy three practical solutions                              large-scale networks; iii) methods based on modifying firmware
+for improving WiFi latency in Tsinghua, and the results show                                    or software of access points (APs) take significant time to be
+significantly improved WiFi latencies. In particular, over 1,000                                adopted in commercial deployments; and iv) vanilla measurement
+devices use our AP selection service based on a predictive WiFi                                 methods based on pings are influenced by the device’s energy
+latency model for 2.5 months, and 72% of their latencies are                                    saving modes (§2.1). Secondly, while directly measuring WiFi
+reduced by over half after they re-associate to the suggested APs.                              latency is thus challenging, characterizing WiFi latency by means
+                                                                                                of reducing it to other more easily measurable WiFi-related metrics
+                                                                                                is also challenging. Specifically, it turns out that there is no
+Keywords                                                                                        simple correlation between WiFi latency and any other such readily
+Wireless Network; WiFi Latency; Measurement                                                     available metric. Instead, as we show in this paper, WiFi latency is
+                                                                                                related to other radio parameters and metrics in subtle and non-
+                                                                                                linear ways, revealing a complex interplay between multiple WiFi
+1.        INTRODUCTION                                                                          metrics, protocol parameters and environmental factors.
+   WiFi latency is a critical performance measure for modern real-                                 To tackle these challenges, we design WiFiSeer (Fig. 1), a
+time, interactive Internet applications, such as online gaming, web                             framework for measuring and characterizing WiFi latency at large-
+browsing, and live collaboration applications. These applications                               scale, as well as improving WiFi latency in large operational
+have strict requirements on end-to-end latency [28, 33, 53]. For                                Enterprise Wireless Local Area Networks (EWLAN) [9, 10], such
+example, [53] shows that 20 ms last-mile latency will be amplified                              as in campuses, shopping malls, airports, and hotels.
+into about two to three seconds of web page load time, so slow that                                WiFiSeer first makes use of a new ping based methodology,
+is beyond 47% of web users’ expectation [19]. While the latency                                 called ping2 (§2.1), to measure the WiFi latency of devices
+on the wired Internet is relatively stable and well-engineered (e.g.,                           connected to the EWLAN. At the same time, WiFiSeer periodically
+via CDN), the last-hop WiFi latency is often unpredictable and                                  polls the readily available data using SNMP (Simple Network
+a dominating factor in the end-to-end latency. For example, our                                 Management Protocol) to derive potential impacting factors of
+measurement results in §3.1 show that, while the median WiFi                                    WiFi latency in the EWLAN. Data from ping2 and SNMP are
+∗
+    Dan Pei is the corresponding author.                                                        associated and form the WiFi latency dataset of WiFiSeer. In a
+                                                                                                one-week exemplary dataset of real deployment in the EWLAN
+Permission to make digital or hard copies of all or part of this work for personal or
+                                                                                                of Tsinghua University (THU-WLAN), hundreds of millions of
+classroom use is granted without fee provided that copies are not made or distributed           WiFi latency records are collected based on ping2. Each of these
+for profit or commercial advantage and that copies bear this notice and the full citation       records associates a specific WiFi latency with 11 industry-standard
+on the first page. Copyrights for components of this work owned by others than
+ACM must be honored. Abstracting with credit is permitted. To copy otherwise, or
+                                                                                                radio factors (e.g., channel utilization), 3 protocol factors (e.g.,
+republish, to post on servers or to redistribute to lists, requires prior specific permission   channel number), and 6 environmental factors (e.g., buildings) from
+and/or a fee. Request permissions from permissions@acm.org.                                     the SNMP data (§2.2). More than 2,700 APs, 114 buildings, and
+MobiSys’16, June 25-30, 2016, Singapore, Singapore                                              more than 47,000 mobile devices are observed in the dataset.
+c 2016 ACM. ISBN 978-1-4503-4269-8/16/06. . . $15.00
+DOI: http://dx.doi.org/10.1145/2906388.2906393
+                                      Data Collector                                                   WiFi Latency Models and Applications
+
+         AP
+                               AP
+                                       WiFi Latency           Periodically                           Model 1 Application 1:
+                                                                                                             Understanding Radio Factor Effects
+                   Wired                                       Collected
+                  Network               (by ping2)
+                                                                             Machine Learning
+                                                               Historical                            Model 2 Application 2:
+                                                                                                             Diagnosing High WiFi Latency
+                                                                Dataset       Building Blocks
+          AP
+                                     Related Factors
+                  Wireless             (by SNMP)                     On-demand                       Model 3 Application  3:
+                                                                                                             Selecting a Low-Latency AP (AGE)
+                 Controllers                                      Real-time Measure
+Device
+              EWLAN                                                                   WiFiSeer
+                                                       Figure 1: Overview of WiFiSeer.
+
+
+   The above large-scale dataset enables a panoramic view on the               To summarize, our main contributions are:
+WiFi latency in the wild. First, some common perceptions about               • WiFiSeer framework is general enough to enable researchers or
+unsatisfying WiFi latency are quantitatively confirmed: i) WiFi                operators worldwide to study their own networks. It comprises a
+latency follows a long tail distribution: its 50th , 90th and 99th             systematic methodology for modeling the complex relationships
+percentiles are around 3 ms, 20 ms and 250 ms, respectively; ii)               between WiFi latency and a diverse set of WiFi performance
+75% of user devices experience at least one unsatisfying episode               metrics, device characteristics, and environmental factors.
+which has the average latency of over 20 ms for more than one
+minute in a week. Second, straightforward visual inspection also             • We present an enterprise-scale measurement study of WiFi
+reveals some interesting observations (§3.2): i) the 5 GHz band is             latencies, the largest reported so far, complementing prior WiFi
+still largely underutilized and offers lower latency than 2.4 GHz; ii)         studies that have focused on interference [51] and through-
+the default RSSI-based band selection of devices is biased towards             put [46]. Our results quantitatively confirm some anecdotal
+2.4 GHz; iii) RSSI is not as highly correlated with WiFi latency as            perceptions, disapprove some others (e.g., the impact of RSSI
+channel utilization for example.                                               on latency), and reveal some previously unknown insights (e.g.,
+   In order to understand the reasons behind these observations                AP selection mechanisms are inadequate and not collaborative).
+and mitigate the high WiFi latency in operational networks, we                 We believe these results have implications to all players in the
+model WiFi latency based on WiFi related factors, which are easily             mobile Internet ecosystem.
+measurable, but interdependent, and related to WiFi latency in               • We deploy three practical solutions for improving WiFi latency
+non-linear or even non-monotonic ways. WiFiSeer uses machine                   in an operational EWLAN. The results show significantly im-
+learning to provide modeling building blocks and then applies them             proved WiFi latencies.
+to build three different models tailored for three different practical          The rest of the paper is organized as follows. §2 describes how
+applications, which in turn enable us to make more interesting               WiFiSeer collects WiFi latencies and related factors. §3 shows a
+observations and insights.                                                   large-scale measurement study based on the dataset collected from
+   In the first application, WiFiSeer correlates industry-standard           THU-WLAN. §4 introduces how WiFiSeer builds comprehensive
+radio factors (i.e., easily measurable WiFi performance metrics) to          WiFi latency models using machine learning techniques. §5
+WiFi latency. This model can help vendors and protocol designers             presents three typical applications based on the models in §4
+to evaluate potential solutions. The model shows that the three most         to characterize and improve WiFi latency in large-scale opera-
+informative indicators for WiFi latency are channel utilization, the         tional networks. §6 discusses several directions for extensions of
+number of online devices, and the signal-to-noise-ratio (SNR),               WiFiSeer. §7 reviews related work and §8 concludes the paper.
+while the commonly considered RSSI used for AP selection is
+not. The model also describes that these metrics can relate to WiFi          2.       DATA COLLECTION
+latency in non-intuitive and intricate ways.
+                                                                                In this section, we describe how WiFiSeer collects the dataset of
+   In the second application, WiFiSeer provides a WiFi latency
+                                                                             WiFi latencies and related factors. The measurement studies (§3)
+model to help operators diagnose high WiFi latency in operational
+                                                                             and model building (§4) are both based on the dataset collected in
+EWLANs. Specifically, this model identifies where and when WiFi
+                                                                             this way.
+latency is high, and provides potential impact factors for these “bad
+apples”. Based on the results of this application, we accordingly            2.1      Measuring WiFi Latency
+deployed two concrete mitigation approaches (adding a 5 GHz only
+                                                                                In an operational large-scale EWLAN, systematically measuring
+SSID and dense AP deployment) in THU-WLAN, which turned out
+                                                                             WiFi latencies at low cost is challenging. First, WiFi latency is
+to be effective in practice (§5.2).
+                                                                             not readily available in common wireless products. For example,
+   In the third application, WiFiSeer implements AGE (Associate
+                                                                             the APs of Cisco do not monitor WiFi latency in the SNMP data.
+to Good Enterprise APs), a latency-oriented AP selection service
+                                                                             Second, sniffer-based methods [31, 32, 47] require deploying extra
+composed of a helper app installed on user’s devices and a central-
+                                                                             wireless sniffers, and are thus inconvenient or too costly for a
+ized controller running a predictive model. AGE controller predicts
+                                                                             large EWLAN. Third, methods based on modifying the firmware or
+the WiFi latency of APs near a device based on readily-available
+                                                                             software of APs [12, 46, 51] cannot be used immediately because it
+performance metrics and environmental factors. Then the AGE
+                                                                             takes a long time for vendors to adopt them in commercial products.
+client app guides the device to associate to the AP with the lowest
+                                                                             Finally, the standard ping methods, issued from a mobile device
+predicted latency. Deployment of AGE on over 1,000 Android
+                                                                             to an AP (e.g., as used in MobiPerf [39] and Speedtest [17]) or
+devices for 2.5 months shows that after AGE re-associations, 72%
+                                                                             issued from an AP side to a mobile device, can in principle estimate
+of the latencies are reduced by more than half.
+                                                                             WiFi latency [37], but in practice are unusable (see the evaluation
+of ping2 later) because they are impacted by the device’s energy                                     connect to the AP via WiFi, and then use the following methods to
+saving modes [6, 7, 14, 16], such as the low power suspend mode of                                   measure WiFi latency in turn: M1 uses ping2 to measure latency
+the processor [48] and the power saving mode of the WiFi chip [35].                                  every 10 s; M2 pings from the server to the mobile device every
+In particular, if the device is in the energy saving mode, the ping                                  10 s; M3 pings from the mobile device to the server every 10 s;
+latency will be significantly inflated by the device wake-up time                                    M4 pings from the mobile device to the server every 1 ms; M5
+and is thus inaccurate. Because there lacks a feasible WiFi latency                                  is MobiPerf, an app that is installed only for the smartphone and
+measurement tool, researchers and operators rarely know accurate                                     pings from the smartphone to the server every 0.5 s and uses the
+WiFi latencies in an EWLAN.                                                                          average of 10 pings as a latency result. We assume that WiFi
+   Design of ping2: To obtain more accurate WiFi latency, we                                         latency remains the same during the experiment, and consider the
+develop ping2, a ping based light-weight WiFi latency measure-                                       result of M4 as the ground truth of WiFi latency since the ping
+ment tool. The key idea of how ping2 avoids the additional                                           of that high frequency prevents devices entering energy saving
+delay introduced by the energy saving mode is intuitive. As shown                                    mode [14, 16]. M4 is a more general method to obtain the ground
+in Fig. 2, ping2 runs on a server on the wired network in the                                        truth of WiFi latency than manually turning off the energy saving
+EWLAN, and sends two consecutive pings from the server to a                                          mode of devices, because the later depends on or may even not
+user’s device. The first ping is used to wake up the device. After the                               be supported by devices. We use each method to measure latency
+first ping is returned, the second ping is immediately issued. Since                                 120 times and show their CDFs in Fig. 3. Among these methods,
+the device default active mode time (e.g., about 200 ms for Android                                  M1 (ping2) is the most similar to M4 for different devices, which
+devices [36] and 100 ms for iPhone [35]) is usually longer than the                                  indicates that ping2 can measure WiFi latency more accurately.
+RTT (e.g., in Fig. 4, 98% of RTT is less than 200 ms, and 97% of                                     On the other hand, M3 and M5 introduce extra latency because if
+that is less than 100 ms), the second ping, in most cases, avoids the                                the device is in energy saving mode, it needs several milliseconds
+device’s energy saving mode, and is able to measure WiFi latency                                     to wake up before sending the ping; M2 is even worse because
+more accurately. Thus, the second ping (RTT 2 in Fig. 2) is deemed                                   according to the power saving strategy, waking up a device from the
+as the measured result by ping2. Note that the wired part latency                                    AP side requires waiting for an AP beacon, which can be delayed
+(from the ping2 server to the AP) is negligible because the 99th                                     for as long as a beacon cycle [29], e.g., 100 ms in THU-WLAN.
+percentile of wired part latency is less than 1 ms in THU-WLAN                                          In terms of server overhead, ping2 is extremely light-weight.
+according to our measurement.                                                                        We implement ping2 using C++ multithreading, and run it on
+                                                                                                     an ordinary Linux server (with two Intel E5-2420 CPUs, 32 GB
+                                                                                                     memory, and a gigabit ethernet card). At peak hour, ping2 is
+                                                                                                     capable of measuring the WiFi latency of more than 15,000 online
+                                                                                      PING frame
+
+
+
+
+                      Wired                      Wireless
+ping2        Server           AP                                Mobile Device                        users’ devices using less than 10% CPU utilization and 1MB/s
+                                                                                                     bandwidth (also including the overhead of SNMP data collection).
+ 1st ping                                                                                               In addition, ping2 introduces relatively low and occasional
+                                   Wake up delay of WiFi chip
+                                                                        saving mode
+
+
+
+
+                                                                                                     overhead on the batteries of users’ devices. We conduct A/B tests
+                                                                                      Beacon frame
+                                                                           Energy
+
+
+
+
+                                                                                                     on 6 different pairs of phones in our small testbed. For each pair,
+     RTT 1
+                                                                                                     one is measured by ping2 and the other is not. To evaluate the
+                                                 Wake up delay of CPU                                worst case, that is, let ping2 wake up the phones from the energy
+ 2nd ping
+                                                                                                     saving mode as much as possible, we set all the phones to their
+                                                                                      NULL frame
+                                                                        Active
+                                                                        mode
+
+
+
+
+                                                                                                     factory settings and standby mode, so they are in energy saving
+     RTT 2                                                                                           mode in most cases during the test. We find that ping2 costs
+                                                                                                     at most 7%–10% of the battery volume for different phones in a
+                                                                                                     persistent test of 24 hours (Table 1). In practice, the impact of
+                      Figure 2: Time line of ping2.                                                  ping2 could be much less because users’ phones themselves are
+                                                                                                     not always in energy saving mode. Specifically, they are woken up
+                                                                                                     periodically by the background traffic of mobile apps [49], such
+   We use ping2 to measure the WiFi latency of users’ devices that
+                                                                                                     as the transmission of app logs and keep-alive packets. More
+connect to the EWLAN. In order to obtain a stable latency, we use
+                                                                                                     importantly, ping2 does not have to run all the time. WiFiSeer
+ping2 to measure the latency of each device every 10 seconds and
+                                                                                                     only needs to periodically collect a dataset, e.g., for a week every
+take the average of six measured results in a minute as one WiFi
+                                                                                                     quarter, to build WiFi latency models.
+latency record in the dataset. The IP addresses of the connected
+                                                                                                        In summary, ping2 is an accurate and low-cost tool for mea-
+devices are recorded by the EWLAN and can be obtained from the
+                                                                                                     suring WiFi latencies in a large EWLAN. It also is very general
+SNMP data. To reduce bandwidth cost, ping2 uses ping packets
+                                                                                                     and can be plugged into an operational EWLAN without any
+without any payloads.
+                                                                                                     modifications to the existing APs or users’ devices.
+   Evaluation of ping2: We now evaluate ping2 in terms of its
+accuracy, server overhead, and battery overhead of users’ devices.
+                                                                                                     Table 1: Maximum battery costs of ping2 in a persistent A/B
+In order to validate the accuracy of ping2, we conduct controlled
+                                                                                                     test of of 24 hours.
+experiments on three different types of mobile devices in a small
+testbed. The testbed has an AP, a Linux server connected to the                                            ID   Brand       Model           Battery costs of ping2
+AP in a wired way, and three mobile devices including an Android                                            1   Huawei      Honor 6                             7%
+smartphone (LG Nexus 5), a Windows tablet (Surface Pro 3), and a                                            2   Xiaomi      Mi 4                                8%
+Linux laptop (Lenovo ThinkPad X1 Carbon). The testbed is set up                                             3   Vivo        X5 Pro                              8%
+in an isolated environment where almost no traffic is on the wireless                                       4   Oppo        R7                                  9%
+channel we used. We restore the three devices to their factory                                              5   Samsung     Galaxy Note 3                      10%
+settings such that the devices will not be waken up by additional                                           6   Meizu       MX5                                10%
+installed softwares. Each time, we let only one mobile device
+                         M1 ping2 from server every 10s                            M3 ping from client every 10s            M5 ping from client by MobiPerf
+                         M2 ping from server every 10s                             M4 ping from client every 1ms (baseline)
+             1                                                          1                                                         1
+            0.8                                                        0.8                                                       0.8
+            0.6                                                        0.6                                                       0.6
+      CDF
+
+
+
+
+                                                                 CDF
+
+
+
+
+                                                                                                                           CDF
+            0.4                                                        0.4                                                       0.4
+            0.2                                                        0.2                                                       0.2
+             0                                                          0                                                         0
+                  0.1      1        10         100        1000               0.1      1       10           100      1000               0.1      1          10         100       1000
+                             Latency (ms)                                                Latency (ms)                                             Latency (ms)
+                        (a) Android smartphone                                       (b) Windows tablet                                         (c) Linux laptop
+
+
+                        Figure 3: CDFs of latency measured by different methods. M5 (MobiPerf) is only for the smartphone.
+
+
+2.2         Collecting Related Factors
+                                                                                                             Table 2: Wireless performance related factors.
+   SNMP data is a commonly-used data source for monitoring                                         For Application 2, factors of X1 are used in the first stage of the model, and
+large-scale EWLANs. Most vendors provide a large range of useful                                   factors of X2 are used in the second stage (§5.2).
+SNMP data on their wireless controllers. To avoid causing overload
+of the wireless controllers, WiFiSeer polls the SNMP data once per                                                                                                      Used in app
+                                                                                                      ID Radio factor                        Value range
+                                                                                                                                                                        1   2     3
+minute. The wireless performance related factors we collect are
+                                                                                                      1     Antenna gain                     ≥ 0 dBm                    X         X
+listed in Table 2. They generally fall into three broad categories:                                   2     Noise power                      ≥ -128 dBm                 X         X
+radio factors, protocol factors, and external factors. Table 2 also                                   3     Interference power               ≥ -128 dBm                 X X2 X
+shows the value range of each factor observed in our dataset. The                                     4     Transmit power                   ≥ -1 dBm                   X X2 X
+applications (§4.1) that each factor is used for are also marked.                                     5     #Devices (per radio)             ≥0                         X X2 X
+   Radio factors: Radio factors include typical universal wireless                                    6     Channel utilization              0 – 100%                   X X2 X
+performance metrics of APs and user devices, for example channel                                      7     Interference utilization         0 – 100%                   X X2 X
+                                                                                                      8     Receiver utilization             0 – 100%                   X         X
+utilization, interference utilization, receiver/transmitter utilization,
+                                                                                                      9     Transmitter utilization          0 – 100%                   X         X
+and #devices (per radio).1 See [4] for details of these factors. These                                10    RSSI                             ≥ -128 dBm                 X         X
+radio factors describe the properties of the wireless environment                                     11    SNR                              ≥ -128 db                  X         X
+and may fundamentally affect WiFi latency or be correlated to it.
+   Protocol factors: Protocol factors represent spectrum and fre-                                     ID Protocol factor                     Value range                1   2      3
+quency properties such as the 5 GHz band. Protocol factors can be                                                                            1, 6, 11, 13; 36, 149,
+                                                                                                      12 Channel number                                                     X2 X
+described by radio factors. For example, the 5 GHz band has less                                                                             153, 157, 161, 165
+devices and lower channel utilization. Thus, protocol factors can                                     13 Band                                2.4 GHz, 5 GHz                 X2 X
+                                                                                                      14 Protocol                            802.11a, b, g, n, ac           X2
+be deemed as specific collections of radio factors.
+   External factors: External factors include temporal and spatial                                    ID    External Factor                  Value range                1   2      3
+factors as well as hardware characteristics of APs and user devices.                                  15    AP model                         5 models                              X
+They often affect WiFi latencies indirectly through radio factors.                                    16    WiFi chip manufacture            152 manufactures                      X
+For example, the rush hour implies a high channel utilization and                                     17    Building                         114 buildings                  X1     X
+may cause high WiFi latencies. The five AP models are Cisco                                           18    Building type                    10 types                       X1     X
+AIR-CAP{3602I-C, 702W-C, 3502E-C, 3702I-H, 3502I-C}-K9.                                               19    Day of week                      Mon, Tue, ..., Sun             X1     X
+                                                                                                      10    Time of day                      24 hours                       X1     X
+The WiFi chip manufacturers are derived from the organizationally
+unique identifier (OUI) in the device’s MAC address. The building
+type is derived from the usage of the building: classroom buildings,                               records (up to 500 GB) from more than 47,000 unique devices.
+libraries, dormitories, cafeterias, gyms, administrative buildings,                                To the best of our knowledge, this dataset thus represents a WiFi
+departments, hotels, elementary school, and others. Day of week                                    latency measurement of unprecedented scale. It provides us a
+and time of day are derived from the SNMP data timestamp. Some                                     unique opportunity to understand WiFi latency, and its relationship
+of these external factors, such as the AP models and the buildings,                                to a diverse set of related factors in the wild. There are several high-
+are specific to our THU-WLAN deployment.                                                           level findings that generalize beyond the scope of THU-WLAN:
+                                                                                                   (1) WiFi latency has a long tail; (2) the 5 GHz band is largely
+3.     LARGE-SCALE MEASUREMENT STUDY                                                               underutilized and provides lower latency than 2.4 GHz; (3) AP
+                                                                                                   selection mechanisms are inadequate and not collaborative; (4)
+  We have deployed all components of WiFiSeer in THU-WLAN.                                         Different WiFi chipsets differ greatly in their WiFi latency. We
+Tsinghua campus covers an area of about 4 km2 with more than                                       provide insights into these and other results in this section.
+53,000 students, faculties, and staff. More than 2,700 dual band
+Cisco APs governed by 14 Cisco 5508 wireless controllers provide                                   3.1      Distributions and Relationships
+a dual-band SSID “Tsinghua” in 114 buildings for WiFi access.                                         WiFi latency: Fig. 4 shows the distribution (CDF) of WiFi la-
+We use WiFiSeer to collect one week of data of WiFi latency                                        tency in THU-WLAN. While the median WiFi latency is low (about
+and related factors. Our dataset contains hundreds of millions of                                  3 ms), the 90th percentile is around 20 ms and the 99th percentile
+1
+  Channel utilization is the percentage of time used by all traffic of this channel;               is even more than 250 ms. As mentioned in the introduction,
+interference utilization is the part of channel utilization used by other 802.11 networks          this long tail is critical because it can lead to multiple seconds
+(e.g., rogue APs [52]) on the same channel; receiver/transmitter utilization is the
+percentage of time the AP receiver/transmitter is busy operating on packets; #devices              of application-level or user-perceived latency [15]. For example,
+(per radio) is the number of devices connected to the specific band of the AP.                     according to [53], when last-hop latency increases only 10 ms,
+web page load time will increase hundreds of milliseconds; about                          measures. Interestingly, we notice that these two measures can be
+20 ms last-hop latency can result in about two to three seconds                           conflicting for some factors. For example, RSSI is ranked high for
+of page load time for popular websites (e.g., Google and Yahoo),                          the Kendall score, but its information gain is very low. It means
+a time that is beyond 47% of users’ expectation [19]. Because                             that although RSSI negatively correlates well with WiFi latency, it
+of this multifold amplification of WiFi latencies to user perceived                       does not help in predicting it. The reason for this counter-intuitive
+latencies, the long-tail distribution we observe is alarming.                             result is that 96% of RSSI values concentrate on the range between
+                                                                                          -85 dBm and -45 dBm, where WiFi latency does not change much
+                      1
+                                                                                          with RSSI. These results demonstrate the complex relationships
+                   0.8         EX fast                                                    between WiFi latency and other diverse factors. We will show how
+                   0.6                         fast                                       to systematically model WiFi latency in §4.
+             CDF
+
+
+
+
+                                             slow
+                   0.4
+                                         EX slow
+                                                                                                    Table 4: Correlation and information gain.
+                   0.2
+                                                                                                Radio factor                    Kendall score       Information gain
+                      0                                                                         Channel utilization                    0.886                 0.1708
+                           1             5 10 20      100    1000    10000
+                                                                                                #Devices                               0.799                 0.0355
+                                            Latency (ms)                                        Interference power                     0.489                 0.0629
+                                                                                                RSSI                                  -0.472                 0.0008
+                   Figure 4: WiFi latency distribution.                                         Noise power                            0.230                 0.0336
+                                                                                                Transmit power                        -0.214                 0.0047
+   For better conceptualization, we categorize WiFi latency into
+                                                                                                Antenna gain                           0.200                 0.0081
+four classes based on the end-to-end latency requirements of                                    Interference utilization               0.132                 0.0462
+Internet services (Table 3). With this classification, we see that in                           SNR                                   -0.116                 0.0020
+Fig. 4, about 20% of measured WiFi latencies belong to classes                                  Receiver utilization                   0.075                 0.0294
+slow and EX slow. We also find that on Tsinghua campus,                                         Transmitter utilization               -0.056                 0.0588
+75% of user devices experience at least one unsatisfying episode of
+EX slow WiFi latency for more than one minute in a week. The
+above results demonstrate that high WiFi latency not only exists but                      3.2    Observations
+is also quite common in practice.                                                            Our dataset provides ample material to study WiFi latency. We
+                                                                                          make three important observations, the first one is specific to the
+                    Table 3: Classes of WiFi latency.                                     measurement environment but also representative, and the other
+    WiFi latency class                   Range        Referred Internet service end-      two are due to the protocol implementation.
+    (EX: extremely)                                   to-end latency requirement             5 GHz has lower latency: On Tsinghua campus, the average
+    EX fast                       < 5 ms              Online gaming [33]                  WiFi latency of 5 GHz is 35% lower than that of 2.4 GHz.
+    fast                        6 – 10 ms             Online collaborative show [28]      Furthermore, Fig. 5(a) also shows that the WiFi latency distribution
+    slow                       11 – 20 ms             Quick Web surfing [53]              in 5 GHz is better. A potential reason is that only half as many
+    EX slow                      > 20 ms              -                                   devices use 5 GHz than 2.4 GHz, and thus channel utilization in
+                                                                                          5 GHz is much lower (Fig. 5(b)). This observation is consistent
+   Related factors: Fig. 6 shows the distribution (left Y-axis) of                        with [26]. See §5.2 for how we improve WiFi latency using 5 GHz
+some factors.2 The numeric factors are binned by 1 unit (e.g., 1%                         in THU-WLAN.
+and 1 dBm). Our dataset includes a wide variety of factors (radio
+and environmental factors, protocol parameters, etc.). The results                                           1
+present a subset of these values that are of interest with regard to                                      0.8
+WiFi latency. For example, the median of interference power is                                            0.6
+                                                                                                    CDF
+
+
+
+
+less than -80 dBm; noise power is under -80 dBm in most cases; the
+                                                                                                          0.4
+median of #devices (per radio) is below 5; the median of channel,
+                                                                                                          0.2                             2.4GHz
+interference, and receiver/transmitter utilization is below 30%, 5%,                                                                        5GHz
+and 10%, respectively; the median of RSSI and SNR of devices are                                             0
+-66 dBm and 29 db; 802.11n is the dominant protocol.                                                                 1      5 10 20     100        1000   10000
+   Relationship to WiFi Latency: To understand the qualitative                                                                  Latency (ms)
+relationship between WiFi latency and the above related factors,                                                            (a) WiFi latency
+we also plot the average WiFi latency against (binned) values of
+each factor (right Y-axis of Fig. 6). The trends visually confirm                                           1
+that some factors, such as channel utilization, correlate with                                            0.8
+WiFi latency well. To quantify these relationships, we consider
+                                                                                                          0.6
+                                                                                                    CDF
+
+
+
+
+two common measures: the Kendall rank correlation coefficient
+(Kendall score for short) and the information gain. These two                                             0.4
+                                                                                                          0.2                            2.4GHz
+measures are complementary [41]. While the Kendall score                                                                                   5GHz
+quantifies the monotone relationships (increasing or decreasing),                                           0
+the information gain quantifies how well we can predict WiFi                                                     0         20      40       60      80     100
+latency if we know a factor. Table 4 shows the results for the                                                           Channel utilization (%)
+radio factors whose values are numeric. The factors are sorted                                                           (b) Channel utilization
+in descending order of the absolute Kendall scores. We see that
+channel utilization is the most important factor, ranked first for both                                      Figure 5: 5 GHz vs. 2.4 GHz.
+2
+ Due to the limitation of space, we only show 11 radio factors, 3 protocol factors, and
+one external factor (time of day) .
+                1                                                                      40                                     0.2                                                          150                                    0.5                                                   50                                  0.6                                                       25
+
+              0.8                                                                                                                                                                          120                                    0.4                                                   40                                  0.5                                                       20
+
+
+
+
+                                                                                            Latency (ms)
+
+
+
+
+                                                                                                                                                                                                     Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                                                             Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                           Latency (ms)
+                                                                                       30                                  0.15
+   Fraction
+
+
+
+
+                                                                                                                Fraction
+
+
+
+
+                                                                                                                                                                                                                       Fraction
+
+
+
+
+                                                                                                                                                                                                                                                                                                                 Fraction
+                                                                                                                                                                                                                                                                                                                            0.4
+              0.6                                                                                                                                                                          90                                     0.3                                                   30                                                                                            15
+                                                                                       20                                     0.1                                                                                                                                                                                           0.3
+              0.4                                                                                                                                                                          60                                     0.2                                                   20                                                                                            10
+                                                                                                                                                                                                                                                                                                                            0.2
+                                                                                       10                                  0.05
+              0.2                                                                                                                                                                          30                                     0.1                                                   10                                  0.1                                                       5
+
+                0                                                                      0                                        0                                                          0                                        0                                                   0                                     0                                                       0
+                          0         1         2     3         4    5        6    7                                                  ‐128 ‐113 ‐100            ‐80         ‐60        ‐45                                                ‐128        ‐101       ‐80    ‐60    ‐40 ‐30                                              ‐1       2        5        8   11   14   17   20
+                                    Antenna gain (dBm)                                                                                         Noise power (dBm)                                                                             Interference power (dBm)                                                                   Transmit power (dBm)
+                                            (a)                                                                                                       (b)                                                                                               (c)                                                                                      (d)
+           0.16                                                                        1200                                0.08                                                            160                                    0.5                                                   400                                   1                                                       60
+
+                                                                                                                                                                                                                                  0.4                                                                                       0.8
+
+
+
+
+                                                                                                       Latency (ms)
+
+
+
+
+                                                                                                                                                                                                     Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                                                                  Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                           Latency (ms)
+           0.12                                                                        900                                 0.06                                                            120                                                                                          300
+Fraction
+
+
+
+
+                                                                                                         Fraction
+
+
+
+
+                                                                                                                                                                                                                       Fraction
+
+
+
+
+                                                                                                                                                                                                                                                                                                                 Fraction
+                                                                                                                                                                                                                                                                                                                                                                                      40
+                                                                                                                                                                                                                                  0.3                                                                                       0.6
+           0.08                                                                        600                                 0.04                                                            80                                                                                           200
+                                                                                                                                                                                                                                  0.2                                                                                       0.4
+                                                                                                                                                                                                                                                                                                                                                                                      20
+           0.04                                                                        300                                 0.02                                                            40                                                                                           100
+                                                                                                                                                                                                                                  0.1                                                                                       0.2
+
+                0                                                                      0                                        0                                                          0                                        0                                                   0                                     0                                                       0
+                    0                    50             100        150           200                                                  0        20      40         60      80         100                                                  0          20        40      60         83                                              0                     10            20        30
+                                                  #Devices                                                                                Channel utilization (%)                                                                       Interference utilization (%)                                                                  Receiver utilization (%)
+                                                     (e)                                                                                            (f)                                                                                              (g)                                                                                         (h)
+                1                                                                      100                                 0.05                                                            60                                  0.05                                                     300                                 0.3                                                       20
+
+              0.8                                                                      80                                  0.04                                                            50                                  0.04                                                     240
+                                                                                                 Latency (ms)
+
+
+
+
+                                                                                                                                                                                                Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                                                                  Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                           Latency (ms)
+                                                                                                                                                                                                                                                                                                                                                                                      15
+                                                                                                                                                                                           40                                                                                                                               0.2
+   Fraction
+
+
+
+
+                                                                                                                Fraction
+
+
+
+
+                                                                                                                                                                                                                    Fraction
+
+
+
+
+                                                                                                                                                                                                                                                                                                                 Fraction
+              0.6                                                                      60                                  0.03                                                                                                0.03                                                     180
+                                                                                                                                                                                           30                                                                                                                                                                                         10
+              0.4                                                                      40                                  0.02                                                                                                0.02                                                     120
+                                                                                                                                                                                           20                                                                                                                               0.1
+                                                                                                                                                                                                                                                                                                                                                                                      5
+              0.2                                                                      20                                  0.01                                                            10                                  0.01                                                     60
+
+                0                                                                      0                                        0                                                          0                                        0                                                   0                                     0                                                       0
+                       0            15        30    45        60       75        98                                                 ‐128        ‐97         ‐70     ‐50    ‐30       ‐12                                             ‐128      ‐80    ‐40       0     40    80    127                                             1    6       11    13      36 149 153 157 161 165
+                    Transmitter utilization (%)                                                                                                     RSSI (dBm)                                                                                             SNR (dB)                                                                             Channel number
+                                (i)                                                                                                                     (j)                                                                                                   (k)                                                                                     (l)
+                1                                                                      20                                       1                                                          20                                     0.1                                                   20
+
+              0.8                                                                                                             0.8                                                                                              0.08                                                                                                                 Latency
+                                                                                            Latency (ms)
+
+
+
+
+                                                                                                                                                                                                Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                                                             Latency (ms)
+                                                                                       15                                                                                                  15                                                                                           15
+                                                                                                                                                                                                                                                                                                                                                    (categorical factors)
+   Fraction
+
+
+
+
+                                                                                                                   Fraction
+
+
+
+
+                                                                                                                                                                                                                    Fraction
+              0.6                                                                                                             0.6                                                                                              0.06
+                                                                                       10                                                                                                  10                                                                                           10                                                          Latency
+              0.4                                                                                                             0.4                                                                                              0.04                                                                                                                 (numeric factors)
+                                                                                       5                                                                                                   5                                                                                            5
+              0.2                                                                                                             0.2                                                                                              0.02                                                                                                                 Fraction
+
+                0                                                                      0                                        0                                                          0                                        0                                                   0
+                                    2.4GHz                         5GHz                                                                    a          ac           g             n                                                       0      4          8     12    16    20   23
+                                                    Band                                                                                       Protocol (802.11)                                                                                      Hour of day
+                                                     (m)                                                                                              (n)                                                                                                 (o)
+
+
+
+Figure 6: Distribution of factors, and their relationships with WiFi latency. Some peaks of latency are caused by the lack of enough
+latency data for corresponding factor values.
+
+
+                                                                                             Latency (ms)
+                                                                   10           20     30                  40                 50      60       70      80                                                                                    Table 5: Major WiFi chip manufacturers in Tsinghua.
+                                                                                                                                                                                                                                                 WiFi chip                                                                             Latency (ms)
+                                                                                                                                                                                                                                                                             #Devices
+                                   100                                                                                                                                                                                                         manufacturer                                                      Mean                   Median 90th -%ile
+                    Latency (ms)
+
+
+
+
+                                    80                                                                                                                                                                                                         Intel                               1153                           9.63                     3.53     15.15
+                                    60                                                                                                                                                                                                         Xiaomi                              2626                          11.58                      3.8     16.56
+                                    40                                                                                                                                                                                                         Apple                              21210                          12.88                     3.31     18.57
+                                    20                                                                                                                       ‐80                                                                               HonHai                               848                          13.75                     3.36     18.84
+                                     0                                                                                                              ‐70                                                                                        Samsung                             3735                          14.52                     4.02     20.08
+                                          90 80 70                                                                                         ‐60
+                                                   60 50 40                                                                                                                                                                                    Huawei                              2536                          17.16                     4.54     27.21
+                                                            30 20 10                                                            ‐50                 RSSI (dBm)
+                                                                     0                                                                                                                                                                         Meizu                               1061                          43.83                     4.28     131.3
+                                         Channel utilization (%)
+
+                Figure 7: Joint effect of RSSI and channel utilization.
+
+
+   AP selection mechanisms are inadequate and not collabora-                                                                                                                                                                      achieve low latency. Interestingly, we also find that AP vendors
+tive: Given the above findings, we find that, surprisingly, dual-                                                                                                                                                                 such as Cisco provide a mechanism (which is also used in THU-
+band devices (supporting both 2.4 GHz and 5 GHz) are 1.6× more                                                                                                                                                                    WLAN) to direct dual-band devices to the 5 GHz band by delaying
+frequent than single-band devices (supporting only 2.4 GHz), and                                                                                                                                                                  probe responses of 2.4 GHz to make 5 GHz more attractive [11].
+over 50% of the dual-band devices connected to 2.4 GHz. A natural                                                                                                                                                                 However, our measurement shows that device vendors do not
+question is that since 5 GHz provides a lower WiFi latency, why                                                                                                                                                                   collaborate well with this ad hoc mechanism, because a user device
+are dual-band devices nevertheless connecting to 2.4 GHz? The                                                                                                                                                                     can still discover the 2.4 GHz of APs by listening to their beacons,
+reason is that the device AP selection heavily depends on RSSI,                                                                                                                                                                   leading to crowded 2.4GHz and little-utilized 5GHz bands.
+and since 5 GHz signals attenuate faster, devices are biased towards                                                                                                                                                                 WiFi chipsets are not equal: Table 5 shows the WiFi latency
+2.4 GHz [26]. In contrast, RSSI is not a very important factor for                                                                                                                                                                of the major WiFi chip manufacturers that have more than 800
+WiFi latency: good RSSI does not guarantee low WiFi latency.                                                                                                                                                                      devices in our dataset, sorted by the mean of their WiFi latency.
+For example, Fig. 7 shows that RSSI has a trivial effect on WiFi                                                                                                                                                                  We notice that these manufacturers differ a lot in the tail part (90th
+latency when channel utilization is low. Moreover, when channel                                                                                                                                                                   percentile). It is interesting to note that in addition to radio factors,
+utilization exceeds 50%, even high RSSI (e.g., -50dBm) cannot                                                                                                                                                                     device factors also potentially impact WiFi Latency.
+4.    MODELING METHODOLOGY                                                                             60
+   The measurements in the previous section show that many fac-
+
+
+
+
+                                                                                            SNR (dB)
+tors impact WiFi latency. In this section, we present how WiFiSeer                                     40
+builds more comprehensive WiFi latency models based on machine
+learning for three representative applications (§6 discusses some                                      20
+other applications.).
+                                                                                                           0
+                                                                                                           ‐100          ‐80          ‐60         ‐40
+4.1    Applications and Challenges                                                                                         RSSI (dBm)
+   Applications: We begin by describing the model requirements
+of the three applications in WiFiSeer: (a) Application 1 is to
+systematically understand how radio factors affect WiFi latency in               Figure 8: Interdependency between SNR and RSSI.
+EWLAN, i.e., which combination(s) of factors impact WiFi latency
+and how? (b) Application 2 is to help operators diagnose high WiFi       WiFi latency as a function of the related factors3 . These models can
+latency in the EWLAN by locating where and when WiFi latency             be used to explain or predict WiFi latencies based on the related
+is high, and then identifying potential impact factors that operators    factors. All models are built offline using the dataset in §3.
+can take action to improve. (c) Application 3 is to associate user          We need to be careful when choosing machine learning algo-
+devices to low-latency APs by predicting WiFi latency based on           rithms. The algorithms should be able to not only tackle the
+readily-available factors.                                               complex relationship and the interdependencies, but also satisfy
+   All the three applications need effective models to characterize      the different requirements of the applications (Table 6). We
+the relationship between WiFi latency and different factors. How-        conducted some pilot experiments on commonly used machine
+ever, they differ significantly in their requirements with respect       learning algorithms, including k-nearest neighbor (KNN), sup-
+to the models (Table 6). First, the model usages are different.          porting vector machine (SVM), naive Bayes, neural networks,
+The first two applications both aim at providing human-readable          decision trees, and random forests (see [13] for details). We
+insights, thus they need the models to be intuitive enough to            use these algorithms to do binary classification on our dataset
+interpret rather than black boxes; in contrast, the third application    (slow/EX slow WiFi latency as one class and fast/EX fast
+merely needs the model to predict WiFi latency as accurately             WiFi latency as the other class). The dataset is undersampled to
+as possible. Secondly, the applications make use of different            deal with the imbalanced class problem [38]. The main idea is
+related factors. While Application 1 is interested in radio factors,     to randomly remove a part of majority class data to make classes
+Application 2 cares mostly about environmental factors such as           balanced. We evaluate the classification accuracy using precision-
+temporal and spatial factors, since they provide specific locations      recall curves [38]. Fig. 9 shows that random forests outperform
+and times for troubleshooting. Besides, because AP selection             other algorithms by achieving higher recall ( # of #reported   true positives
+                                                                                                                                of true positives
+                                                                                                                                                       )
+happens before a device connects to a certain AP, Application            for the same precision ( # of# ofreported true positives
+                                                                                                            reported positives
+                                                                                                                                  ). As a result, we select
+3 cannot use factors that are only available after the connection        random forests to build the predictive model for Application 3. In
+is established. Finally, the applications focus on different WiFi        addition, we find that among these learning algorithms, decision
+latency ranges. Application 2 is to diagnose high WiFi latency,          trees have a unique advantage of being easy to interpret and also
+Application 3 seeks to find low WiFi latency APs, and Application        reasonably accurate. Thus, we select decision trees to build the
+1 pays attention to both.                                                descriptive models for Application 1 and Application 2.
+   Motivated by these considerations, rather than building a single
+unified WiFi latency model, we argue that the model should be                                      1
+tailored for the specific application.                                                                                                      Random forest
+                                                                                                                                            Decision tree
+   Challenges: However, modeling WiFi latency imposes several                               0.9                                             Neural network
+challenges: First, the relationships between WiFi latency and                                                                               Naive Bayes
+                                                                                Precision
+
+
+
+
+related factors are complex. As mentioned in §3.1, these rela-                              0.8                                             KNN
+                                                                                                                                            SVM
+tionships are non-linear, or even non-monotonic. As a result,
+                                                                                            0.7
+simple approaches such as linear regression that assume a linear
+or monotonic relationship are unlikely to work. Secondly, various                           0.6
+factors are naturally interdependent of each other. For example,
+Fig. 8 visually shows that SNR and RSSI are highly correlated;                              0.5
+Fig. 5(b) shows that channel utilization is quite different in 2.4 GHz                                 0     0.2   0.4    0.6   0.8     1
+and 5 GHz. With such subtle interdependencies, the individual                                                      Recall
+relationship could be a combined effect of several factors. Finally,
+the distribution of WiFi latencies is highly skewed. For instance,       Figure 9: Comparing different machine learning algorithms
+Fig. 4 shows that high WiFi latency is much rarer. Modeling such         (Y-axis starts from 0.5).
+imbalanced data often has biases (e.g., ignoring high WiFi latency),
+and thus are less representative [38].                                      Table 7 summarizes the model and its configuration for each
+                                                                         application. To determine a proper parameter setting for each
+                                                                         model, we use 10-fold cross-validation to select the parameter
+4.2    Machine Learning Algorithms                                       setting that best achieves the goal of the model. We describe these
+   To address the challenges outlined above, WiFiSeer uses super-        models and how they are used for each application in §5.
+vised machine learning based methods to model WiFi latency. At           3
+                                                                           We also test regression models (e.g., regression trees) in our pilot experiments, but its
+a high level, we begin by categorizing WiFi latency into different       accuracy is low. Moreover, classification models are often more straightforward and
+classes (§3.1), and then build classification models to express the      usable for practitioners [24, 25, 54].
+                                     Table 6: Requirements of WiFi latency models for different applications.
+                                           Application 1                               Application 2                                Application 3
+                                Understanding effects of radio factors          Diagnosing high WiFi latency                 Selecting a low-latency AP
+         Model usage          Intuitive descriptive model                   Intuitive descriptive model                Accurate predictive model
+         Factors interested                                                 Environment-specific factors and factors   Factors that are available before devices
+                              Industry-standard radio factors
+         in (see Table 2)                                                   actionable for operators                   connect to APs.
+         The WiFi latency
+                              Both high and low latency                     High latency                               Low latency
+         interested in
+
+
+
+
+                        Table 7: Configurations and performance of WiFi latency models for different applications.
+                                       Model 1 for Application 1                  Model 2 for Application 2                  Model 3 for Application 3
+         Modeling method      Decision tree                                 Decision trees                             A random forest
+         Classification &     Multiclass classification:                    Binary classification:                     Binary classification:
+         Classes              1. EX slow                                    1. EX slow                                 1. slow/EX slow
+         (see Table 3)        2. slow                                       2. not EX slow                             2. fast/EX fast
+                              3. fast
+                              4. EX fast
+         Factors used         Column 4 in Table 2                           Column 5 in Table 2                        Column 6 in Table 2
+         How to solve im-
+                              Undersampling                                 Adjust the decision threshold              Undersampling
+         balanced data
+                                                                            Achieving acceptable precision of class    Achieving high precision of class 2 and
+         Model goal           Maximizing accuracy
+                                                                            1 and maximize recall of class 1           maximize recall of class 2
+         Performance          Accuracy = 0.42 (multiclass classification)   Precision = 0.59, recall = 0.64 (median)   Precision=0.76, recall=0.67
+
+
+
+
+5.    APPLICATIONS                                                                     the leftmost slow node occurs where channel utilization is ≤ 22.5
+   Based on the three models we build in §4, WiFiSeer provides                         and #devices > 35.5. Previous studies suggest that this is caused
+three applications to characterize and improve WiFi latency in                         by the local contention problem: a large number of concurrent
+large-scale operational networks.                                                      senders increase the data collision probability and the backoff
+                                                                                       waiting time, and decrease the achievable channel utilization [27,
+                                                                                       40]. Besides, each device has to wait for its turn to receive the
+5.1    App 1: Understanding Radio Factors                                              data from the AP. The waiting time becomes long when the AP is
+   To understand the effects of the 11 radio factors on WiFi latency,                  connected by many devices.
+we build a decision tree (Fig. 10) for the four WiFi latency classes.                     Third, for SNR, we find that the split points of SNR nodes in the
+The specific configuration is shown in the second column of                            decision tree are from 21.5 dB to 25.5 dB. This suggests that SNR
+Table 7. The tree has an accuracy of 0.42, which is reasonable for                     less than 20 dB is low, and could impact WiFi latency. Specifically,
+multiclass classification [25]. Fig. 10 shows that among all the 11                    the fading and noise problem increases the bit error rate and thus
+radio factors, only 4 factors appear in the decision tree. Intuitively,                increases the MAC layer frame retry times; or decreases the PHY
+because the decision tree puts important factors near the root to                      rate and thus increases the transmission time, which both in turn
+better classify the data, factors close to the root has more effect                    inflate the WiFi latency.
+on WiFi latency than factors close to the leaves, than factors not                        The above observations and the tree model characterize how
+appearing in the tree. In particular, we find that channel utilization                 radio factors affect WiFi latency in a typical large-scale EWLAN,
+and #devices (in the top three levels of the decision tree) are the two                and can help further evaluations on the inherent trade-offs in the
+most important radio factors for characterizing WiFi latency. On                       design of protocols and hardware.
+the other hand, SNR and the transmit utilization only take effect on
+lower-level branches, e.g., when channel utilization > 47.5% and
+#devices ≤ 11.5. Other radio factors that do not show up in the                        5.2        App 2: Diagnosing High WiFi Latency
+decision tree play a relatively less important role for WiFi latency.                     For diagnosing high WiFi latency, we consider a binary classi-
+   The decision tree also shows the thresholds of how these radio                      fication (EX slow and not EX slow) since the operators (e.g.,
+factors affect WiFi latency. These thresholds quantitatively de-                       those we worked with) care more about EX slow cases. In the
+scribe conditions in which typical wireless problems are likely to                     diagnosis, the time and place is important because operators need
+occur. The main takeaways are as follows:                                              to know when and where high WiFi latency is likely to occur so
+   First, for channel utilization, the EX slow class only ap-                          that they can take further actions, such as troubleshooting in the
+pears when channel utilization > 47.5%, and the EX fast class                          field. However, since the decision tree does not guarantee that these
+only appears when it ≤ 47.5%. Therefore, channel utilization                           factors appear, we use a two-stage method in Application 2.
+greater than 47.5% can be deemed as the heavy load problem.                               We first split the data based on the combinations of temporal
+The decision tree suggests that the heavy load problem is a key                        factors (time of day and day of week) and spatial factors (buildings
+cause of EX slow WiFi latency, and should be avoided if one                            and building types). In order to provide high-level results, we
+wants to achieve EX fast WiFi latency. The threshold 47.5%                             categorize the time of day into six meaningful intervals: morning
+quantitatively confirms previously suggested rules-of-thumb that                       (08:00 – 11:00), lunch (11:00 – 13:00), afternoon (13:00 – 17:00),
+channel utilization should be kept under 50% for good WiFi                             dinner (17:00 – 19:00), evening (19:00 – 22:00), sleep (22:00 –
+performance [5, 21].                                                                   08:00); day of week into two types: weekdays and weekends.
+   Second, we observe that even when channel utilization is very                       We define a problem time and place as any spatial-temporal
+low, a large #devices can still impact WiFi latency. For example,                      combination whose 1) data is more than 0.1% of the total and
+                                                                                                    Channel
+                                                                                                    utilization
+
+                                                                                           <=47.5                            >47.5 (Heavy load)
+
+                                                               Channel
+                                                                                                                                     #Devices
+                                                               utilization
+
+                                              <=22.5                 >22.5                                                                  <=11.5              >11.5
+
+                                                                                                                                     Channel                               Channel
+              #Devices                                         #Devices
+                                                                                                                                     utilization                           utilization
+
+            <=22.5 >22.5                                        <=12.5 >12.5                                                         <=69.5 >69.5                               <=66.5     >66.5
+
+  EX fast                                                                                                                                    Channel                                       EX slow
+              #Devices                                    SNR         #Devices                                                   SNR                                       #Devices
+ (46.54%)                                                                                                                                    utilization                                   (60.93%)
+
+            <=35.5 >35.5 (Local contention)      <=24.5 >24.5                <=19.5   >19.5                                  <=21.5 >21.5          <=76.5 >76.5                 <=22.5     >22.5
+
+  EX fast       slow            Channel                Channel           fast         Channel                 Transmit            fast                       EX slow         slow          EX slow
+                                                                                                                                               SNR
+ (31.11%)     (33.12%)          utilization            utilization    (36.10%)        utilization             utilization      (38.26%)                      (46.60%)      (38.39%)        (49.81%)
+
+                              <=37.5 >37.5               <=34.5 >34.5                   <=34.5 >34.5              <=0.5      >0.5                  <=25.5 (Fading and noise) >25.5
+
+                    EX fast        fast          EX fast            fast           fast          slow           fast            slow         EX slow                              slow
+                   (29.16%)     (34.68%)        (44.08%)         (32.72%)       (33.65%)       (39.87%)      (32.54%)         (37.91%)       (39.83%)                           (36.76%)
+
+
+
+Figure 10: Decision tree for modeling the effects of radio factors on WiFi latency. The percent of the major class in the node is shown.
+
+
+    Table 8: Examples: problem time and places of 6Jiao.
+                                                                                                                                Channel utilization
+   Building-Building Type-Day-Time                     %[EX slow]             %Data
+   6Jiao-Classroom-Weekday-Morning                           36%              0.80%
+                                                                                                                                     <=50.5          >50.5
+   6Jiao-Classroom-Weekday-Afternoon                         35%              0.82%
+   6Jiao-Classroom-Weekday-Evening
+                                                                     51%       0.28%                                        not EX slow
+   (Its decision tree is shown in Fig. 11)                                                                                                     Channel utilization
+                                                                                                                            (29%,48%)
+   6Jiao-Classroom-Weekend-Morning                                   33%       0.13%
+
+                                                                                                                                                      <=66.5 >66.5
+
+2) %[EX slow] (percentage of EX slow) is significantly high
+(≥1.5× the global %[EX slow] [41]). The global %[EX slow]                                                                                 #Devices             #Devices
+is about 10% in THU-WLAN (Fig. 4). In this way, we found 92
+problem time and places out of 1368 on Tsinghua campus. For                                                                          <=41.5 >41.5                  <=13.5      >13.5
+example, Table 8 shows the problem time and places regarding a
+classroom building named 6Jiao (the sixth classroom building, also                                                 not EX slow             EX slow           not EX slow           EX slow
+the largest one in Tsinghua).                                                                                      (50%,14%)              (79%,6%)            (59%,6%)           (83%,26%)
+   Then, for each problem time and place, we build a decision tree
+(that is, 92 decision trees in total) based on factors that operators                                  Figure 11: Decision tree for the problem time and place “6Jiao-
+can possibly take action on to affect latencies. The specific                                          Classroom-Weekday-Evening”. A tuples in a leaf node means
+configuration of the decision trees is shown in the third column of                                    ( EX slow  data in the node
+                                                                                                                                   , data in the node
+                                                                                                                                                      ). Bold paths represent two
+                                                                                                             data in the node        data in the tree
+Table 7. Overall, the median precision and recall of those decision                                    high WiFi latency conditions.
+trees are 0.59 and 0.64, respectively.
+   A decision tree identifies a high WiFi latency condition as the
+combination of the factors and their values on the path from the                                       Table 9: Prevalent patterns of high WiFi latency conditions that
+root to an EX slow node. For example, Fig. 11 shows the decision                                       appear in more than five problem time and places.
+tree of the problem time and place “6Jiao-Classroom-Weekday-
+Evening”. The two high WiFi latency conditions, represented by                                               High WiFi latency condition pattern                                         Frequency
+two bold paths, are “channel utilization > 66.5% and #device >                                               Channel utilization > x and #devices > y                                        21
+13.5” and “50.5% < channel utilization ≤ 66.5% and #device                                                   Channel utilization > x                                                         18
+> 41.5”. As such, the operators should focus their efforts on                                                #Devices > x                                                                    11
+investigating and solving the heavy load and local contention                                                Channel utilization > x and #devices ≤ y                                         8
+                                                                                                             Channel utilization > x and y < #devices ≤ z                                     8
+problems in the weekday evening of 6Jiao.
+                                                                                                             #Devices > x and y < channel utilization ≤ z                                     6
+   Table 9 shows the prevalent patterns of high WiFi latency                                                 Interference power > x and #devices > y                                          6
+conditions, that is, ignoring the specific factor values in the                                              Interference power > x and channel utilization > y
+conditions. We see that high channel utilization, a large number of                                                                                                                         6
+                                                                                                             and #devices ≤ z
+devices, and high interference power are the three dominant factors
+across the high WiFi latency conditions in THU-WLAN.
+   Practical solutions: To solve those common issues, we have                                          between WiFi latency and WiFi metrics is complex (Fig. 6), and
+deployed two solutions in practice to optimize the WiFi latency                                        the default RSSI-based AP selection cannot assure low latency
+in THU-WLAN. First, we intend to guide more dual-band user                                             (§3.1). To solve this problem, WiFiSeer provides machine learning
+devices to connect to the 5 GHz to avoid high WiFi latency                                             based latency-oriented AP selection, called AGE (Associating to
+conditions, because the 5 GHz band has fewer devices and lower                                         Good Enterprise APs), to help devices associate to low-latency
+channel utilization (Fig. 5(b)), and thus can provide lower latency                                    APs nearby. AGE controls the AP association of user devices by
+(Fig. 5(a)). To this end, we add a 5 GHz only SSID “Tsinghua-5G”                                       a mobile app we developed, so that AGE can be easily deployed
+in addition to the original dual-band SSID “Tsinghua”. This gives                                      without any changes to device OS/drivers or AP firmware. AGE
+a chance for the owners of dual-band devices to manually select the                                    has already been deployed in THU-WLAN and is used daily by
+5 GHz band, which in turn solves the aforementioned problem that                                       over 1,000 user devices. The deployment shows that AGE reduces
+the default band selection of devices is biased towards 2.4 GHz.                                       WiFi latency substantially (shows later).
+The number of user devices connected to “Tsinghua-5G” keeps                                               Design of AGE: Fig. 13 shows the high-level overview of AGE.
+growing and hit 6,000 at the end of Oct. 2015. We find that, on                                        It contains two main components: the AGE helper app installed
+average, the WiFi latency of “Tsinghua-5G” is 22% lower than that                                      on user devices to associate devices to the AP selected; the AGE
+of the original SSID “Tsinghua”.                                                                       controller which uses WiFi latency Model 3 (a random forest) to
+   Second, we propose a dense AP deployment solution to avoid                                          predict WiFi latencies of APs around a device based on readily-
+high WiFi latency conditions, and deploy this solution in Dorm#31.                                     available WiFi factors from the SNMP data. Model 3 is built offline
+In particular, for 78 rooms from the 1st floor to the 4th floor                                        with the historical dataset (last column of Table 7). Its precision
+in Dorm#31, we deploy one AP in each room in which live                                                and recall are 0.76 and 0.67, respectively. Note that, to avoid
+three students. Such dense deployment significantly reduces the                                        battery overhead for devices, AGE does not use ping2 to measure
+number of devices per radio. Besides, the channel and the power                                        WiFi latency of devices. WiFiSeer only uses ping2 for infrequent
+of each AP are also well-engineered to mitigate the interference                                       historical data collection, not for online AGE prediction.
+among APs, and no ethernet ports are available in the rooms so
+that the interference of rogue APs can be eliminated as much as
+possible. Compared with other dorms with regular AP deployment                                                              ...
+on Tsinghua campus — e.g., Dorm#17 where two students live in                                           AP 1      AP 2             AP n
+a room and about 10 rooms share one AP — the AP in Dorm#31                                                           Re-associate to
+                                                                                                                     the specified AP             SNMP
+has fewer devices, less interference, lower channel utilization, and                                                 (if not Null)
+thus lower WiFi latency as shown in Fig. 12(a-d). On average, our                                                                                           Get AGE factors of each AP
+dense AP deployment improved WiFi latency by 36%.                                                                         AGE request
+                                                                                                                                                                  AGE factors
+                                                                                                                          (with an AP list)
+        1                                                 1                                                AGE app                               AGE                                Model 3
+                                                                                                                                               Controller
+      0.8                                               0.8                                                                 Specified AP                        Predicted latency
+                                                                                                                            (may be Null)                       class for each AP
+      0.6                                               0.6
+CDF
+
+
+
+
+                                                  CDF
+
+
+
+
+      0.4                                               0.4                                              User Device                                              Server
+      0.2                         Dorm#17                                           Dorm#17
+                                                        0.2
+                                  Dorm#31                                           Dorm#31
+        0                                                                                                                         Figure 13: AGE overview.
+            1                10             100                1               10               100
+                          #Devices                             Interference utilization (%)
+                             (a)                                            (b)                           In particular, AGE works as follows:
+        1                                                 1
+                Dorm#17                                                                                   Step 1: When a device is connected to the EWLAN, the AGE
+      0.8                                               0.8
+                Dorm#31                                                                                app periodically4 sends an AGE request with a list of nearby APs it
+      0.6                                               0.6
+                                                                                                       scanned to the AGE controller.
+CDF
+
+
+
+
+                                                  CDF
+
+
+
+
+      0.4                                               0.4
+                                                                                                          Step 2: For the APs in the list, the AGE controller collects their
+      0.2                                               0.2                         Dorm#17
+                                                                                    Dorm#31            related factors (last column of Table 2) from the SNMP data, called
+        0                                                 0
+            1                10             100               0.1   1     10        100   1000 10000
+                                                                                                       AGE factors here.
+                 Channel utilization (%)                                Latency (ms)                      Step 3 & 4: Based on those AGE factors, Model 3 generates the
+                           (c)                                               (d)                       likelihood that an AP is fast/EX fast or slow/EX slow.
+                                                                                                       Then, the AP is classified as fast/EX fast or slow/EX slow
+Figure 12: Dense AP deployment (Dorm#31) vs. regular AP                                                if the likelihood is higher than 0.6; otherwise, the AP is deemed as
+deployment (Dorm#17).                                                                                  not sure. We use 0.6 as the threshold because it best achieves
+                                                                                                       the goal of Model 3 (Table 7) in offline 10-fold cross-validation.
+                                                                                                          Step 5: With the classification results of Model 3, the AGE
+5.3             App 3: Selecting a Low-Latency AP                                                      controller decides whether the device should re-associate to another
+   An EWLAN often deploy many APs to improve WiFi availabil-                                           AP instead of the current one. Specifically, if the current connected
+ity and support device roaming. Therefore, a user device typically                                     AP is predicted as slow/EX slow, and there exists at least
+hears multiple APs in its vicinity [43], e.g., user devices can hear                                   one nearby AP being predicted as fast/EX fast, the AGE
+on average 5 APs in THU-WLAN at the same time. However,                                                controller will respond with the AP that has the highest likelihood
+deciding which AP to associate to for low latency is a challenging                                     of fast/EX fast; otherwise, the AGE controller returns Null.
+task because neither the device nor ping2 can measure WiFi                                                Step 6: The AGE app re-associates the device to the specified AP
+latency before the device associates to an AP. Thus, one needs                                         (if not Null) by modifying the device WiFi configurations (e.g.,
+to select a low-latency AP based on other WiFi metrics that are                                        using the Android APIs [8]).
+measurable and available before the connection being established,                                      4
+                                                                                                         For our deployment, the interval is set to 5 minutes when the device screen is on, and
+such as RSSI and channel utilization. However, the relationship                                        20 minutes when it is off.
+                                                                                    1                                        1                                     1
+                                                                                          0.93
+                                    B: Latency before re‐associations                                                             B‐A
+     Avg latency (ms)    1000
+                                    A: Latency after re‐associations
+                                                                                  0.8                                      0.8                                   0.8
+                                                                                                                                                                           0.72
+                                                                                  0.6                                      0.6                                   0.6
+                          100
+
+
+
+
+                                                                            CDF
+
+
+
+
+                                                                                                                     CDF
+
+
+
+
+                                                                                                                                                           CDF
+                                                                                          0.47
+                                                                                  0.4                                      0.4                                   0.4
+                           10                                                                              B
+                                                                                  0.2                                      0.2                                   0.2
+                                                                                                           A                                7.5 51                                      A/B
+                            1                                                       0                                        0                                     0
+                                0        0.2     0.4     0.6     0.8    1               0.1      1   10   100 1000           0.01 0.1   1    10 100 1000               0    0.2   0.4   0.6   0.8   1
+                          Fraction of re‐associations (ranked by B)                           Avg latency (ms)                   Avg latency gap (ms)                  Avg latency gap (ratio)
+                                             (a)                                                     (b)                                  (c)                                    (d)
+                                                                                    1                                        1                                     1
+     90th latency (ms)
+
+
+
+
+                                    B: Latency before re‐associations                                                             B‐A
+                         1000                                                     0.8                                      0.8                                   0.8
+                                    A: Latency after re‐associations
+                                                                                  0.6                                      0.6                                   0.6
+                          100
+
+
+
+
+                                                                            CDF
+
+
+
+
+                                                                                                                     CDF
+
+
+
+
+                                                                                                                                                           CDF
+                                                                                  0.4                                      0.4                                   0.4
+                           10                                                                              B
+                                                                                  0.2                                      0.2                                   0.2
+                                                                                                           A                                                                            A/B
+                            1                                                       0                                        0                                     0
+                                0        0.2     0.4     0.6     0.8    1               0.1      1   10   100 1000           0.01 0.1   1    10 100 1000               0    0.2   0.4   0.6   0.8   1
+                          Fraction of re‐associations (ranked by B)                           90th latency (ms)                  90th latency gap (ms)             90th latency gap (ratio)
+                                             (e)                                                     (f)                                  (g)                                 (h)
+
+
+                                                Figure 14: Comparison of WiFi latencies before (B) and after (A) AGE re-associations.
+
+   Large-scale deployment of AGE: We implemented the AGE
+app as a component of the Android version TUNet5 as shown in
+Fig. 15. AGE automatically runs in the background, so users do
+not have to manually run it. 1165 devices have installed AGE since
+Sept. 2015, and have used it for 2.5 months.
+   To evaluate AGE, we measure the WiFi latency of these devices
+using ping2 (This measurement is only for evaluation, it is not
+a part of the design of AGE). Fig. 14 shows the performance
+of AGE re-associations, that is, one-minute latency before and
+after devices re-associate to the APs suggested by AGE. For these
+re-associations, AGE significantly reduces both the average and
+the 90th percentile of WiFi latency. For example, focusing on
+the average latency in Fig. 14(a-d), 92% of the re-associations
+reduce the latency (green areas below the solid line in Fig. 14(a));
+the fraction of fast/EX fast (≤ 10 ms) has been improved
+from 47% before re-associations to 93% after re-associations
+(Fig. 14(b)); after re-associations, 50% of latencies are reduced by                                                  Figure 15: TUNet with the AGE app as a component.
+more than 7.5 ms and 10% of latencies are reduced by more than
+51 ms (Fig. 14(c)), and relatively, 72% of the latencies are reduced                                               Other WiFi latency related applications: The machine learn-
+by more than half (Fig. 14(d)). The results of the 90th percentile                                              ing approaches in WiFiSeer can be used in other applications. For
+(Fig. 14(e-h)) are similar.                                                                                     example in EWLAN optimizations, due to the lack of knowledge
+   Our large-scale real-world deployment demonstrates that AGE                                                  on how different actions will influence performance, operators face
+is much more effective at selecting low-latency APs than the                                                    hard decisions on whether certain actions will work or not. In
+default AP selection of devices. Thus, AGE provides a promising                                                 other words, it is difficult to estimate beforehand their impact on
+framework for EWLANs to improve their WiFi latency.                                                             network performance. WiFiSeer can provide a predictive model to
+                                                                                                                help operators estimate the performance improvement of different
+                                                                                                                actions. Based on the operational experience, operators can roughly
+6.                  DISCUSSION                                                                                  estimate the impact of an action on the radio factors. For example,
+   Generality of WiFiSeer: WiFiSeer can be easily adopted                                                       adding an AP for client-concentrated areas reduces the number of
+by network operators in typical operational EWLANs. For the                                                     devices of nearby APs by 20%. By using our model, the potential
+measurement part, WiFiSeer only uses traditional SNMP data                                                      benefit on latencies can be predicted before taking any real-world
+and the light-weight ping2 method, both of which are general                                                    actions. Thus, our modeling approach can also help operators make
+methods for EWLANs. Furthermore, for the running of WiFiSeer,                                                   decisions to balance cost/benefit trade-offs.
+continuous running of data collection is not required by WiFiSeer.                                                 Potential improvements of AGE: In the AGE deployment, we
+For modeling and the three applications, WiFiSeer takes advantage                                               notice that some devices do not collaborate well with the AGE
+of widely used machine learning algorithms, which are well-known                                                app. In particular, although AGE suggests re-associations, some
+for being general and able to deal with diverse data. The three                                                 devices may not authorize the AGE app to do this, or some devices
+applications are independent of each other and thus can be run                                                  will change back to the original APs after AGE re-associations
+separately on demand.                                                                                           because of the conflicts between the default device AP selection
+                                                                                                                algorithm and AGE. It shows that AGE has the potential to bring
+5
+  TUNet is a mobile app which can help users automatically login the captive portal of                          more benefits if it can be implemented on device hardware/OS
+THU-WLAN. The version with AGE can be downloaded from [18].                                                     levels or in protocols as we discuss next.
+   Future 802.11k/v integration: The real-world deployment               surement of WiFi latency nor provides enough knowledge for
+(§5.3) of AGE shows that EWLAN users could have a much better            802.11k/v-capable devices to actually select best performing APs.
+latency experience. The strategy of AGE can be an important com-            In addition, some work [30, 34, 43] attempts to associate a
+plement to the traditional 802.11k/v protocol, which is designed         user device to multiple APs simultaneously. It requires the device
+to assist AP selection when devices roam. The current imple-             to be equipped with more than one physical WiFi interface card
+mentation of 802.11k/v only provides a way to exchange several           or support virtual interfaces. Nevertheless, these solutions still
+data (e.g., channel loads, neighbor reports, and link measurements)      need a way to decide which APs nearby have better performance.
+between APs and devices, but leaves the AP selection to the user         WiFiSeer provides a methodology for modeling and predicting
+devices. This task, however, is challenging as elaborated in §4.1.       WiFi performance, which is complementary to those solutions.
+AGE can be integrated into 802.11k/v to systematically solve those
+problems, and make 802.11k/v more intelligent in the future. Still,
+for legacy EWLANs and user devices, where 802.11k/v is not
+supported, our application-level attempt is a viable way for WiFi
+                                                                         8.    CONCLUSION
+latency optimization.                                                       In this paper, we present WiFiSeer, a general and practical
+   Other WiFi performance metrics beyond latency: Different              framework for measuring and characterizing WiFi latency in large-
+mobile applications are often sensitive to different WiFi perfor-        scale operational EWLANs. WiFiSeer was deployed in Tsinghua
+mance metrics, e.g., latency we studied in this work, throughput,        to conduct a WiFi latency measurement study of unprecedented
+or both. Also, it is possible that the good conditions for latency       scale. Our machine learning-based characterization results pro-
+could conflict with that for throughput. Therefore, a promising          vide important insights to network operators and 802.11 protocol
+extension of AGE is to build predictive models not only for latency      designers. Among commonly suspected reasons for unsatisfying
+but also for other metrics, such as throughput or even application       WiFi latency, heavy traffic load, local contention, noise and fading,
+layer metrics (e.g., web page load time). Then, according to             and interference are indeed quantitatively confirmed as top reasons,
+user’s preference, AGE can select the AP that has either reasonable      whereas RSSI (often used for AP selection) is not. Our machine
+performance for all those metrics or the best performance for the        learning based modeling reveals the complex but quantitative
+active application, e.g., high throughput for online videos. We will     impacts of various factors on real-world WiFi latency, which are
+explore this direction in our future work.                               hard to obtain through theoretical analysis or simulations. The real-
+                                                                         world performance gains resulting from two deployed mitigation
+                                                                         approaches suggested by WiFiSeer highlight the promise of data-
+                                                                         driven re-engineering of operational networks.
+7.    RELATED WORK                                                          Our results also show that existing AP selection mechanisms are
+   WiFi measurements: Analyzing packet traces is a costly way            inadequate. Ad hoc solutions from AP and OS vendors do not
+to monitor a wireless network. It is hard to modify the hardware         collaborate with each other, resulting in poor utilization of available
+of enterprise APs to capture and record wireless frame traces like       resources, e.g., crowded 2.4 GHz and little-utilized 5 GHz bands.
+WiSe [46] and PIE [51]. Additional hardware, e.g. extra sniffers         Through adaptively re-associating a device to better performing
+in Jigsaw [32] and Wit [44], are also inappropriate for large scale      APs, our widely deployed AGE client greatly helps to mitigate
+measurements. Meraki [26] monitors the wireless link at large            these problems on Tsinghua campus. Encouraged by this result,
+scale using the customized AP with dedicated radio hardware (e.g.,       we advocate that protocol designers, OS vendors, AP vendors, and
+Meraki MR18). In contrast, within WiFiSeer framework, WiFi               researchers should work together to push 802.11k/v deployment,
+latency measurement method of ping2 and traditional SNMP are             and to improve the methodologies, such as WiFiSeer, to generate
+low-overhead and deployable in large-scale EWLANs.                       better data-driven intelligence to drive the 802.11k/v protocols.
+   Modeling: There are some prior studies of modeling key per-
+formance indicators in different domains, such as video QoE [25,
+41, 50] and web QoE [24]. They also take advantage of machine
+learning algorithms, such as decision trees, to model the complex        Acknowledgments
+relationships. However, machine learning building blocks cannot          We thank our shepherd Kamin Whitehouse and the anonymous
+be set once and for all. In this paper, we explore how to tailor         reviewers for their thorough comments and valuable feedback. We
+models for three different applications (§4).                            are grateful to Lab µ for their efforts on developing TUNet and
+   AP selection: There are many methods for AP selection.                for them allowing us to implement AGE as a component of it. We
+Currently most devices only utilize part of the available information    appreciate Weichao Li, Fan Ye, Hewu Li, and Chunyi Peng for their
+to make choices with simple assumptions of wireless performance.         helpful suggestions, as well as Yousef Azzabi for his proofreading.
+Preferential association to APs with stronger RSSI is a common              This work was partly supported by the Key Program of the Na-
+approach [55], but stronger signal strength does not assure better       tional Natural Science Foundation of China under grant 61233007,
+performance [42]. Some implementations utilize more historical           the National Natural Science Foundation of China (NSFC) un-
+or actively measured client-side information besides RSSI [3, 45].       der grant 61472214 & 61472210 & 61033001 & 61361136003,
+However, it is time-consuming, battery-draining and sometimes            the National High Technology Research and Development Pro-
+bothering for a user device to test each nearby AP only by itself [1].   gram of China (863 Program) under grant 2013AA013302, the
+   Some approaches exchange information of the wireless en-              National Basic Research Program of China (973 Program) un-
+vironment between the EWLAN and its clients — specifically,              der grant 2013CB329105 & 2011CBA00300 & 2011CBA00301,
+implementations of 802.11k/v [22, 23] standards. E.g., Cisco             the Tsinghua National Laboratory for Information Science and
+enterprise APs can send neighbor AP report (defined in 802.11k,          Technology key projects, the Global Talent Recruitment (Youth)
+called “AP assisted roaming" by Cisco [2]) to 802.11k equipped           Program, and the Cross-disciplinary Collaborative Teams Program
+iOS devices [20], which helps speed up scanning, reduces power           for Science & Technology & Innovation of Chinese Academy of
+consumption, and makes efficient use of air time. However,               Sciences-Network and system technologies for security monitoring
+the information currently exchanged neither contains direct mea-         and information interaction in smart grid.
+References                                                                 (Amendment to IEEE Std 802.11-2007) (June 2008), 1–244.
+ [1] 802.11 association process explained.                            [23] Ieee standard for information technology– local and
+     https://documentation.meraki.com/MR/WiFi_Basics_and_                  metropolitan area networks– specific requirements– part 11:
+     Best_Practices/802.11_Association_process_explained.                  Wireless lan medium access control (mac) and physical layer
+ [2] 802.11r, 802.11k, and 802.11w deployment guide, cisco                 (phy) specifications amendment 8: Ieee 802.11 wireless
+     ios-xe release 3.3: 802.11k assisted roaming.                         network management. IEEE Std 802.11v-2011 (Amendment
+     http://www.cisco.com/c/en/us/td/docs/wireless/controller/te           to IEEE Std 802.11-2007 as amended by IEEE Std
+     chnotes/5700/software/release/ios_xe_33/11rkw_Deploymen               802.11k-2008, IEEE Std 802.11r-2008, IEEE Std
+     tGuide/b_802point11rkw_deployment_guide_cisco_ios_xe                  802.11y-2008, IEEE Std 802.11w-2009, IEEE Std
+     _release33/b_802point11rkw_deployment_guide_cisco_ios_                802.11n-2009, IEEE Std 802.11p-2010, and IEEE Std
+     xe_release33_chapter_010.html.                                        802.11z-2010) (Feb 2011), 1–433.
+ [3] Android framework classes and services. https:                   [24] BALACHANDRAN , A., AGGARWAL , V., H ALEPOVIC , E.,
+     //android.googlesource.com/platform/frameworks/base/.                 PANG , J., S ESHAN , S., V ENKATARAMAN , S., AND YAN ,
+     Accessed: 2015-01-23.                                                 H. Modeling web quality-of-experience on cellular
+ [4] Cisco snmp.                                                           networks. In MoBicom 2014.
+     http://tools.cisco.com/Support/SNMP/do/BrowseOID.do.             [25] BALACHANDRAN , A., S EKAR , V., A KELLA , A., S ESHAN ,
+ [5] Designing for voice / tech tools. http://wirelesslanprofessio         S., S TOICA , I., AND Z HANG , H. Developing a predictive
+     nals.com/wlw-010-designing-for-voice-tech-tools/.                     model of quality of experience for internet video. In ACM
+ [6] Edimax wifi adapter seems to go to sleep if not used.                 SIGCOMM Computer Communication Review (2013),
+     https://www.raspberrypi.org/forums/viewtopic.php?t=61665.             vol. 43, ACM, pp. 339–350.
+ [7] Edison wifi delay and power saving.                              [26] B ISWAS , S., B ICKET, J., W ONG , E., M USALOIU -E, R.,
+     https://communities.intel.com/message/255890.                         B HARTIA , A., AND AGUAYO , D. Large-scale
+ [8] enablenetwork of wifimanager in android.                              measurements of wireless network behavior. In Proceedings
+     http://developer.android.com/reference/android/net/wifi/Wi            of the 2015 ACM Conference on Special Interest Group on
+     fiManager.html#enableNetwork(int,boolean). Accessed:                  Data Communication (2015), ACM, pp. 153–165.
+     2015-09-22.                                                      [27] B ONONI , L., C ONTI , M., AND G REGORI , E. Design and
+ [9] Ewlan market. http://www.delloro.com/news/enterprise-wir              performance evaluation of an asymptotically optimal backoff
+     eless-lan-market-to-expand-70-percent-by-2018.                        algorithm for ieee 802.11 wireless lans. In System Sciences,
+[10] Ewlan overview.                                                       2000. Proceedings of the 33rd Annual Hawaii International
+     http://www.cisco.com/c/en/us/td/docs/solutions/Enterprise/M           Conference on (2000), IEEE, pp. 10–pp.
+     obility/emob41dg/emob41dg-wrapper/ch1_Over.html.                 [28] C HAFE , C., G UREVICH , M., L ESLIE , G., AND T YAN , S.
+[11] Load balancing and band select on the cisco wireless lan              Effect of time delay on ensemble accuracy. In Proceedings
+     controller.                                                           of the International Symposium on Musical Acoustics (2004),
+     https://supportforums.cisco.com/document/81896/load-balan             vol. 31.
+     cing-and-band-select-cisco-wireless-lan-controller.              [29] C HANDRA , P., AND L IDE , D. Wi-Fi Telephony: Challenges
+[12] Openwrt. https://openwrt.org/.                                        and solutions for voice over WLANs. Newnes, 2011.
+[13] Orange. http://docs.orange.biolab.si/reference/rst/index.html.   [30] C HANDRA , R., BAHL , P., AND BAHL , P. Multinet:
+[14] Ping on mavericks on late 2013 macbook pro slow and                   connecting to multiple ieee 802.11 networks using a single
+     variable compared to windows. http://apple.stackexchange.             wireless card. In INFOCOM 2004. Twenty-third AnnualJoint
+     com/questions/110777/ping-on-mavericks-on-late-2013-m                 Conference of the IEEE Computer and Communications
+     acbook-pro-slow-and-variable-compared-to-windows.                     Societies (March 2004), vol. 2, pp. 882–893 vol.2.
+[15] Round-trip time is important. https:                             [31] C HENG , Y.-C., A FANASYEV, M., V ERKAIK , P., B ENKO ,
+     //marketo-web.thousandeyes.com/rs/thousandeyes/images/T               P., C HIANG , J., S NOEREN , A. C., S AVAGE , S., AND
+     housandEyes_Use_Case_Enterprise_and_IT_Operations.pdf.                VOELKER , G. M. Shaman automatic 802.11 wireless
+[16] Slow ping on raspberry pi. http://procrastinative.ninja/2014/         diagnosis system.
+     11/19/slow-ping-on-raspberry-pi/.                                [32] C HENG , Y.-C., B ELLARDO , J., B ENKÖ , P., S NOEREN ,
+[17] Speed test. http://www.speedtest.net/.                                A. C., VOELKER , G. M., AND S AVAGE , S. Jigsaw: solving
+[18] Tunet. http://netman.cs.tsinghua.edu.cn/wp-content/uploads            the puzzle of enterprise 802.11 analysis, vol. 36. ACM, 2006.
+     /2016/04/TUNet-Android-v3.2.4.apk_.zip.                          [33] C LAYPOOL , M., AND C LAYPOOL , K. Latency can kill:
+[19] What is the business value of application speed and                   precision and deadline in online games. In Proceedings of
+     performance to you?                                                   the first annual ACM SIGMM conference on Multimedia
+     https://s3.amazonaws.com/cisco-partnerpedia-production/pr             systems (2010), ACM, pp. 215–222.
+     oduct_files/78904/original/Speed_Matters.pdf.                    [34] C ROITORU , A., N ICULESCU , D., AND R AICIU , C.
+[20] Wi-fi network roaming with 802.11k, 802.11r, and 802.11v              Towards wifi mobility without fast handover. Usenix NSDI.
+     on ios. https://support.apple.com/en-us/HT202628.                [35] D ING , N., PATHAK , A., KOUTSONIKOLAS , D., S HEPARD ,
+[21] Wi-fi tip: Channel utilization best practice.                         C., H U , Y. C., AND Z HONG , L. Realizing the full potential
+     http://www.revolutionwifi.net/revolutionwifi/2010/08/wi-fi-t          of psm using proxying. In INFOCOM, 2012 Proceedings
+     ip-channel-utilization-best.html.                                     IEEE (2012), IEEE, pp. 2821–2825.
+[22] Ieee standard for information technology– local and              [36] D ING , N., WAGNER , D., C HEN , X., PATHAK , A., H U ,
+     metropolitan area networks– specific requirements– part 11:           Y. C., AND R ICE , A. Characterizing and modeling the
+     Wireless lan medium access control (mac)and physical layer            impact of wireless signal strength on smartphone battery
+     (phy) specifications amendment 1: Radio resource                      drain. In Proceedings of the ACM
+     measurement of wireless lans. IEEE Std 802.11k-2008                   SIGMETRICS/International Conference on Measurement
+     and Modeling of Computer Systems (New York, NY, USA,                    of the 19th annual international conference on Mobile
+     2013), SIGMETRICS ’13, ACM, pp. 29–40.                                  computing & networking (MobiCom 2013), ACM,
+[37] G RIGORIK , I. High Performance Browser Networking:                     pp. 339–350.
+     What every web developer should know about networking              [47] PAUL , U., K ASHYAP, A., M AHESHWARI , R., AND DAS ,
+     and web performance. " O’Reilly Media, Inc.", 2013.                     S. R. Passive measurement of interference in wifi networks
+[38] H E , H., G ARCIA , E., ET AL . Learning from imbalanced                with application in misbehavior detection. Mobile
+     data. Knowledge and Data Engineering, IEEE Transactions                 Computing, IEEE Transactions on 12, 3 (2013), 434–446.
+     on 21, 9 (2009), 1263–1284.                                        [48] P ENG , G., Z HOU , G., N GUYEN , D. T., AND Q I , X. All or
+[39] H UANG , J., C HEN , C., P EI , Y., WANG , Z., Q IAN , Z.,              none? the dilemma of handling wifi broadcast traffic in
+     Q IAN , F., T IWANA , B., X U , Q., M AO , Z., Z HANG , M.,             smartphone suspend mode. Power (mW) 300, 400, 500.
+     ET AL . Mobiperf: Mobile network measurement system.               [49] Q IAN , F., WANG , Z., G AO , Y., H UANG , J., G ERBER , A.,
+     Tech. rep., Technical report, Technical report, Technical               M AO , Z., S EN , S., AND S PATSCHECK , O. Periodic
+     report). University of Michigan and Microsoft Research,                 transfers in mobile applications: network-wide origin,
+     2011.                                                                   impact, and optimization. In Proceedings of the 21st
+[40] J I , X., H E , Y., WANG , J., W U , K., Y I , K., AND L IU , Y.        international conference on World Wide Web (2012), ACM,
+     Voice over the dins: improving wireless channel utilization             pp. 51–60.
+     with collision tolerance. In Network Protocols (ICNP), 2013        [50] S HAFIQ , M. Z., E RMAN , J., J I , L., L IU , A. X., PANG , J.,
+     21st IEEE International Conference on (2013), IEEE,                     AND WANG , J. Understanding the impact of network
+     pp. 1–10.                                                               dynamics on mobile video user engagement. In The 2014
+[41] J IANG , J., S EKAR , V., S TOICA , I., AND Z HANG , H.                 ACM international conference on Measurement and
+     Shedding light on the structure of internet video quality               modeling of computer systems (2014), ACM, pp. 367–379.
+     problems in the wild. In Proceedings of the Ninth ACM              [51] S HRIVASTAVA , V., R AYANCHU , S. K., BANERJEE , S., AND
+     Conference on Emerging Networking Experiments and                       PAPAGIANNAKI , K. Pie in the sky: Online passive
+     Technologies (New York, NY, USA, 2013), CoNEXT ’13,                     interference estimation for enterprise wlans. In NSDI (2011),
+     ACM, pp. 357–368.                                                       vol. 11, p. 20.
+[42] J UDD , G., AND S TEENKISTE , P. Fixing 802. 11 access             [52] S UI , K., Z HAO , Y., P EI , D., AND Z IMU , L. How bad are
+     point selection. ACM SIGCOMM Computer Communication                     the rogues’ impact on enterprise 802.11 network
+     Review 32, 3 (2002), 31–31.                                             performance? In Computer Communications (INFOCOM),
+[43] K ATEJA , R., BARANASURIYA , N., NAVDA , V., AND                        2015 IEEE Conference on (April 2015), pp. 361–369.
+     PADMANABHAN , V. N. Diversifi: Robust multi-link                   [53] S UNDARESAN , S., F EAMSTER , N., T EIXEIRA , R.,
+     interactive streaming. CoNEXT.                                          M AGHAREI , N., ET AL . Measuring and mitigating web
+[44] M AHAJAN , R., RODRIG , M., W ETHERALL , D., AND                        performance bottlenecks in broadband access networks. In
+     Z AHORJAN , J. Analyzing the mac-level behavior of wireless             ACM Internet Measurement Conference (2013).
+     networks in the wild. In ACM SIGCOMM Computer                      [54] WANG , X. S., BALASUBRAMANIAN , A.,
+     Communication Review (2006), vol. 36, ACM, pp. 75–86.                   K RISHNAMURTHY, A., AND W ETHERALL , D. How speedy
+[45] N ICHOLSON , A. J., C HAWATHE , Y., C HEN , M. Y.,                      is spdy. In NSDI (2014), pp. 387–399.
+     N OBLE , B. D., AND W ETHERALL , D. Improved access                [55] X U , F., TAN , C. C., L I , Q., YAN , G., AND W U , J.
+     point selection. In Proceedings of the 4th international                Designing a practical access point association protocol. In
+     conference on Mobile systems, applications and services                 INFOCOM, 2010 Proceedings IEEE (2010), IEEE, pp. 1–9.
+     (2006), ACM, pp. 233–245.
+[46] PATRO , A., G OVINDAN , S., AND BANERJEE , S. Observing
+     home wireless experience through wifi aps. In Proceedings
+

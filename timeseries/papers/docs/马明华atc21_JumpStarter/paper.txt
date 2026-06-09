@@ -1,0 +1,959 @@
+                                    Jump-Starting Multivariate Time Series
+                                  Anomaly Detection for Online Service Systems
+
+               Minghua Ma                            Shenglin Zhang ∗             Junjie Chen                   Jun Xu
+        Tsinghua University, BNRist                 Nankai University          Tianjin University             Georgia Tech
+            Haozhe Li, Yongliang Lin                         Xiaohui Nie                       Bo Zhou, Yong Wang
+               Nankai University                      Tsinghua University, BNRist                 CNCERT/CC
+                                                             Dan Pei
+                                                    Tsinghua University, BNRist
+                               Abstract                              intervals [3, 33]. The monitoring data of a metric form a uni-
+                                                                     variate time series, and thus that of a service system, which
+   With the booming of online service systems, anomaly de-           has multiple metrics, constitutes a multivariate time series.
+tection on multivariate time series, such as a combination
+                                                                        Traditional multivariate time series anomaly detection ap-
+of CPU utilization, average response time, and requests per
+                                                                     proaches are typically based on detecting univariate time
+second, is important for system reliability. Although a col-
+                                                                     series [15, 32, 36]. However, operators are concerned about
+lection of learning-based approaches have been designed for
+                                                                     the status of the overall service rather than that of a specific
+this purpose, our empirical study shows that these approaches
+                                                                     metric [28]. Because the univariate time series anomaly de-
+suffer from long initialization time for sufficient training data.
+                                                                     tection cannot capture the complex temporal relationships
+In this paper, we introduce the Compressed Sensing technique
+                                                                     among different univariate time series [28], they tend to
+to multivariate time series anomaly detection for rapid ini-
+                                                                     cause alert storms [5]. To address this problem, recent works
+tialization. To build a jump-starting anomaly detector, we
+                                                                     [12,22–24,28,34] use deep learning techniques to build learn-
+propose an approach named JumpStarter. Based on domain-
+                                                                     ing models for multivariate time series anomaly detection. For
+specific insights, we design a shape-based clustering algo-
+                                                                     example, the state-of-the-art approach, OmniAnomaly [28],
+rithm as well as an outlier-resistant sampling algorithm for
+                                                                     utilizes a stochastic recurrent neural network model to learn
+JumpStarter. With real-world multivariate time series datasets
+                                                                     the temporal relationships of multivariate time series.
+collected from two Internet companies, our results show that
+                                                                        Learning-based approaches are hardly applicable in prac-
+JumpStarter achieves an average F1 score of 94.12%, signifi-
+                                                                     tice because they usually require a long period of training
+cantly outperforming the state-of-the-art anomaly detection
+                                                                     data. Online service systems are deployed or changed very
+algorithms, with a much shorter initialization time of twenty
+                                                                     frequently to deploy new features, fix bugs [35], etc. In large
+minutes. We have applied JumpStarter in online service sys-
+                                                                     service providers, such as Google [3] and Baidu [35], it is
+tems and gained useful lessons in real-world scenarios.
+                                                                     reported that thousands of software changes are deployed ev-
+                                                                     ery day. Due to these software changes, the data distribution
+1     Introduction                                                   of multivariate time series can change dramatically, which
+                                                                     is called the expected concept drift [17]. For example, when
+In recent years, online service systems based on cloud com-          operators conduct a software change to deploy a service to
+puting, e.g., online office, e-commerce, are becoming increas-       more instances, the metric “Requests Per Second” in each
+ingly popular. For example, the number of daily meeting par-         instance will drop significantly as shown in Figure 1. This is
+ticipants of the video conferencing app Zoom jumps to over           expected to operators, and they do not need to roll back the
+300 million before May 2020 [31]. Due to the complexity and          software change. After the change, this will cause a lot of
+the large scale of online service systems, automatic anomaly         false alarms or false positives, since it invalidates the learning-
+detection is of ultimate importance to guarantee their relia-        based anomaly detection models trained based on the data
+bility [36]. To closely monitor the quality of service, online       before the change [17]. It is because the common assumption
+service providers or cloud computing platforms, such as Mi-          in deep learning that the data distribution must remain the
+crosoft and AWS, continuously collect the monitoring data            same across training and test set [10] is violated. Therefore,
+of each performance metric (e.g., CPU utilization, average           these learning-based approaches have to be retrained. This
+response time, and requests per second) at equally spaced            retraining process, however, can consume tens to hundreds of
+                                                                     days [28, 32] before reaching steady state.
+    ∗ Shenglin Zhang is the corresponding author.                       To quantitatively measure how long it takes to “initialize”
+        100                                                          much less training data than those learning-based approaches.
+                                         CPU Utilization             A learning-based approach has to explicitly learn the “be-
+        50
+                                                                     havior" (probability distribution) of a normal multivariate
+          0
+                                                                     time series in order to detect anomalies. In comparison, in
+        100
+                                                                     JumpStarter the reconstructed multivariate time series of im-
+Value
+
+
+
+
+                                         Average Response Time
+        50                                                           plicitly inherits this normal behavior without involving any
+          0                                                          explicit learning. Due to the complexity of real-world scenar-
+        100                                                          ios, however, it is challenging to apply CS to implement a
+                                         Requests Per Second         jump-starting multivariate time series anomaly detection in
+        50
+                                                                     the following situations:
+          0
+              0         1        2         3         4           5      Large number of time series. In large-scale online ser-
+                  Software Change Time (h)                           vice systems, tens of time series are monitored for each sys-
+                                                                     tem forming a multivariate time series [17]. Typically, it is
+Figure 1: The multivariate time series (selected as examples)
+                                                                     time-consuming for CS to reconstruct a large number of time
+of an online service system before and after a software change.
+                                                                     series, because it needs to solve a convex optimization prob-
+The red segment is labeled anomalous.
+                                                                     lem whose time complexity depends on the number of time
+                                                                     series. To tackle this challenge, we cluster these time series
+an anomaly detection model for multivariate time series, we          based on shape. Since the time series in the same group ex-
+first define initialization time, as the time lag between when       hibit a similar shape, they can be reconstructed efficiently
+the model is launched and when it becomes well trained. We           without losing temporal relationships [14].
+then conduct an empirical study based on the datasets col-              Sampling from random anomalous segments in time
+lected from real-world online service systems. Through this          series. CS typically uses a Gaussian distribution to sample
+study, we summarize two key findings: (1) The average ini-           from the original time series to guarantee Restricted Isome-
+tialization time of existing learning-based approaches ranges        try Property (RIP). Nevertheless, it may inevitably generate
+from ten days to one hundred days. (2) The state-of-the-art ap-      reconstructed time series sampled from some long-lasting
+proaches (i.e., OmniAnomaly [28] and MSCRED [34]) do not             anomalous segments. The anomaly detection model based
+achieve a satisfactory performance when they are improved            on these reconstructed time series can cause some false posi-
+with incremental retraining [15]. When the period of training        tives and/or false negatives. Therefore, we design an outlier-
+data is short, the accuracy of these approaches are low. There-      resistant sampling algorithm to sample from normal time
+fore, we aim to design a robust anomaly detection approach           series segments rather than anomalous ones.
+for multivariate time series with small initialization time.            We conducted a comprehensive study to evaluate the per-
+   In this paper, we propose a novel multivariate time se-           formance of JumpStarter based on three datasets from 28 and
+ries anomaly detection approach, called JumpStarter, that is         30 large-scale industrial online service systems of two Inter-
+based on Compressed Sensing (CS). CS is a signal processing          net companies, respectively. The first dataset, from company
+technique where high-energy components in a matrix (mul-             A , is a 5-week-long time-series open dataset. The other two
+tivariate time series) are sparse (i.e., have few high-energy        datasets are from a top-tier global content platform company
+components) [4]. Hence, the difference between the origi-            B , which provides service for more than 800 million users
+nal and the reconstructed multivariate time series, comprised        around the world. These datasets contain 7-week-long time
+only of low-energy components, should resemble white noise,          series. Our experimental results illustrate that JumpStarter
+when the original time series contains no anomaly. The intu-         outperforms both the state-of-the-art learning-based multi-
+ition behind using CS for anomaly detection is that anomalies        variate time series anomaly detection approaches (i.e., Omni-
+in multivariate time series, such as jitters, sudden drops or        Anomaly [28] and MSCRED [34]) clustering-based LESINN
+surges, usually manifest themselves as strong signals that           [20]. Also, JumpStarter is more suitable than RRCF [11]
+contain high-energy components, which would differ signif-           used in AWS CloudWatch. The average F1 score of Jump-
+icantly from white noise [16]. Hence we can tell whether a           Starter is 94.12%, while those of the other four approaches
+time series contains anomalies by checking whether the differ-       are 86.51%, 59.64%, 82.5%, and 36.01% respectively. Also,
+ence between the original and the reconstructed multivariate         our results demonstrate that the main components in Jump-
+time series in a sliding window [32] looks very differently          Starter (i.e., shape-based clustering and outlier-resistant sam-
+from white noise. Since CS only uses a fixed-length window           pling) significantly contribute to the overall performance of
+to “train” an anomaly detection model, the initialization time       JumpStarter. JumpStarter achieves good accuracy with an
+of JumpStarter depends on the window size, which is typi-            initialization time as short as twenty minutes, open sourced at
+cally twenty minutes. It is much shorter than the initialization     https://github.com/NetManAIOps/JumpStarter. We ap-
+time of learning-based approaches. We now provide an in-             plied JumpStarter to B and it indeed achieved a good anomaly
+tuitive explanation of why CS-based JumpStarter requires             detection performance in practice. We also present two cases
+                                                                            Table 1: Comparison of the initialization time (days) on three
+                                                                            datasets (S1∼S3) used in their works. * denotes univariate
+                                                                            time series anomaly detector, which can be used for multivari-
+                                                                            ate time series by combining it with majority vote [28].
+                                                                                           Approach         S1     S2     S3    Avg.
+                                                                                        MSCRED [34]          7     13      -     10
+                                                                                      OmniAnomaly [28]      17     15     17    16.3
+                                                                                       LSTM-NDT [12]        69     36      -    52.5
+                                                                                       * Opprentice [15]    56     56     56     56
+    Figure 2: The initialization time of an anomaly detector                             * Donut [32]       102    110    99    103.6
+
+
+and gain lessons for both academia and industry.                            2.2    An Empirical Study on Initialization Time
+                                                                            Anomaly detection initialization time. With a new ser-
+2     Background and Empirical Study                                        vice being deployed or updated, operators usually launch an
+                                                                            anomaly detection approach for it. The initialization time of
+2.1     Background                                                          the anomaly detection approach is the time lag between when
+                                                                            it is launched (t1 ) and when it becomes effective (t2 ), as shown
+Multivariate time series. In an online service system, oper-                in Figure 2. Many prior approaches, e.g., [12, 22, 23, 28, 34],
+ators continuously collect monitoring data of multiple met-                 use a learning-based workflow to detect anomalies. Typically,
+rics or extract numerical values from logs [37]. A service                  they are periodically trained based on historical data [15]. The
+level metric (e.g., average response time), or a machine level              initialization time of these approaches, e.g., tens of days, is rel-
+metric (e.g., CPU utilization, memory utilization), is usually              atively long, because they usually need to offer a lot of histori-
+collected by equal interval, forming a univariate time series.              cal data for training. In Table 1 we list the suggested initializa-
+Any univariate time series alone, however, cannot capture all               tion time of five learning-based anomaly detection approaches
+types of system’s performance issues [28]. Because a sys-                   on different datasets. For example, OmniAnomaly [28] used
+tem typically has a collection of monitoring metrics, it can                two robot system datasets (denoted as S1, S2) and a server
+be denoted as a multivariate time series [17], which includes               dataset (S3, which also used in our experiment as D1). From
+diverse types of univariate time series and thus track various              the last column of Table 1, we can see that the average initial-
+aspects of performance issues. With the scale and complexity                ization time of these approaches ranges from 10 days to more
+of the system increasing, it is becoming more difficult to man-             than one hundred days, indicating that it is unsuitable to use
+ually inspect system anomalies. Therefore, multivariate time                these approaches for newly deployed or updated systems.
+series anomaly detection is of great importance [28, 34]. We                Incremental retraining. Considering the long initialization
+denote a multivariate time series at time t as Xt = [xt1 , xt2 ...,         time of learning-based anomaly detection approaches, one
+xtn ]T , where xti = [xt−w+1
+                       i        i
+                             , xt−w+2 , ..., xti ] is the univariate time   may suggest incremental retaining, i.e., gradually (incremen-
+                th
+series of the i monitoring metric, n is the number of metrics,              tally) adding a short-period (say one day) of data to train these
+and w is the observation window size. We apply the sliding                  approaches. In this way, we can improve the performance of
+window, which is a common practice in time series anomaly                   these approaches step by step. Adding one day’s data each
+detection [32, 35], to construct Xt .                                       time is because these learning-based approaches need at least
+Anomaly detection. Anomaly detection using multivariate                     thousands of data points to converge [32]. We then try to apply
+time series [28] is important in online service systems. In                 incremental retraining to the state-of-the-art multivariate time
+previous anomaly detection works [12, 22–24, 28, 34], op-                   series anomaly detection approaches, i.e., OmniAnomaly [28]
+erators have a rough consensus on the following points: 1)                  and MECRED [34]. The dataset is the same as what is used
+A multivariate time series anomaly is a data point or a data                in OmniAnomaly (see §4.1 for more details). We gradually
+segment that significantly deviates from operators’ expec-                  enlarge the training set from one day’s data to 13 days’ data
+tations of normal behavior, and it can be visually observed                 (i.e., the largest training set of this dataset), and the testing set
+(e.g., in Figure 1). 2) An anomaly indicates something might                remains as the data collected after the 13th day.
+have gone wrong, although further investigation may still be                    This sounds ideal, but anomaly detection using incremen-
+needed for verification. 3) Anomaly detection is often used                 tal retraining cannot ensure satisfactory performance. Fig-
+as a failure discovery mechanism. Formally, we define mul-                  ure 3 shows the average F1 score and training time of Om-
+tivariate time series anomaly detection: for time t, given its              niAnomaly and MECRED as the period of training data in-
+multivariate time series Xt , we determine whether an anomaly               creases (day by day), respectively. From Figure 3(a), we can
+occurs (e.g., jitter, sudden drop or surge), which is denoted by            see that the average F1 scores of both OmniAnomaly and ME-
+yt = 1 if yes and yt = 0 otherwise.                                         CRED increase along with more training data being used, and
+                                    MECRED                                    OmniAnomaly                    Time Series        Reconstruct           Time Series          Reconstruct
+               100                                                   60
+
+
+
+
+                                               Training Time (min)
+                80                                                   50
+F1-score (%)
+
+
+
+
+                                                                     40
+                60
+                                                                     30
+                40
+
+
+
+
+                                                                                                     Value
+
+
+
+
+                                                                                                                                              Value
+                                                                     20
+                20                                                   10
+                 0                                                    0
+                     1   3     5 7 9 11 13                                1    3     5 7 9 11 13
+                             Data Size (Day)                                       Data Size (Day)
+                                   (a)                                                   (b)
+                                                                                                                     Time (h)                                 Time (h)
+Figure 3: Performance of OmniAnomaly [28] and MECRED
+                                                                                                                (a) As a Whole                            (b) Separately
+[34] by incremental retraining.
+                                                                                                     Figure 4: Examples of CS-based anomaly detection when
+they do not converge until 10 days’ data is used for training.                                       the multivariate time series is reconstructed as a whole n × w
+One primary reason is that these learning-based approaches                                           matrix (a) or as n separate univariate time series (b). The red-
+have to explicitly learn the probability distribution of a mul-                                      shaded regions denote the anomalies labeled by operators.
+tivariate time series from a large amount of training data to
+capture its normal behavior. Figure 3(b) shows that the train-                                       during the anomaly window (shaded). This is an undesired
+ing time of both OmniAnomaly and MECRED increases lin-                                               behavior that indicates inaccurate reconstruction. In the lat-
+early with the size of training data. When the training dataset                                      ter way, as shown in Figure 4(b), the difference between the
+contains 10 days of data, it takes about 35 minutes to train                                         original and reconstructed univariate time series manifests as
+OmniAnomaly or MECRED. Therefore, these approaches are                                               white noise in normal segments and as large fluctuations in
+not suitable for newly deployed or updated systems due to                                            anomalous ones, which accurately captures the anomalies for
+their non-robustness and considerable training cost.                                                 each univariate time series. However, it cannot capture the
+                                                                                                     complex relationships among multivariate time series [28].
+3               JumpStarter Approach                                                                 Moreover, due to the challenge of a large number of univariate
+                                                                                                     time series, the separate reconstruction is more computation-
+3.1                  Key Idea and Challenges                                                         ally expensive.
+                                                                                                     Problem of Random Gaussian Sampling. The first step of
+To deal with the aforementioned limitations of learning-based                                        our CS approach is to sample from a multivariate time series.
+approaches, we propose to use Compressed Sensing (CS) [9]                                            The sampled matrix needs to guarantee Restricted Isometry
+for multivariate time series anomaly detection. CS is a signal                                       Property (RIP) [4] so that it can reconstruct the original mul-
+processing technique for reconstructing a signal from a se-                                          tivariate time series properly. It has been shown that random
+ries of sampling measurements [8]. The signal reconstructed                                          Gaussian sampling satisfies RIP [9]. Random sampling, how-
+from these samples preserves the high-energy components of                                           ever, samples some data points also from anomalous segments.
+the original signal with high probability under some mild as-                                        In this case, the reconstructed multivariate time series will not
+sumptions [8]. As explained earlier, we can detect anomalies                                         be significantly different from the original one when a system
+in a multivariate time series by checking whether the recon-                                         becomes anomalous. Thus it inevitably degrades the anomaly
+structed signal differs from the original signal (multivariate                                       detection performance.
+time series) by more than white noise. Since CS does not
+require any training, the initialization time of the CS-based
+anomaly detection for Xt is the window size w.                                                       3.2      Overview of JumpStarter
+Two Strawman Solutions using CS. Intuitively, we can ap-                                             The JumpStarter approach, which consists of both offline and
+ply CS to reconstruct Xt in two ways: treating Xt as a whole                                         online processing procedures, is shown in Figure 5. To tackle
+n × w matrix, or as n separate univariate time series. In the                                        the challenge of a large number of time series, we adopt a
+former way, we randomly sample some data from Xt and                                                 shape-based clustering method to group the univariate time
+then reconstruct it following [26] (more details to be provided                                      series of a multivariate time series into several groups in the
+in §3.5). Figure 4(a) shows the reconstructed multivariate                                           offline processing. The sliding window technique is applied
+time series. As shaded in Figure 4(a), there is a significant                                        to multivariate time series in the online anomaly detection.
+difference between the original (blue lines) and the recon-                                          For each group of univariate time series, we propose a novel
+structed multivariate time series (dashed brown lines) when an                                       outlier-resistant sampling algorithm to solve the challenge
+anomaly occurs. This is a desired behavior (of CS). However,                                         introduced by sampling from anomalous segments, and apply
+the first two reconstructed time series fluctuate frequently all                                     compressed sensing to reconstruct them. After that, we con-
+the time, whereas both original time series are stable except                                        catenate these reconstructed time series, measure the differ-
+                                                                     Table 2: An example of clustering the multivariate time series
+                                                                     into three clusters. Each univariate time series is named based
+                                                                     on its corresponding monitoring metric.
+
+                                                                      #    Cluster of Univariate Time Series          Explanation
+                                                                      1    rx-pkts-eth0, rx-bytes-eth0                # received packets/bytes
+                                                                      2    tcp-insegs, tcp-outsegs, tx-pkts-eth0      TCP network metrics
+                                                                      3    cpu-ctxt, cpu-user, cpu-system, cpu-nice   CPU utilization metrics
+
+
+
+                                                                     of online service systems and the discussion with operators.
+                                                                     Anomalies rarely occur in real-world scenarios [15, 32]. That
+                                                                     is, anomalies are usually outliers in an observation (sliding)
+Figure 5: JumpStarter approach consists of offline processing        window [16]. If an anomaly lasts longer than the window size,
+and online processing, of which output is whether anomaly            it can be captured from the beginning since it is significantly
+or not.                                                              different from the normal pattern. Therefore, we can adopt
+                                                                     a simple outlier detection algorithm to obtain the sampling
+                                                                     confidence of each data point. The higher a data point is likely
+ence between the original and the reconstructed multivariate
+                                                                     to be an outlier, the lower its sampling confidence is, and the
+time series as an anomaly score, and detect anomalies using
+                                                                     less likely it will be selected. Based on this insight, we design
+EVT threshold against the anomaly score.
+                                                                     an outlier-resistant sampling algorithm, i.e., one-dimensional
+                                                                     random Gaussian, which not only guarantees RIP but also
+3.3    Shape-Based Clustering                                        resists outliers.
+While each strawman solutions has its advantages and draw-           Algorithm. We describe the design of outlier-resistant sam-
+backs, we find a way to combine them to get the better of            pling in Algorithm 1 and show the main steps in Figure 6.
+both. Specifically, we split Xt into several clusters of time        After the shape-based clustering, for each cluster, we can ob-
+series and reconstruct each cluster. The question is, how this       tain an w ∗ k matrix, which is constituted of k univariate time
+splitting should be done. Recall the first strawman solution         series. We also configure a sampling ratio, θ, as the input of
+cannot deal with time series of different shapes. Hence, we          the algorithm. To begin with, from Line 1 to 4 of Algorithm 1,
+choose to split Xt based on their shape. This solution can           we initialize a zero m ∗ w matrix T, where m = dw ∗ θe. φ is
+achieve both high accuracy and high efficiency.                      initialized as a vector containing m random Gaussian sample
+   We adopt shape-based distance [21], a cross correlation-          timestamps ranging from 0 to w. Motivated by [20], we adopt
+based method, to measure the distance between two univari-           a light-weight algorithm LESINN to calculate the sampling
+ate time series. It can achieve high computational efficiency        confidence vector sc, which determines the sampling confi-
+when dealing with high-dimensional time series. Different            dence of each timestamp. Nevertheless, as demonstrated in
+from ROCKA [14], we use hierarchical clustering, which               §4.2, LESINN itself cannot effectively handle multivariate
+is efficient and need not manually configure the number of           time series anomaly detection because it cannot capture the
+clusters, as the base clustering algorithm. Table 2 illustrates      complex temporal relationships among these time series. Fig-
+an example of clustering results. The nine univariate time           ure 6(a) shows one example of the original time series (blue
+series of a multivariate time series are grouped into three          line) with a window size of 20 and its sampling confidence
+clusters. In each cluster, the time series are correlated to the     (orange dotted line) for each timestamp.
+physical meaning of their corresponding monitoring metrics,             Then, we perform value sampling (Line 5 to 14). We first
+demonstrating that our method is intuitive.                          normalize sc to make its values sum up to one, and create
+   We cluster univariate time series for every multivariate          R equal-width steps. Each step is mapped to a timestamp
+time series based on one-day worth of data, because most             t based on the normalized sc (Line 8). For each step, we
+univariate time series are roughly periodical with a 24-hour         randomly sample a value from (0, 1), and compare it with the
+cycle that coincides with customers’ diurnal usage pattern           probability of a similar version of Gaussian distribution:
+[17]. Moreover, we observe that the shape of a univariate time
+series usually remains unchanged after a software change [38].                                                 (φi − step)2
+                                                                                     Pi (step) = ρ · exp(−                  )               (1)
+As a result, it has no need to re-cluster after a software change.                                                 2σ2
+                                                                     Note that ρ is a parameter representing the max sampling
+3.4    Outlier-Resistant Sampling                                    points (height in Figure 6(b)). For more theoretical details,
+                                                                     please refer to the work of Barranca, et al. [2]. σ is the stan-
+Insight. To solve the problem of random Gaussian sampling,           dard deviation of the distribution. If the random value is
+we gain insight from the investigation of a large number             smaller than P(step), we add one to T[i][t]. Note that after
+                     1.0                                                                                1.0                                                                         1.0
+                                    Time Series                                                                                                                                                   Time Series
+                     0.8                                                                                0.8
+
+
+
+
+                                                                                   Value (normalized)
+                                                                                                                                                                                    0.8
+Value (normalized)
+
+
+
+
+                                                                                                                                                               Value (normalized)
+                                    Sampling Confidence
+                                        ϕ1           ϕ2
+                     0.6                                                                                0.6                                                                         0.6
+
+                     0.4                                                                                0.4        ρ               σ                                                0.4
+
+                     0.2                                                                                0.2                                                                         0.2
+
+                     0.0                                                                                0.0                                                                         0.0
+                           0    2   4        6   8   10   12   14   16   18   20                          0.0    0.2         0.4    0.6     0.8          1.0                              0   2   4    6      8   10     12   14   16   18   20
+                                                  Time (h)                                                      Normalized Sampling Confidence                                                                Time (h)
+
+                                             (a) Initialize                                                            (b) Sampling                                                                        (c) Results
+
+Figure 6: A toy example of outlier-resistant sampling. In (a), to make it simple, we just plot one time series whose values are
+normalized, and it has an anomalous segment ranging from (timestamp) 9 to 12. We set m = 2 in this example. In (b), the small
+black dot is steps, and the purple and green marks are “selected” steps. (c) shows two sampled data points.
+
+
+all the iterations, the randomly sampled timestamps in φ may                                                                        Algorithm 1: Outlier-Resistant Sampling
+not be “shot” by t. Therefore, we add one to T[i][φi ] for each
+                                                                                                                                     Input: Xtc (w ∗ k): k univariate time series of Xt in cluster c,
+sampled timestamp i. Figure 6(b) shows a concrete example                                                                                    θ: Initial sampling ratio
+of sampling values. In this figure, there are R = 42 steps (the                                                                      Output: Sampling matrix B(m ∗ k)
+small points in the bottom), and the normalized sc (the orange                                                                     1 m ← dw ∗ θe
+box) is shown in its original temporal order, which represents                                                                     2 T(m ∗ w) ← 0
+a timestamp.                                                                                                                       3 φ(m ∗ 1) ← randomly sampling m timestamps from [0, w]
+
+   Finally, we normalize each column of T (Line 15 to 18).                                                                         4 sc(w ∗ 1) ← SamplingConfidence (Xw )
+                                                                                                                                              sc
+The sampling matrix B is the dot product of T and Xtc . As                                                                         5 sc ← w−1
+                                                                                                                                            ∑ j=0 sc j
+shown in Figure 6(c), the purple dot and green cross are the                                                                       6 step = 0
+sampled data points in B. We can see that our algorithm is                                                                         7 while step ≤ 1 do
+resistant to anomalous data points because the sampled green                                                                       8     t ← arg min step < ∑aj=0 sc( j)
+                                                                                                                                                    0≤a<w
+cross point represents “normal pattern” even though its corre-                                                                     9      foreach i ∈ [0, m) do
+sponding point in the original time series is anomalous. Note                                                                      10          if random(0, 1) < Pi (step) then
+that although we apply LESINN to calculate the sampling                                                                            11               T[i][t] ← T[i][t] + 1
+confidence vector, which is of great importance to the resis-                                                                      12     step ← step + 1/R
+tant outlier, our algorithm is also robust to other sampling                                                                       13 foreach i ∈ [0, m) do
+confidence measurements beyond LESINN.                                                                                             14     T[i][φi ] ← T[i][φi ] + 1
+                                                                                                                                   15 foreach i ∈ [0, m) do
+                                                                                                                                   16     T[i] ← T[i]/ ∑wj=0 T[i][ j])
+3.5                            Compressed Sensing Reconstruction                                                                   17 B ← T · Xt
+                                                                                                                                                 c
+
+                                                                                                                                   18 return B
+Here we provide a quick introduction to the signal reconstruc-
+tion step in compressed sensing, using this anomaly detection
+problem as the context. The objective of compressed sensing
+                                                                                                                                       The sampling matrix A is calculated as:
+reconstruction is to “solve” [4]:
+                                                               0
+                                                                                                                                                                                     A = φ(D ⊗ DT )                                          (3)
+                                                          AX t = B                                                     (2)
+                                                                                                                                   where D is the inverse discrete cosine transform [13] of the
+where X0 t is the multivariate time series to be reconstructed                                                                     original time series Xtc , and ⊗ is the Kronecker product [29].
+from B that is sampled from the original Xt . We put quotations                                                                       To solve Equation 2 (by L1 minimization), we adopt
+around the word “solve”, since this equation is not solvable                                                                       CVXPY [7], an efficient convex optimization tool set, to cal-
+in the usual sense, as it is under-determined. Rather, ideally                                                                     culate the L1 minimum [8]. CVXPY may return no result in
+we would like to compute the sparest (i.e., containing the                                                                         some edge cases because the equation is non-homogeneous.
+smallest number of nonzero components) such X0 t . However,                                                                        Therefore, we gradually increase θ by 0.1 to avoid such a
+this computation, known as L0 minimization, is NP-complete.                                                                        scenario. We set θ = 0.2 based on the evaluation experiments
+A classic CS result is that, when Xt is sparse, minimizing the                                                                     as shown in §4.4. Reconstructing each cluster of univariate
+L1 of X0 t (while satisfying Equation 2) results in the same                                                                       time series in a multivariate time series is much more efficient
+solution as the L0 minimization with high probability [4].                                                                         than reconstructing the whole multivariate time series (§4.4).
+Anomaly score. We first obtain the reconstructed time se-               Table 3: The detailed information of the datasets (# Train-
+ries for each cluster of univariate time series to form an              ing/Test Points = # Online Services * n * # Days * collected
+original multivariate time series. We then concatenate the              data points per day)
+reconstructed univariate time series to form a reconstructed             Dataset    # Online   n    # Training Points    # Test Points    Anomaly
+multivariate time series X0 t . Note that the original and re-                      Services            (# Days)           (# Days)        ratio
+constructed multivariate time series have the same order of                D1         28       38   19,835,340 (13)     19,835,760 (13)    4.16
+univariate time series. Intuitively, an anomaly score is needed            D2         30       19    3,283,200 (20)      4,104,000 (25)    5.25
+                                                                           D3         30       19    3,283,200 (20)      4,104,000 (25)    20.26
+to measure the similarity between the original and the re-
+constructed multivariate time series. We measure the differ-
+ences of the n time series between Xt and X0 t using euclidean          collected from 30 online service systems over two different
+distance [15]: dti = |xti − x0 ti |, where x0 ti is the reconstructed   seven-week-long periods, respectively. They are both sampled
+univariate time series of xti . To avoid an anomaly score be-           once every five minutes.
+ing dominated by a single significant spike in a univariate                This work studies metrics for a single service hosted on
+time series, we calculate st using the harmonic mean of di ,            one or multiple machines. These metrics are equally impor-
+                       −1
+i.e., st = n/(∑ni=1 dti ).                                              tant and have no hierarchy among them. The ground truth of
+Choosing threshold. To properly generate anomaly alerts,                anomalies in all the three datasets are manually labeled by
+we need to accurately choose a threshold to determine whether           operators based on performance issues and failure tickets. The
+an anomaly score is high enough to trigger an alert. A                  point-wise anomaly rates ( # #anomaly  data points
+                                                                                                        total data points ) are diverse in
+static threshold does not work well since the data distribu-            these datasets. For example, the anomaly rate of D3 (20.26%)
+tion changes over time. Because an extreme value of the                 is much higher than those of D1 (4.16%) and D2 (5.25%),
+anomaly score generated by JumpStarter usually represents               mainly because D3 contains a severe outage that lasted a long
+an anomaly, we adopt the widely used Extreme Value The-                 time. Table 3 lists the detailed information of each dataset,
+ory (EVT) [27] to tailor the anomaly threshold automatically.           including the number of metrics (n), the scale of the training
+EVT is a statistical theory aiming to find the law of extreme           and test sets, and the anomalies ratio. For each service, the
+values, and it does not assume data distribution. It has been           monitoring metrics constitute its multivariate time series. The
+demonstrated to accurately choose the threshold for anomaly             numbers of metrics monitored in D1, D2 and D3 are 38, 19
+detection methods [17,28]. Note that EVT for choosing thresh-           and 19, respectively. Monitoring tens of metrics is a typical
+old is not the main contribution of our work.                           setting for online service systems.
+
+                                                                        4.1.2      Compared Approaches
+4     Experiments
+                                                                        We compare JumpStarter with two learning-based unsuper-
+In the study, we address the following research questions:              vised approaches for multivariate time series anomaly detec-
+RQ1: How well does JumpStarter perform in multivariate                  tion, namely, MSCRED and OmniAnomaly. We also compare
+time series anomaly detection?                                          it with two other anomaly detection algorithms: robust ran-
+RQ2: Does each component contribute to JumpStarter?                     dom cut forest (RRCF) and least similar nearest neighbors
+RQ3: How do the major parameters of JumpStarter influence               (LESINN). Since it has been demonstrated [28] that univari-
+its performance?                                                        ate time series anomaly detection approaches are not suitable
+                                                                        for multivariate time series, we do not compare JumpStarter
+                                                                        with the baseline methods designed for univariate time series.
+4.1     Experimental Design
+                                                                        RRCF [11]. RRCF is the base anomaly detection algorithm
+4.1.1    Datasets                                                       used in AWS CloudWatch, which improves the robustness of
+                                                                        original random cut forest probabilistic data structure when
+We conduct experiments on three datasets, including one open
+                                                                        detecting anomalies in streaming data. It is open-sourced2 .
+dataset1 – D1 from a large Internet company A , and two
+datasets (D2, D3) collected from a top-tier global content              LESINN [20]. LESINN is a time series outlier detection
+platform B providing services for over 800 million daily ac-            algorithm. For each data point, it calculates the least similar
+tive (over 1 billion cumulative) users across all of its content        nearest neighbors of it in a time window. If the data point
+platforms. Specifically, D1 is a five-week-long dataset col-            does not have any similar nearest neighbor, it is an outlier.
+lected from 28 online service systems, and it is sampled once           MSCRED [34]. MSCRED first encodes the temporal corre-
+per minute. These 58 online service systems are located in              lations among the time series using an attention-based Con-
+different servers, which provide services such as searching,            vLSTM network, and then reconstructs time series to detect
+ranking, and data processing, etc. D2 and D3 are two datasets           anomalies using a convolutional decoder.
+    1 https://github.com/NetManAIOps/OmniAnomaly                          2 https://github.com/aws/random-cut-forest-by-aws
+                                            RRCF             LESINN             MECRED                   OmniAnomaly               JumpStarter
+                                  100                                                      100                      100
+                                  80                                                        80                        80
+
+
+                   F1-score (%)
+                                  60                                                        60                        60
+                                  40                                                        40                        40
+                                  20                                                        20                        20
+
+                                        1    2   3   4   5   6      7 8   9 10 11 12 13          1   2      3 4   5        1   2      3 4   5
+                                                                 (a) D1                                  (b) D2                    (c) D3
+
+  Figure 7: The average F1 score for the three datasets D1, D2, and D3 as a function of the training dataset size in segments.
+
+OmniAnomaly [28]. OmniAnomaly is an unsupervised deep                                     change. Second, in the offline experiment, we adopt the same
+learning based approach. It glues GRU and VAE to model the                                experiment settings as used in previous work.
+temporal dependence and stochasticity of time series.                                     Online experiment. We evenly split the training set of D1
+                                                                                          into 13 segments (1-day-long data per segment and each has
+4.1.3   Implementation                                                                    a similar number of anomalies), and D2 and D3 each into 5
+                                                                                          segments (4-day-long data per segment and each has a similar
+JumpStarter is implemented using Python 3.7. For the hyper-
+                                                                                          number of anomalies). D2 and D3 have a longer segment be-
+parameters, ρ = 0.1 and σ = 0.5 are used in all settings. The
+                                                                                          cause they have fewer anomalies per day. For each dataset, the
+detection window size w = 20 and the sampling rate σ = 0.2
+                                                                                          test set remains the same for a fair comparison (see Table 3).
+are used in §4.4. Our study is conducted on a Dell R420 server
+                                                                                          Figure 7 shows the average F1 score of JumpStarter and four
+with 16 * Intel Xeon E5-2420 CPUs and a 64GB memory.
+                                                                                          baseline methods as the amount (scale) of training data in-
+                                                                                          creases from 1 segment to 13 consecutive segments for D1,
+4.1.4   Evaluation Metrics                                                                and to 5 consecutive segments for D2 and D3. As for Jump-
+The output of a multivariate time series anomaly detection                                Starter, RRCF and LESINN, they conduct anomaly detection
+approach for a specific timestamp is either anomalous or not.                             without any training data. Therefore, their performance stays
+We use True Positive (TP), True Negative (TN), False Positive                             the same when the scale of training data varies.
+(FP), and False Negative (FN) to label an anomaly detection                                  We can see that JumpStarter performs significantly better
+result according to the ground truth. A TP is an anomaly both                             than the four baseline approaches across all segments on all
+confirmed by operators and detected by the approach. If an                                the three datasets. RRCF is less accurate than the other ap-
+anomaly is labeled by operators but not detected by the ap-                               proaches because it aims to detect the anomalous behavior
+proach, we label the item as an FN. An FP is an “anomaly"                                 of a single data point, which is not suitable in our scenario
+that is detected by the approach but is actually normal. An                               where the anomalous behavior of a time series segment is
+item is TN, if neither the operators nor the approach considers                           studied. The F1 scores of learning-based approaches, namely
+it an anomaly. We use three metrics for evaluating the perfor-                            OmniAnomaly and MSCRED, increase as the scale of train-
+mance of JumpStarter and related approaches: Precision = TP                               ing set increases, and approach 90% and 60% respectively
+/ (TP + FP), Recall = TP / (TP + FN), F1 score = 2 * Precision                            toward the end. OmniAnomaly achieves higher accuracy than
+* Recall / (Precision + Recall). The accounting of the three                              LESINN when the amount of training data is sufficient. MS-
+metrics is point-adjusted. That is, if any point in an anomalous                          CRED does not perform well because it mainly focuses on the
+segment in the ground truth is detected, we consider the entire                           inter-correlations rather than the overall performance of mul-
+segment, or all anomalous points therein, as detected correctly.                          tivariate time series. For all approaches except RRCF, they
+Point-adjusted metrics are widely adopted in anomaly detec-                               achieve the best performance on D3 because the anomalous
+tion [28, 32], since operators care more about anomalies in a                             patterns in D3 are easier to capture than those in the other
+contiguous segment than point-wise anomalies.                                             two datasets. The outperformance of JumpStarter will be ex-
+                                                                                          plained next, when we will perform experiments concerning
+                                                                                          software changes.
+4.2     RQ1: Performance of JumpStarter
+                                                                                          Anomaly detection after software changes. Recall that soft-
+We evaluate two aspects of the performance of anomaly de-                                 ware changes occur frequently in online service systems. We
+tection each using a different partitioning of training and test                          evaluate the performance of the five approaches during ten
+sets. First, we conduct service anomaly detection in the on-                              software changes deployed on two service systems. We do
+line mode and evaluate it as an online experiment. In addition,                           so using the average false positive rate (FPR), defined as FP /
+we collect ten software changes from B for evaluating the                                 (TN + FP), as the metric. FPR measures the burden of false
+performance of these approaches in reacting to a software                                 alarms, which is an appropriate metric here since anomalies
+                       Table 4: Average Precision (P), Recall (R), and F1 Score (F) of JumpStarter and related approaches
+                                                   D1                               D2                              D3                       Avg.
+                        Method
+                                           P       R        F          P            R        F          P           R         F       P       R         F
+                       RRCF [11]          40.26   54.45   39.54      44.06         39.02   30.10    28.33      75.33        38.38    37.55   56.27     36.01
+                      LESINN [20]         75.49   77.40   76.43      77.50         87.15   82.04    87.02      90.95        88.94    80.00   85.17     82.50
+                     MSCRED [34]          46.19   56.16   50.69      46.91         58.26   51.97    68.21      86.47        76.26    53.77   66.96     59.64
+                    OmniAnomaly [28]      78.19   95.03   85.79      77.24         85.84   81.31    89.59      95.02        92.23    81.67   91.96     86.51
+                      JumpStarter         90.35   94.31   92.29      92.05         94.51   93.26    94.14      99.60        96.79    92.18   96.14     94.12
+
+
+
+          100                                                                              Table 5: The average initialization time (IT) and detection
+                                                                                           time (DT) of JumpStarter and baseline approaches
+RPS
+
+
+
+
+          50
+                                                                                             Approach       RRCF         LESINN     MSCRED     Omni-        JumpStarter
+            0
+                                                                                                                                              Anomaly
+                0         6            12         18            24           30
+                              Software Change                                                IT (min)        20            20       >86400    >86400             20
+                                                                                             DT (ms)        41.24        118.63     122.82    191.86           127.13
+           RRCF        LESINN       MECRED        OmniAnomaly        JumpStarter
+          100
+FPR (%)
+
+
+
+
+                                                                                           is 94.12%, significantly higher than those of the other four
+          50
+                                                                                           approaches, which are 86.51%, 59.64%, 82.50%, and 36.01%,
+            0                                                                              respectively. This is because D2 contains a large quantity of
+                0         6            12         18            24           30
+                                         Time (min)
+                                                                                           noises, and none of the other four approaches is robust to such
+                                                                                           noises. In contrast, JumpStarter reconstructs an anomaly-free
+                                                                                           time series with outlier-resistant sampling, making it robust
+Figure 8: The average False Positive Rate (FPR) during ten                                 to such noises in each dataset.
+software changes. We plot the software changes starting at
+                                                                                           Efficiency. Table 5 lists the average initialization time and de-
+the seventh minute. The top figure is a constituent univariate
+                                                                                           tection time of the five approaches. The initialization time of
+time series representing Requests Per Second (RPS).
+                                                                                           JumpStarter, as demonstrated in §4.4, is only twenty minutes,
+                                                                                           much shorter than those of other approaches. Although RRCF
+                                                                                           and LESINN achieves the same initialization time as Jump-
+rarely occur in a short period.
+                                                                                           Starter, they suffer from low accuracy as shown in Table 4.
+   Figure 8 shows the average FPR of the five approaches dur-                              The detection time of JumpStarter for each multivariate time
+ing the 10 software changes, all of which occur at the seventh                             series is 127.13 ms, similar to that of the other approaches.
+minute in the figure. Some constituent univariate times series                             In JumpStarter, the shape-based clustering step takes at most
+of the multivariate time series witness level shifts [17]. We                              500ms on all three datasets.
+observe that all five approaches produce false positives after
+these software changes. However, JumpStarter suffers from
+high FPR only for about five minutes, after which its FPR                                  4.3     RQ2: Contributions of Components
+becomes quite low. RRCF and LESINN detect anomalies by
+                                                                                           In this section, we evaluate the relative contributions of two
+calculating outliers in a relatively long period, and hence their
+                                                                                           component techniques in JumpStarter, namely shape-based
+FPRs do not start to decrease until 17 minutes after software
+                                                                                           clustering and outlier-resistant sampling, to its outperfor-
+changes. Both OmniAnomaly and MECRED perform well
+                                                                                           mance. To this end, we reconfigure JumpStarter to create
+only when the joint distribution of multivariate time series
+                                                                                           three variants. The first two variants concern JumpStarter
+remains unchanged. Consequently, they produce false alarms
+                                                                                           without shape-based clustering. The first variant, called w/o
+for a long period after software changes.
+                                                                                           Clustering: As a Whole, is to treat all time series as a whole,
+Offline experiment. Now we study the potential performance                                 whereas the second variant, called w/o Clustering: Separately,
+in the offline setting using best F1 score. Since we need a                                is to sample and reconstruct time series separately. The third
+long time to train models of learning-based anomaly detec-                                 variant, called w/o Sampling, is JumpStarter without outlier-
+tion approaches, we split the dataset into training and test set                           resistant sampling.
+following the settings in [28]. Then, we calculate the best F1                                Figure 9 shows the comparison results of JumpStarter and
+score of each approach by grid searching their parameters and                              its three variants on three datasets in terms of average best F1
+anomaly thresholds. Table 4 lists the average best F1 scores                               scores. JumpStarter performs better than all its three variants.
+of JumpStarter and baseline approaches on each dataset, as                                 Specifically, JumpStarter improves the average best F1 score
+well as their corresponding Precision and Recall. The aver-                                of w/o Clustering: As a Whole, w/o Clustering: Separately,
+age best F1 score of JumpStarter across the three datasets                                 and w/o Sampling by 5.81% ∼ 14.90%, 2.58% ∼ 9.96%, and
+                           w/o Clustering: As a Whole   w/o Sampling                                100                          1.0
+                           w/o Clustering: Separately   JumpStarter
+
+
+
+
+                                                                                     F1-score (%)
+               100                                                                                   80
+
+
+
+
+                                                                                                                                        Time (s)
+                                                                                                                                 0.5
+               90                                                                                    60
+F1-score (%)
+
+
+
+
+               80
+                                                                                                     40                          0.0
+                                                                                                       10   20 30 40 50        60
+               70                                                                                            Window Size w
+
+               60                                                                                                 (a)
+                                                                                                    100                          1.0
+               50
+                          D1                   D2            D3
+
+
+
+
+                                                                                    F1-score (%)
+                                                                                                    80
+
+
+
+
+                                                                                                                                       Time (s)
+Figure 9: The average F1 score of JumpStarter and its three                                                                      0.5
+                                                                                                    60
+variants on three datasets
+                                                                                                    40                           0.0
+                                                                                                     0.1 0.2 0.3 0.5 0.7       0.9
+4.69% ∼ 18.34%, respectively. The results demonstrate that                                                   Sampling Rate θ
+both shape-based clustering and outlier-resistant sampling                                                       (b)
+contribute significantly to a more accurate JumpStarter. In
+addition, w/o Clustering: Separately outperforms w/o Clus-             Figure 10: The average F1 score (green line with error bounds)
+tering: As a Whole, because separate reconstruction of time            and average point-wise detection time (dotted blue line) of
+series more accurately captures anomalous patterns than re-            JumpStarter under different parameters.
+construction as a whole, as shown in Figure 4.
+   To compare the computational efficiency of different meth-          from 0.1 to 0.2, the F1 score of JumpStarter increases, and it
+ods, we compare their detection times. For each multivariate           becomes stable after that. The point-wise detection time of
+time series, the detection time of w/o Clustering: As a Whole,         JumpStarter decreases with an increase in the sampling rate
+w/o Clustering: Separately, w/o Sampling, and JumpStarter is           from 0.1 to 0.2, and it then increases after that. That is because,
+7891.45 ms, 2056.56 ms, 121.75 ms, 127.13 ms, respectively.            if the sampling rate is too low (e.g., 0.1), reconstruction is
+This demonstrates that the shape-based clustering technique            likely to fail, which in turn increases the number of retries.
+significantly improves the computational efficiency of Jump-           Therefore, we set the sampling rate to 0.2.
+Starter. In conclusion, the combination of the shape-based
+clustering and outlier-resistant sampling facilitates an accu-
+rate and efficient JumpStarter.                                        5     Deployment and Discussion
+
+                                                                       5.1    Success Story
+4.4                  RQ3: Parameter Sensitivity
+                                                                       Case study. We applied JumpStarter into 30 online service
+Recall that our goal is to shorten the initialization time of          systems in a top-tier global content platform B , which has
+anomaly detection. The initialization time of JumpStarter              more than 800 million users around the world. Operators can
+depends on the detection window size w. We empirically in-             register a multivariate time series monitor task by ingesting
+crease the window size from ten minutes to sixty minutes.              these time series from influxDB and Kafka. From the monitor-
+Figure 10(a) shows how the average best F1 score and point-            ing dashboard of these services, we can see the multivariate
+wise detection time of JumpStarter changes as the window               time series of service monitoring. Figure 11 shows some time
+size increases. The accuracy of JumpStarter increases be-              series of two technical outages.
+fore the window size reaches 20 minutes, after which it be-               Case I: Long service response time caused by network
+comes stable, whereas the detection time increases gradually.          issue. As illustrated in Figure 11(a), we observed jitters in
+Therefore, the window size is preset as twenty minutes, which          time series tcpext_listendrops and tcp_attemptfails.
+makes JumpStarter both accurate and efficient. Note that for           In the meantime, time series such as cpu_user and load_one
+those anomalies lasting longer than 20 minutes, JumpStarter            drastically dropped. JumpStarter successfully pinpointed this
+is still able to detect them because it can easily capture these       anomaly and generated an alert. After diagnosing the anomaly,
+anomalies when they start.                                             operators found that it was a network issue of a database node.
+   Another important parameter of JumpStarter is σ, the initial           Case II: Service hang-up due to software change. As illus-
+sampling rate. Figure 10(b) shows how the average best F1              trated in Figure 11(b), time series tcp_retrans_percentage
+score and point-wise detection time of JumpStarter changes             witnessed significant jitters and cpu_idle plunged to zero.
+as σ increases. Similarly, when we increase the sampling rate          After that, cpu_sintr, cpu_ctxt, rx_byptes_eth0 and
+tx_pkts_eth0 increased significantly. JumpStarter detected           ent anomalous cases [5]. Besides, adeptly integrating domain
+and reported this anomaly to operators. Operators conducted          knowledge into the alert system is also of great importance
+software changes and a configuration error occurred in the           since the system needs feedback from operators. Therefore,
+new version. Thanks to JumpStarter, operators found out this         apart from the anomaly detection approach JumpStarter, we
+error in time and quickly rolled out the software change.            will improve the alert system behind it.
+Help with root cause diagnosis. JumpStarter can help with
+root cause diagnosis in two aspects. First, hundreds of multi-       5.3    Threats to Validity
+variate time series need to be monitored. After shape-based
+clustering in JumpStarter, operators can focus on limited            Anomaly labeling. In this work, we use one open dataset
+time series groups with a similar shape of variations. Sec-          from OmniAnomaly and two datasets from real-world ser-
+ond, JumpStarter respectively calculates the distance between        vices. All the labels in these datasets are provided by operators
+the original univariate time series and the reconstructed ones.      based on performance issues and incident reports. Manually
+Therefore, it can output a rank list of time series’ contributions   labeling anomaly points in the timeline may introduce noise
+to the overall anomaly. For example, tcpext_listendrops              (false positives or negatives) because no clear boundaries lie
+in Figure 11(a) is detected as the most anomalous time series        in anomalies and normal patterns. However, domain operators
+in this figure. It can explicitly indicate the issue caused by the   with profound experience suggest the noise in those labels
+network component.                                                   accounts for a very small portion. Besides, operators design
+                                                                     evaluation metrics that utilize contiguous anomaly segments
+                                                                     instead of point-wise anomalies. Adopting these widely used
+5.2    Lessons Learned                                               metrics [17, 28, 32], we can also eliminate labeling noises.
+                                                                     Subject systems. In our experiments, we use an open dataset
+Different services may prefer precision and recall differ-
+                                                                     D1 from a large Internet company. We also collect datasets
+ently. With collaboration with different services teams, we
+                                                                     D2 and D3 from large-scale real-world online service systems.
+found that their preferences on precision and recall are diverse.
+                                                                     The granularity of the time series of these datasets is one and
+For example, recall weighs more than precision does in a user
+                                                                     five minutes, respectively. The efficacy of our algorithm is not
+interactive core service since operators do not want to miss
+                                                                     influenced by the granularity. With fine-grained granularity,
+any potential anomaly that can negatively impact the user
+                                                                     say one second, we believe our algorithm can still work with-
+experience. In addition, precision is more valuable in a data
+                                                                     out additional efforts. Since JumpStarter’s versatility has been
+analysis job because operators would better detect anomalies
+                                                                     demonstrated using three datasets collected from 58 different
+precisely than to obtain a lot of false alerts. Therefore, the
+                                                                     services, it should be easy for JumpStarter to work with a new
+F1 score alone is not a suitable metric for all services. Going
+                                                                     dataset. Admittedly, the number of subject services is still
+forward, we can provide operators with an interface to choose
+                                                                     limited. We will experiment with JumpStarter on a variety of
+their precision and recall preference level. Specifically, Jump-
+                                                                     online service systems in the future.
+Starter can accordingly set the anomaly score using different
+parameters of the EVT algorithm to guide the sensitivity of
+detection output. We also observe that severe faults (examples       6     Related work
+in Figure 11) rarely happen in online services but performance
+issues do happen a lot. We aim to reduce mean time to restore        Multivariate time series anomaly detection. Existing ap-
+for severe faults in future work.                                    proaches include: (1) Traditional statistic method: time series
+Alert system is not just anomaly detection. Our Jump-                analysis [6], RRCF [11] and clustering-based LESINN [20]
+Starter for robust and quickly initialized anomaly detection is      do not need training data thus the initialization time is short.
+not the end of the story. Building an intelligent alert system       However, they all suffer from parameter tuning [15] and be-
+based on anomaly detection results is also a complex task in         ing not robust in real practice [17]. (2) Supervised learning
+both engineering and academic aspect. Some anomalies may             based method: Opprentice [15] is an ensemble supervised
+have no or little signal in the monitored time series. Therefore,    approach. It needs operators to label anomalies for a long
+JumpStarter may miss these anomalies. For this scenario, we          period to train a model. (3) Unsupervised learning based
+aim to collect more types of monitoring data, e.g., logs, traces,    method: LSTM-NDT [12], LSTM-VAE [22], MSCRED [34]
+to build a more comprehensive anomaly detection model. We            and OmniAnomaly [28] build anomaly detection models by
+believe JumpStarter can be easily extended for localizing            learning the anomaly patterns using a large span of histor-
+the anomalous metrics, however, there is a significant gap           ical data. These methods suffer long initialization time for
+between anomalous metrics and the root causes of anoma-              training the model and are less accurate when facing software
+lies [16,25]. An intelligent alert system needs to merge similar     change [17]. Different from them, we take advantage of com-
+anomalous cases, pinpoint more sharply to the root causes            pressed sensing, which is a quick initiated signal processing
+of anomalies. It also had better learn the priority of differ-       based approach without any training data.
+    tcpext_listendrops                                                  tcp_retrans_percentage
+
+
+
+
+    tcp_attemptfails                                                    cpu_idle
+
+
+
+
+    tcp_outsegs                                                         cpu_sintr
+
+
+
+
+    cpu_user                                                            cpu_ctxt
+
+
+
+
+    cpu_system                                                          rx_bytes_eth0
+
+
+
+
+    load_one                                                            tx_pkts_eth0
+
+
+
+        21               22                  23         24                  21                   22                23        24
+                                   Alert                                                                      Alert
+                         (a) Network Issue                                                       (b) Software Change
+
+Figure 11: Two anomaly cases with selected time series (service performance metrics, e.g., average response time, error rate, are
+hidden for the confidential reason). Time (X-axis) is shown in days. The alert is generated by JumpStarter.
+
+
+Signal processing based anomaly detection. Since time se-           univariate time series in a multivariate time series, and outlier-
+ries of online service systems fluctuate and not always peri-       resistant sampling to avoid sampling anomalous values. Ex-
+odic [35]. Other signal processing methods are not suitable in      periments conducted on 58 real-world online service systems
+this scenario. For example, Fourier transform can only cap-         of two Internet companies demonstrate the effectiveness of
+ture period, the global information of time series [38]. For        JumpStarter, achieving an average F1 score of 94.12% and
+local information, wavelet analysis can capture local patterns      outperforming four state-of-the-art approaches. Besides, our
+but it is very time consuming [1]. Kalman filtering [18] and        results also endorse the contributions of the main components.
+PCA [19] are not suitable for variation time series of online       In particular, we have applied JumpStarter in a real-world
+service systems [15]. Different from them, our work adopts          online service system and gained some useful lessons.
+compressed sensing as the base technique and our experimen-
+tal results have demonstrated the effectiveness of JumpStarter
+in multivariate time series anomaly detection scenario.             8    Acknowledgements
+Compressed sensing. As body of theory regarding signal re-
+covery, CS has been widely used in image reconstruction [2],        We thank our shepherd and the anonymous reviewers for their
+genome-wide association study [30], and many other applica-         thorough comments and helpful suggestions. We thank Shiyu
+tions [9]. JumpStarter is parallel to them, as it detects anomaly   Ma, Tiankai Yang, and Hanwen Hu for helping with exper-
+adopting the idea of CS reconstruction.                             iments. We appreciate Christopher Zheng for proofreading
+                                                                    our paper. This work has been partially supported by the
+                                                                    National Key Research and Development Program of China
+7    Conclusion                                                     under Grant No.2019YFE0105500, the National Natural Sci-
+                                                                    ence of China under Grant 62072264, and the Beijing National
+In recent years, online service systems are increasingly de-        Research Center for Information Science and Technology
+ployed on cloud computing platforms. To adapt to frequent           (BNRist) key projects. Shenglin Zhang has been partially sup-
+changes in online service systems, multivariate time series         ported by the National Natural Science Foundation of China
+anomaly detection approaches should be robust and quickly           under Grant No. 61902200 and the China Postdoctoral Sci-
+initialized. In this paper, we propose a jump-starting multivari-   ence Foundation under Grant No.2019M651015. Junjie chen
+ate time series anomaly detection approach with a relatively        has been partially supported by the National Natural Science
+short initialization time of only twenty minutes. Based on the      Foundation of China under Grand No. 62002256. The work
+compressed sensing technique, JumpStarter adopts a shape-           of Jun Xu has been partially supported by US NSF through
+based clustering strategy to deal with the large number of          awards CNS-1909048 and CNS-2007006.
+References                                                      [12] Kyle Hundman, Valentino Constantinou, Christopher
+                                                                     Laporte, Ian Colwell, and Tom Soderstrom. Detecting
+ [1] Vicente Alarcon-Aquino and Javier A Barria. Anomaly             spacecraft anomalies using lstms and nonparametric dy-
+     detection in communication networks using wavelets.             namic thresholding. In Proceedings of the 24th SIGKDD
+     IEE Proceedings-Communications, 148(6):355–362,                 International Conference on Knowledge Discovery and
+     2001.                                                           Data Mining, pages 387–395. ACM, 2018.
+ [2] Victor J Barranca, Gregor Kovačič, Douglas Zhou, and     [13] Andy C Hung and Teresa H-Y Meng. A comparison of
+     David Cai. Improved compressive sensing of natural              fast inverse discrete cosine transform algorithms. Multi-
+     scenes using localized random sampling. Scientific re-          media Systems, 2(5):204–217, 1994.
+     ports, 6:31976, 2016.
+                                                                [14] Zhihan Li, Youjian Zhao, Rong Liu, and Dan Pei. Ro-
+ [3] Betsy Beyer, Chris Jones, Jennifer Petoff, and
+                                                                     bust and rapid clustering of kpis for large-scale anomaly
+     Niall Richard Murphy. Site Reliability Engineering:
+                                                                     detection. In Proceedings of the 26th IWQoS Interna-
+     How Google Runs Production Systems. O’Reilly Media,
+                                                                     tional Symposium on Quality of Service, pages 1–10.
+     Inc., 2016.
+                                                                     IEEE, 2018.
+ [4] Emmanuel J Candes and Terence Tao. Decoding by lin-
+     ear programming. Transactions on Information Theory,       [15] Dapeng Liu, Youjian Zhao, Haowen Xu, Yongqian Sun,
+     51(12):4203–4215, 2005.                                         Dan Pei, Jiao Luo, Xiaowei Jing, and Mei Feng. Oppren-
+                                                                     tice: Towards practical and automatic anomaly detection
+ [5] Yujun Chen, Xian Yang, Hang Dong, Xiaoting He,                  through machine learning. In Proceedings of the IMC In-
+     Hongyu Zhang, Qingwei Lin, Junjie Chen, Pu Zhao,                ternet Measurement Conference, pages 211–224. ACM,
+     Yu Kang, Feng Gao, et al. Identifying linked incidents          2015.
+     in large-scale online service systems. In Proceedings
+     of the 28th ACM Joint Meeting on European Software         [16] Minghua Ma, Zheng Yin, Shenglin Zhang, Sheng Wang,
+     Engineering Conference and Symposium on the Foun-               Christopher Zheng, Xinhao Jiang, Hanwen Hu, Cheng
+     dations of Software Engineering, pages 304–314, 2020.           Luo, Yilin Li, Nengjun Qiu, et al. Diagnosing root
+                                                                     causes of intermittent slow queries in cloud databases.
+ [6] David R Choffnes, Fabián E Bustamante, and Zihui Ge.            Proceedings of the VLDB Endowment, 13(8):1176–
+     Crowdsourcing service-level network event monitoring.           1189, 2020.
+     In Proceedings of the SIGCOMM Conference, pages
+     387–398. ACM, 2010.                                        [17] Minghua Ma, Shenglin Zhang, Dan Pei, Xin Huang, and
+                                                                     Hongwei Dai. Robust and rapid adaption for concept
+ [7] Steven Diamond and Stephen Boyd. CVXPY: A Python-               drift in software system anomaly detection. In Pro-
+     embedded modeling language for convex optimization.             ceedings of the 29th ISSRE International Symposium on
+     Journal of Machine Learning Research, 17(83):1–5,               Software Reliability Engineering, pages 13–24. IEEE,
+     2016.                                                           2018.
+ [8] David L Donoho. For most large underdetermined
+                                                                [18] Joseph Ndong and Kavé Salamatian. Signal processing-
+     systems of linear equations the minimal l1-norm so-
+                                                                     based anomaly detection techniques: a comparative anal-
+     lution is also the sparsest solution. Communications on
+                                                                     ysis. In Proc. 2011 3rd International Conference on
+     Pure and Applied Mathematics: A Journal Issued by the
+                                                                     Evolving Internet, pages 32–39, 2011.
+     Courant Institute of Mathematical Sciences, 59(6):797–
+     829, 2006.                                                 [19] Netflix.  Rad — outlier detection on big data.
+ [9] Yonina C Eldar and Gitta Kutyniok. Compressed sens-             https://netflixtechblog.com/rad-outlier-
+     ing: theory and applications. Cambridge University              detection-on-big-data-d6b0494371cc.
+     Press, 2012.                                               [20] Guansong Pang, Kai Ming Ting, and David Albrecht.
+[10] João Gama, Indrė Žliobaitė, Albert Bifet, Mykola Pech-        Lesinn: Detecting anomalies by identifying least similar
+     enizkiy, and Abdelhamid Bouchachia. A survey on                 nearest neighbours. In Proceedings of the ICDMW Inter-
+     concept drift adaptation. Computing Surveys (CSUR),             national Conference on Data Mining Workshop, pages
+     46(4):1–37, 2014.                                               623–630. IEEE, 2015.
+
+[11] Sudipto Guha, Nina Mishra, Gourav Roy, and Okke            [21] John Paparrizos and Luis Gravano. k-shape: Efficient
+     Schrijvers. Robust random cut forest based anomaly              and accurate clustering of time series. In Proceedings of
+     detection on streams. In International Conference on            the SIGMOD International Conference on Management
+     Machine Learning, pages 2712–2721. PMLR, 2016.                  of Data, pages 1855–1870. ACM, 2015.
+[22] Daehyung Park, Yuuna Hoshi, and Charles C Kemp. A                 www.theverge.com/2020/4/23/21232401/zoom-300-
+     multimodal anomaly detector for robot-assisted feeding            million-users-growth-coronavirus-pandemic-
+     using an lstm-based variational autoencoder. Robotics             security-privacy-concerns-response.
+     and Automation Letters, 3(3):1544–1551, 2018.                [32] Haowen Xu, Wenxiao Chen, Nengwen Zhao, Zeyan Li,
+                                                                       Jiahao Bu, Zhihan Li, Ying Liu, Youjian Zhao, Dan Pei,
+[23] Daehyung Park, Hokeun Kim, Yuuna Hoshi, Zackory                   Yang Feng, et al. Unsupervised anomaly detection via
+     Erickson, Ariel Kapusta, and Charles C Kemp. A multi-             variational auto-encoder for seasonal kpis in web appli-
+     modal execution monitor with anomaly classification for           cations. In Proceedings of the 26th WWW World Wide
+     robot-assisted feeding. In Proceedings of the IROS Inter-         Web Conference, pages 187–196, 2018.
+     national Conference on Intelligent Robots and Systems,
+     pages 5406–5413. IEEE, 2017.                                 [33] Yong Xu, Kaixin Sui, Randolph Yao, Hongyu Zhang,
+                                                                       Qingwei Lin, Yingnong Dang, Peng Li, Keceng Jiang,
+[24] Hansheng Ren, Bixiong Xu, Yujing Wang, Chao Yi, Con-
+                                                                       Wenchi Zhang, Jian-Guang Lou, et al. Improving service
+     grui Huang, Xiaoyu Kou, Tony Xing, Mao Yang, Jie
+                                                                       availability of cloud systems by predicting disk error. In
+     Tong, and Qi Zhang. Time-series anomaly detection ser-
+                                                                       2018 USENIX Annual Technical Conference (USENIX
+     vice at microsoft. In Proceedings of the 25th SIGKDD
+                                                                       ATC 18), pages 481–494, 2018.
+     International Conference on Knowledge Discovery and
+     Data Mining, pages 3009–3017. ACM, 2019.                     [34] Chuxu Zhang, Dongjin Song, Yuncong Chen, Xinyang
+[25] Zhilei Ren, Changlin Liu, Xusheng Xiao, He Jiang, and             Feng, Cristian Lumezanu, Wei Cheng, Jingchao Ni,
+     Tao Xie. Root cause localization for unreproducible               Bo Zong, Haifeng Chen, and Nitesh V Chawla. A deep
+     builds via causality analysis over system call tracing. In        neural network for unsupervised anomaly detection and
+     Proceedings of the 34th ASE International Conference              diagnosis in multivariate time series data. In Proceed-
+     on Automated Software Engineering, pages 527–538.                 ings of the AAAI Conference on Artificial Intelligence,
+     IEEE/ACM, 2019.                                                   volume 33, pages 1409–1416, 2019.
+
+[26] Sikandar Samar, Dimitry Gorinevsky, and Stephen Boyd.        [35] Shenglin Zhang, Ying Liu, Dan Pei, Yu Chen, Xianping
+     Likelihood bounds for constrained estimation with un-             Qu, Shimin Tao, and Zhi Zang. Rapid and robust impact
+     certainty. In Proceedings of the 44th Conference on               assessment of software changes in large internet-based
+     Decision and Control, pages 5704–5709. IEEE, 2005.                services. In Proceedings of the 11th CoNext Conference
+                                                                       on Emerging Networking Experiments and Technologies,
+[27] Alban Siffer, Pierre-Alain Fouque, Alexandre Termier,             pages 1–13. ACM, 2015.
+     and Christine Largouet. Anomaly detection in streams
+     with extreme value theory. In Proceedings of the 23rd        [36] Xu Zhang, Junghyun Kim, Qingwei Lin, Keunhak Lim,
+     SIGKDD International Conference on Knowledge Dis-                 Shobhit O Kanaujia, Yong Xu, Kyle Jamieson, Aws Al-
+     covery and Data Mining, pages 1067–1075. ACM, 2017.               barghouthi, Si Qin, Michael J Freedman, et al. Cross-
+                                                                       dataset time series anomaly detection for cloud sys-
+[28] Ya Su, Youjian Zhao, Chenhao Niu, Rong Liu, Wei Sun,              tems. In 2019 USENIX Annual Technical Conference
+     and Dan Pei. Robust anomaly detection for multivari-              (USENIX ATC 19), pages 1063–1076, 2019.
+     ate time series through stochastic recurrent neural net-
+     work. In Proceedings of the 25th SIGKDD International        [37] Xu Zhang, Yong Xu, Qingwei Lin, Bo Qiao, Hongyu
+     Conference on Knowledge Discovery and Data Mining,                Zhang, Yingnong Dang, Chunyu Xie, Xinsheng Yang,
+     pages 2828–2837. ACM, 2019.                                       Qian Cheng, Ze Li, et al. Robust log-based anomaly
+                                                                       detection on unstable log data. In Proceedings of the
+[29] Charles F Van Loan. The ubiquitous kronecker prod-
+                                                                       27th ESEC/FSE Joint Meeting on European Software
+     uct. Journal of computational and applied mathematics,
+                                                                       Engineering Conference and Symposium on the Foun-
+     123(1-2):85–100, 2000.
+                                                                       dations of Software Engineering, pages 807–817. ACM,
+[30] Shashaank Vattikuti, James J Lee, Christopher C Chang,            2019.
+     Stephen DH Hsu, and Carson C Chow. Applying com-
+     pressed sensing to genome-wide association studies. Gi-      [38] Nengwen Zhao, Jing Zhu, Yao Wang, Minghua Ma,
+     gaScience, 3(1):2047–217X, 2014.                                  Wenchi Zhang, Dapeng Liu, Ming Zhang, and Dan Pei.
+                                                                       Automatic and generic periodicity adaptation for kpi
+[31] Tom Warren. Zoom grows to 300 million meeting                     anomaly detection. Transactions on Network and Ser-
+     participants despite security backlash. https://                  vice Management, 16(3):1170–1183, 2019.
+

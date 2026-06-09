@@ -1,0 +1,918 @@
+                         Generic and Robust Localization
+                        of Multi-Dimensional Root Causes
+                          Zeyan Li†k , Chengyang Luo† , Yiwei Zhao† , Yongqian Sun‡∗ , Kaixin Sui§
+                               Xiping Wang† , Dapeng Liu§ , Xing Jin¶ , Qi Wang¶ , Dan Pei†k
+                           † Tsinghua University, ‡ Nankai University, § BizSeer, ¶ China Construction Bank
+                      k Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+
+
+   Abstract—Operators of online software services periodically            TABLE I: Fundamental measure example: total dollar amount
+collect various measures with many attributes. When a measure             of orders. The bold lines are abnormal. The root cause is
+becomes abnormal, indicating service problems such as reliability         (Province=Beijing).
+degrade, operators would like to rapidly and accurately localize
+the root cause attribute combinations within a huge multi-                      Province      ISP               real value   forecast value
+dimensional search space. Unfortunately, previous approaches                    Beijing       China Mobile      5            10
+                                                                                Beijing       China Unicom      10           20
+are not generic or robust in that they all suffer from impractical
+                                                                                Shanghai      China Unicom      30           31
+root cause assumptions, handling only directly collected measures               Guangdong     China Mobile      10           9.8
+but not derived ones, handling only anomalies with significant                  Zhejiang      China Unicom      2            2
+magnitudes but not those insignificant but important ones,                      Guangdong     China Unicom      200          210
+requiring manual parameter fine-tuning, or being too slow.                      Shanxi        China Unicom      20           22
+   This paper proposes a generic and robust multi-dimensional                   Jiangsu       China Unicom      200          203
+root cause localization approach, Squeeze, that overcomes all                   Tianjin       China Mobile      41           43
+above limitations, the first in the literature. Through our novel                           Total               518          550.8
+“bottom-up then top-down” searching strategy and the tech-
+niques based on our proposed generalized ripple effect and                TABLE II: Derived measure example: the average dollar
+generalized potential score, Squeeze is able to reach a good trade-       amount per order ( totalthedollar amount of orders
+                                                                                                       number of orders      ). The bold lines are
+off between search speed and accuracy in a generic and robust             abnormal. The root cause is (Province=Beijing).
+manner. Case studies in several banks and an Internet company
+show that Squeeze can localize root causes much more rapidly and                Province      ISP               real value   forecast value
+accurately than the traditional manual analysis. Furthermore,                   Beijing       China Mobile      50/20        10/10
+                                                                                Beijing       China Unicom      120/60       24/30
+our extensive experiments on semi-synthetic datasets show that
+                                                                                Shanghai      China Unicom      30/30        31/30
+the F1-score of Squeeze outperforms previous approaches by 0.4                  Guangdong     China Mobile      10/21        9.8/20
+on average, while its localization time is only about 10 seconds.               Zhejiang      China Unicom      2/2          2/2
+   Index Terms—multi-dimensional, root cause localization, gen-                             Total               212/133      76.8/92
+eralized ripple effect, generalized potential score
+                                                                          bold lines in Table I and Table II). In such case, operators
+                        I. I NTRODUCTION                                  would like to rapidly and accurately localize the root cause at-
+   Operators of online software services (e.g., online shopping           tribute combinations, e.g., (Province=Beijing) for both Table I
+and Internet company) periodically (e.g., every minute) col-              and Table II. Localization of multi-dimensional root causes
+lect various measures to monitor and troubleshoot service’s               is thus critical to troubleshooting and mitigating the software
+performance and reliability problems [1], [2]. Some measures              service performance and reliability anomalies.
+are directly collected from raw logs (e.g., total dollar mount               The fundamental challenge of multi-dimensional root cause
+of orders in Table I), and are called fundamental measures [3].           localization is its huge search space due to the large number
+Other measures derived from fundamental measures by some                  of attribute combinations and that in theory the root cause
+functions (e.g., the average dollar amount per order in Table II)         can be a set of any number of attribute combinations. Thus,
+are called derived measures [3]. Measures are usually collected           even for the toy examples in Table I and Table II, there exists
+with many attributes (e.g., Province, ISP) whose values are               27+2+9 − 1 and 24+2+5 − 1 potential root causes respectively.
+categorical (e.g., Beijing or Shanghai for attribute ISP). The            Suppose there are d attributes
+                                                                                                       Pdand deach
+                                                                                                                i attribute has l distinct
+                                                                                                                              d
+measure can be calculated for each attribute combination (i.e.,           values, then there can be       i=1 i l = (l + 1) − 1 valid
+a conjunction of attribute and attribute value pairs). e.g., in           attribute combinations and the number of potential root cause
+                                                                                        d
+
+the third row of Table I, the measure for attribute combination           can be 2(l+1) −1 −1. According to the experiences of operators
+(Province=Shanghai∧ISP=China Unicom) is 30.                               that we worked with, typically d is less than or about ten, l
+   When a measure’s real value deviates from its expected                 is several tens. When d = 5 and l = 10, then there will be
+(forecast) value, this measure encounters anomalies (see the              2161050 − 1 potential root causes.
+                                                                             Previous multi-dimensional root cause localization ap-
+  Yongqian Sun∗ is the corresponding author.                              proaches [3]–[7] proposed various techniques to reduce the
+
+
+
+                                                                      1
+                    TABLE III: Qualitative comparison of related works. Detailed reviews are in Section VII.
+                                                                               Change            Parameter
+  Algorithms       Root Cause Assumption                Measure                                                  Time Cost               Method
+                                                                              Magnitude         Fine Tuning
+ Adtributor [3]      single attribute (in one     fundamental & derived       significant            no          very short              top-down
+                        first-layer cuboid)             (quotient)
+  R-Adtributor
+                              none                fundamental & derived        significant          yes            short                 top-down
+      [4]
+                                                        (quotient)
+   iDice [5]           one or two attribute          fundamental only          significant          no           very short              top-down
+                           combinations
+  Apriori [6]                  none               fundamental & derived           any               yes        always too long       bottom-up
+  HotSpot [7]     all attribute combinations of      fundamental only          significant          no         sometimes long        top-down
+                  the root cause in one cuboid
+                                                                                                                                     bottom-up
+    Squeeze       those which cause the same      fundamental & derived           any               no             short
+                                                                                                                                   then top-down
+                   changes are in one cuboid        (quotient, product)
+
+search space, but they all suffer some limitations (summarized            not both. In contrast, Squeeze first searches bottom-up to
+in Table III) and are not generic or robust. Adtributor [3]               narrow down the search space, within which Squeeze then
+and iDice [5] have assumptions on root causes that are too                does top-down search to localize the root cause attribute
+strong and impractical. HotSpot [7] and iDice can only handle             combinations. In the bottom-up step, Squeeze filters out most
+fundamental measures, and Adtributor and R-Adtributor [4]’s               normal attribute combinations and groups potential abnormal
+approaches for derived measures are very different from the               attribute combinations into clusters according to GRE. In the
+ones for fundamental measures. iDice, HotSpot, Adtributor                 top-down step, Squeeze uses a heuristic method (with only
+and R-Adtributor all ignore attribute combinations whose                  one robust parameter) to efficiently search for the root causes
+anomaly magnitudes are insignificant. (e.g., in Table I, where            within those clusters output by the bottom-up step. Our novel
+the abnormal lines change by 15, which is insignificant relative          “bottom-up&top-down” method (hence the name Squeeze)
+to the total amount 518). However, such anomalies are impor-              enables Squeeze to become the first generic and robust
+tant in some cases (e.g., bank transactions failure of a small            approach in the literature for multi-dimensional root cause
+number of users). Apriori and R-Adtributor stop searching                 localization, which is our second contribution.
+with arbitrary and hard-to-tune conditions with no clear physi-              We extensively evaluate Squeeze by comparing with previ-
+cal meanings in the context of root cause localization (e.g., the         ous works on several semi-synthetic datasets. The experiments
+minimum support threshold), thus require manual parameter                 show that the F1-score of Squeeze significantly outperforms
+fine-tuning for different services or the same service over time,         the others by about 0.4. Squeeze is also efficient and consis-
+thus are impractical. Apriori [6] is too time-consuming.                  tently costs only about 10 seconds in all cases. Case studies in
+   Our design goals for multi-dimensional root cause localiza-            several banks and an Internet company show that Squeeze can
+tion are generic and robust: 1) consistently handle fundamental           localize root causes much more rapidly and accurately than
+and derived measures; 2) handle both significant and insignif-            traditional manual analysis. This is our third contribution.
+icant anomaly magnitudes; 3) do not require parameter fine-
+                                                                                           II. BACKGROUND
+tuning; 4) be consistently fast, and 5) have no impractical root
+cause assumptions. The core ideas and major contributions of                 TABLE IV: Raw Transaction Log Example for Table I
+                                                                            Order ID         Timestamp    Dollar Amount       Province          ISP
+our proposed approach, Squeeze, are the following.
+   First, for the first time in the literature, we propose gener-            Table V lists the the definitions, notations, and examples
+alized ripple effect (GRE) for both fundamental and derived               of the important terms used in the paper. Measure is the
+measures, which captures magnitude relationship between the               value of interest, e.g., total dollar amount of orders in Table I,
+root cause attribute combinations and its “descendant” attribute          average dollar amount per order in Table II, and success
+combinations. GRE has two major differences from the the                  rate in the case studies in Section V-A and Section V-B.
+ripple effect observed by [7]: 1) ripple effect was considered by         Measures are calculated periodically with many attributes
+[7] to hold only for fundamental measures. We mathematically              (e.g., ISP) based on raw logs of transactions (e.g., Table IV).
+prove that GRE holds for a derived measure as long as the                 Each attribute will have several discrete potential values (e.g.,
+ripple effect holds for its underlying fundamental measures 2)            ChinaUnicom, ChinaMobile for attribute ISP). A conjunction
+the ripple effect in [7] does not work for zero forecast values           of several (attribute, attribute value) pairs where an attribute
+(not uncommon in practice), but we make improvements so                   can appear in at most one pair is called attribute combination.
+that GRE works for zero forecast values. Furthermore, we                     A leaf attribute combination (also referred to as leaf for
+show that GRE holds true in the real world through case                   simplicity) is an attribute combination which includes all
+studies on an Internet company and several large banks. GRE               attributes. From raw logs like Table IV, given a time window,
+and its confirmation in reality are our first contribution.               we sum the dollar amount of all transactions with the same
+   Second, we attribute previous approaches’ limitations to               leaf attribute combination to obtain its measure. e.g., each
+the fact that, to reduce the search space, they all use either            line except for the last one in Table I corresponds to a
+top-down method [3]–[5], [7] or bottom-up method [6], but                 leaf attribute combination and its dollar amount measure
+
+
+
+                                                                     2
+                                                          TABLE V: Summary of Terms
+     Term                          Definition                        Notation                                    Example
+    Measure                   The measure of interest                  M              total dollar amount of orders, average dollar amount per order
+  Fundamental
+                                Additive measures                        -          total dollar amount of orders, the number of orders, the number of
+    Measure
+                                                                                          successful transactions, total search response time (SRT)
+    Derived
+                   Measure derived from fundamental measures             -           average dollar amount per order ( totalthe dollar amount of orders
+                                                                                                                                                        ), success
+    Measure                                                                                       #success transactions
+                                                                                                                                  number of orders
+                                                                                                                                             total SRT
+                                                                                            rate ( #total transactions ), average SRT ( #page       views
+                                                                                                                                                          )
+   Attribute                       All categories                       A                                   Province, ISP in Table I
+   Attribute
+                        Potential values for each attribute             a                   Beijing, Shanghai, Guangdong for attribute Province
+    Value
+   Attribute
+                    A conjunction of (attribute, attribute value)       e            (Province=Beijing) and (Province=Shanghai∧ISP=China Mobile)
+  Combination
+                                       pairs                                        are both valid. (Province=Shanghai∧Province=Beijing) is not valid.
+ Leaf Attribute
+                  An attribute combination such that all potential      e                     (Province = Beijing ∧ ISP = China Unicom),
+ Combination
+                           attributes are specified a value                                 (Province=Beijing∧ISP=China Mobile) in Table I
+    Cuboid             Set of attribute combinations whose              C               CISP = {(ISP = China Mobile), (ISP = China Unicom)},
+                  corresponding attribute combinations have the                            CProvince,ISP ={(Province=Beijing,ISP=China Mobile),
+                                      same keys                                     (Province=Beijing,ISP=China Unicom), (Province=Shanghai,China
+                                                                                         Unicom), (Province=Guangdong, ISP=China Mobile)...}
+    Descent        e1 is descended from e2 means the attribute           -           (Province = Beijing ∧ ISP = China Unicom) is descended from
+                       combination of e1 contains that of e2                                 (Province = Beijing), but is not descended from
+                                                                                                             (Province=Shanghai)
+   Real Value       The measure values that are collected from         v(·)          In Table I, v(Province = Beijing ∧ ISP = China Unicom) = 10,
+                                   real world.
+ Forecast Value           Measures’ expected values.                   f (·)         In Table I, f (Province = Beijing ∧ ISP = China Unicom) = 20
+
+for the given time window. Such additive measures, which                         attribute combination is considered abnormal for a given time
+are collected directly from raw logs, are called fundamental                     window if its real value deviates significantly enough from its
+measures. They can be sliced along different attributes. For                     expected value. Note that although value forecasting interacts
+example, in Table I, the dollar amount of attribute combi-                       with root cause localization, it is not in our studied scope of
+nation (Province=Beijing) (not shown in the table) is the                        root cause localization. There are lots of time series forecasting
+sum over of those of (Province=Beijing∧ISP=China Mobile)                         algorithms that handles value forecasting, from simple statis-
+and (Province=Beijing∧ISP=China Unicom), while the total                         tical algorithms [9]–[12] to advanced algorithms [13]–[15], or
+amount (last line in Table I) is the sum over those of all                       forecasting for multi-dimensional attributes [6]. The choice of
+leaves. There are also derived measures which are functions                      appropriate forecasting algorithm sometimes needs be based
+of fundamental measures. They are typically non-additive. For                    on the specific data [16]. To prevent fine-tuning forecasting
+example, from raw logs like Table IV, given a time window,                       algorithm from hurting the robustness of localization, in this
+we count the number of transactions (orders) for each leaf to                    paper, we simply use MA (moving average) for all scenarios.
+obtain the number of orders for the given time window. Then                      Our experiments in Section VI-E show that our proposed lo-
+the average dollar amount per order in Table II is the total                     calization approach is robust against MA’s various forecasting
+dollar amount of orders divided by the number of orders.                         errors on different datasets.
+   All the attribute combinations    Layer 1  A      B       C                      Real values and forecast values are denoted by v(·) and
+with the same set of attributes
+                                     Layer 2 AB      AC     BC                   f (·) respectively. Without loss of generality, we assume both
+(regardless of the attribute val-
+                                     Layer 3        ABC                          v and f are non-negative, since in practice measures are non-
+ues) form a set of attribute com-
+                                                                                 negative. We only extract real and forecast values for all leaves
+binations called cuboid [8] (see Fig. 1: A cuboid graph with
+                                                                                 from raw logs directly. For a fundamental measure, a non-
+4th last row in Table V for ex- 3 attributes: A, B, C.
+                                                                                 leaf attribute combination’s real (forecast) value is the sum
+amples). If there are d attributes
+                                                                                 over all leaves that descended from this non-leaf attribute
+in total, there would be 2d − 1 cuboids. Cuboids can form
+                                                                                 combination. In other words, v(e) = e0 ∈descent(e) v(e0 ), f (e) =
+                                                                                                                              P
+a multi-layer graph, as Fig. 1 shows. A cuboid’s layer is                                              0
+                                                                                    e0 ∈descent(e) f (e ). For a derived measure, a non-leaf attribute
+                                                                                 P
+the number of attributes it uses. If there are dˆ attributes in
+                                                               ˆ                 combination’s real (forecast) value is the function of its
+a cuboid and each has l distinct values, there would be ld
+                                                                                 corresponding fundamental measures’ values for this attribute
+attribute combinations in it. We say an attribute combination
+                                                                                 combination, i.e., if v=h(v1 , ..., vn ), then v(e)=h(v1 (e), ..., vn (e)),
+e1 is descent from e2 if e1 ’s conjunction contains all those of
+                                                                                 where v is a derived measure from fundamental measures
+e2 (see 3rd last row in Table V for examples).
+                                                                                 {v1 , v2 , ..., vn } and h(·) is the function that produces v. For
+   The real value of an attribute combination is the measure                     convenience, we slightly extend the definition of operator v
+values directly collected/calculated based on the raw transac-                   and f . If S is a set of attribute combinations which are in
+tion logs, and the forecast value is its expected value based on                 the same cuboid, and the measure is a fundamental measure,
+some forecasting algorithms. The last two columns in Table I                     v(S)= e∈S v(e) and f (S)= e∈S f (e). If it is a derived mea-
+                                                                                          P                         P
+
+and Table II are real and forecast values, respectively. An                      sure, v(S)=h(v1 (S), ..., vn (S)) and f (S)=h(f1 (S), ..., fn (S)).
+
+
+
+                                                                             3
+             III. G ENERALIZED R IPPLE E FFECT                                   true root cause is S={(P rovince=Beijing)}. Then for
+                                                                                                                       vM (e1 )
+   We propose generalized ripple effect (GRE), which cap-                        e1 =(P rovince=Beijing∧ISP =M obile), f 3 (e ) = 50 / 10 =
+                                                                                                                                  20 10
+                                                                                                                        M    1        3
+                                                                                 vM3 (S)
+tures the relationship of attribute combinations’ abnormal                       fM3 (S)
+                                                                                         = 50+120 / 10+24 = 52
+                                                                                            20+60 10+30
+                                                                                                             .
+magnitudes caused by the same root cause. GRE holds for                             GRE also holds for products (M3 =M1 ·M2 ), which can be
+both fundamental and derived measures and can handle zero                        proved similarly. We prove GRE for quotients and productions
+forecast values. GRE is a key enabler of Squeeze’s genericness                   because they are the most common cases. The core idea of the
+and robustness, and in Section V we will show that it holds                      our proof is finite difference [17]. A similar method can be
+true in the real world through industrial case studies.                          applied when dealing with other types of derived measures.
+A. Background of Ripple Effect                                                      Our results of GRE can cover fundamental measures (e.g.,
+                                                                                 total dollar amount of orders, page views, issue counts, total
+   Ripple effect, first observed by [7] for fundamental mea-
+                                                                                 traffic) and most common derived measures (e.g., average
+sures only, captures the relationship of attribute combinations’
+                                                                                 latency, average dollar amount per order, success rate).
+abnormal magnitudes caused by the same root cause. The
+intuition of ripple effect is that all attribute combinations                    C. Generalizing Ripple Effect for Zero Forecast Values
+affected by the same root cause will change by the same                            The ripple effect in [7] does not work for zero forecast
+proportion. It says that, given a root cause S, which is a                       values (i.e., f (S) = 0. To avoid this problem, we replace f
+subset of cuboid C, the abnormal magnitude of any affected                       with f +v
+                                                                                        2 . That is to say, GRE’s formulation becomes
+attribute combination e (in S or descended from any attribute                                            f (e) − v(e)   f (S) − v(S)
+                                                                                                                      =                                      (2)
+combination in S) satisfies the following equation:                                                      f (e) + v(e)   f (S) + v(S)
+                     f (e) − v(e)   f (S) − v(S)                                    where the symbols have the same meaning as (1). If (1)
+                                  =              ,                     (1)
+                         f (e)          f (S)                                    holds, then it is obvious that (2) holds as well; if f (S) = 0,
+   where f (S) (v(S)) denotes the total forecast (real) value of                 then any affected attribute combination e should have infinitely
+all leaf attribute combinations in S. For example, in Table I,                   large abnormal magnitudes or f (e) = 0.
+the root cause is S={(Province=Beijing)} in cuboid Cprovince .
+                                                                                                   IV. Squeeze A PPROACH
+Therefore, if e1P   =(Province=Beijing∧ISP=China Unicom),
+                                0       0
+                        ∈S (f (e )−v(e ))
+                     e0 P                                                          We propose an approach, Squeeze, for multi-dimensional
+then f (S)−v(S)
+         f (S)
+                 =         0    f (e0 )
+                                          = 0.5 =
+                                                  f (e1 )−v(e1 )
+                                                      f (e1 )
+                         e ∈S                                                    root cause localization, whose design goals are listed in
+B. Generalizing Ripple Effect for Derived Measures                               Section I and scope/architecture shown in Fig. 2.
+   Ripple effect was considered by [7] to hold for only funda-                   A. Scope of this Paper                         Anomaly Happens
+mental measures. In this section, we mathematically prove that
+                                                                                    The       double       Squeeze Related System                   Timestamp
+GRE holds for a derived measure as long as the ripple effect
+                                                                                 dashed box in                                  Measures Database       Forecast
+holds for its underlying fundamental measures. Since most
+                                                                                 Fig. 2 highlights Bottom-Up                    Clustering: Sec IV.C
+common derived measures are the quotient of two fundamental
+                                                                                 the     scope     of     Top-Down       Locating in Each Cluster: Sec IV.D
+measures, without much loss of generality, we provide proof
+                                                                                 Squeeze,      which
+of GRE for such derived measures.                                                                                  Root Cause: A Set of Attribute Combinations
+                                                                                 is    called      on
+   Consider three measures, M1 , M2 , M3 , where M1 and M2
+                                                                                 demand         when Fig. 2: Squeeze’s scope and architecture.
+are fundamental measures and M3 = M           M2 . Since M1 and
+                                                1
+                                                                                 some anomaly (e.g., success rate drops significantly) happens
+M2 are fundamental measures, M1 and M2 satisfies ripple
+                                                                                 to a service at a particular time window, indicated by some
+effect (1). It can be proved the M3 also satisfies ripple effect:
+                                                                                 calls, tickets, or alerts. Then operators query the measure’s
+Note that the real value and forecast value of a derived
+                                                                                 real values for leaf attribute combinations from the measure
+measures are defined by its component fundamental measures:
+         fM (S)                                                                  database, and call a forecasting algorithm (i.e., Moving
+fM3 (S)= f 1 (S) 6= e0 ∈S fM3 (e0 ). Therefore,
+                   P
+           M2
+            fM1 (e) vM1 (e) ∆M1 (e)vM2 (e) − ∆M2 (e)vM1 (e)                      Average) on demand to obtain the measure’s forecast values
+∆M3 (e)=           −        =                                                    for all leaves for the given time window. In other words,
+            fM2 (e) vM2 (e)           vM2 (e)fM2 (e)
+                     ∆M1 (S)vM2 (S)−∆M2 (S)vM1 (S)                               Squeeze is called on demand with the input of a measure’s
+similarly, ∆M3 (S)=                                                              real and forecast values of all leaves.
+                               vM2 (S)fM2 (S)
+                             fMi (e)                                                The output of Squeeze is a set of attribute combinations
+ ∵ ripple effect, ∴ ∆Mi (e)=         ∆Mi (S), i=1, 2                             that explain all anomalies and are as succinct as possible
+                             fMi (S)
+          fM3 (e) ∆M1 (S)vM2 (S)−∆M2 (S)vM1 (S) fM2 (S) fM1 (e)                  (Occam’s razor principle). For example, in Table I, both
+ ∴ ∆M3            =                                                              (Province=Beijing) and {(Province=Beijing∧ISP=China Mo-
+          fM3 (S)           vM2 (S)fM2 (S)           fM1 (S) fM2 (e)
+            ∆M2 (S)                       ∆M2 (e)                                bile), (Province=Beijing∧ISP=China Unicom)} explain the
+    ∆M1 (e)− v      vM1 (e)       ∆M1 (e)− v      vM1 (e)
+             M2 (S)                        M2 (e)                                anomaly, but we prefer (Province=Beijing) as the root case
+=                             =                             =∆M3 (e)
+           fM2 (e)                       fM2 (e)                                 since it is more succinct.
+   Therefore, for each root cause, there is also a con-                             The selection of the time series forecasting algorithm is out
+stant k such that for any attribute combination un-                              of the scope of Squeeze as mentioned in Section II. Similar to
+               vM3 (e)
+der affection fM
+                 3
+                   (e) =k. We call it as generalized rip-                        other multi-dimensional root cause localization approaches [3],
+ple effect (GRE). Take Table II as an example, the                               [5], [7], casual inference is also out of scope.
+
+
+
+                                                                             4
+B. Core Ideas                                                                We use a simple den-        10
+                                                                          sity based clustering algo-            relmax
+                                                                                                                 relmin
+
+
+
+
+                                                                                                         pdf
+   Different from all previous works [3]–[7], Squeeze employs                                             5
+                                                                          rithm, as shown in Al-                 density
+a novel “bottom-up then top-down” searching strategy to                   gorithm 1. First we get         0
+achieve a good trade-off between speed and accuracy in a                                                       0.5       0.0        0.5 1.0
+                                                                          the histogram of the devi-                deviation score
+generic and robust manner. Squeeze first searches bottom-up               ation scores. Then the rela- Fig. 4: Illustration of Algo-
+to narrow down the search space, within which Squeeze then                tive maximums of the his- rithm 1 by Case II in Sec-
+does top-down search to localize the root cause. In the bottom-           togram are considered as tion V-A
+up step, Squeeze filters out most normal attribute combinations           the cluster centroids, and
+and groups potential abnormal attribute combinations into                 the closest relative minimums are considered as the cluster
+clusters according to GRE. In the top-down step, Squeeze uses             boundaries.
+a heuristic method based on our proposed generalized potential
+score (GPS) to efficiently search for the root causes within              Algorithm 1 Deviation Score Based Clustering by Density
+those clusters output by the bottom-up step.                               1: procedure D ENSITY C LUSTER (arr)
+                                                                           2:    bins, hists ← histogram(arr)
+C. Bottom-Up Searching through Clustering                                  3:    centers ← argrelmax(hists)
+                                                                           4:    boundaries ← argrelmin(hists)
+    Squeeze first searches bottom-up to narrow down the search             5:    clusters ← []
+space. More specifically, Squeeze filters out most normal at-              6:    for center in centers do
+tribute combinations and then groups the remaining potentially             7:         l ← last attribute combination in boundaries s.t.
+abnormal ones into clusters according to GRE.                                 bins[l] < bins[center]
+    1) Deviation Based Fil-                                                8:         r ← first attribute combination in boundaries s.t.
+tering: Given the large num-          50                 Knee Point           bins[r] > bins[center]
+                                 CDF
+
+
+
+
+ber of leaf attribute com-                                                 9:         clusters ← clusters + {x ∈ arr|l ≤ x ≤ r}
+binations, when a service              0                                         return clusters
+                                         0           5          10
+anomaly occurs, usually the                     log(|v f| + 1)            Algorithm 2 Localization in Cluster
+number of “abnormal” leaf Fig. 3: Cumulative distribu-
+                                                                           1: procedure I N C LUSTER L OCALIZATION (cluster)
+attribute combinations (with tion of leaf attribute combi-
+                                                                           2:    root causes ← []
+large deviations) is much nations’ deviations, and knee
+                                                                           3:    for cuboid in all cuboids from top to bottom do
+less than those “normal” point threshold selection.
+                                                                           4:        n ele ← the number of leaf attribute combinations
+ones (with little deviations).
+                                                                              descended from each attribute combination of cuboid in
+The goal of this step is to filter out those normal leaf attribute
+                                                                              cluster
+combinations in order to reduce the number of leaf attribute
+                                                                           5:         n descents ← the number of all leaf attribute
+combinations for the next step (clustering). One key challenge
+                                                                              combinations descended from each attribute combination
+is how to automatically determine whether a leaf attribute
+                                                                              of cuboid
+combination is abnormal or not. Similar to those anomaly                                                                         n ele
+                                                                           6:         sort attribute combinations in cuboid by n descents
+detection algorithms [13], [16], we use the forecast residuals
+                                                                              in descending order
+(or deviation) to indicate the extent of changes, and apply
+                                                                           7:         for split in all valid splits do
+a threshold to decide whether the change is an anomaly or
+                                                                           8:             score[split] ← GPS(split)
+not. Fig. 3 shows the cumulative distribution of leaf attribute
+combinations’ deviations in an example service anomaly. The                9:         index ← argmaxsplit score
+skewed distribution naturally allows us to apply the knee-                10:         root cause ← attribute combinations[index]
+point method [18] to automatically pick the knee-point as the             11:         root causes ← root causes + [root cause]
+anomaly threshold, on demand for each service anomaly. For                12:         if root cause’s score ≥ δ then
+example, the vertical dashed line in Fig. 3 marks the threshold           13:             Stop search next layer
+given by knee method for this example.                                    14:     sort root causes with score ∗ C − n ele ∗
+    2) Deviation Score Based Clustering: The deviation based                  cuboid layer in descending order
+filtering outputs a list of potentially abnormal leaf attribute           15:     return root causes[0]
+combinations which Squeeze groups into clusters, each of
+which is a potential root cause.                                          D. Top-Down Localization within Each Cluster
+    Deviation score is defined as d(e):=2 ff (e)−v(e)
+                                              (e)+v(e) . All leaves          The output of the bottom-up search is a list of leaf attribute
+of the same root cause will have similar deviation scores                 combination clusters, each of which is a potential root cause
+according to GRE. Therefore, we can find which (potentially               with a different range of deviation scores. This output is the
+abnormal) leaf attribute combinations are affected by the same            input of the top-down localization. Within each cluster, we
+root cause by grouping leaf attribute combinations with similar           use a top-down heuristic algorithm (shown in Algorithm 2) to
+deviation scores into the same cluster.                                   efficiently search for the root cause attribute combinations.
+
+
+
+                                                                      5
+   1) Root Cause Assumption: Squeeze does have one as-                          leaf attribute combinations, i.e., v(S)=(v(e1 ), v(e2 ), ..., v(en ));
+sumption about root causes: we assume that the root cause                       and avg(·) means average over the vector.
+attribute combination is always a subset of only one cuboid                        The most important difference between GPS (3) and poten-
+                                                                                                          ||(v(S1 ),v(S2 ))−(a(S1 ),f (S2 ))||2
+in each cluster outputted by Section IV-C. However, unlike                      tial score (ps= max(0, 1− ||(v(S1 ),v(S2 ))−(f (S1 ),f (S2 ))||2
+                                                                                                                                                 )) in [7] is
+the impractical root cause assumptions in [3] and [5], our                      that we use the sum of normalized L1-norm of the positive
+assumption above about root causes is practical because: 1)                     and negative parts, while potential score uses L2-norm of all
+one physical root cause brings the same abnormal magnitudes                     leaf attribute combinations. We make this modification because
+according to GRE, and it is almost impossible in practice                       the forecast residuals of normal part would cumulate as the
+there are several physical root causes which cause the same                     number of normal leaf attribute combinations increases.
+abnormal magnitudes at the same time; 2) in practice it is                         An example is given in Table I. The two bold lines are ab-
+very rare that root cause attribute combinations which cause                    normal. The other normal lines may have small forecast errors
+the same abnormal magnitudes require more than one cuboid.                      compared to the normal values. Thus, potential score gives a
+   2) Top-Down Localization Heuristics: In every cuboid,                        very low score for the root cause (Province=Beijing), while
+there is a set of attribute combinations that can cover all                     GPS gives a high score. This demonstrate GPS’ advantage
+abnormal leaf attribute combinations in the cluster, and there is               over potential score.
+                                                                                                       ||(0, 0, 1, 0.2, 0, 10, 2, 3, 2)||2
+a subset of the leaf cuboid that can exactly match all abnormal                              ps = 1 −                                      = 0.30
+                                                                                                      ||(5, 10, 1, 0.2, 0, 10, 2, 3, 2)||2
+leaf attribute combinations. Therefore, determining the right                                        avg(0, 0) + avg(1, 0.2, 0, 10, 2, 3, 2)
+cuboid is important for localizing the root cause. The number                            GP S = 1 −                                            = 0.74
+                                                                                                    avg(5, 10) + avg(1, 0.2, 0, 10, 2, 3, 2)
+of attributes is denoted by d, then there will be only 2d − 1                      Therefore, when the magnitude of anomaly is not signifi-
+cuboids. Since d is usually less than 10 or about 10, so it is                  cant, potential score will fail to indicate the root cause because
+acceptable to enumerate all cuboids if it does not take too long                it cumulates forecast errors of all leaf attribute combinations.
+to find the best solution in each cuboid.                                          In each cuboid, we would get a root cause candidate. If its
+   Squeeze uses a heuristic method to find best subset of                       corresponding GPS is larger than a threshold δ, Squeeze would
+each cuboid. The key idea is that, if an attribute combination                  not search deeper layer. Note that δ is the only parameter in
+e in the current cuboid belongs to the root cause, all of                       Squeeze that has to manually configured, and in Section VI-E
+its descent leaf attribute combinations should be abnormal                      we show Squeeze is very robust against different δ values.
+and in the same cluster because of GRE. In other words, a                          Finally all the root cause candidates will be sorted by their
+necessary condition for an attribute combination belonging                      GPS and succinctness. Succinctness is defined as the number
+to the root cause is that most of its descent leaf attribute                    of attributes of all root cause attribute combinations. We use
+combinations are in the cluster. We denote the ratio of descent                 a constant C to trade off between GPS and succinctness. We
+leaf attribute combinations in the cluster by descent score. We                 use an empirical formula for C, which avoids manual tuning:
+sort the attribute combinations of the cuboid by descent score
+                                                                                         log(#clusters · #abnormal leaves
+                                                                                                             #leaves
+                                                                                                                          )
+in descending order, then the root cause should be the left part                     −                                         · (#attribute values)
+                                                                                               log(#attribute values)
+of the sorted attribute combinations with appropriate partition.
+For example, in the cuboid of attribute province of Table I,
+(P rovince = Beijing)’s descent score is 1 and those of all                           V. S UCCESS S TORIES IN I NDUSTRIAL P RACTICE
+other attribute combinations are 0.                                               We have successfully applied Squeeze to several large
+   Now we only need to compare all potential partitions. Given                  commercial banks and a top Internet company. The results
+a partition, the part with larger descent score are classified as               show that Squeeze can localize root causes much more rapidly
+abnormal and the other one as normal. A good partition should                   and accurately than traditional manual analysis. In this section,
+make the abnormal part contain most anomalies and the nor-                      we present three success stories. We omit and anonymize some
+mal part contain few. Then, the abnormal leaf attribute combi-                  confidential details.
+nations should follow GRE. Actually, according to GRE, the
+                                                                                A. Case I: Intra-System localization
+real value of an abnormal leaf attribute combination e under
+root cause S is expected to be aS (e)=f (e)− ff(S)
+                                                 (e)
+                                                     (f (S)−v(S)) =                In 26 Nov 2018 9:00 to 11:00, the operators of a bank
+      v(S)
+f (e) f (S) . Thus, the difference between the expected value and               received many tickets and alerts and noticed that the API call
+real value |v(e) − aS (e)| can be used to evaluate how well the                 success rate of a system suffered a severe drop. The search
+root cause S follows GRE. Therefore, we propose generalized                     space is large, and the attributes and the number of distinct
+potential score (GPS), defined as follows:                                      values are listed as follows: province (38), agency (815), server
+                                                                                group (16), channel (4), server (339), code (4), status (2),
+                  avg(|v(S1 ) − a(S1 )|) + avg(|v(S2 ) − f (S2 )|)
+     GP S = 1 −                                                       (3)       service type (3). After two hours of fruitless manual root
+                  avg(|v(S1 ) − f (S1 )|) + avg(|v(S2 ) − f (S2 )|)
+                                                                                cause localization, the operators decided to just roll back the
+where S1 is the set of abnormal (i.e., descent of the root cause)               entire system to the last version, which happened to actually
+leaf attribute combinations of this cluster; S2 is the set of                   fix the issue. After the roll-back, it took another 2 hours for
+all normal leaf attribute combinations; v, f , a are respectively               an inexperienced operator on duty to eventually find the root
+vectors of real, forecast and expected values of all affected                   cause (there was a bug in the newly deployed version of the
+
+
+
+                                                                            6
+software for ServiceType 0200020) based on the 2-hour logs                        102                                 interface=fect&so...
+                                                                                  101                                 interface=5pecash...
+
+
+
+
+                                                                            PDF
+during the service anomaly.
+   Upon the request of the operators, we ran Squeeze over                         100                                 destination=ic
+                                                                                    0                                 interface=cwzb;in...
+this system’s logs at the beginning of the service anomaly.                             1.0   0.5 0.0 0.5       1.0   normal
+Squeeze took a few seconds to report the root cause (Ser-                                     deviation score
+                                                                           Fig. 6: Root causes reported by Squeeze and the histogram of
+viceType=020020), which indicates exactly the software that
+                                                                           deviation scores of their descent leaves in Case II.
+has a buggy version update. Had Squeeze be actually used
+immediately after the anomaly happened, operators could have               consists of only one attribute combination (AC1 in Fig. 7),
+localized the root cause much faster.                                      which took them one hour.
+   Fig. 5 shows this case’s                                                  We ran Squeeze over this system’s logs at the beginning of
+                                             ServiceType=020020
+                                  PDF
+results of deviation-based       500
+                                             Normal                        the service anomaly and in several seconds found more root
+clustering. We can see that        0                                       causes: AC1 and AC2 as shown in Fig. 7. It is obvious that
+the deviation scores of all          0.00 0.25    0.50     0.75 1.00
+                                             deviation score
+                                                                           AC2 also has severe error bursts. The operators mistakenly
+leaf attribute combinations                                                ignored it because the error count of AC2 only represented
+                              Fig. 5: The histogram of de-
+of the root cause (Ser-                                                    a very small fraction of the total error counts. Manual anal-
+                              viation scores of leaf attribute
+viceType=020020) are very                                                  ysis apparently has difficulties in localizing root causes of
+                              combinations in Case I.
+close to each other. This to                                               anomalies with insignificant magnitudes. Squeeze would help
+some extent confirms the generalized ripple effect.                        the operators to notice such root causes efficiently.
+B. Case II: Inter-System localization
+   In 23 Mar 2019, there was a burst of failures in another
+bank’s transaction system. There are many subsystems which
+communicate with each other by API calls. The search space is              Fig. 7: Measure values along time of Case III. AC1
+also large, and the attributes and the number of distinct values           is (useragent=uc∧idc=ih∧province=other), and AC2 is
+are listed as follows: source (13), source ip (66), destination            (useragent=uc∧idc=is∧province=other). Note that the Y-axis
+(7), destination ip (10), interface (135). The operators manu-             scales are different.
+ally located one root cause (destination=ic in Fig. 6) in ten
+minutes by tracing all the abnormal transactions’ API calls.
+                                                                                                    VI. E XPERIMENTS
+   Again, upon the request of the operators, we ran Squeeze
+over this system’s API call logs at the beginning of the service             In this section, we use the results on the semi-synthetic
+anomaly. Squeeze localized the root causes in Fig. 6 in just sev-          datasets to answer these three questions:
+eral seconds, which also confirms the generalized ripple effect              • RQ1: How effective is Squeeze in localizing root causes?
+because deviation scores of leaf attribute combinations that                    Is it effective for both fundamental and derived measures?
+are descended from the same root cause attribute combination                    Is it effective for anomalies with any magnitudes?
+are close to each other. Note that Squeeze reported more root                • RQ2: How efficient is Squeeze in localizing root causes?
+cause attribute combinations than what the operators found.                     It is efficient consistently for all cases?
+The operators confirmed that these additional root causes are                • RQ3: How well does Squeeze perform in different con-
+indeed valid: they were abnormal and were actually affected                     figurations? Is Squeeze sensitive to parameters?
+by ic system. Had Squeeze be actually used immediately after               We compare Squeeze with the following previous works,
+the issue, operators could have localized the root cause much              which will be introduced with more details in Section VII:
+faster (seconds vs minutes) and more accurately. We also run               HotSpot [7] (we revise it to handle derived measures ac-
+some other algorithms on Case II (see Table VI).                           cording to GRE in Section III), iDice [5], Adtributor [3], R-
+TABLE VI: Qualitative comparison on industrial cases:                      Adtributor [4], Apriori [6].
+whether the algorithm can find the true root cause. Some cases             A. Evaluation Metrics
+and some baseline algorithms are missing due to deployment
+issues. Details about the algorithms are in Section VII.                      F1-score is used in this paper to evaluate multi-dimensional
+ RC?        Squeeze   HotSpot   Apriori   Adtributor   R-Adtributor        root cause localization tasks. It is calculated based on attribute
+ Case II      Yes      Yes       Yes         No            No              combinations, i.e., if an attribution combination is reported by
+ Case III     Yes       No       No          No            No              the algorithm and it is in the root cause, it is a true positive
+                                                                           (TP); if a reported attribute combination is not in the root
+C. Case III: Anomaly with Insignificant Magnitude                          cause, it is a false positive (FP); if an attribute combination in
+   One day night, a top Internet company suffered an anomaly.              root cause is not reported, it is a false negative (FN). Then F1-
+The HTTP error counts bursted suddenly as shown in Fig. 7.                 score is calculated as follows: F 1-Score= 2∗#T P2∗#T    P
+                                                                                                                                +#F P +#F N
+                                                                                                                                            .
+The attributes and the number of distinct values are listed as                Another evaluation metric is time cost. In the following
+follows: datacenter (11), province (7), ISP (6), useragent(22).            experiments, we present the average running time of all cases
+The operators manually found a potential root cause which                  in the corresponding setting.
+
+
+
+                                                                       7
+                                                                                            1.0
+B. Datasets                                                                                                                             Squeeze
+                                                                                                                                        HotSpot+GRE
+
+
+
+
+                                                                                 F1-Score
+   We have two real-world datasets from two companies,                                      0.5                                         Adtributor
+which are collected from real systems. One of them is an                                                                                R-Adtributor
+                                                                                            0.0                                         Apriori
+online shopping platform, and the other one is an Internet
+                                                                                                      ) ) ) ) ) ) ) ) )
+company. They are denoted by I1 , I2 respectively. The mea-                                       (1,1 (1,2 (1,3 (2,1 (2,2 (2,3 (3,1 (3,2 (3,3
+sure of I1 is the number of transactions every five minutes,                                               (n_elements, cuboid_layer)
+and the measure of I2 is the number of page views per minute.                                     Fig. 8: F1-score comparison over dataset D.
+There are 5 attributes in I1 and 4 in I2 . Although these                                         0.8                         [0%, 0.4%)
+are real data, it is very hard to get lots of anomalies and                                       0.6                         [0.4%, 12%)
+
+
+
+
+                                                                                       F1-Score
+corresponding root causes verified by operators manually as                                       0.4                         [12%, 100%)
+                                                                                                                              Total
+the ground truth. As a result, we inject synthetic anomalies                                      0.2
+onto these real data to evaluate the algorithm. We get 7 semi-                                    0.0
+synthetic datasets with different anomaly injection methods                                Squeeze HotSpot AdtributoRr -Adtributor iDice Apriori
+based on I1 and I2 1 . The basic statistics of them are shown                  Fig. 9: F1-scores of all cases in {Bi , i = 0, 1, ..., 4} with
+in Table VII, where d means the number of attributes, #AC                      different abnormal magnitudes.
+means the number of leaf attribute combinations, and n means
+                                                                               D (derived measure) in Fig. 8, where cuboid layer means the
+the number of injected anomalies for each setting. In each
+                                                                               layer of the cuboid contains the root causes and n elements
+setting, a root cause contains the same number of root cause
+                                                                               means the number of attribute combinations in the root causes.
+attribute combinations in cuboids of the same layer.
+                                                                               We present the total F1-score of each setting in Table IX
+                TABLE VII: Summary of Datasets                                 and Fig. 8. We set δ = 0.9 for all cases. Other algorithms’
+ Name      n      d     #AC      Source      Measure        Residual           parameters are set following the original papers’ suggestions.
+  A       400     5    15324       I1       Fundamental      13.0%
+  B0      100     4    21600       I2       Fundamental      0.80%                For all cases, Squeeze is able to achieve relatively good
+  B1      100     4    21600       I2       Fundamental      3.19%             results. In most cases, Squeeze achieves the best F1-scores.
+  B2      100     4    21600       I2       Fundamental      6.37%             iDice does not work on our data mainly because it is de-
+  B3      100     4    21600       I2       Fundamental      9.54%             signed for detecting anomalies and localizing root causes
+  B4      100     4    21600       I2       Fundamental      13.0%
+  D       100     4    21600       I2         Derived        3.99%             for a duration, rather than a single time point. Adtributor
+                                                                               only localizes root causes of the first-layer cuboids, and the
+   For fundamental measures, we randomly choose some                           explanation power makes it only able to handle anomalies
+cuboids and root causes in them, change the values of the                      with significant magnitudes. Although R-Adtributor is able to
+abnormal leaf attribute combinations by GRE with random                        localize root causes in other cuboids, it is hard for R-Adtributor
+amounts, finally add Gaussian noises to all leaf attribute com-                to decide when the recursion should terminate. HotSpot has the
+binations. We use the Gaussian noises with different standard                  problem in localizing root causes which are in deep cuboids
+deviations to emulate different forecast residuals.                            or containing many attribute combinations. HotSpot relies on
+   For derived measures (D), we assume normal success rates                    potential scores along the whole search path to lead it to the
+follow unif (0.9, 1.0), pick some attribute combinations, then                 true root cause, but for root causes which are in deep cuboids
+make their success rate decrease according to GRE, then                        or containing many attribute combinations, the potential scores
+randomly generate the total transaction number and successful                  can be quite small at the beginning of the search path. As a
+transaction number, finally add Gaussian noises with standard                  result, on the one hand, the hierarchical pruning strategy may
+deviation 5% to all attribute combinations.                                    wrongly prune the right search path. On the other hand, for the
+   In all datasets, we inject anomalies with random magni-                     sake of efficiency, HotSpot cannot search too many steps and
+tudes, i.e., we do not guarantee the anomalies are significant.                therefore the mistakes at the beginning of search can be fatal
+   We apply MA (moving average) for all scenarios. We
+                                                                               for HotSpot. Furthermore, we revise HotSpot with GRE to
+present the time usage for single leaf attribute combination
+                                                                               obtain HotSpot+GRE so that it can handle derived measures.
+of several algorithms used by previous works (Period is used
+                                                                                  Squeeze performs well for anomalies with any magnitudes.
+by [7], ARIMA is used by [3]) in Table VIII. MA is one of
+                                                                               We present the total F1-score of B0 , B1 , ..., B4 of different
+the simplest forecast algorithms and it costs little time.
+                                                                               levels of magnitudes in Fig. 9. Squeeze’s F1-score outperforms
+ TABLE VIII: Time Usage Comparison of Forecast Methods                         others by about 0.4 in {Bi , i = 0, 1, ..., 4} in total, as shown
+ Algorithm            MA               Period [19]      ARIMA
+                                                                               in Fig. 9. [0%, 0.4%) means the magnitudes of anomalies are
+ Time Usage (µs)      6.11(±1.91)      29.8(±3.94)      38575(±32447)
+                                                                               less than 0.4% of the sum of all leaf attribute combinations,
+C. RQ1: Effectiveness                                                          and so do the other two. We choose 0.4% and 12% because
+  We conduct experiments to evaluate Squeeze with datasets                     they are 25-percentile and 75-percentile respectively. There
+described in Section VI-B. We present the F1-score compari-                    is almost nothing different for Squeeze whether the anomaly
+son of fundamental measures in Table IX, and present that of                   magnitude is significant or not. Only Squeeze achieves the
+                                                                               same good performance in all cases. Hotspot and Adtributor
+ 1 Datasets and code are available at https://github.com/lizeyan/Squeeze       are almost not able to localize root causes for insignificant
+
+
+
+                                                                           8
+                                        TABLE IX: F1-score comparison of fundamental measures
+            F1-score                                               (n elements, cuboid ayer)
+  Dataset         Algorithm    (1, 1)       (1, 2)   (1, 3)    (2, 1)       (2, 2)        (2, 3)    (3,1)            (3,2)   (3, 3)
+                   Squeeze     0.8632       0.7827   0.4932    0.7584       0.6361       0.4097    0.6441           0.5145   0.3618
+                   HotSpot     0.6856       0.4389   0.2158    0.5085       0.3433       0.2043    0.3988           0.2916   0.1768
+                 Adtributor    0.3892       0.0000   0.0000    0.4010       0.0000       0.0000    0.3857           0.0000   0.0000
+    A
+                R-Adtributor   0.0180       0.0020   0.0016    0.0075       0.0049       0.0294    0.0081           0.0067   0.0410
+                    iDice      0.0000       0.0036   0.0425    0.0000       0.0065       0.0437    0.0000           0.0007   0.0172
+                   Apriori     0.1036       0.0580   0.0001    0.1427       0.0926       0.0019    0.1537           0.0882   0.0062
+                   Squeeze     0.9041       0.9327   0.9231    0.9604       0.9799       0.9333    0.9631           0.9371   0.9228
+                   HotSpot     0.9950       0.4928   0.1215    0.7588       0.3934       0.0577    0.5961           0.3043   0.0775
+                 Adtributor    0.3044       0.0000   0.0000    0.4226       0.0000       0.0000    0.4654           0.0000   0.0000
+    B0
+                R-Adtributor   0.0639       0.0000   0.0000    0.0114       0.0000       0.0000    0.0177           0.0000   0.0000
+                    iDice      0.0000       0.0517   0.0488    0.0000       0.0409       0.0618    0.0000           0.0228   0.0959
+                   Apriori     0.4430       0.5116   0.7523    0.8490       0.6853       0.7351    0.8743           0.8087   0.7368
+                   Squeeze     0.8900       0.8889   0.8350    0.9624       0.9479       0.9192    0.8912           0.9019   0.9060
+                   HotSpot     0.9804       0.3767   0.0175    0.6882       0.4207       0.0549    0.6030           0.3261   0.0471
+                 Adtributor    0.2874       0.0000   0.0000    0.4286       0.0000       0.0000    0.5000           0.0000   0.0000
+    B1
+                R-Adtributor   0.0538       0.0000   0.0081    0.0114       0.0000       0.0000    0.0100           0.0000   0.0000
+                    iDice      0.0000       0.0040   0.0065    0.0000       0.0125       0.0099    0.0000           0.0245   0.0092
+                   Apriori     0.6965       0.6582   0.6316    0.8492       0.8351       0.8161    0.8885           0.7986   0.0000
+                   Squeeze     0.8155       0.8208   0.9171    0.9641       0.8021       0.8615    0.7081           0.7731   0.8396
+                   HotSpot     0.9167       0.3930   0.0254    0.6648       0.3486       0.0601    0.5839           0.3349   0.0563
+                 Adtributor    0.2915       0.0000   0.0000    0.4590       0.0000       0.0000    0.4848           0.0000   0.0000
+    B2
+                R-Adtributor   0.0100       0.0000   0.0000    0.0201       0.0000       0.0041    0.0177           0.0000   0.0034
+                    iDice      0.0000       0.0063   0.0030    0.0000       0.0119       0.0123    0.0000           0.0125   0.0108
+                   Apriori     0.3844       0.3208   0.1537    0.8184       0.7556       0.2636    0.8885           0.8345   0.3339
+                   Squeeze     0.8835       0.7611   0.6920    0.8667       0.7809       0.7494    0.6753           0.7068   0.7586
+                   HotSpot     0.9167       0.3810   0.0339    0.6744       0.3988       0.0299    0.5369           0.4072   0.0625
+                 Adtributor    0.2770       0.0000   0.0000    0.4182       0.0000       0.0000    0.4610           0.0000   0.0000
+    B3
+                R-Adtributor   0.0000       0.0000   0.0052    0.0086       0.0000       0.0188    0.0177           0.0000   0.0226
+                    iDice      0.0000       0.0061   0.0025    0.0000       0.0180       0.0129    0.0000           0.0189   0.0175
+                   Apriori     0.0000       0.5000   0.2792    0.0000       0.7324       0.4605    0.8825           0.8330   0.5314
+                   Squeeze     0.8173       0.7207   0.6167    0.8528       0.6863       0.7015    0.5470           0.6489   0.6543
+                   HotSpot     0.9346       0.3362   0.0084    0.6535       0.3642       0.0301    0.5282           0.3431   0.0321
+                 Adtributor    0.2740       0.0000   0.0000    0.3853       0.0000       0.0000    0.4517           0.0000   0.0000
+    B4
+                R-Adtributor   0.0000       0.0000   0.0037    0.0143       0.0000       0.0092    0.0301           0.0000   0.0233
+                    iDice      0.0000       0.0092   0.0049    0.0000       0.0069       0.0164    0.0000           0.0229   0.0108
+                   Apriori     0.0467       0.0064   0.0000    0.1290       0.0042       0.0016    0.2023           0.0093   0.0009
+
+
+
+
+            Fig. 10: Running time comparison of A, B0 , D. Mean and standard deviation of each setting are presented.
+cases, mainly because of their potential score and explanation        on a server with 24 × Intel(R) Xeon(R) CPU E5-2620 v3
+power mechanisms. Apriori is able to localize root causes for         @ 2.40GHz (2 sockets) and 64G RAM. All algorithms are
+anomalies with insignificant magnitudes, but it may prune such        implemented with Python but iDice is with C++. Experiments
+anomalies because of its sensitive support threshold. Therefore       of all algorithms are conducted under the same condition.
+its performance on such cases is not so good.                         E. RQ3: Performance under Different Configurations
+D. RQ2: Efficiency                                                       All the parameters in Section IV      1.0
+                                                                                                             F1-Score
+
+
+
+
+   Squeeze is efficient enough in all cases. In Fig. 10 we            are automatically configured ex-         0.5
+present the running times of A, B0 , D. We do not present             cept δ, the GPS threshold. We            δ
+                                                                                                                            25
+                                                                                                                              5
+                                                                                                                              7
+                                                                                                                            75
+                                                                                                                            85
+                                                                                                                              9
+
+                                                                                                                              5
+                                                                                                                            95
+
+                                                                                                                              5
+                                                                                                                           0.
+                                                                                                                           0.
+
+
+
+
+                                                                                                                           0.
+                                                                                                                           92
+
+
+                                                                                                                           97
+                                                                                                                        0.
+
+
+
+
+                                                                                                                         0.
+                                                                                                                         0.
+
+
+
+
+                                                                                                                         0.
+                                                                                                                        0.
+
+
+                                                                                                                        0.
+
+
+
+
+results of all datasets because all of {Bi , i = 0, 1, 2, 3, 4}       present Squeeze’s effectiveness un-
+                                                                                                             Fig. 11: F1-Scores
+have similar results. Squeeze costs only about ten seconds            der different δ in Fig. 11 with
+                                                                                                             over different δ of B1
+even in the worst cases. It is efficient enough since measures        cuboid layer = 3, n elements =
+                                                                                                             with cuboid layer =
+are usually collected every one minute or every five minutes.         3 in B1 . Squeeze’s performance
+                                                                                                             3, n elements = 3.
+HotSpot sometimes is as efficient as Squeeze, but sometimes           does not change a lot as δ changes.
+it would cost more time. Apriori costs hundreds of seconds,           We only choose this setting because it is the hardest setting,
+which is too slow. Others can be fast, but they do not                and actually results in Table IX and Fig. 8 also show that
+effectively localize root causes. We run every experiment             δ = 0.9 leads to a good enough results. Since δ is the threshold
+
+
+
+                                                                  9
+of GPS for early stopping, it is reasonable to set δ near 0.9             attribute combinations. The appropriate thresholds of support,
+regardless of the specific dataset.                                       confidence and distinguishing normal and abnormal leaf at-
+                                                                          tribute combinations are different for different services or the
+                                                                          service over time. Apriori’s performance is sensitive to these
+                                                                          thresholds. So its performance varies in different settings, as
+                                                                          Section VI shows.
+                                                                                    VIII. L IMITATIONS AND F UTURE W ORKS
+                                                                             Squeeze assumes that attribute combinations of the root
+     Fig. 12: F1-score comparison of different residuals.                 cause which cause the same abnormal magnitudes (in the same
+   Squeeze, as well as many other algorithms, relies on forecast          cluster in Section IV-C2) are in one cuboid. This assumption
+values. In Fig. 12, we plot the F1-scores under different                 is very weak since in practice it is very rare that root
+forecast residuals. We select these two representative settings           cause attribute combinations which cause the same abnormal
+because Squeeze’s performance changes relatively small in (a)             magnitudes are in more than one cuboid.
+and large in (b) along different datasets. Residuals do affect the           Squeeze focuses on categorical attributes, and Squeeze can-
+performance of algorithms that rely on forecasting including              not leverage numerical attributes. We observe that numerical
+Squeeze. But Squeeze still outperforms other algorithms when              attributes are much less prevalent in practice (e.g. in the four
+the residuals are relatively large.                                       companies that we studied in this paper). According to our
+                                                                          interviews with some engineers, they choose not to record
+F. Thread to Validity                                                     them because they weren’t sure how to use them for diagnosis.
+  The experiments in this section are based on semi-synthetic                In Section III, we only give proof of quotients. We have
+datasets, which might not perfectly represent real world ones.            also proven GRE for products. It is omitted due to space
+                                                                          limitations, and it is similar to that of quotients. They are the
+                    VII. R ELATED W ORKS                                  most common two cases. More types of derived measures’
+   There are many previous works in root cause localization               GRE can be proved when we encounter them. In most cases,
+in various contexts. Most works are different from ours [20]–             the idea of finite difference would help. But for those which are
+[31]. On the one hand, we focus on root cause localization on             not continuous (e.g., 95-percentile of search response time), it
+general multi-dimensional systems. On the other hand, most of             is more challenging. We will work on it in the future.
+these works use intuitive domain-knowledge based empirical                   We apply a relatively simple clustering algorithm in Sec-
+methods, while we propose a generic algorithm. Some works                 tion IV-C2, and we use the deviation based filtering to make
+are closely related to ours. We compared them in Table III.               the clustering perform better. Since it is simple, an advanced
+   Adtributor [3] assumes that the root cause can be local-               clustering algorithm may make Squeeze work better.
+ized by only one attribute. It uses different approaches for                                    IX. C ONCLUSION
+fundamental and derived measures. Adtributor relies on fore-                 Given the importance of multi-dimensional root cause lo-
+casting for attribute combinations in all one-attribute cuboids           calization, many approaches are proposed, but they are not
+to calculate explanation power and surprise. R-Adtributor [4]             generic or robust enough and suffer from some limitations.
+recursively calls Adtributor to provide multi-dimensional root            Through a novel “bottom-up then top-down” searching strat-
+causes. But it has a hard-to-tune termination condition.                  egy and the techniques based on our proposed generalized rip-
+   iDice [5] only works for fundamental measures and anoma-               ple effect and generalized potential score, our proposed algo-
+lies with significant magnitudes. Isolation power measures how            rithm, Squeeze, overcomes these limitations. Squeeze achieves
+well the attribute combination isolates abnormal and normal               a good trade-off between speed and accuracy in a generic and
+values, but if there are more than one attribute combination              robust manner. Case studies in several large commercial banks
+related to anomalies, a single attribute combination actually             and an Internet company show that Squeeze can localize root
+cannot isolate abnormal and normal values.                                causes much more rapidly and accurately than traditional man-
+   HotSpot [7] uses MCTS (Metro Carlo tree search) to solve               ual analysis. Furthermore, we conduct extensive experiments
+the problem of huge search space. It focuses on fundamental               on several semi-synthetic datasets. The results show that the
+measures since they consider ripple effect to hold only for               F1-score of Squeeze outperforms previous approaches by 0.4
+fundamental measures. HotSpot relies on forecasting for all               on average, and consistently costs only about 10s.
+leaf attribute combinations to calculate potential score. As
+shown in Section IV-D, potential score does not work well                                    X. ACKNOWLEDGMENT
+when anomaly magnitudes are not very significant.                           The authors gratefully thank Suning.com Co., Ltd. for
+   End2End [6] uses forecast value and real value to dis-                 providing parts of the data used in this paper’s evaluation. We
+tinguish all abnormal leaf attribute combinations. Then the               thank Juexing Liao and Chuanxi Zheng for proofreading this
+Apriori algorithm is applied to find the max frequent pat-                paper. This work has been supported by the Beijing National
+terns related to anomalies with high confidence. [6] mainly               Research Center for Information Science and Technology
+focuses on accurately and efficiently forecasting for all leaf            (BNRist) key projects.
+
+
+
+                                                                     10
+                              R EFERENCES                                                  tection through machine learning,” in Proceedings of the 2015 Internet
+                                                                                           Measurement Conference. ACM, 2015, pp. 211–224.
+ [1] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, and Z. Zang, “Rapid
+     and robust impact assessment of software changes in large internet-              [17] L. M. Milne-Thomson, The calculus of finite differences. American
+     based services,” in International Conference on emerging Networking                   Mathematical Soc., 2000.
+     EXperiments and Technologies (CoNEXT), 2015, pp. 1–13.                           [18] V. Satopaa, J. Albrecht, D. Irwin, and B. Raghavan, “Finding a” kneedle”
+ [2] M. Ma, S. Zhang, D. Pei, X. Huang, and H. Dai, “Robust and rapid                      in a haystack: Detecting knee points in system behavior,” in 2011 31st
+     adaption for concept drift in software system anomaly detection,”                     International Conference on Distributed Computing Systems Workshops.
+     in 2018 IEEE 29th International Symposium on Software Reliability                     IEEE, 2011, pp. 166–171.
+     Engineering (ISSRE). IEEE, 2018, pp. 13–24.                                      [19] S.-B. Lee, D. Pei, M. Hajiaghayi, I. Pefkianakis, S. Lu, H. Yan, Z. Ge,
+ [3] R. Bhagwan, R. Kumar, R. Ramjee, G. Varghese, S. Mohapatra,                           J. Yates, and M. Kosseifi, “Threshold compression for 3g scalable
+     H. Manoharan, and P. Shah, “Adtributor: Revenue debugging in ad-                      monitoring,” in INFOCOM, 2012 Proceedings IEEE. IEEE, 2012, pp.
+     vertising systems,” in 11th USENIX Symposium on Networked Systems                     1350–1358.
+     Design and Implementation (NSDI 14), 2014, pp. 43–55.                            [21] R. R. Kompella, J. Yates, A. Greenberg, and A. C. Snoeren, “Detection
+ [4] M. Persson and L. Rudenius, “Anomaly detection and fault localization                 and localization of network black holes,” in IEEE INFOCOM 2007-26th
+     an automated process for advertising systems,” Master’s thesis, 2018,                 IEEE International Conference on Computer Communications. IEEE,
+     göteborg : Chalmers University of Technology.                                        2007, pp. 2180–2188.
+ [5] Q. Lin, J.-G. Lou, H. Zhang, and D. Zhang, “idice: problem identi-
+                                                                                      [22] S. Kandula, D. Katabi, and J.-P. Vasseur, “Shrink: A tool for failure
+     fication for emerging issues,” in 2016 IEEE/ACM 38th International
+                                                                                           diagnosis in ip networks,” in Proceedings of the 2005 ACM SIGCOMM
+     Conference on Software Engineering (ICSE). IEEE, 2016, pp. 214–
+                                                                                           workshop on Mining network data. ACM, 2005, pp. 173–178.
+     224.
+ [6] F. Ahmed, J. Erman, Z. Ge, A. X. Liu, J. Wang, and H. Yan, “Detecting            [23] R. R. Kompella, J. Yates, A. Greenberg, and A. C. Snoeren, “Fault
+     and localizing end-to-end performance degradation for cellular data                   localization via risk modeling,” IEEE Transactions on Dependable and
+     services based on tcp loss ratio and round trip time,” IEEE/ACM                       Secure Computing, vol. 7, no. 4, pp. 396–409, 2009.
+     Transactions on Networking (TON), vol. 25, no. 6, pp. 3709–3722, 2017.           [24] P. Bahl, R. Chandra, A. Greenberg, S. Kandula, D. A. Maltz, and
+ [7] Y. Sun, Y. Zhao, Y. Su, D. Liu, X. Nie, Y. Meng, S. Cheng, D. Pei,                    M. Zhang, “Towards highly reliable enterprise network services via
+     S. Zhang, X. Qu et al., “Hotspot: Anomaly localization for additive                   inference of multi-level dependencies,” ACM SIGCOMM Computer
+     kpis with multi-dimensional attributes,” IEEE Access, vol. 6, pp. 10 909–             Communication Review, vol. 37, no. 4, pp. 13–24, 2007.
+     10 923, 2018.                                                                    [25] H. Yan, A. Flavel, Z. Ge, A. Gerber, D. Massey, C. Papadopoulos,
+ [8] J. Han, J. Pei, and M. Kamber, Data mining: concepts and techniques.                  H. Shah, and J. Yates, “Argus: End-to-end service anomaly detection
+     Elsevier, 2011.                                                                       and localization from an isp’s point of view,” in 2012 Proceedings IEEE
+ [9] F. Knorn and D. J. Leith, “Adaptive kalman filtering for anomaly                      INFOCOM. IEEE, 2012, pp. 2756–2760.
+     detection in software appliances,” in INFOCOM Workshops 2008, IEEE.
+     IEEE, 2008, pp. 1–6.                                                             [26] B. Nguyen, Z. Ge, J. Van der Merwe, H. Yan, and J. Yates, “Absence:
+[10] B. Pincombe, “Anomaly detection in time series of graphs using arma                   Usage-based failure detection in mobile networks,” in Proceedings of
+     processes,” Asor Bulletin, vol. 24, no. 4, p. 2, 2005.                                the 21st Annual International Conference on Mobile Computing and
+[11] Y. Chen, R. Mahajan, B. Sridharan, and Z.-L. Zhang, “A provider-                      Networking. ACM, 2015, pp. 464–476.
+     side view of web search response time,” in ACM SIGCOMM Computer                  [27] D. Liu, Y. Zhao, K. Sui, L. Zou, D. Pei, Q. Tao, X. Chen, and D. Tan,
+     Communication Review, vol. 43, no. 4. ACM, 2013, pp. 243–254.                         “Focus: Shedding light on the high search response time in the wild,” in
+[12] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, Z. Zang, X. Jing, and               IEEE INFOCOM 2016-The 35th Annual IEEE International Conference
+     M. Feng, “Funnel: Assessing software changes in web-based services,”                  on Computer Communications. IEEE, 2016, pp. 1–9.
+     IEEE Transactions on Service Computing, 2016.                                    [28] S. Zhang, W. Meng, J. Bu, S. Yang, Y. Liu, D. Pei, J. Xu, Y. Chen,
+[13] H. Xu, W. Chen, N. Zhao, Z. Li, J. Bu, Z. Li, Y. Liu, Y. Zhao, D. Pei,                H. Dong, X. Qu et al., “Syslog processing for switch failure diagnosis
+     Y. Feng et al., “Unsupervised anomaly detection via variational auto-                 and prediction in datacenter networks,” in 2017 IEEE/ACM 25th Inter-
+     encoder for seasonal kpis in web applications,” in Proceedings of the                 national Symposium on Quality of Service (IWQoS). IEEE, 2017, pp.
+     2018 World Wide Web Conference on World Wide Web. International                       1–10.
+     World Wide Web Conferences Steering Committee, 2018, pp. 187–196.                [29] S. Zhang, Y. Liu, W. Meng, Z. Luo, J. Bu, S. Yang, P. Liang, D. Pei,
+[14] Z. Li, W. Chen, and D. Pei, “Robust and unsupervised kpi anomaly de-                  J. Xu, Y. Zhang et al., “Prefix: Switch failure prediction in datacenter
+     tection based on conditional variational autoencoder,” in 2018 IEEE 37th              networks,” Proceedings of the ACM on Measurement and Analysis of
+     International Performance Computing and Communications Conference                     Computing Systems, vol. 2, no. 1, p. 2, 2018.
+     (IPCCC). IEEE, 2018, pp. 1–9.
+[15] J. Bu, Y. Liu, S. Zhang, W. Meng, Q. Liu, X. Zhu, and D. Pei, “Rapid             [30] W. Meng, Y. Liu, S. Zhang, D. Pei, H. Dong, L. Song, and X. Luo,
+     deployment of anomaly detection models for large number of emerging                   “Device-agnostic log anomaly classification with partial labels,” in
+     kpi streams,” in 2018 IEEE 37th International Performance Computing                   2018 IEEE/ACM 26th International Symposium on Quality of Service
+     and Communications Conference (IPCCC). IEEE, 2018, pp. 1–8.                           (IWQoS). IEEE, 2018, pp. 1–6.
+[16] D. Liu, Y. Zhao, H. Xu, Y. Sun, D. Pei, J. Luo, X. Jing, and                     [31] W. Meng, Y. Liu, Y. Zhu, S. Zhang, D. Pei, Y. Liu, Y. Chen, R. Zhang,
+     M. Feng, “Opprentice: Towards practical and automatic anomaly de-                     S. Tao, P. Sun, and R. Zhou, “Loganomaly: Unsupervised detection of
+[20] M. Y. Chen, E. Kiciman, E. Fratkin, A. Fox, and E. Brewer, “Pinpoint:                 sequential and quantitative anomalies in unstructured logs,” in Proceed-
+     Problem determination in large, dynamic internet services,” in Proceed-               ings of the Twenty-Eighth International Joint Conference on Artificial
+     ings International Conference on Dependable Systems and Networks.                     Intelligence, IJCAI-19. International Joint Conferences on Artificial
+     IEEE, 2002, pp. 595–604.                                                              Intelligence Organization, 7 2019, pp. 4739–4745.
+
+
+
+
+                                                                                 11
+

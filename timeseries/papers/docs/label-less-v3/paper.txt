@@ -1,0 +1,665 @@
+        Label-Less: A Semi-Automatic Labelling Tool
+                     for KPI Anomalies
+                    Nengwen Zhao†k , Jing Zhu†k , Rong Liu‡ , Dapeng Liu§ , Ming Zhang¶ , Dan Pei∗†k
+                    † Tsinghua University ‡ Stevens Institute of Technology § BizSeer ¶ China Construction Bank
+                       k Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+
+   Abstract—KPI (Key Performance Indicator) anomaly detection       and practice just like what ImageNet [13] did to the fields of
+is critical for Internet-based services to ensure the quality and   computer vision and deep learning.
+reliability. However, existing algorithms’ performance in reality      Unfortunately, obtaining a large-scale KPI anomaly dataset
+is far from satisfying due to the lack of sufficient KPI anomaly
+data to help train and evaluate these algorithms. In this paper,    with high-quality ground truth has been a great challenge
+we argue that labeling overhead is the main hurdle to obtain        due to following reasons. First, labeling KPI anomalies takes
+such datasets.                                                      domain knowledge of IT operations. Thus the number of
+   Thus we novelly propose a semi-automatic labelling tool called   people who can reliably label in our domain is much fewer
+Label-Less, which minimizes the labeling overhead in order to       than in image and speech areas. Besides, even the experienced
+enable an ImageNet-like large-scale KPI anomaly dataset with
+high-quality ground truth. To save operators from scanning and      operators may not have enough confidence to perform high-
+checking the long KPIs back and forth for abnormal patterns         quality labeling since it is difficult to give an explicit definition
+and label consistency, we propose to adopt Isolation Forest for     of “what is an anomaly” in various KPIs and applications.
+unsupervised anomaly detection and adopt the accelerated DTW        Second, it is labor intensive to carefully examine a several-
+techniques in UCR Suite for robust anomaly similarity search.       month-long KPI back and forth and try to label anomalies in a
+In our evaluations using 30 real KPIs from a large Internet
+company, our anomaly similarity search achieves the best F-         consistent manner. For example, according to our observation,
+score of 0.95 on average, and a real-time per-KPI response time     it takes an experienced operator a few hours, with the help
+(less than 0.5 second). Overall, the feedback from deployment       of a labeling tool such as Curve [14] which has a dedicated
+in practice shows that Label-Less can reduce operators’ labeling    user interface, to label a 6-month-long KPI with 300,000 data
+overhead by more than 90%.                                          points spaced at 1-minute interval. Third, we fundamentally
+                                                                    need to label a large number of KPIs to train anomaly detection
+                         I. I NTRODUCTION                           algorithms, because the anomalies in each KPI are relatively
+   In recent years, Internet-based services, such as search         rare, KPI patterns are diverse, and the number of KPIs in
+engines and online shopping, have become an indispensable           practice is huge in large companies. In a real and very recent
+part of our daily life. To ensure undisrupted business, operators   example, when preparing for the KPI anomaly detection algo-
+of these companies need to closely monitor various time series      rithm competition [15], 5 large Internet companies (Alibaba,
+data called Key Performance Indicators (KPIs, e.g., search          Tencent, Baidu, eBay, and Sogou) sponsored us with thousands
+response time, CPU usage), to accurately detect KPI anomalies       of KPIs (2-month to 6-month long), yet we ended up being
+and trigger timely troubleshooting/mitigation [1].                  able to publish just 30 labeled KPIs due to the high overhead
+   Despite the importance of KPI anomaly detection and also         to obtain high-quality ground-truth.
+a large body of algorithms proposed in the literature [2]–             From the above discussion, it is apparent that labeling over-
+[10], existing algorithms’ performance in reality is far from       head has become the main hurdle to large-scale KPI anomaly
+satisfying. One key reason is the lack of generality in most        dataset, which in turn is the main hurdle to effective and prac-
+of these algorithms. KPIs in practice have various types of         tical KPI anomaly detection. In this paper, we aim to tackle the
+patterns, yet the published algorithms are typically trained by     KPI anomaly labeling overhead problem and propose a semi-
+private datasets, and thus cannot be easily generalized to other    automatic labeling framework called Label-Less. Our idea is
+contexts. The majority of existing public time series datasets      inspired by one key observation: the majority of operators’
+mainly aim at classification, clustering or regression [11] [12],   labeling efforts are spent on visually scanning through the
+not for anomaly detection. Although there exist a few public        KPIs to gauge their “normal” patterns and variations and on
+anomaly detection datasets like Yahoo Benchmark [3] and Nu-         examining KPIs back and forth to check whether “similar” KPI
+menta Anomaly Benchmark [4], they only contain KPIs with            segments (see Fig. 1 for example) are labeled consistently.
+limited data points and synthetic anomalies. Consequently, the      We argue that above “scanning and checking” should be
+community of KPI anomaly detection is in an urgent need             facilitated by automatic tools driven by algorithms. In our idea,
+for a large-scale and diverse KPI anomaly dataset. Such a           the visual scanning is replaced by unsupervised anomaly
+dataset would greatly benefit the anomaly detection research        detection which emphasizes on high recall and acceptable
+                                                                    precision, and the results are candidate potential anomalies.
+  ∗ Dan Pei is the corresponding author.                            The manual consistency checking is replaced with anomaly
+                                                                      context instead of an individual point, it is a collection of
+                                                                      continuous points called anomaly segment (anomaly for short
+                                                                      hereinafter), which can be formalized as a subsequence of KPI
+                                                                      X, denoted as segment(i) = {xi , xi+1 , · · · , xi+m−1 }, where
+        Apr 10     Apr 11   Apr 12   Apr 10    Apr 11   Apr 12        m is the length of the anomaly.
+                 KPI X                        KPI Y                      Anomaly template: An anomaly template is an anomaly
+Fig. 1: Similar anomalies (labeled in red) in KPIs X and Y .          segment chosen by an operator according to his interest,
+similarity search, which given an anomaly template by the             denoted as q with length m, which is the input to the anomaly
+operator, i.e., a KPI segment containing known anomalous data         similarity search problem. For example, the fisrt segment in
+points, discovers anomalies similar to the template among the         red color in Fig. 1 can be an anomaly template.
+candidate anomalies.                                                     Similar anomaly: According to some distance measure,
+  Our major contributions are summarized as follows:                  segment(i) with length m which has a small distance with
+                                                                      the anomaly template q is considered as a similar anomaly to
+• To the best of our knowledge, this is the first work to focus
+                                                                      the template q. We require that two similar anomalies have the
+  on reducing the labeling workload for KPI anomaly de-
+                                                                      same length (m) for the following two reasons. First, there are
+  tection by algorithms. Our proposed framework Label-Less
+                                                                      no known techniques to support similarity search of arbitrary
+  including an unsupervised anomaly detection component
+                                                                      lengths [19]. Second, the techniques of lower bound used to
+  and an anomaly similarity search component, is a general
+                                                                      speed up DTW in §IV-C requires that two segments must have
+  one to tackle labeling overhead reduction problem. Besides,
+                                                                      same length. Otherwise, the search would be too slow for the
+  the feedback from deployment in practice shows that Label-
+                                                                      interactive labeling.
+  Less reduces more than 90% labeling time for operators.
+• This paper is the first one that applies Isolation Forest [16]      B. Anomaly Similarity Search
+  to unsupervised KPI anomaly detection, with features given
+                                                                         Operators provide an anomaly template q, which is an
+  by time series prediction models. Experiments have showed
+                                                                      anomaly case that operators are interested in, such as the dip
+  the unsupervised anomaly detection approach adopted in
+                                                                      of the number of requests, and the goal of “anomaly similarity
+  Label-Less has better performance and lower computation
+                                                                      search” is to discover top-k similar anomalies from candidate
+  complexity compared with other alternatives, e.g., One-
+                                                                      anomalies (given by unsupervised anomaly detection) with the
+  Class SVM [17] and Local outlier factor [18].
+                                                                      given template q. We opted to use k-NN search since it is
+• This is the first attempt to define and study the new problem:
+                                                                      intuitive and practical. In contrast, range search which aims to
+  search anomalies similar to a given anomaly template from
+                                                                      find all similar anomalies where their distances are less than
+  a set of candidate anomalies. Through experiments on
+                                                                      the tolerance value is very cumbersome to use in practice,
+  various KPIs, the average best F-score can reach about 0.95.
+                                                                      since the tolerance value is not intuitive for operations and it
+  Besides, in order to reduce the response time required by
+                                                                      varies under different KPIs. Therefore, it is hard to determine
+  labeling’s interactive nature, we adopt the accelerated Dy-
+                                                                      a suitable tolerance value in advance [21].
+  namic Time Warping (DTW) techniques in UCR Suite [19]
+                                                                         Anomaly similarity search is a little different from general
+  for rapid anomaly similarity search. The response time for
+                                                                      time series similarity search [19] [22]. First of all, anomaly
+  one KPI is under 0.5 second. In addition to reducing labeling
+                                                                      information is indispensable in our scenario. In other words,
+  workload, the problem has other practical applications, as
+                                                                      what we are searching for is not only a segment similar to the
+  discussed in §VII.
+                                                                      template but also an anomaly. Thus the search space here is
+                 II. D EFINITIONS AND OVERVIEW                        candidate anomalies given by unsupervised anomaly detection
+  In this section, we first define a few key terms and formulate      instead of the entire KPI. Besides, different from traditional
+the problem of anomaly similarity search, then present an             time series, e.g., Electrocardiogram (ECG) and Electroen-
+overview of Label-Less framework.                                     cephalogram (EEG), a large number of long KPIs bring a
+                                                                      great challenge in search responsiveness. The difference is
+A. Definitions.                                                       demonstrated by experiments in §V-D.
+   KPI: KPI is a special type of time series data. A KPI can
+be denoted as X = {x1 , x2 , · · · , xn }, where xi is the value      C. Overview of Label-Less
+corresponding to time index i for i ∈ 1, 2, · · · , n, and n is the      The overall framework of Label-Less shown in Fig. 2 has
+length of the KPI. Compared with general time series, KPIs            two major components. The first component, Unsupervised
+are based on the domain knowledge of IT operations. Besides,          Anomaly Detection, takes a set of related unlabeled KPIs
+the length of one KPI is long and the number of KPIs is huge          (e.g., the number of requests per server in a well load-
+about millions to tens of millions in large companies [9], [20].      balanced server cluster) as its input, and identifies a set of
+   KPI Anomaly: Anomalies refer to the data points in                 candidate anomalies as its output. In detail, we apply Isolation
+a KPI that do not conform to the expected behavior and                Forest [16] as an outlier detector and use the features extracted
+significantly differ from the normal data [2] [5], e.g., jitters,     from time series models such as Holt-Winters [6]. Then an
+spikes and dips. Since an anomalous case always has its               appropriate detection threshold θ is selected with bias towards
+                                     Yes (Labeled KPIs)                                                                                                                    iForest
+                Operators
+                                     Investigate
+
+                                                          All anomalies                                                                     MA                             EWMA                         HW      iTree
+                        Unlabeled                          have been                                                   Score         <           >                                        ……
+                          KPIs                               labeled?                                                         1
+                                                                                                             Anomaly                 Diﬀ                0.9
+
+                      Preprocessing
+                                                                                                                                  0.6      WMA
+                                                       Check of top-k
+                                                      similar anomalies        No (Choose
+   No (Choose            Feature                                                                              Normal
+                                                                               another                                                     0.2   ARIMA
+   another              Extraction                                                                           samples
+                                                                               template)
+   template)                                              Accelerated
+                        Isolation                            DTW                                                                                  0.1
+                                                                                                                              0
+                         Forest
+
+                        Threshold              Candidate            Anomaly                                  (a) An intuitive example to illustrate how iForest works.
+                        Selection              Anomalies            Template
+                    Unsupervised
+                                                   Anomaly Similarity Search                                 KPI value                                                           100
+                  Anomaly Detection                                                                      6   Anomaly score
+                                                                                                                                                                                  80
+
+
+
+
+                                                                                                                                                        Anomaly score
+                                                                                                             Anomaly
+
+
+
+
+                                                                                             KPI value
+          Fig. 2: The overall framework of Label-Less.                                                                                                                            60
+
+
+
+
+                                                                                                                                                                        CDF(%)
+                                                                                                         4                                              1
+                                                                                                                                                                                  40
+high recall and acceptable precision. As we will demonstrate                                             2
+                                                                                                                                                                                  20
+in our experiments later (§V-C), with a high recall rate, most
+                                                                                                         0    Aug 3          Aug 4         Aug 5 0                                 00.0   0.2     0.4   0.6     0.8     1.0
+anomalies can be included as candidate anomalies. Moreover,                                                           Time (Day)                                                                Anomaly score
+unsupervised anomaly detection not only provides candidate
+                                                                                             (b) Comparison of anomaly scores (c) The CDF of anomaly scores.
+anomalies which can save the visual scanning time for oper-                                  between normal points and anomalies. The black point is 85th percentile.
+ators, but also plays a key role in anomaly similarity search.
+                                                                                             Fig. 3: Detailed explanation of iForest and anomaly score.
+It filters out normal points so as to reduce false positives, i.e.,
+similar normal segment (§V-D). Besides, it can significantly
+                                                                                            minority consisting of fewer samples and they have some fea-
+reduce the search space and improve search efficiency (§V-F).
+                                                                                            tures which are very different from those of normal samples.
+   To label anomalies consistently for the given KPIs, an                                   In other words, anomalies are “few and different”. Therefore,
+operator first labels a true candidate anomaly as template.                                 they are more susceptible to be isolated.
+Then the second component, Anomaly Similarity Search, uses                                     IForest isolates observations by randomly selecting a feature
+the template to automatically search for the top-k similar                                  and a split value between the minimum and maximum values
+anomalies from the candidate anomalies. We adopt the ac-                                    of the selected feature. Usually, only a few conditions are
+celerated Dynamic Time Warping (DTW) techniques in UCR                                      needed to isolate anomalies from normal ones, whereas sepa-
+Suite [19] to reduce the search response time. The operator                                 rating normal observations requires more conditions. Thus an
+then confirms the returned similar anomalies and labels them                                anomaly score can be calculated as the number of conditions
+accordingly. This process continues until there are no more                                 required to separate a given observation. Recursive partitioning
+unlabeled anomalies. More details on how operators interact                                 of iForest can be represented by a tree structure (iTree), and the
+with Label-Less are introduced in §VI.                                                      number of splittings required to isolate a sample is equivalent
+                                                                                            to the path length from the root node to the terminating node.
+          III. U NSUPERVISED A NOMALY D ETECTION                                            Therefore, iForest builds an ensemble of iTrees for the input
+A. Review of Isolation Forest                                                               data, and anomalies are those instances with short average path
+                                                                                            lengths on the iTrees. Fig. 3(a) presents an intuitive illustration
+   A rich body of literature exist on unsupervised anomaly                                  and the features on every node will be introduced later.
+detection, e.g., One-Class SVM [17], deep generative model
+like Variational Auto-encoder [5]. Their philosophy is to focus                             B. Preprocessing
+on normal patterns instead of detecting anomalies directly.                                    Before unsupervised anomaly detection, we first need to
+Since the majority of data points in KPIs are normal, these                                 preprocess the input unlabeled KPIs. KPIs are monitored with
+models all first recognize normal regions in the original or                                certain interval, e.g., every minute. Occasionally, a monitoring
+some latent feature space, and then compute the anomaly                                     system does not receive data, leading to missing values. We
+score by measuring “how far” an observation is from the                                     simply use linear interpolation to fill them based on their
+normal regions. However, these approaches suffer from either                                adjacent data points. In addition, since KPIs are sourced
+high computational complexity [5] or poor performance [17].                                 from different servers, we normalize them to eliminate scale
+Isolation Forest (iForest) is a popular outlier detector and                                variances to prepare for similarity search. Zero-mean normal-
+has shown good performance with a linear time complexity                                    ization is applied to transform a KPI to have zero mean and
+in outlier detection [16], but it has not been applied in                                   one standard deviation, i.e., x̂i = xiσ−µ
+                                                                                                                                    x
+                                                                                                                                      x
+                                                                                                                                        , where xi is the raw
+KPI anomaly detection. Thus, we novelly apply iForest to                                    KPI value, µx and σx are its mean and standard deviation.
+unsupervised KPI anomaly detection.
+   Different from most existing approaches, iForest explicitly                              C. Feature Extraction
+isolates anomalies rather than profiling normal instances. It                                  To apply iForest algorithm, we first need to extract anomaly
+takes advantage of two properties of anomalies: they are the                                features. Inspired by the idea of ensemble learning [2] [3],
+we adopt several classical time series prediction models              the top-k anomalies most similar to a user-provided anomaly
+as feature extractors, i.e., Difference [2], Moving Average           template and report to operators. The key issue here is how to
+(MA), Weighed MA (WMA), Exponentially Weighted MA                     find similar anomalies with high accuracy and low response
+(EWMA), Autoregressive Integrated MA (ARIMA) [7] and                  latency. Inspired by existing works on time series similarity
+Holt-Winters [6]. The parameters are chosen based on our              search [19], [21]–[23], we adopt several effective techniques
+experience and domain knowledge. These six models have low            in UCR Suite [19] to search for similar anomalies rapidly. The
+computation complexity and good performance which have                details are shown in Algorithm 1.
+been proved in anomaly detection literature [2] [3]. Certainly,
+if needed, other suitable prediction models can be added or                Algorithm 1: Anomaly similarity search through
+replace these six models.                                                  adopting the time series similarity search algorithms
+   In general, normal points can be well predicted with small              in UCR Suite [19]
+prediction errors, since they conform to the expected behavior,          Input: Anomaly template q, candidate anomalies C
+while anomalies with unexpected patterns are hard to be pre-             Output: Top-k similar anomalies
+dicted, creating large prediction errors. Let pi be the predicted      1 Create a max-heap h with size k to keep the top-k similar
+                                                                          anomalies;
+value of data point xi , then we can calculate the absolute
+                                                                       2 for each candidate anomaly c in candidate C do
+difference between the actual value and the forecast value of          3     best-so-f ar=the root node of h;
+each data point, i.e., |pi − xi |, as a feature of data point xi .     4     if LB Kim(q, c) > best-so-f ar then
+                                                                       5          prune off c [23];
+D. Unsupervised Anomaly Detector                                       6     else if LB Keogh(q, c) > best-so-f ar then
+   In previous step, the raw KPI vector X (n × 1) was trans-           7          prune off c [22];
+                                                                       8     else if LB Keogh Reverse(q, c) > best-so-f ar then
+formed into feature matrix X 0 (n × 6). Then we recursively            9          prune off c [19];
+divide X 0 by randomly selecting a feature, e.g., MA, and a split     10     else
+value , as shown in Fig. 3(a), to construct an iForest. Each         11          for j = 1; j ≤ m; j + + do
+terminal node in iForest is associated with a score between           12              dist = cDTW(1 : j) + LB Keogh(j : m);
+0 and 1, calculated based on its path length [16]. The larger         13              if dist > best-so-f ar then
+                                                                      14                   early stopping and prune off c [19];
+the score is, the more likely the node is an anomaly. Fig. 3(b)
+presents an example to illustrate the anomaly score (right Y-         15           h.push([c,dist]);
+axis) from a real KPI (left Y-axis). Obviously, the anomaly
+                                                                      16    return Top-k similar anomalies;
+scores of anomalies are much higher than normal points. The
+effectiveness of iForest will be studied in §V-C.
+                                                                      B. Review of DTW
+E. Threshold Selection                                                   Choosing a suitable distance measure is the first step for
+   To detect potential anomalies based on anomaly scores, we          anomaly similarity search. In spite of dozens of alternative
+need to choose an appropriate threshold θ. If the anomaly score       measures, recent empirical evidence strongly suggests that
+of a point xi is larger than θ, we regard this point as a potential   none of these alternatives routinely beats Dynamic Time
+anomalous point, and then add segment(i) into the candidate           Warping (DTW) [24] [19]. Thus we adopt DTW and the
+anomalies. Usually, threshold selection for anomaly detection         effectiveness of DTW will be discussed in §V-E. By op-
+needs to trade off between high recall and high precision, and        timally aligning two sequences in temporal domain, DTW
+often uses F-score as the metric. However, since here we try to       calculates the minimized accumulated aligning cost as distance
+generate candidate anomalies for operators and as our search          with dynamic programming. Hence, DTW can handle shift
+space for anomaly similarity search, we choose to bias towards        invariance as shown in Fig. 4(a). Given two time series x
+high recall and acceptable precision, so that false negative rate     and y, with length of s and t, respectively, it first estimates
+can be minimized. In principle, the percentage of anomalous           the distance map d between two points xi , yj given by
+points in a KPI is very rare, usually about 1% [3], [5]. Fig. 3(c)    d(i, j) = (xi − yj )2 . A cumulative distance D with elements
+shows the CDF of anomaly scores of a real KPI. We observe             Di,j is computed from the distance map d as: Di,j = d(i, j)+
+that the majority of points are likely to be normal with low          min{Di,j−1 , Di−1,j , Di−1,j−1 }. The final DTW corresponds
+anomaly scores and only few points have high anomaly scores.          to the total accumulated cost, i.e., dDT W (x, y) = Ds,t .
+Thus we choose anomaly score at 85th percentile (marked as            The time complexity of DTW is O(st). Fig. 4(b) shows the
+the black dot) as the threshold θ such that the chance of false       computation of DTW with a matrix, and the warping path
+negatives is really small. The robustness and generality of our       representing the optimal alignment is marked in black color.
+strategy of threshold selection will be discussed in §V-C.            C. Accelerated DTW
+                                                                         Suppose there are r candidate anomalies, the complexity of
+            IV. A NOMALY S IMILARITY S EARCH
+                                                                      similarity search reaches O(rm2 ), where m is the length of
+A. Overview                                                           anomaly template. When m and r are large, DTW computation
+   Through unsupervised anomaly detection, we can get a set           can be very costly. Thus speeding up DTW is a key challenge
+of candidate anomalies as our search space. Next we search for        in our scenario. A few techniques have been proposed to speed
+                                                                                 U                                                    Partial truncation
+                                                                                                            Partial calculation
+                                y                                            q                        c          of cDTW
+                                                                                                                                      of LBKeogh
+
+                                         y
+                                                                                          L
+                    x                                                                                                             k
+
+                                                                                     (a) LBKeogh .                    (b) Early stopping.
+                                              w      x
+               (a) Elastic alignments.    (b) Warping path.               Fig. 5: Illustration of LBKeogh and early stopping of DTW,
+                    Fig. 4: Illustration of DTW.                          adopted and slightly modified from Figure 6 in [19].
+up DTW in the literature, including early stopping [19], lower
+bound [23], local constraints [22], Piecewise Aggregate Ap-                I(·) is the indicator function. As shown in Fig. 5(a), the
+proximation (PAA) [22], etc. Note that not all techniques work            squared length of gray lines represents the LBKeogh .
+effectively in our scenario, for example, PAA only performs                  Reversing the q/c role in LBKeogh [19]. We use the lower
+well on long time series about thousands of points. While                 bound proposed by UCR Suite [19], which computes the upper
+the length of anomaly template is relative short with only                bound U and lower bound L around each candidate anomaly.
+dozens of points, PAA will greatly destroy raw information.
+                                                                             Review of Early stopping [19]. Fig. 5(b) (adopted and
+Considering fast response time (usually less than 0.5 second)
+                                                                          slightly modified from Figure 6 in [19]) explains the idea of
+required by labeling’s interactive nature and complexity of
+                                                                          early stopping. In the process of computing cDTW, once the
+the labeling tool, our goal is to reduce response time with as
+                                                                          sum of partial cDTW (from the left side of the dashed line) and
+simple an algorithm as possible. After careful investigation and
+                                                                          partial LBKeogh (from the right of the dashed line) exceeds
+extensive experiments, we adopt the state-of-the-art similarity
+                                                                          best-so-far, this candidate anomaly can be pruned off [19].
+search algorithm, UCR Suite [19], which is composed of three
+techniques (constrained DTW [21], [22], lower bound [22],                                            V. E VALUATION
+[23], and early stopping [19]). Our experiments (§V) have
+demonstrated these three techniques are effective in our label-             In this part, we focus on evaluating two components in
+ing tool.                                                                 Label-Less. We first introduce the datasets and metric. Then,
+                                                                          we present the performance of unsupervised anomaly detection
+   Review of Constrained DTW [21], [22]. The core idea of
+                                                                          and anomaly similarity search. In addition, the discussion
+constrained DTW (cDTW) is to limit the permissible warping
+                                                                          about search response time is also provided.
+paths by providing local restrictions on the set of alternative
+steps [21], [22]. It works under the assumption that it is                A. Datasets
+unlikely for qi and cj to be matched if i and j are too far. The
+threshold is determined by a warping window size w. In this                  We obtained four datasets named A, B, C, D (shown in
+way, we align qi and cj only if |i−j| ≤ w. The computational              Table I), with 30 KPIs in total collected from a large Internet
+complexity of cDTW is O(wm). As shown in Fig. 4(b), the                   company through the real-time monitoring systems. All of
+gray area is the permissible scope of warping path.                       KPIs have a time span of about six months with 1-minute
+   Review of Lower bound [19], [22], [23]. The basic idea is              monitoring interval. KPIs in each dataset monitor a service on
+to use a cheap-to-compute lower bound to prune segments that              different servers, so they have similar shapes and many similar
+cannot be the top-k similar anomalies [22], [23]. The process             anomalies. To illustrate our datasets intuitively, we select one
+of pruning by lower bound has been shown in Algorithm 1,                  KPI from each dataset and plot a 2-day-long fragment as
+where best-so-far is the furthest distance in top-k segments.             shown in Fig. 6.
+In order to maintain best-so-far efficiently, we create a max-               For the purpose of evaluating unsupervised anomaly detec-
+heap to keep the top-k similar anomalies. When computing                  tion, the experienced operators first label all anomaly segments
+similarity, once the lower bound exceeds best-so-far, this                as the ground truth (N 0 ). Then in order to evaluate anomaly
+segment is discarded since it cannot be in the top-k list. We             similarity search, operators pick the most frequent anomaly
+use the following three lower bounds in UCR Suite [19].                   pattern in each dataset as the template, which is marked in
+   LBKim [23] extracts a four-tuple feature vector from each              blue dashed rectangle in Fig. 6 (other anomaly patterns can
+segment: the first, last, minimum, and maximum values.                    be seen in Fig. 11), and identify all anomalies in this dataset
+LBKim is the maximum squared difference of these features.                that are similar to the template as the ground truth of anomaly
+   LBKeogh [22]. Two sequences U and L are defined with                   similarity search (N ). For example, dataset A has 1030 labeled
+the warping window size w in cDTW:                                        anomalies in total and 874 similar anomalies for the most
+                                                                          frequent anomaly pattern A1 .
+   Ui = max qj          Li = min qj ,    where j ∈ [i − w, i + w]
+           j                   j
+                                                                          B. Performance Metric
+U and L are the upper bound and lower bound of the template                 Different from regular anomaly detection, the input and
+q, i.e., ∀i Li ≤ qi ≤ Ui . Then LBKeogh can be computed as:
+                                                                          output are segments, instead of single observation. A returned
+                    m
+                    X                                                     segment may partially overlap with a true anomaly segment.
+LBKeogh (q, c) =      (ci − Ui )2 I(ci > Ui ) + (ci − Li )2 I(ci < Li )
+                    i=1
+                                                                          As Fig. 7 shows, we define that if a returned anomaly segment
+    TABLE I: Details of the datasets in our experiments.
+                                                                            0   0     1    1   1   1      1      0   0
+            Datasets            A      B       C        D
+                                                                                          Ground truth
+             # KPIs              8     12       5        5
+      Template in Fig. 11       A1     B1      C1      D1                   0   0     0    1   1   1      1      1   0
+    Length of template (m)      10     8       13       15
+                                                                                    Returned similar anomaly
+    #Similar anomalies (N )    874    986     1308     634
+     #Total anomalies (N 0 )   1030   1180    1436     752         Fig. 7: Illustration of true positive. Anomaly is denoted by 1
+                                                                   and marked in hollow point on the right. The first row is the
+                                                                   ground truth with an anomaly segment highlighted in shaded
+                                                                   squares. The returned similar anomaly shown in the second
+                                                                   row has a more than 50% overlap with labeled anomaly in
+                                                                   truth. Hence, we regard it is a true positive.
+                                                                   TABLE II: Comparison of recall and per-KPI running time
+                                                                   with different outlier detectors.
+                                                                               Datasets                   A           B        C      D
+                                                                                      IForest            97.4        98.9    95.9    99.4
+                                                                        Recall(%)     LOF                66.7        49.7    62.8    68.0
+                                                                                      OCSVM              75.9        73.3    82.9    76.3
+                                                                                      IForest            13.6s       9.3s    12.4s   12.4s
+Fig. 6: 2-day-long fragments of the KPIs in our datasets.              Per-KPI
+                                                                                      LOF                14.1s       11.5s   11.5s   11.9s
+Similar anomalies are labeled in red color and the anomaly             running time
+                                                                                      OCSVM              5.7h        6.4h    5.9h    6.3h
+templates are marked in blue dashed rectangles.
+overlaps with more than half of a labeled anomaly segment in       measuring the local deviation of a given data point with respect
+ground truth, then we regard it is a true positive.                to its neighbors. These three outlier detectors adopt same
+   As for the metric of unsupervised anomaly detection, since      features (§III-C) and threshold selection strategy (§III-E). The
+it provides potential anomalies for operators, we mainly em-       results about recall and per-KPI running time are shown in
+                                                   P
+phasize on high recall, which is computed as #T  N 0 , where N
+                                                               0   Table II. It is obvious that both LOF and OCSVM show
+is the number of total labeled anomaly segments and #T P is        poor recall, and OCSVM has extremely high computation
+the number of true positives found by candidate anomalies.         complexity. The high recall of iForest also demonstrates that
+   Top-k precision and top-k recall are two popular metrics        the features extracted by time series models is effective and
+for k-NN search, which can be computed as: precision =             threshold selection strategy is robust. Note that it is always
+#T P                      P
+   k   and recall = #T   N , where N is the number of true
+                                                                   possible to have false negatives, operators can adjust θ to
+similar anomalies, and #T P is the number of true positives        control false negatives within an acceptable range.
+found. Besides, F-score as the harmonic mean of precision
+                                                                   D. Comparison with Naive Search
+and recall can be computed as: F -score = 2×precision×recall
+                                              precision+recall .
+However, the selection of k has a great impact on precision and       The search space of anomaly similarity search in Label-Less
+recall. When k is too small, many similar anomalies cannot be      is candidate anomalies given by unsupervised anomaly detec-
+reported, resulting in low recall and high precision. When k is    tion. In order to demonstrate the importance of unsupervised
+too large, segments with low similarity may will be reported,      anomaly detection on anomaly similarity search, we compare
+leading to high recall and low precision. In practice, k can       it with the naive search whose search space is all segments
+be determined by operators based on their needs and domain         with length m in KPIs. The result is displayed in Fig. 8(a).
+knowledge. Considering the best k for each dataset may be          We observe that the best F-score of anomaly similarity search
+different, a more general approach for evaluation is to focus      reaches about 0.95 on average, higher than naive search in all
+on precision-recall curve and compute the AUC (area under          datasets. This is because that naive search simply reports all
+curve), which is the average precision over recall given all       similar segments without considering whether they are normal
+possible k, or compute best F-score indicating the best possible   or anomalous. However, some similar segments are normal
+performance given an optimal k. Therefore, we adopt best F-        patterns. For example, for dataset C as shown in Fig. 6, there is
+score and AUC for evaluating anomaly similarity search.            a spike (black one) at about 12:00 every day. Although similar
+                                                                   to the template, these spikes are normal periodical behaviors,
+C. Performance of IForest                                          probably due to regular business promotions at that time. Naive
+   In order to show the effectiveness of unsupervised anomaly      search will output them simply based on similarity, leading to
+detection in Label-Less, we compare iForest with two popular       poor performance (false positive), while unsupervised anomaly
+outlier detectors, i.e., One-Class SVM (OCSVM) [17] and            detection can filter out these normal points.
+Local outlier factor (LOF) [18]. OCSVM obtains a spherical            On the one hand, this comparison clearly demonstrates that
+boundary in feature space around the data. The volume of           it is essential to adopt unsupervised anomaly detection before
+this hypersphere is minimized so as to isolate outliers outside    anomaly similarity search, since it not only filters out normal
+the boundary. LOF aims to find anomalous data points by            points to reduce false positives, but also reduces the search
+                                   Anomaly similarity search    Naive search
+                   1.0                                    1.0
+                   0.8                                    0.8
+    Best F-score
+
+                   0.6                                    0.6
+
+
+
+
+                                                    AUC
+                   0.4                                    0.4                           (a) Shift      (b) Local scaling      (c) Amplitude
+
+                   0.2                                    0.2                  Fig. 9: Analysis of distance measures. Euclidean distance fails
+                   0.0                                    0.0
+                                                                               to tackle (a) and (b); SBD fails to tackle (b) and (c).
+
+    (a) Comparison between anomaly similarity search and naive search.         TABLE III: Comparison of per-KPI running time (seconds).
+                                          DTW             ED    SBD                      Datasets                 A         B      C      D
+                 1.0                                      1.0                     Anomaly similarity search      0.38      0.35   0.43   0.39
+                 0.8                                      0.8
+                                                                                       Naive search              2.18      2.22   2.95   2.60
+                                                                                      Original DTW               3.84      3.99   5.29   4.95
+  Best F-score
+
+
+
+
+                 0.6                                      0.6
+                                                    AUC
+
+
+                 0.4                                      0.4
+                                                                               any techniques in §IV-C), we demonstrate the efficiency of
+                 0.2                                      0.2
+                                                                               anomaly similarity search in Label-Less. The results are shown
+                 0.0                                      0.0
+                                                                               in Table III and the response time of per-KPI anomaly sim-
+                         (b) Comparison with different distance measures.      ilarity search in Label-Less is under 0.5 second. In addition,
+      Fig. 8: Performance of anomaly similarity search.                        the results show that both unsupervised anomaly detection
+                                                                               and accelerated DTW play key roles in reducing response
+space and improves search efficiency significantly (§V-F). On
+                                                                               time. The unsupervised anomaly detection can reduce search
+the other hand, the result also highlights the difference between
+                                                                               space significantly, and the accelerated techniques from UCR
+anomaly similarity search and general time series similarity
+                                                                               Suite [19] in §IV-C are extremely effective in reducing DTW
+search (§II-B).
+                                                                               computation complexity.
+E. Comparison with Other Similarity Measures
+                                                                                  Note that although there exists some other novel acceler-
+   To demonstrate the effectiveness of accelerated DTW (DTW                    ating techniques [19], our goal is to reduce response time
+for short hereinafter) in Label-Less, we use Euclidean Distance                required by labeling’s interactive nature with as simple an
+(ED), and Shape-Based Distance (SBD) [25] as similarity                        algorithm as possible. In our approach, only using these three
+measure to compare with DTW, and other modules remain                          classical techniques can satisfy our goal (under 0.5 second),
+unchanged. ED is a simple and well-accepted
+                                     pPm          similarity mea-              thus we do not consider other complex methods, which may
+sure, computed as ED(q, c) =                            2
+                                          i=1 (qi − ci ) . SBD is              bring challenges to the development and maintenance of our
+a normalized version of cross-correlation, which can handle                    labeling tool.
+distortions in amplitude and phase.
+   The performance comparison is shown in Fig. 8(b). Clearly,                             VI. OVERALL L ABELING W ORKLOAD
+DTW consistently outperforms other distance measures on                           In this section, we mainly focus on evaluating the perfor-
+all datasets. We can observe that ED perform poorly, since                     mance of Label-Less on reducing labeling workload. We first
+it cannot handle shift or local scaling problem as shown in                    introduce the traditional labeling method. Then we describe
+Fig. 9(a) and Fig. 9(b). When calculating the distance between                 the new labeling method with Label-Less and demonstrate
+two segments, ED assumes the i-th point in one segment                         the good performance of Label-Less by comparing the total
+is aligned with the i-th point in the other, and it is very                    labeling time with traditional labeling.
+sensitive to small distortions in the time axis. The performance
+                                                                               A. Traditional Labeling Method
+of SBD is unstable across the datasets. Although SBD can
+recognize time shift, it fails to deal with local scaling like                    In traditional labeling, given an unlabeled KPI, an operator
+in Fig. 9(b). In addition, it focuses on shape regardless of                   first needs to manually scan the entire KPI to understand its
+variance in amplitude [25]. For example, a sharp spike and a                   overall normal behaviors and get a preliminary judgment of
+gradual increase in Fig. 9(c) are considered to have a small                   what can be considered as anomalies. After that, the operator is
+distance. However, amplitude variance cannot be ignored in                     ready to label from the beginning of the KPI. When finding an
+anomaly detection, since a sharp spike is likely an anomaly                    anomaly case, instead of hurrying to make a decision, he will
+while a gradual increase is probably not, but SBD misjudges                    go back to see the historical information (last day/week/month)
+this case. This experiment concludes that DTW is the best                      and make a comprehensive comparison to draw a reasonable
+choice for anomaly similarity search among these alternatives.                 conclusion whether the segment needs to be labeled. If the
+                                                                               segment needs to be labeled as an anomaly, the operator will
+F. Efficiency of Anomaly Similarity Search                                     zoom in to the region where the anomaly is located and label
+  We have stated that response time is a big concern due                       the segment point by point, and then zoom out to the original
+to a large number of long KPIs in §I. By comparing with                        time scale. The operator will repeat above process until all
+naive search (without unsupervised anomaly detection), and                     anomalies have been labeled. Besides, above labeling process
+original DTW (with O(m2 ) time complexity and without                          is based on using a labeling tool with graphical interface.
+                                                                                m=10 c=874 m=154 c=39 m=37 c=54 m=13 c=26 m=61 c=37    m=8 c=986 m=115 c=65 m=30 c=43 m=188 c=38 m=116 c=32 m=5 c=16
+                                                                                    A1         A2        A3        A4        A5           B1         B2        B3         B4         B5        B6
+
+                                                                                              (a) Dataset A.                                             (b) Dataset B.
+
+
+
+     Tune threshold                                                             m=13 c=1308 m=7 c=62 m=48 c=25 m=146 c=17 m=215 c=24
+                                                                                     C1        C2       C3         C4         C5
+
+                                                                                               (c) Dataset C.                                          (d) Dataset D.
+  (a) Interface of candidate potential anomalies (labeled in red) given by
+  unsupervised anomaly detection.                                             Fig. 11: All templates in four datasets, where m is the length
+                                                                              of template and c is the number of similar anomalies.
+                                                                              TABLE IV: Comparison of labeling time (minutes) between
+                                                                              traditional labeling and Label-Less.
+                                                                                           Datasets                                              A               B    C     D
+                                                                                Total labeling      Label-Less                                   91            114    56    52
+ (b) Interface of anomaly similarity search. On the left is the anomaly
+ template labeled in pink band; on the right is the similar anomalies given
+                                                                                     time           Traditional                                 980            1243 573    602
+ by Label-Less sorted by similarity.                                           Per-KPI labeling     Label-Less                                  9.1             9.5  11.2 10.4
+                                                                                     time           Traditional                                 98.0           103.6 114.6 120.4
+     Fig. 10: Interface of labeling tool with Label-Less.
+
+                                                                              in our experiments. Every operator in each group chooses
+   In summary, the majority of traditional labeling efforts are
+                                                                              one dataset to label. The operators in the first group use our
+spent on visually scanning through KPIs to gauge “what is
+                                                                              developed labeling tool without Label-Less to measure the
+an anomaly” and examining KPIs back and forth to check
+                                                                              workload of traditional labeling and record the total time of
+whether “similar” segments are labeled consistently. When
+                                                                              labeling these four datasets. The other four operators in the
+faced with a large number of long KPIs, traditional labeling
+                                                                              second group use the labeling tool with Label-Less plugged in
+is indeed a prohibitive task for operators.
+                                                                              to measure the total labeling time. Fig. 11 shows the templates
+B. Labeling with Label-Less                                                   used by operators in the second group in four datasets, e.g.,
+   Label-Less has been integrated into a labeling tool de-                    dataset A has five different anomaly templates and 1030
+veloped by us. Fig. 10(a) shows the interface of candidate                    anomaly segments in total. In traditional labeling, operators
+potential anomalies given by unsupervised anomaly detection                   need to find and label all the 1030 segments by hand and
+(labeled in red), and Fig. 10(b) shows the interface of anomaly               examine carefully. With Label-Less, operators choose the first
+similarity search. The improved labeling process with Label-                  template A1 in Fig. 11(a), then confirm all results provided by
+Less is semi-automated, as shown in Fig. 2. More specifically,                Label-Less until all anomalies similar to A1 have been labeled.
+given a set of unlabeled KPIs, candidate anomalies on each                    Next, the operators will probably choose A2 iteratively until
+KPI are identified through the unsupervised anomaly detection.                all anomalies in dataset A have been labeled. It is obvious that
+Thanks to the high recall achieved by this component, an                      confirming thousands of segments is much faster than finding
+operator does not need to examine the entire KPI, but only the                and labeling thousands of segments manually.
+candidate anomalies. Besides, the operator can drag the slider                   Table IV shows the workload comparison between Label-
+to tune a suitable threshold. Later, the operator first labels one            Less and traditional labeling in detail. It is obvious that it
+of the candidate segments as an anomaly (pink band on the                     takes one or two hours to label a 6-month-long KPI for
+left of Fig. 10(b)), then Label-Less uses it as a template to                 traditional manually labeling. However, it only needs about ten
+automatically search for similar anomalies (displayed on the                  minutes with Label-Less. Thus we have confidence to make a
+right of Fig. 10(b) sorted by similarity). For the output similar             conclusion that Label-Less can reduce more than 90% labeling
+segments, the operator can look though them one by one                        time for operators.
+quickly. If top-k segments are all true positives, the operator                                 VII. R ELATED W ORK AND D ISCUSSION
+can click the “submit” button, so that top-k segments can be
+labeled automatically. If there is a false positive, the operator             A. Related Work
+can click the “wrong” button to ignore the segment. In this                      Labeling overhead: Despite many efforts have been put
+way, the operator saves time significantly in finding where the               into anomaly detection [2]–[10], effective ways to reduce the
+anomalies are and manually labeling. The only manual work                     labeling overhead of labeling KPI anomalies have remained
+for operators is choosing a template and checking the results                 elusive. In the past, Haakon Ringberg et al. have argued
+reported by Label-Less.                                                       the challenges of manual labeling traces for network traffic
+   In order to show the effectiveness of Label-Less intuitively,              anomaly detection and presented WebClass [26], a web-based
+we invite eight voluntary experienced operators from an Inter-                infrastructure that adds rigor to the manual labeling process,
+net company which are divided into two groups to participate                  which allows researchers to share, inspect, and label traffic
+time series through a graphical user interface, but it still         China (NSFC) under grant 61472214, 61472210, the Beijing
+requires operators to manually label and inspect. In this paper,     National Research Center for Information Science and Tech-
+we aim to facilitate labeling by automatic tools driven by           nology (BNRist) key projects, the Global Talent Recruitment
+algorithms. To the best of our knowledge, Label-Less is the          (Youth) Program and Okawa Research Grant.
+first semi-automatic labeling tool that focuses on reducing the
+                                                                                                   R EFERENCES
+labeling overhead of KPI anomaly dataset by algorithm.
+   Anomaly similarity search: Although this paper is also the         [1] Y. Chen, R. Mahajan, B. Sridharan, and Z.-L. Zhang, “A provider-side
+                                                                          view of web search response time,” in SIGCOMM, ACM, 2013.
+first one that studies anomaly similarity search in anomaly de-       [2] D. Liu, Y. Zhao, H. Xu, Y. Sun, D. Pei, J. Luo, and et.al, “Opprentice:
+tection fields, the problem can be regarded as incorporating the          towards practical and automatic anomaly detection through machine
+domain knowledge about anomaly detection into general time                learning,” in IMC, ACM, 2015.
+                                                                      [3] N. Laptev, S. Amizadeh, and I. Flint, “Generic and scalable framework
+series similarity search. In fact, although the techniques used           for automated time-series anomaly detection,” in SIGKDD, ACM, 2015.
+in accelerated DTW are adopted from the UCR Suite [19],               [4] A. Lavin and S. Ahmad, “Evaluating real-time anomaly detection
+[21]–[23], the difference between anomaly similarity search               algorithms–the numenta anomaly benchmark,” in ICMLA, IEEE, 2015.
+                                                                      [5] H. Xu, W. Chen, N. Zhao, Z. Li, J. Bu, Z. Li, Y. Liu, Y. Zhao, D. Pei,
+and general similarity search has been introduced in §II-B and            and et.al, “Unsupervised anomaly detection via variational auto-encoder
+demonstrated in §V-D.                                                     for seasonal kpis in web applications,” in WWW, 2018.
+                                                                      [6] H. Yan, A. Flavel, Z. Ge, and A. Gerber, “Argus: End-to-end service
+B. Discussion                                                             anomaly detection and localization from an isp’s point of view,” in
+                                                                          INFOCOM, IEEE, 2012.
+   Beyond reducing the labeling overhead, we name a couple            [7] B. Krishnamurthy, S. Sen, Y. Zhang, and Y. Chen, “Sketch-based change
+of applications of the anomaly similarity search. First, it               detection: Methods, evaluation, and applications,” in IMC, ACM, 2003.
+                                                                      [8] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, and Z. Zang, “Rapid
+can assist operators in discovering some specific types of                and robust impact assessment of software changes in large internet-based
+anomalies which they are concerned about. For example, the                services,” in CoNEXT, IEEE, 2015.
+template for dataset A in Fig. 6 indicates a sharp dip in             [9] M. Ma, S. Zhang, D. Pei, X. Huang, and H. Dai, “Robust and rapid
+                                                                          adaption for concept drift in software system anomaly detection,” in
+the number of requests. Finding all similar dips can help                 ISSRE, IEEE, 2018.
+operators timely troubleshoot whether and why such dips              [10] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, Z. Zang, X. Jing, and
+happen frequently, so that they can respond quickly to avoid              M. Feng, “Funnel: Assessing software changes in web-based services,”
+                                                                          IEEE Transactions on Service Computing, 2016.
+the decline in the number of requests and reduce potential           [11] Y. Chen, E. Keogh, B. Hu, N. Begum, A. Bagnall, A. Mueen, and
+economic loses. Second, suppose the template for dataset B                G. Batista, “The ucr time series classification archive,” July 2015. www.
+in Fig. 6 is of previously unknown type, operators can use                cs.ucr.edu/∼eamonn/time series data/.
+                                                                     [12] M. Lichman, “UCI machine learning repository,” 2013.
+anomaly similarity search to quickly find similar unknown            [13] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “Imagenet:
+anomalies in the all KPIs in dataset B to help pinpoint the               A large-scale hierarchical image database,” in CVPR, IEEE, 2009.
+potential root cause as soon as possible.                            [14] “Curve: Time Series Labeling Tool.” https://github.com/baidu/Curve.
+                                                                     [15] “AIOps Challenge.” http://iops.ai/.
+                                                                     [16] F. T. Liu, K. M. Ting, and Z.-H. Zhou, “Isolation forest,” in ICDM,
+                     VIII. C ONCLUSION                                    IEEE, 2008.
+   In this paper, we argue that labeling overhead has become         [17] M. Amer, M. Goldstein, and et.al, “Enhancing one-class support vector
+                                                                          machines for unsupervised anomaly detection,” in SIGKDD, ACM,
+the main hurdle to researching effective and practical KPI                2013.
+anomaly detection. Our proposed semi-automatic labeling tool         [18] M. M. Breunig, H.-P. Kriegel, and et.al, “Lof: Identifying density-based
+Label-Less saves the operators from scanning and checking                 local outliers,” in SIGMOD, ACM, 2000.
+                                                                     [19] T. Rakthanmanon, B. Campana, A. Mueen, G. Batista, and et al.,
+the long KPIs back and forth for abnormal patterns and                    “Searching and mining trillions of time series subsequences under
+label consistency by unsupervised anomaly detection based on              dynamic time warping,” in SIGKDD, ACM, 2012.
+Isolation Forest, and robust anomaly similarity search, which        [20] Y. Sun, Y. Zhao, Y. Su, D. Liu, X. Nie, Y. Meng, S. Cheng, D. Pei,
+                                                                          S. Zhang, et al., “Hotspot: Anomaly localization for additive kpis with
+is built on top of existing time series similarity search methods.        multi-dimensional attributes,” IEEE Access, 2018.
+Our evaluations show that anomaly similarity search achieves         [21] W.-S. Han, J. Lee, Y.-S. Moon, and H. Jiang, “Ranked subsequence
+the best F-score of 0.95 on average, and a real-time response             matching in time-series databases,” in VLDB, VLDB Endowment, 2007.
+                                                                     [22] E. Keogh and C. A. Ratanamahatana, “Exact indexing of dynamic time
+time. Overall, Label-Less developed in practice can reduce                warping,” Knowledge and Information Systems, 2005.
+operators’ labeling overhead by more than 90%.                       [23] S.-W. Kim, S. Park, and W. W. Chu, “An index-based approach for
+   We believe that, Label-Less is important first step to enable          similarity search supporting time warping in large sequence databases,”
+                                                                          in ICDE, IEEE, 2001.
+an ImageNet-like large-scale KPI anomaly dataset with high-          [24] D. J. Berndt and J. Clifford, “Using dynamic time warping to find
+quality ground truth. This is greatly beneficial to KPI anomaly           patterns in time series.,” in KDD workshop, ACM, 1994.
+detection in academia and industry just like what ImageNet did       [25] J. Paparrizos and L. Gravano, “k-shape: Efficient and accurate clustering
+                                                                          of time series,” in SIGMOD, ACM, 2015.
+to computer vision and deep learning.                                [26] H. Ringberg, A. Soule, and J. Rexford, “Webclass: adding rigor to
+                                                                          manual labeling of traffic anomalies,” in SIGCOMM, ACM, 2008.
+                  IX. ACKNOWLEDGEMENT
+   We thank the anonymous reviewers for their valuable feed-
+backs. We thank Juexing Liao, Minghua Ma and Ya Su for
+their helpful suggestions and proofreading. This work has
+been supported by the National Natural Science Foundation of
+

@@ -1,0 +1,713 @@
+     CTF: Anomaly Detection in High-Dimensional
+    Time Series with Coarse-to-Fine Model Transfer
+                      Ming Sun∗ , Ya Su∗ , Shenglin Zhang† , Yuanpu Cao† , Yuqing Liu† , Dan Pei∗ ,
+                             Wenfei Wu∗ , Yongsu Zhang‡ , Xiaozhou Liu‡ , Junliang Tang‡
+                                         ∗ Tsinghua University † Nankai University ‡ ByteDance
+
+
+
+   Abstract—Anomaly detection is indispensable in modern IT             Typical DL algorithms [1], [2], [5]–[11] train an anomaly
+infrastructure management. However, the dimension explosion          detection model for each machine. However, they face the
+problem of the monitoring data (large-scale machines, many           scalability issue when being applied to a data center with 1X
+key performance indicators, and frequent monitoring queries)
+causes a scalability issue to the existing algorithms. We propose    million machines. Applying the DL algorithms to individual
+a coarse-to-fine model transfer based framework CTF to achieve       machines and training per-machine models could result in
+a scalable and accurate data-center-scale anomaly detection. CTF     unacceptable time (10X minutes per model × 1X million
+pre-trains a coarse-grained model, uses the model to extract         machines); training one DL model for all machines would
+and compress per-machine features to a distribution, clusters        bound the accuracy by nature (one model is not expressive
+machines according to the distribution, and conducts model
+transfer to fine-tune per-cluster models for high accuracy. The      enough for diverse machines).
+framework takes advantage of clustering on the per-machine              For anomaly detection of large-scale machines, some so-
+latent representation distribution, reusing the pre-trained model,   lutions propose to cluster machines first [12], and conduct
+and partial-layer model fine-tuning to boost the whole training      anomaly detection within each cluster. However, the high
+efficiency. We also justify design choices such as the clustering    dimension of the KPI and time domains makes the clustering
+algorithm and distance algorithm to achieve the best accuracy.
+We prototype CTF and experiment on production data to show           algorithms inefficient: they need to compute the pairwise
+its scalability and accuracy. We also release a labeling tool for    distance of 1X million machines’ MTS, each of which has
+multivariate time series and a labeled dataset to the research       100K dimensions (10X KPIs × 1X thousand time points),
+community.                                                           and thus, it could not be complete in practical time.
+                                                                        We observe that a class of unsupervised DL algorithms
+                        I. I NTRODUCTION                             [1], [5] — Recurrent Neural Network - Variational Auto
+   Anomaly detection always plays an important role in IT            Encoder (RNN-VAE) — usually transforms the original MTS
+infrastructure management, which helps operators identify            input into low-dimensional latent representations (details in
+the misbehaving machines and reduce corresponding revenue            §II-A), which actually compresses the dimensions in the KPI
+loss [1]–[3]. A recent trend is to introduce deep learning           domain. While these RNN-VAE based algorithms use latent
+(DL) based algorithms for anomaly detection (as a typical            representations to improve the accuracy and robustness (i.e.,
+scenario of AIOps [4]). Compared with rule-based algorithms,         denoise [1]), we got the inspiration to use the low-dimensional
+such DL-based ones (e.g., OmniAnomaly [1], LSTM-VAE                  latent representations for clustering to solve the dimension
+[5], and DAGMM [6]) have demonstrated the advantages of              explosion issue. Our approach synthesizes an RNN-VAE based
+automation, robustness, and operability (i.e., less dependency       algorithm and a clustering algorithm so that it takes both
+on the operators’ experience).                                       algorithms’ advantages in handling high-dimensional KPIs and
+   However, the DL-based algorithms are facing the challenge         large-scale machines.
+of dimension explosion when being applied to modern large-              We further overcome three challenges to build the synthetic
+scale infrastructures. The dimension increasing is threefold.        framework. First, there is a logical dependency between RNN-
+First, (machine domain) the scale of a modern data center            VAE model training and the clustering — clustering on the
+increases fast in the past few years, and it can consist of a        latent representations requires a trained RNN-VAE model to
+few million servers now. Second, (KPI domain) each machine           transform the original MTS into the latent representations,
+in the infrastructure is monitored at a fixed period with many       but training an RNN-VAE model (before clustering machines)
+key performance indicators (KPIs), i.e., 10X KPIs about CPU,         based on the non-clustered large-scale multi-machine MTS can
+memory, and network statistics; each KPI can be formulated           hardly be accurate and efficient (as discussed in paragraph
+as a univariate time series, and thus, each machine can              3). We propose a coarse-to-fine model transfer framework,
+be represented as a multivariate time series (MTS). Third,           avoiding this dilemma (§II-B).
+(time domain) each machine is monitored in a fine-grained               Second, we still face the challenge in the time domain — the
+frequency, e.g., with a 30-second monitoring interval, there         latent representation is still a high-dimensional time sequence
+would be 2880 time points to monitor a machine each day.             (2880 time points per day), which is not friendly for clustering.
+                                                                     We propose to transform the time sequence into a distribution,
+    Wenfei Wu is the corresponding author.                           which improves both efficiency and accuracy (§II-B).
+   Third, we need to make several design choices under the                                           TABLE I
+synthetic framework, including a model transfer method (e.g.,              D ETAILED INFORMATION OF THE 49 KPI S OF MACHINES WHICH ARE
+                                                                                         CLASSIFIED INTO FIVE CATEGORIES .
+fine-tuning strategy), a clustering algorithm (e.g., DBSCAN,
+Hierarchical Agglomerative Clustering), and a distance metric              KPI categories
+                                                                                                                     KPIs
+(e.g., KL divergence, JS divergence, or Wasserstein distance).               / counts
+We carefully reason the properties of the operational dataset                                  CPU idle rate, CPU busy rate, CPU utilization at
+                                                                              CPU / 15
+                                                                                                      user or system level, CPU load, etc.
+and the advantages of each option and make the design                       Memory / 10           Memory usage or free or available rate, etc.
+choice (§II-C). Specifically, we are the first to apply a fine-             Sockets / 6         Sockets established or closed or orphaned, etc.
+tuning strategy during model transfer for RNN-VAE models,                                      count of UDP packets sent or received, count of
+                                                                              UDP / 7
+                                                                                                    UDP buffer errors sent or received, etc.
+validating its usefulness in improving efficiency and accuracy.                                TCP retransmisstion rate, TCP listen drops, TCP
+We also validate the design choices in experiments (§V-C).                    TCP / 11         listen overflows, TCP delayed ACK locked, etc.
+   The final synthetic framework is named CTF. CTF’s offline
+model training has four steps. First, it samples an all-machine                                     TABLE II
+                                                                             S YMBOLS AND THEIR CORRESPONDING MEANINGS AND VALUES .
+dataset to train a coarse-grained model; second, it uses the
+coarse-grained model to transform per-machine MTS to low-                  Symbols                       Meanings                         Values
+dimensional latent representations; third, it clusters machines              M     No. of machine entities, indexed by i                   105
+based on the distribution of latent representations; finally, it             L     No. of KPI vector’s dimensions, indexed by j             49
+                                                                             T     No. of collected KPI vectors during a period (e.g.,    37440
+copies the coarse-grained model to each cluster and fine-                          13 days in our dataset), indexed by t
+tunes a per-cluster model. CTF’s online anomaly detection                    K     No. of clusters (§III-B)                                50
+uses per-cluster models to generate an anomaly score for per-                C     No. of a latent representation’s dimensions (§III-B)    3
+                                                                             T0    The length of time window in anomaly detection         100
+machine real-time MTS and uses POT [13] to decide the                       Tm     The time of model training per machine                 315s
+threshold whether to report an anomaly. Moreover, CTF is                     Tf    The time of feature extraction per machine             0.3s
+generic to unsupervised DL algorithms whose model learns a                 xi,j,t  The i-th machine’s j-th KPI at time t                   —
+                                                                             Pi    The latent representation distribution of the i-th      —
+low-dimensional time-specific latent representation [8].                           machine entity
+   We architect the CTF framework and use it for a state-
+of-the-art well-performed RNN-VAE algorithm OmniAnomaly
+[1]. We deploy CTF in an Internet company; the whole system            •   We release a labeling tool for MTS* and a labeled dataset†
+preprocesses monitoring data, executes offline model training,             to the community for research and deployment.
+and performs online real-time anomaly detection. We also                                           II. BACKGROUND
+build a labeling tool for network engineers to label MTS
+                                                                       A. Problem Statement
+data as the ground truth and verify the accuracy of CTF’s
+results. Our evaluation shows that when applying CTF to                   Data Format. In the infrastructure, each machine is moni-
+OmniAnomaly, CTF can reduce the model training time from               tored on several KPIs (in Table I, about CPU, memory, etc.),
+about two months (estimated by the number of machines                  and these KPIs are collected at a fixed interval (e.g., 30s in
+× per model training time) to 4.40 hours for one hundred               our system). Thus, each machine’s behavior is formulated as
+thousand machines within a data center using six computing             an MTS, which is also named a machine entity.
+servers; it achieves an F1-Score (accuracy) of 0.830, with only           One time monitoring of the KPIs would generate a vector of
+0.012 performance loss (compared to per-machine models).               L dimensions (Table I). The monitoring system would generate
+The contributions of this paper can be summarized as follows.          T KPI vectors during a period (e.g., T = 2880 for one day,
+                                                                       and T = 20160 for one week). We denote xi,j,t as the i-th
+• We propose a coarse-to-fine model transfer based frame-              machine’s j-th KPI at time t. Then, the i-th machine entity
+  work, which can perform anomaly detection on a huge                  xi,:,: is a L × T matrix (xi,:,: ∈ RL×T , and symbols in Table
+  operation dataset with high dimensions on machine, KPI,              II). Fig. 1 visualizes a few examples of machine entities.
+  and time domains. Its core techniques are as follows.                   An anomaly refers to KPI vector at a time point that
+  – It first synthesizes model training and machine clustering         significantly differs from the normal data [1], [2]. We use
+     and accelerates both of them.                                     T0 to denote the number of consecutive KPI vectors within a
+  – It first uses the distribution of the latent representations       time window. For example, {xi,:,t−T0 +1 , xi,:,t−T0 +2 , ..., xi,:,t }
+     for clustering, which accelerates the pairwise distance           denotes the KPI vectors at time t. We also name these T0 KPI
+     computation.                                                      vectors as a “data instance” in the following context.
+  – It first applies a fine-tuning strategy to RNN-VAE models,            RNN-VAE Based Algorithms for Anomaly Detection.
+     validating its benefits to both accuracy and efficiency.          In this paper, we focus on RNN-VAE based anomaly detec-
+                                                                       tion algorithms, which are unsupervised Deep Learning algo-
+• We implement and evaluate CTF with a state-of-the-art
+                                                                       rithms. They need less operators’ experience compared with
+  anomaly detection algorithm on a large-scale dataset from
+  a top global Internet company, demonstrating CTF’s effec-                  * https://github.com/NetManAIOps/label-tool
+  tiveness and scalability in practical infrastructure.                      † https://github.com/NetManAIOps/CTF data
+
+
+
+
+                                                                   2
+                                                                                                            Dense layers
+
+
+
+
+                                                                                                                                         Dense layers
+                                                                                                 RNN
+
+
+
+
+                                                                                                                                   RNN
+                                                                                       "#                                  $#                           "%#
+
+
+
+                                                                                 Fig. 2. The network architecture of RNN-VAE models at time t. Latent
+                                                                                 representation zt and reconstruction x0t are stochastic variables. RNNs are
+                                                                                 frozen, and dense layers are fine-tuned when training fine-grained models.
+
+                                                                                    Scalability Challenge. As discussed in §I, the dimensions
+                                                                                 in the domains of machine, KPI, and time explode. The
+                                                                                 dimensions and their values in operation are listed in Table I
+                                                                                 and Table II. Such high dimensions make the following
+                                                                                 three approaches with existing solutions hard to scale. (1) As
+                                                                                 training a model usually takes 10X minutes, training individual
+Fig. 1. Examples of machine entities from three classes, each of which is
+a 14-metric 3-day-long multivariate time series. The anomalous regions are       models for each machine entity would cost about two months
+marked in the rectangles.                                                        (i.e., 10X minutes per model × 1X million machines). (2)
+                                                                                 Using a subset of the whole machine’s population (e.g.,
+statistical-based solutions [14], need no manual data labeling
+                                                                                 sampling) would bound the training time, but training one
+compared with supervised solutions [15], and outperform other
+                                                                                 model to represent and detect diverse machine entities can
+unsupervised solutions (e.g., DAGMM [6]) [1] (details in §VI).
+                                                                                 hardly achieve accuracy. Fig. 1 shows that different machines
+   In a dataset, most KPI vectors are usually normal, and
+                                                                                 have different anomaly patterns (e.g., there are short-term
+minority ones are anomalous (i.e., outliers). RNN-VAE based
+                                                                                 anomalies in Machine-3, Machine-5, and Machine-6, a long-
+algorithms train a model to remember the features of majority
+                                                                                 term anomaly in Machine-2, and “stepped” anomalies‡ in
+and denoise the minority. For time series modeling, a data
+                                                                                 Machine-1 and Machine-4), and one model can hardly de-
+instance (containing the historical values) is input to the model
+                                                                                 scribe the diverse behaviors accurately. (3) Naively clustering
+for understanding the last KPI vector, and the model would
+                                                                                 machines and training per-cluster models face the difficulty in
+reconstruct another data instance as output. After training, as
+                                                                                 the clustering stage because the pairwise distance computation
+the model remembers the majority (normal points) features,
+                                                                                 in the clustering needs to handle high-dimensional data in KPI
+the model output represents a normal behavior — if the input
+                                                                                 and time domains (about 100K dimensions).
+significantly differs from the output, the last KPI vector is
+                                                                                    Goal. Thus, our goal is to devise a framework for anomaly
+identified as an anomaly; otherwise, it is normal.
+                                                                                 detection in high-dimensional time series, and with the frame-
+   RNN-VAE models have an encoder and a decoder (Fig. 2).
+                                                                                 work, the anomaly detection should be complete (especially
+At a time point, a KPI vector is input to the encoder. The
+                                                                                 the training time) within an acceptable time and sacrifice
+encoder uses RNNs (storing states from predecessor KPI
+                                                                                 limited accuracy.
+vectors) to extract the temporal features and dense layers to
+compress them to a latent space (i.e., from xt to zt ). The                      B. Intuition and Analysis
+decoder reverses the process — it uses RNNs to recover the
+                                                                                    Intuition. We observe that the RNN-VAE based algorithms
+sequence in the latent space and dense layers to recover the
+                                                                                 could compress each high-dimensional KPI vector (L) into
+dimensions (i.e., from zt to x0t ). The probability density of the
+                                                                                 a low-dimensional latent representation (C) using the dense
+input (i.e., xt ) in the output’s distribution (i.e., x0t distribution)
+                                                                                 layer, a typical structure from VAE.
+is defined as the reconstruction probability. The loss function
+                                                                                    With the KPI domain compressed, pairwise distance com-
+used for model training, the evidence lower bound (ELBO), is
+                                                                                 putation on the latent representations zt could be faster than
+composed of the reconstruction probability and regularization
+                                                                                 that on the original input xt . Thus, we take the approach of
+[16]. Its mathematical format is as follows, and the first term
+                                                                                 clustering machines and training a per-cluster model. There
+corresponds to the reconstruction probability.
+                                                                                 are still three more challenges to overcome for this approach.
+L(xt ) = Eqφ (zt |xt ) [log pθ (xt |zt )] − DKL [qφ (zt |xt )||pθ (zt )]            Challenge 1: The mutual dependency between the clus-
+                                                                                 tering and the model training. Clustering on the latent
+   During the training stage, data instances are input to an                     representations depends on a trained model to transform xt
+RNN-VAE algorithm, and it trains the model by maximizing                         to zt , but without clustering, we face the dilemma of training
+ELBO. During the prediction stage, a real-time data instance                     per-machine models (costly) and training one model for all
+is an input to the RNN-VAE model, and the reconstruction                         machines (inaccurate).
+probability is used to judge whether the current KPI vector is
+an anomaly.                                                                          ‡ KPIs’ distribution changes significantly.
+
+
+
+
+                                                                             3
+   Solution (reducing M and reusing partial results):                   the other. Compared with other choices (e.g., Kullback-Leibler
+We design a synthetic framework, where we consider the                  divergence or Jensen-Shannon divergence), Wasserstein dis-
+efficiency in each step and gradually improve the total ac-             tance is particularly useful when there is less or no overlap
+curacy. (1) We first sample the all-machine dataset to pre-             between two distributions (the other two would degenerate to
+train a coarse-grained model. (2) Then we use the coarse-               meaningless constants). Its mathematical format is below [17].
+grained model to transform per-machine MTS to the latent
+                                                                               W (P1 , P2 ) =        Qinf        E(z1 ,z2 )∼γ [||z1 − z2 ||],
+representations. (3) And then, we use the distribution of the                                   γ∈     (P1 ,P2 )
+latent representations to classify machines into K clusters. (4)
+                                                                        where P1 and  QP2 are the two distributions of random variable
+Finally, we transfer the coarse-grained model to each cluster
+                                                                        z1 and z2 ,      (P1 , P2 ) denotes the set of all possible joint
+and fine-tune the per-cluster fine-grained models. Clustering
+                                                                        distributions, and γ(z1 , z2 ) is one distribution in the set whose
+machines in Step 3 reduces M models to K models, and
+                                                                        marginals are P1 and P2 .
+model transfer in Step 4 reuses the pre-trained model, both
+                                                                           Hierarchical Agglomerative Clustering. In CTF, we adopt
+of which improve the efficiency.
+                                                                        hierarchical agglomerative clustering (HAC) [20]. Based on
+   Challenge 2: The high dimension of the time domain.
+                                                                        the distance matrix, HAC iteratively merges the closer pair of
+Even each KPI vector is compressed, each machine entity is
+                                                                        clusters and moves up the hierarchy until all machine entities
+still a long series of latent representations. If the clustering
+                                                                        are merged into one cluster. The final clustering result can be
+algorithm computes the distance of two long series, the
+                                                                        determined according to the number of required clusters or
+execution time is still not practical.
+                                                                        per-cluster observations. Compared to other clustering algo-
+   Solution (reducing T ): We sample the latent represen-
+                                                                        rithms DBSCAN [12] and K-medoids [21], the HAC algorithm
+tation sequence to get distribution and use the distribution
+                                                                        has three advantages. First, it needs no initial parameters (e.g.,
+for distance computation in clustering. Specifically, we use
+                                                                        the number of clusters or distance thresholds). Second, it is
+Wasserstein distance [17] to compute the pairwise distance.
+                                                                        not sensitive to the distance measurement algorithms because
+Using distribution to represent a machine entity is intuitive:
+                                                                        it clusters on the rank of distances rather than the value. Third,
+the whole company has relatively fixed businesses to run
+                                                                        the relationships among different hierarchies are apparent, so
+on the machines, and each machine usually executes one
+                                                                        it is convenient for us to visualize the clustering results.
+kind of business (corresponding programs); thus, samples can
+                                                                           Model Transfer. If a model is trained on an old dataset and
+represent the whole time series, and distribution is more
+                                                                        needs to be applied to a new dataset, the model needs to be
+suitable than a temporal sequence of latent representations for
+                                                                        further trained using the new dataset. This process is called
+clustering (analysis in §III-B).
+                                                                        model transfer. Model transfer can have the model preserve
+   Challenge 3: The design choices of the neural network                previous training results to avoid training from scratch and
+(NN) training methods. We transfer the coarse-grained model             adapt to a new dataset to improve accuracy [22]. In this
+to train per-cluster models, but model transfer has several             paper, we use the whole dataset (all machine entities) as the
+choices, e.g., training all NN layers of the old model in a new         old dataset to get a coarse-grained model and the per-cluster
+dataset, training partial layers of the old model on the new            dataset to fine-tune a per-cluster fine-grained model.
+dataset (i.e., fine-tuning). We should make the right choice to
+guarantee efficiency and accuracy (or make the tradeoff).                                             III. D ESIGN
+   Solution (faster training): Inspecting the NN architecture              We apply the CTF framework to an RNN-VAE algorithm,
+in Fig. 2, we find that the RNN layers are shallow and                  and it has three steps — data preprocessing, offline model
+deterministic, which extract the general time-series features. In       training, and online anomaly detection. The offline model
+contrast, the dense layers are deep and stochastic for learning         training synthesizes the methods in §II-B as a whole workflow.
+better representations of a new dataset. Thus, we conduct
+the first fine-tuning strategy for RNN-VAE networks: freezing           A. Data Preprocessing
+RNNs for feature generalization [18] [19] and tuning the dense             In the infrastructure, each machine is monitored periodically
+layers for better latent representation and reconstruction. It          (30 seconds), and the per-machine KPIs are collected and
+further saves the model training time (freezing RNNs) and               stored. These raw data cannot be used directly in the later
+improves accuracy (feature generalization).                             model training and anomaly detection, and they need to be
+                                                                        preprocessed with two steps.
+C. Preliminaries                                                           Filling in missing data. In practical operation, some data
+   The text above briefly describes concepts of RNN-VAE used            could be missing because of the problems of data collection
+in CTF; we further list details of the other methods in CTF.            or transmission in the monitoring system. When a value is
+   Wasserstein Distance. Most clustering algorithms need                missing, we use its previously observed value to fill in its
+to compute pairwise distances. In CTF, a machine entity is              position.
+transformed into distribution in §II-B; thus, we need a metric             Data normalization. Different KPIs have different units
+to measure the distance between distributions. Wasserstein              (e.g., GB for memory, % for CPU) and different ranges. DL
+distance is a suitable choice for CTF. Its intuition is to              algorithms usually perform better when the values in different
+measure the least distance of “moving” one distribution to              dimensions are within an approximate range. Thus, we conduct
+
+
+
+                                                                    4
+                                                                              transformed into distribution of fewer low-dimensional latent
+                                                                 (M)         representations, i.e., zt distribution.
+                                                                                  There is a subtle argument that we should pay more atten-
+                                               0 1:        :4     .34 0
+                                                                              tion to the distribution of the latent representations than the
+                         :0 : 4 4 2 30 .              :0
+                           2: 4 0     0                                       temporal order of that. For infrastructure operation data, the
+                                                0                             distribution is more suitable than time series. For example,
+                            0       :0 0 : . 4                                machine-one may execute tasks A and B sequentially, and
+                                          4 :4- 4          1      .34 0       machine-two executes the two tasks in reverse order; in
+                                .34 0 .       0:4 2                           practice, the two tasks are probably affiliated to the same
+                                          .     0:
+                                                                              application/service, the two machines should belong to the
+                           0 :       10: 14 0   4 2                           same cluster; in this case, two time series would be different
+                    14 0 2: 4 0          0 0: .   0:                          but their distributions would be the same. Furthermore, our
+                                                                              experimental results §V-C validate this hypothesis.
+                                                                                  Step 3: Machine Clustering. The machine clustering is
+                0               0
+                                                   0          (K<<M)
+                                                                              executed on the machines’ latent representation distributions,
+                                                                              i.e., their zt distributions. First, CTF computes the pairwise
+         Fig. 3. The workflow of CTF’s offline model training.                Wasserstein distance of zt distributions among machine en-
+                                                                              tities and gets a distance matrix of all machine entities. The
+data normalization. In detail, the i-th machine’s j-th KPI at
+                                                                              distance measures the similarities between entities — closer
+time t is normalized by the mean and standard deviation of
+                                                                              distributions should more likely belong to the same class. Then
+the same machine and KPI dimension (µi,j and σi,j ), i.e.,
+                                                                              CTF uses HAC to cluster machines based on the distance
+                                     xi,j,t − µi,j                            matrix, and each machine would finally belong to one specific
+                        x̂i,j,t =                  ,
+                                          σi,j                                cluster.
+                                                                                  In our practice, the number of machine entities is still too
+where µi,j and σi,j are updated periodically using recently                   large to compute the pairwise distance (M = 105 ), and we
+collected data.                                                               further improve the clustering algorithm based on [12]. We
+                                                                              randomly sample a subset (about 10K) of the machine entities,
+B. Offline Model Training
+                                                                              and run HAC on the subset to get the classes. For each of the
+   The synthetic model training has the following four steps.                 remaining machine entities, we compute the distances from it
+Fig. 3 depicts the workflow of the offline training.                          to all clustered machine entities, calculate the average distance
+   Step 1: Pre-training Coarse-grained Model M0 . CTF                         within each class, and assign it to the class with the least
+pre-trains a coarse-grained model for clustering and model                    average distance.
+training. As the whole dataset contains M × T data instances,                     Step 4: Model Transfer. The coarse-grained model M0
+CTF samples a portion of them to train the model. CTF follows                 is copied to each cluster; within each cluster, the model is
+two principles to make the samples representative of the whole                further trained (i.e., fine-tuned) using the per-cluster data. The
+dataset.                                                                      data sampling is the same as that in Step 1, but the training
+   First, we consider the extra physical attributes of machines,              procedures are customized in this step.
+e.g., physical racks, running applications, and machine models,                   In the model fine-tuning, the RNN layers are frozen, and
+and sample data instances from each group of machines.                        the model parameter update is only on the dense layers.
+Second, in the time domain, we uniformly randomly sample                      The reason is that RNN layers are shallow and deterministic,
+data instances from each machine’s time series.                               and thus, they extract general time-series features in the
+   The sampled data instances are fed into an RNN-VAE                         coarse-grained model, which could contribute to the model
+algorithm for model training; the parameters in the RNN-VAE                   generalization (similar to BERT [23] for text feature extraction
+model are initialized and updated and converge to a coarse-                   and VGG [24] for image feature extraction); but the dense
+grained model M0 . This pre-training is efficient because the                 layers are deep and stochastic, and thus, they need to be fine-
+sampled dataset is much smaller (0.0001X) than the whole                      tuned to learn a better latent representation for each cluster.
+original dataset.                                                             Moreover, freezing RNN layers also saves the training time in
+   Step 2: Feature Extraction. With M0 , each machine entity                  this step. Finally, the M0 would evolve to individual models
+is transformed into a briefer representation distribution in                  Mi for each cluster.
+the latent space, named zt distribution. Each machine has
+T KPI vectors, and each KPI vector corresponds to a data                      C. Online Anomaly Detection
+instance. For each machine entity, CTF first samples a portion                   In the runtime, each machine’s data instance is input to the
+of the KPI vectors from the whole time series, and then uses                  machine’s cluster model, and the model outputs a reconstruc-
+the encoder of the RNN-VAE model to transform the KPI                         tion data instance. As the model remembers the majority be-
+vector to its latent representation (a vector of size C, and                  havior, the output indicates the “normal” behavior of machines.
+C < L, see Table II). Thus, a per-machine KPI vector series is                The reconstruction probability between xt and x0t indicates the
+
+
+
+                                                                          5
+                         Results &                         Outlier Alerting
+                        Visualization                          ( V-B)
+
+                                                          Online Anomaly
+                          Data API         Online Data    Detection ( III-C)
+     Monitored
+   machine entities
+                      Data Preprocessing                   Model     Score
+                           ( III-A)
+
+                                                           Offline Model
+                                           Offline Data   Training ( III-B)
+
+
+Fig. 4. System architecture. The blue modules with solid lines denote offline
+model training, and the orange modules in dash lines represent online anomaly
+detection, while the green ones with dot-dash lines show the notification
+system.
+                                                                                                  Fig. 5. The interface of the labeling tool.
+probability of the input KPI vector approaching the normal
+behavior. A smaller reconstruction probability would imply                          online and offline modules are implemented in Python with
+that the input is anomalous.                                                        Tensorflow, which has about 500 lines of code (mainly about
+   In operation, the reconstruction probability is also named                       the CTF framework); the visualization system is implemented
+anomaly score. The online module of CTF compares the                                based on Grafana.
+anomaly score with a threshold — for each real-time KPI
+vector, an anomaly score lower than the threshold would be                          B. A Labeling Tool for Experiment
+considered as an anomaly; otherwise, it is normal.                                     While CTF with an anomaly detection algorithm is un-
+   In the threshold selection, CTF uses Peaks-Over-Threshold                        supervised, which does not need labeled data, we still need
+(POT) [13]. Given a set of historical anomaly scores (also                          ground truth (i.e., a dataset with data labeled anomalous or
+called samples in the following text), POT has two steps                            normal) to validate its accuracy. We develop a labeling tool
+(details in [13]): first, POT filters out the samples below                         with graphical user interface (GUI) for network engineers to
+a certain ”low quantile” of the whole population, fits these                        label a multivariate time series. The labeling tool is illustrated
+samples with a Generalized Pareto Distribution (GPD), and                           in Fig. 5, and it has the following functions. (1) It can load,
+gets the GPD function; second, it uses the function and an                          visualize, drag, zoom in/out the time series so that the user
+anomaly quantile among the whole population (denoted as q)                          can overview the shape of the whole sequence and locate the
+to identify the threshold.                                                          details of a segment. (2) It can fold and unfold a few KPI
+   Compared with other choices of threshold selection methods                       dimensions, providing a better view to the users. (3) It can
+(e.g., state-based thresholding [5], Dynamic Error Thresholds                       label or cancel anomalies. Users can select the beginning and
+[7]), POT has three advantages. First, it makes no assumption                       end of an interval and save it as an anomaly. (4) It collects and
+of the whole population’s distribution, because it filters out                      updates statistics of anomaly intervals (e.g., count, percentage)
+the low quantile samples and fits them with GPD. Second,                            in real-time. This labeling tool is implemented in Python with
+it requires only two parameters (low quantile and q), which                         PyQt and matplotlib, with about 600 lines of code.
+is robust in parameter selection. Third, POT is efficient in
+practical operations (0.015 seconds for each machine’s one                                                  V. E VALUATION
+week’s historical score).                                                             Combining with a state-of-the-art well-performed RNN-
+   In CTF operation, we apply the same POT parameters to                            VAE based algorithm (i.e., OmniAnomaly [1] in this paper),
+each cluster and use the historical scores of each machine                          we set up experiments (dataset and environment) to evaluate
+within the cluster to fit the GPD. Because the statistical                          CTF’s performance (scalability and effectiveness). We com-
+features of machines’ scores in the same cluster are similar,                       pare CTF with its variants to validate its synthetic framework,
+they can share the same parameters, avoiding unnecessary                            compare CTF with other baselines to validate the design
+parameter tuning.                                                                   choices (e.g., clustering objects, clustering algorithms), and
+                                                                                    show the deployment results.
+                               IV. I MPLEMENTATION
+A. System Architecture                                                              A. Experiment Setup
+   The architecture of CTF with an anomaly detection algo-                             Dataset. We collect a dataset from a top global Internet
+rithm is shown in Fig. 4. CTF fetches monitoring data via                           company, where geo-distributed data centers serve global
+the Data API and preprocesses the KPI data, as described in                         users. The businesses running on the infrastructure are typical
+§III-A. The offline module runs the logic in §III-B and stores                      Internet services (e.g., news, advertisement, videos).
+the per-cluster model and historical scores. The online model                          The experimental dataset contains 533 machine entities, and
+runs the logic in §III-C and outputs the result (anomalous or                       each is monitored with 49 KPIs. KPIs are collected every
+not) to the notification system (alerting and visualization). The                   30s spanning 13 days (from April 18th to April 30th). In the
+
+
+
+                                                                                6
+                           TABLE III                                                                       TABLE IV
+ T HE EXECUTION TIME OF EACH STEP UNDER DIFFERENT NUMBERS OF                   F1, P RECISION , AND R ECALL SCORES OF CTF WITH O MNI A NOMALY
+                       MACHINE ENTITIES .                                                         WITHOUT AND WITH ALERTING .
+
+
+                                                                                            Methods          F1     Precision   Recall
+         M              533     103     104     105    105 (6 servers)                   Without alerting   0.830     0.785     0.881
+    Pre-training       5493    5493    5493     5493        5493                          With alerting     0.892     0.907     0.877
+ Feature extraction    166      311    3113    31130        5292
+     Clustering          3       6      232      576         576
+  Model transfer       2238    2238     4475   22375        4475                                         TABLE V
+       Total           7900    8048    13313   59574       15836                            C OMPARISON WITH MODEL VARIATIONS .
+      Average         14.822   8.048   1.331   0.596        0.158
+                                                                                    Methods           F1      Precision    Recall   Training time
+                                                                                      CTF           0.830       0.785       0.881       7900
+experiment, we use the first five days’ data for training and                  One model/machinea   0.842       0.820       0.864      168150
+the latter eight days’ data for testing.                                        One model for all   0.796       0.791       0.802       5493
+                                                                                 CTF w/o transfer   0.798       0.758       0.843       8413
+   Performance Metrics. The online module of CTF would                         a We evaluate 10% machine entities in this method.
+output the detection result, which is compared with the labeled
+results. We denote false positives (FP) as the normal KPI
+vectors that are reported as anomalies by the algorithm, false               average, it takes 0.3s for each machine. Third, the clustering
+negatives (FN) as anomalous KPI vectors reported as normal                   algorithm needs first to compute the pair-wise distance and
+ones, true positives (TP) and true negatives (TN) as the                     then run HAC. However, this step is significantly smaller
+anomalous or normal KPI vectors reported correctly. We use                   (0.1X, e.g., 576s v.s. 4000+s for 105 ) than other steps. Using zt
+Precision, Recall, and F1-Score (F1 for short) to evaluate the               distribution in the latent space to represent a machine entity is
+anomaly detection accuracy, where                                            efficient in accelerating the clustering speed (comparison with
+                                                                             other methods are in §V-C). Finally, the fine-tuning time is
+P recision = T P/(T P + F P ), Recall = T P/(T P + F N )                     proportional to the number of clusters (Table III), but it can
+   F 1 = 2 × P recision × Recall/(P recision + Recall)                       also be paralleled among clusters. Overall, CTF is scalable to
+                                                                             process data of the size of a data center (about 1X million
+F1 is a performance indicator with considering both Precision                machines).
+and Recall, and it is more important than Precision and Recall.                 Effectiveness and Operational Tuning. Applying CTF
+In this paper, all scores (i.e., F1, Precision, and Recall) are              with OmniAnomaly to the dataset, we got F1/Precision/Recall
+the average of all machine entities. In the experiment, we also              of 0.830/0.785/0.881, which can significantly reduce the op-
+measure the execution time of CTF and other methods, which                   erators’ workload.
+denotes the efficiency. All the time is in seconds.                             In practical operation, we observe that some anomalies
+   Hyper-parameters of models. In the experiment, we keep                    lasted for a short time (e.g., less than 2 minutes). Thus, we tune
+the original hyper-parameters of OmniAnomaly as [1]. The                     alerting policy cross-time: at least N consecutive anomalous
+offline module of CTF would sample 100 machine entities                      points will be considered as anomalies (e.g., N = 5 in our
+and 10% data instances per-machine series in Step 1, and 30                  scenario). With this alerting policy, the Precision of CTF is
+and 10% in Step 4. The number of clusters in Step 2 is 5. In                 further improved (F1 from 0.830 to 0.892, see Table IV).
+the offline module, we use empirical values of low quantile                     Validating the choice of the Synthetic Framework. CTF
+0.01, 0.02, and 0.03 and q = 10−5 .                                          uses a synthetic framework to conduct machine clustering
+   Environment. All the experiments are run on a server with                 and model training. We compare it with a few other model
+a 64-core Intel(R) Xeon(R) Gold 6130 CPU @2.10GHz and                        variations and list the results in Table V. “One model/machine”
+376GB RAM.                                                                   denotes training one model for each machine. We use all five
+                                                                             days’ data for model training because the sampled data is
+B. Overall Performance                                                       insufficient. This method can fit the machine’s behavior to
+   Scalability. We deploy the CTF framework, vary the num-                   the best and is the most effective one, but its training time
+ber of machine entities, and measure the execution time of                   is not acceptable. In the experiment, we could evaluate only
+each step, and the results are in Table III. The numbers of                  10% machine entities on our test dataset, and the training time
+clusters (an empirical value) for 103 , 104 , and 105 machines               of 100,000 machines is estimated to be about two months.
+are 5, 10, and 50, respectively. For the case of 105 machines,               In practice, it could be hardly paralleled on each machine
+we use six CPU servers for the model training (Step 2 and 4)                 because it costs many computing resources and may affect
+and list the accumulated time and the actual parallel execution              more important business tasks. The time complexity of this
+time of six servers. We got the following observations.                      approach is O(M · Tm ), where Tm is per-model training time,
+   First, the pre-training time is a marginal fixed time (5493s).            and that of CTF is O(M · Tf ) + O(K · Tm ), where Tf is
+Second, the feature extraction time is proportional to the                   feature extraction time, and K is the number of clusters. With
+number of machines (311s for 103 and 3113s for 104 ),                        Tf  Tm and K  M , the total time is significantly reduced.
+but this step can be paralleled among machine entities. On                   In practice, CTF needs 15,836s (i.e., 4.40h) with six servers
+
+
+
+                                                                         7
+                                                                                 state-of-the-art algorithms: SPF [25] and ROCKA [12] with
+                                                                                 the original input, and DCN [26] with AE latent representa-
+                                                                                 tion (§VI). They cannot handle matrix input, and we flatten
+                                                                                 the matrix to a vector [27]. After clustering, we train one
+                                                                                 OmniAnomaly [1] model within each cluster. Fig. 7 represents
+                                                                                 the clustering time and Fig. 8(a) shows the effectiveness.
+                                                                                    Overall, CTF’s clustering object (zt distribution) outper-
+                                                                                 forms the other three on both efficiency and effectiveness.
+                                                                                    (1) ROCKA’s execution time increases at a square of the
+                                                                                 number of machines, and DCN, SPF, and CTF increase
+                                                                                 linearly. CTF has a marginal cost (i.e., the coarse-grained
+                                                                                 model training time), but the time to machine ratio is small.
+                                                                                 When the number of machines is 5000 or more, CTF costs the
+Fig. 6. F1 and training time under different numbers of epochs for CTF w/o
+transfer.                                                                        least clustering time. Thus, CTF is able to handle the anomaly
+                                                                                 detection of millions of machines.
+                                                                                    (2) CTF has a higher F1 score than the other three al-
+                                                                                 gorithms. SPF and ROCKA are not resistant to noises in
+                                                                                 the dataset; DCN theoretically could resist noises, but it is
+                                                                                 hard to fully converge (its NN has a few billion parameters),
+                                                                                 and thus its latent representation may be inaccurate. CTF’s
+                                                                                 zt distribution is robust to noises and low-dimensional to
+                                                                                 converge in the experiment, which is thus the most accurate.
+                                                                                    Choice of Distance Measures. We compare CTF’s
+                                                                                 Wasserstein distance algorithm with other distance measures:
+                                                                                 Kullback-Leibler (KL) divergence (between distributions),
+                                                                                 Jensen-Shannon (JS) divergence (between distributions), and
+                                                                                 mean squared error (between sequences). We replace the dis-
+       Fig. 7. The clustering time of CTF and baseline algorithms.
+                                                                                 tance algorithm with the other three and run CTF experiments
+to train models for 100,000 machines (0.158s per machine).                       again. The results are shown in Fig. 8(b).
+   “One model for all” indicates training one model for all                         Wasserstein distance outperforms the other three. Compared
+machine entities. It is equivalent to the pre-trained coarse-                    with MSE, we conclude that distribution is a better represen-
+grained model M0 in CTF. It costs the least training time, but                   tation than sequence for machine clustering (as analyzed in
+its anomaly detection accuracy is the lowest. Because the ma-                    §III-B). Compared with KL and JS divergences, we conclude
+chine entities are diverse, one single model can hardly extract                  that the distance between neighboring values (in Wasserstein)
+features from their mixed patterns (the latent zt distribution                   is a better measure than the binary 0/1 indicator of whether
+and reconstruction x0t may be inaccurate).                                       two values overlap (in KL and JS divergences).
+   “CTF without (w/o) transfer” is similar to CTF in the                            Choice of Clustering Algorithms. We also compare the
+workflow, and the difference is in Step 4: each cluster retrains                 HAC algorithm with other popular clustering algorithms: K-
+a model from scratch (not from M0 ). Note that CTF freezes                       medoids and DBSCAN. We replace HAC with each of them
+the RNNs in Step 4, but “CTF w/o transfer” needs to train                        in CTF, fine-tune their parameters, and show the results in
+RNNs from scratch. “CTF w/o transfer” performs worse in                          Fig. 8(c). HAC performs best because it is based on the rank
+both effectiveness and efficiency compared with CTF. Fig. 6                      of distances and robust to extreme values. However, the other
+shows the F1 and training time of “CTF w/o transfer”, and                        two algorithms are sensitive to extreme values in the distances’
+we can observe that more epochs can achieve higher F1 but                        distribution and parameters, especially for DBSCAN. Thus,
+need more time. However, even if training 25 epochs (19,417                      the HAC algorithm is more suitable in real scenarios.
+seconds), the F1 is still lower than that of CTF. Because in
+                                                                                           VI. R ELATED W ORK AND D ISCUSSION
+CTF, the pre-trained M0 in CTF captures the general features
+[19], its RNNs do not need to be trained further, and CTF                        A. Anomaly Detection Algorithms
+benefits from model generalization; but in “CTF w/o transfer”,                      The anomaly detection algorithms for time series can be
+the initialization of network parameters is easier to disturb                    roughly classified into three classes — statistical-based algo-
+the per-cluster model in Step 4 (ineffectiveness), and training                  rithms and machine learning algorithms (supervised and unsu-
+RNNs costs extra time (2238s v.s. 2751s).                                        pervised) [28]. They have different advantages in scalability,
+                                                                                 operability, efficiency, and accuracy.
+C. Validating Design Choices                                                        Statistical-based algorithms rely on extensive domain
+  Choice of Clustering Objects. The clustering object of                         knowledge (e.g., parameter selection). A classic one is K-
+CTF is zt distribution, and we compare this choice with other                    Sigma algorithm [14], which used the values deviating K times
+
+
+
+                                                                             8
+                            (a)                                                      (b)                                                 (c)
+
+Fig. 8. F1, Precision, and Recall scores under (a) algorithms for different clustering objects, (b) different distance measures, (c) different clustering algorithms.
+
+the standard derivation from the average as thresholds and                           whole latent representation, improving both effectiveness and
+conducted anomaly detection. This kind of algorithms can be                          efficiency.
+efficient and scalable, but usually need experienced operators
+to set parameters (e.g., anomaly threshold).                                         C. Model Transfer Strategies
+   Supervised algorithms [3], [15], [29] require manual label-
+ing. The famous one is EGADS in Yahoo [15], which used a                                During model transfer, the old model is trained on a new
+collection of machine learning methods and threshold selection                       dataset. This process has several choices, e.g., continuing to
+algorithms for anomaly detection on large-scale univariate                           train all NN layers, training partial layers (namely fine-tuning,
+time series. When there are no tremendous labors to devote                           e.g., Convolution layers or RNN layers). Jason, et al. [18]
+to labeling, this class of algorithms can hardly be applied to                       studied the transferability of different layers in deep neural
+millions of machines.                                                                networks. They find that the shallow layers contain more
+                                                                                     general information and benefit for diverse data. In contrast,
+   Unsupervised algorithms [1], [5]–[9] aim to find “outliers”
+                                                                                     the deep layers are specific, which need more fine-tuning to fit
+among all data instances. Among them, RNN-VAE based algo-
+                                                                                     new tasks. Moreover, Long, et al. [19] applied this method to
+rithms, combining RNN for time-series feature extraction and
+                                                                                     image classification. In the infrastructure operation domain, we
+VAE for learning a robust latent representation, demonstrate
+                                                                                     are the first to exercise the fine-tuning on RNN-VAE models.
+the best potential [1]. CTF is a framework that scales them to
+                                                                                     The evaluation results show that this is the right choice in our
+millions of machines.
+                                                                                     scenario.
+
+B. Clustering Algorithms
+                                                                                     D. Lessons Learned
+   The clustering algorithms can be categorized according to                            We learn the following lessons. (1) Our coarse-to-fine
+their clustering objects.                                                            framework synthesizes clustering and model training in large-
+   Cluster on univariate time series. ROCKA [12] aims to                             scale infrastructure, which could also be applied to other
+detect anomalies for large-scale univariate time series. It clus-                    scalable scenarios, e.g., large-scale time series prediction or
+tered them using DBSCAN with normalized cross-correlation                            classification. (2) For anomaly detection methods with the
+distance and trained one anomaly detection model DONUT [2]                           CTF framework, data within a shorter time window (a few
+per cluster. Symbolic Pattern Forest (SPF) [25] is the state-                        days instead of months) may be sufficient to train models for
+of-the-art algorithm on univariate time series clustering. It                        more machine entities, e.g., CTF with OmniAnomaly uses five
+extracted the symbolic patterns from time series, clustered on                       days’ data to train models and achieves equally high F1-Score
+them using different trees, and finally assembled the clustering                     compared with eighteen days’ data in OmniAnomaly only.
+results. They do not contain mechanisms to compare the
+importance of KPI dimensions in an MTS and cannot be
+                                                                                                               VII. C ONCLUSION
+directly applied.
+   Cluster on multivariate time series (MTS). Multi-                                    We built CTF to perform anomaly detection for large-
+dimensional dynamic time warping (MDDTW) [30] measures                               scale and high-dimensional data center infrastructures. CTF
+the shape similarity among MTS. Then a clustering algorithm                          is a synthetic framework with four steps — pre-training,
+(e.g., DBSCAN) is combined with it for clustering. However,                          feature extraction, machine clustering, and model transfer. The
+its computational complexity of one pairwise distance is                             synthetic framework takes advantage of low-dimensional zt
+O(LT 2 ), higher than O(LT log T ) of ROCKA [12]. Thus, it                           distribution clustering, model reuse, and fine-tuning in model
+costs more time than zt distribution clustering (§V-C).                              transfer to boost the training efficiency. We carefully justify the
+   Cluster on the latent representation (e.g., z) in Auto                            design choices, such as the clustering algorithm and distance
+Encoder (AE) models. DCN [26] combines AE for di-                                    measure, to improve the accuracy to the best. We exercise CTF
+mensionality reduction and K-means on the encoded z for                              prototype on production data and demonstrate the scalability
+clustering and trains the whole model end-to-end. CTF is                             and effectiveness of its design. We also release a labeling tool
+inspired by this approach. It uses distribution instead of the                       for MTS and a labeled dataset to the research community.
+
+
+
+                                                                                 9
+                         ACKNOWLEDGMENT                                                [17] M. Arjovsky, S. Chintala, and L. Bottou, “Wasserstein gan,” arXiv
+                                                                                            preprint arXiv:1701.07875, 2017.
+  This project is supported by National Natural Science                                [18] J. Yosinski, J. Clune, Y. Bengio, and H. Lipson, “How transferable are
+Foundation of China Grant No. 61802225, the Zhongguancun                                    features in deep neural networks?” in Advances in neural information
+                                                                                            processing systems, 2014, pp. 3320–3328.
+Haihua Institute for Frontier Information Technology, National                         [19] M. Long, Y. Cao, J. Wang, and M. Jordan, “Learning transferable
+Natural Science Foundation of China Grant No. 61902200 and                                  features with deep adaptation networks,” in International Conference
+China Postdoctoral Science Foundation (2019M651015).                                        on Machine Learning, 2015, pp. 97–105.
+                                                                                       [20] F. Murtagh and P. Legendre, “Ward’s hierarchical agglomerative clus-
+                              R EFERENCES                                                   tering method: which algorithms implement ward’s criterion?” Journal
+                                                                                            of classification, vol. 31, no. 3, pp. 274–295, 2014.
+ [1] Y. Su, Y. Zhao, C. Niu, R. Liu, W. Sun, and D. Pei, “Robust anomaly               [21] H.-S. Park and C.-H. Jun, “A simple and fast algorithm for k-medoids
+     detection for multivariate time series through stochastic recurrent neural             clustering,” Expert systems with applications, vol. 36, no. 2, pp. 3336–
+     network,” in Proceedings of the 25th ACM SIGKDD International                          3341, 2009.
+     Conference on Knowledge Discovery & Data Mining, 2019, pp. 2828–                  [22] C. Tan, F. Sun, T. Kong, W. Zhang, C. Yang, and C. Liu, “A survey on
+     2837.                                                                                  deep transfer learning,” in International conference on artificial neural
+ [2] H. Xu, W. Chen, N. Zhao, Z. Li, J. Bu, Z. Li, Y. Liu, Y. Zhao,                         networks. Springer, 2018, pp. 270–279.
+     D. Pei, Y. Feng, J. Chen, Z. Wang, and H. Qiao, “Unsupervised                     [23] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training
+     anomaly detection via variational auto-encoder for seasonal kpis in web                of deep bidirectional transformers for language understanding,” arXiv
+     applications,” in WWW, 2018.                                                           preprint arXiv:1810.04805, 2018.
+ [3] D. Liu, Y. Zhao, H. Xu, Y. Sun, D. Pei, J. Luo, X. Jing, and                      [24] K. Simonyan and A. Zisserman, “Very deep convolutional networks for
+     M. Feng, “Opprentice: Towards practical and automatic anomaly de-                      large-scale image recognition,” arXiv preprint arXiv:1409.1556, 2014.
+     tection through machine learning,” in Proceedings of the 2015 Internet            [25] X. Li, J. Lin, and L. Zhao, “Linear time complexity time series clustering
+     Measurement Conference, 2015, pp. 211–224.                                             with symbolic pattern forest,” in Proceedings of the 28th International
+ [4] Y. Dang, Q. Lin, and P. Huang, “Aiops: real-world challenges and                       Joint Conference on Artificial Intelligence. AAAI Press, 2019, pp.
+     research innovations,” in 2019 IEEE/ACM 41st International Conference                  2930–2936.
+     on Software Engineering: Companion Proceedings (ICSE-Companion).                  [26] B. Yang, X. Fu, N. D. Sidiropoulos, and M. Hong, “Towards k-
+     IEEE, 2019, pp. 4–5.                                                                   means-friendly spaces: Simultaneous deep learning and clustering,” in
+ [5] D. Park, Y. Hoshi, and C. C. Kemp, “A multimodal anomaly detector                      Proceedings of the 34th International Conference on Machine Learning-
+     for robot-assisted feeding using an lstm-based variational autoencoder,”               Volume 70. JMLR. org, 2017, pp. 3861–3870.
+     IEEE Robotics and Automation Letters, vol. 3, no. 3, pp. 1544–1551,               [27] S. Basu, K. Wagstyl, A. Zandifar, L. Collins, A. Romero, and D. Precup,
+     2018.                                                                                  “Analyzing alzheimer’s disease progression from sequential magnetic
+ [6] B. Zong, Q. Song, M. R. Min, W. Cheng, C. Lumezanu, D. Cho, and                        resonance imaging scans using deep 3d convolutional neural networks.”
+     H. Chen, “Deep autoencoding gaussian mixture model for unsupervised                    NIPS, 2018.
+     anomaly detection,” in International Conference on Learning Represen-             [28] V. Chandola, A. Banerjee, and V. Kumar, “Anomaly detection: A survey,”
+     tations, 2018.                                                                         ACM computing surveys (CSUR), vol. 41, no. 3, pp. 1–58, 2009.
+ [7] K. Hundman, V. Constantinou, C. Laporte, I. Colwell, and T. Soder-                [29] X. Zhang, J. Kim, Q. Lin, K. Lim, S. O. Kanaujia, Y. Xu, K. Jamieson,
+     strom, “Detecting spacecraft anomalies using lstms and nonparametric                   A. Albarghouthi, S. Qin, M. J. Freedman et al., “Cross-dataset time
+     dynamic thresholding,” in Proceedings of the 24th ACM SIGKDD                           series anomaly detection for cloud systems,” in 2019 {USENIX} Annual
+     International Conference on Knowledge Discovery & Data Mining,                         Technical Conference ({USENIX}{ATC} 19), 2019, pp. 1063–1076.
+     2018, pp. 387–395.                                                                [30] J. Mei, M. Liu, Y.-F. Wang, and H. Gao, “Learning a mahalanobis
+ [8] P. Malhotra, A. Ramakrishnan, G. Anand, L. Vig, P. Agarwal, and                        distance-based dynamic time warping measure for multivariate time
+     G. Shroff, “Lstm-based encoder-decoder for multi-sensor anomaly de-                    series classification,” IEEE transactions on Cybernetics, vol. 46, no. 6,
+     tection,” arXiv preprint arXiv:1607.00148, 2016.                                       pp. 1363–1374, 2015.
+ [9] C. Zhang, D. Song, Y. Chen, X. Feng, C. Lumezanu, W. Cheng, J. Ni,
+     B. Zong, H. Chen, and N. V. Chawla, “A deep neural network for
+     unsupervised anomaly detection and diagnosis in multivariate time series
+     data,” in Proceedings of the AAAI Conference on Artificial Intelligence,
+     vol. 33, 2019, pp. 1409–1416.
+[10] H. Ren, B. Xu, Y. Wang, C. Yi, C. Huang, X. Kou, T. Xing, M. Yang,
+     J. Tong, and Q. Zhang, “Time-series anomaly detection service at
+     microsoft,” in Proceedings of the 25th ACM SIGKDD International
+     Conference on Knowledge Discovery & Data Mining, 2019, pp. 3009–
+     3017.
+[11] S. M. Erfani, S. Rajasegarar, S. Karunasekera, and C. Leckie, “High-
+     dimensional and large-scale anomaly detection using a linear one-class
+     svm with deep learning,” Pattern Recognition, vol. 58, pp. 121–134,
+     2016.
+[12] Z. Li, Y. Zhao, R. Liu, and D. Pei, “Robust and rapid clustering
+     of kpis for large-scale anomaly detection,” in 2018 IEEE/ACM 26th
+     International Symposium on Quality of Service (IWQoS). IEEE, 2018,
+     pp. 1–10.
+[13] A. Siffer, P.-A. Fouque, A. Termier, and C. Largouet, “Anomaly detec-
+     tion in streams with extreme value theory,” in Proceedings of the 23rd
+     ACM SIGKDD International Conference on Knowledge Discovery and
+     Data Mining, 2017, pp. 1067–1075.
+[14] E. W. Grafarend, Linear and nonlinear models: fixed effects, random
+     effects, and mixed models. de Gruyter, 2006.
+[15] N. Laptev, S. Amizadeh, and I. Flint, “Generic and scalable framework
+     for automated time-series anomaly detection,” in Proceedings of the 21th
+     ACM SIGKDD International Conference on Knowledge Discovery and
+     Data Mining, 2015, pp. 1939–1947.
+[16] D. P. Kingma and M. Welling, “Auto-encoding variational bayes,” arXiv
+     preprint arXiv:1312.6114, 2013.
+
+
+
+
+                                                                                  10
+

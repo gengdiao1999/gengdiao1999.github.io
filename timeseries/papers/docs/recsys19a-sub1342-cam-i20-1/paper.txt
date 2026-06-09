@@ -1,0 +1,708 @@
+                          Personalized Re-ranking for Recommendation
+                                                    Changhua Pei1∗ , Yi Zhang1∗ , Yongfeng Zhang2∗
+          Fei Sun1 , Xiao Lin1 , Hanxiao Sun1 , Jian Wu1 , Peng Jiang3 , Junfeng Ge1 , Wenwu Ou1 , Dan Pei4
+                                       1 Alibaba Group 2 Rutgers University 3 Kwai Inc. 4 Tsinghua University
+       1 {changhua.pch, zhanyuan.zy, ofey.sf, hc.lx, hansel.shx, joshuawu.wujian, beili.gjf, santong.oww}@alibaba-inc.com
+                            2 yongfeng.zhang@rutgers.edu 3 jiangpeng@kuaishou.com 4 peidan@tsinghua.edu.cn
+
+
+ABSTRACT                                                                                      1   INTRODUCTION
+Ranking is a core task in recommender systems, which aims at                                  Ranking is crucial in recommender systems. The quality of the
+providing an ordered list of items to users. Typically, a ranking                             ranked list given by a ranking algorithm has a great impact on users’
+function is learned from the labeled dataset to optimize the global                           satisfaction as well as the revenue of the recommender systems.
+performance, which produces a ranking score for each individual                               A large amount of ranking algorithms [4, 5, 7, 15, 19, 27, 32] have
+item. However, it may be sub-optimal because the scoring function                             been proposed to optimize the ranking performance. Typically
+applies to each item individually and does not explicitly consider                            ranking in recommender system only considers the user-item pair
+the mutual influence between items, as well as the differences of                             features, without considering the influences from other items in
+users’ preferences or intents. Therefore, we propose a personal-                              the list, especially by those items placed alongside[8, 35]. Though
+ized re-ranking model for recommender systems. The proposed                                   pairwise and listwise learning to rank methods try to solve the
+re-ranking model can be easily deployed as a follow-up modular                                problem by taking the item-pair or item-list as input, they only
+after any ranking algorithm, by directly using the existing ranking                           focus on optimizing the loss function to make better use of the
+feature vectors. It directly optimizes the whole recommendation                               labels, e.g., click-through data. They didn’t explicitly model the
+list by employing a transformer structure to efficiently encode the                           mutual influences between items in the feature space.
+information of all items in the list. Specifically, the Transformer                               Some works[1, 34, 37] tend to model the mutual influences be-
+applies a self-attention mechanism that directly models the global                            tween items explicitly to refine the initial list given by the previous
+relationships between any pair of items in the whole list. We con-                            ranking algorithm, which is known as re-ranking. The main idea is
+firm that the performance can be further improved by introducing                              to build the scoring function by encoding intra-item patterns into
+pre-trained embedding to learn personalized encoding functions                                feature space. The state-of-the-art methods for encoding the feature
+for different users. Experimental results on both offline benchmarks                          vectors are RNN-based, such as GlobalRerank[37] and DLCM[1].
+and real-world online e-commerce systems demonstrate the signifi-                             They feed the initial list into RNN-based structure sequentially
+cant improvements of the proposed re-ranking model.                                           and output the encoded vector at each time step. However, RNN-
+                                                                                              based approaches have limited ability to model the interactions
+CCS CONCEPTS                                                                                  between items in the list. The feature information of the previous
+• Information systems → Recommender systems.                                                  encoded item degrades along with the encoding distance. Inspired
+                                                                                              by the Transformer architecture[20] used in machine translation,
+KEYWORDS                                                                                      we propose to use the Transformer to model the mutual influences
+                                                                                              between items. The Transformer structure uses self-attention mech-
+Learning to rank; Re-ranking; Recommendation                                                  anism where any two items can interact with each other directly
+ACM Reference Format:                                                                         without degradation over the encoding distance. Meanwhile, the en-
+Changhua Pei1∗ , Yi Zhang1∗ , Yongfeng Zhang2 and Fei Sun1 , Xiao Lin1 ,                      coding procedure of Transformer is more efficient than RNN-based
+Hanxiao Sun1 , Jian Wu1 , Peng Jiang3 , Junfeng Ge1 , Wenwu Ou1 , Dan Pei4 .                  approach because of parallelization.
+2019. Personalized Re-ranking for Recommendation . In Thirteenth ACM                              Besides the interactions between items, personalized encoding
+Conference on Recommender Systems (RecSys ’19), September 16–20, 2019,                        function of the interactions should also be considered for re-ranking
+Copenhagen, Denmark. ACM, New York, NY, USA, 9 pages. https://doi.org/                        in recommender system. Re-ranking for recommender system is
+10.1145/3298689.3347000
+                                                                                              user-specific, depending on the user’s preferences and intents. For
+∗ Changhua Pei and Yi Zhang contribute equally. Yongfeng Zhang is the corresponding
+                                                                                              a user who is sensitive to price, the interaction between “price”
+author.                                                                                       feature should be more important in the re-ranking model. Typical
+                                                                                              global encoding function may be not optimal as it ignores the dif-
+Permission to make digital or hard copies of all or part of this work for personal or
+                                                                                              ferences between feature distributions for each user. For instance,
+classroom use is granted without fee provided that copies are not made or distributed         when users are focusing on price comparison, similar items with dif-
+for profit or commercial advantage and that copies bear this notice and the full citation     ferent prices tend to be more aggregated in the list. When the user
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,       has no obvious purchasing intention, items in the recommendation
+to post on servers or to redistribute to lists, requires prior specific permission and/or a   list tend to be more diverse. Therefore, we introduce a personal-
+fee. Request permissions from permissions@acm.org.                                            ization module into the Transformer structure to represent user’s
+RecSys ’19, September 16–20, 2019, Copenhagen, Denmark
+© 2019 Association for Computing Machinery.
+                                                                                              preference and intent on item interactions. The interaction between
+ACM ISBN 978-1-4503-6243-6/19/09. . . $15.00
+https://doi.org/10.1145/3298689.3347000
+RecSys ’19, September 16–20, 2019, Copenhagen, Denmark                                                                                 Changhua Pei et al.
+
+
+items in the list and user can be captured simultaneously in our                             Table 1: Notation used in this paper.
+personalized re-ranking model.
+   The main contributions of this paper are as follows:                          Notation.     Description.
+                                                                                 X             The matrix of features.
+     • Problem. We propose a personalized re-ranking problem in                  PV            The matrix of personalized vectors.
+       recommender systems, which, to the best of our knowledge,                 PE            The matrix of position embeddings.
+       is the first time to explicitly introduce the personalized in-            E             The output matrix of the input layer.
+       formation into re-ranking task in large-scale online system.              R             The set of total users’ requests.
+       The experimental results demonstrate the effectiveness of                 Ir            The set of candidate items for each user’s re-
+       introducing users’ representation into list representation for                          quest r ∈ R.
+       re-ranking.                                                               Sr            The initial list of items generated by the ranking
+     • Model. We employ the Transformer equipped with person-                                  approaches for each user’s request r .
+       alized embedding to compute representations of initial in-                Hu            The sequence of items clicked by user u.
+       put ranking list and output the re-ranking score. The self-                  ˆ θ′
+                                                                                 θ, θ,         The parameter matrices of ranking, re-ranking
+       attention mechanism enable us to model user-specific mutual                             and pre-trained model respectively.
+       influences between any two items in a more effective and                  yi            The label of click on item i.
+       efficient way compared with RNN-based approaches.                         P(yi |·)      The click probability of item i predicted by the
+     • Data. We release a large scale dataset (E-commerce Re-ranking                           model.
+       dataset) used in this paper. This dataset is built from a real-
+       world E-commerce recommender system. Records in the                   when scoring the items, but its computation cost is high because it
+       dataset contain a recommendation list for user with click-            enumerates every possible combinations of items in the list.
+       through labels and features for ranking.
+     • Evaluation. We conducted both offline and online experi-              3    RE-RANKING MODEL FORMULATION
+       ments which show that our methods significantly outper-               In this section, we first give some preliminary knowledge about
+       form the state-of-the-art approaches. The online A/B tests            learning to rank and re-ranking methods for recommendation sys-
+       show that our approach achieves higher click-through rate             tems. Then we formulate the problem we aim to solve in this paper.
+       and more revenue for real-world system.                               The notations used in this paper are in Table 1.
+                                                                                Learning to rank (often labelled as LTR) method is widely used
+                                                                             for ranking in real-work systems to generate an ordered list for
+2    RELATED WORK
+                                                                             information retrieval[18, 22] and recommendation[14]. The LTR
+Our work aims to refine the initial ranking list given by the base           method learns a global scoring function based on the feature vector
+ranker. Among these base rankers, learning to rank is one of the             of items. Having this global function, the LTR method outputs an
+widely used methods. The learning to rank methods can be classified          ordered list by scoring each item in the candidate set. This global
+into three categories according to the loss function they used: point-       scoring function is usually learned by minimizing the following
+wise[12, 21], pairwise[6, 18, 19], and listwise[5, 7, 14, 19, 27, 32, 33].   loss function L:
+All these methods learn a global scoring function within which the                                 Õ                                   
+weight of a certain feature is globally learned. However, the weights                         L=       ℓ {yi , P(yi |x i ; θ )|i ∈ Ir }      (1)
+of the features should be able to be aware of the interactions not                                  r ∈R
+only between items but also between the user and items.                      where R is the set of all users’ requests for recommendation. Ir
+   Closest to our work are [1–3, 37], which are all re-ranking meth-         is the candidate set of items for request r ∈ R. x i represents the
+ods. They use the whole initial list as input and model the complex          feature space of item i. yi is the label on item i, i.e., click or not.
+dependencies between items in different ways. [1] uses unidirec-             P(yi |x i ; θ ) is the predicted click probability of item i given by the
+tional GRU[10] to encode the information of the whole list into              ranking model with parameters θ . ℓ is the loss computed with yi
+the representation of each item. [37] uses LSTM[17] and [3] uses             and P(yi |x i ; θ ).
+pointer network[29] not only to encode the whole list information,               However, x i is not enough to learn a good scoring function.
+but also to generate the ranked list by a decoder. For those meth-           We find that ranking for recommender system should consider
+ods which use either GRU or LSTM to encode the dependencies                  the following extra information: (a) mutual influences between
+of items, the capacity of the encoder is limited by the encoding             item-pairs[8, 35]; (b) interactions between the users and items. The
+distance. In our paper, we use transformer-like encoder, based on            mutual influences between item-pairs can be directly learned from
+self-attention mechanism to model the interactions for any of two            the initial list Sr = [i 1 , i 2 , ..., i n ] given by the existing LTR model
+items in O(1) distance. Besides, for those methods which use de-             for the request r . Works[1][37][2][3] propose approaches to make
+coder to sequentially generate the ordered list, they are not suitable       better use of mutual information of item-pairs. However, few works
+for online ranking system which requires strict latency criterion.           consider the interactions between the users and items. The extent
+As the sequential decoder uses the item selected at time t-1 as input        of mutual influences of item-pairs varies from user to user. In this
+to select the item at time t, it can not be parallelized and needs           paper, we introduce a personalized matrix PV to learn user-specific
+n times of inferences, where n is the length of the output list. [2]         encoding function which is able to model personalized mutual
+proposes a groupwise scoring function which can be parallelized              influences between item-pairs. The loss function of the model can
+Personalized Re-ranking for Recommendation                                                      RecSys ’19, September 16–20, 2019, Copenhagen, Denmark
+
+
+be formulated as Equation 2.                                                 At last we use one simple feed-forward network to convert the
+                                                                          feature matrix E ∈ Rn×(dfeature +dpv ) to E ∈ Rn×d , where d is latent
+                                                                                          ′′
+
+                     ℓ {yi , P(yi |X , PV ; θˆ)|i ∈ Sr }
+                  Õ                                     
+             L=                                                    (2)    dimensionality of each input vector of encoding layer. E can be
+                     r ∈R                                                 formulated as Equation 5.
+where Sr is the initial list given by the previous ranking model. θˆ                                   E = EW E + b E                              (5)
+is the parameters of our re-ranking model. X is the feature matrix
+of all items in the list.                                                 where W E ∈ R(dfeature +dpv )×d is the projection matrix and b E is
+                                                                          d-dimensional vector.
+4     PERSONALIZED RE-RANKING MODEL
+                                                                          4.3     Encoding Layer
+In this section, we first give an overview of our proposed Personalized
+                                                                          The goal of the encoding layer in Figure 1(a) is to integrate the
+Re-ranking Model (PRM). Then we introduce each component of
+                                                                          mutual influences of item-pairs and other extra information, in-
+our model in detail.
+                                                                          cludes the user preferences and the ranking order of the initial list
+                                                                          S. To achieve this goal, we adopt Transformer-like encoder because
+4.1    Model Architecture
+                                                                          Transformer[28] has been proven to be effective in many NLP tasks,
+The architecture of PRM model is shown in Figure 1. The model             specially in machine translation for its powerful encoding and de-
+consists of three parts: the input layer, the encoding layer and the      coding ability compared to RNN-based approaches[10, 11, 17]. The
+output layer. It takes the initial list of items generated by previous    self-attention mechanism in Transformer is particularly suitable
+ranking method as input and outputs a re-ranked list. The detailed        in our re-ranking task as it directly models the mutual influences
+structure will be introduced separately in the following sections.        for any two items regardless the distances between them. Without
+                                                                          distance decay, Transformer can capture more interactions between
+4.2    Input Layer                                                        items that are far away from each other in the initial list. As shown
+The goal of the input layer is to prepare comprehensive repre-            in Figure 1(b), our encoding module consists of N x blocks of Trans-
+sentations of all items in the initial list and feed it to the encod-     former encoder. Each block (Figure 1(a)) contains an attention layer
+ing layer. First we have a fixed length of initial sequential list        and a Feed-Forward Network (FFN) layer.
+S = [i 1 , i 2 , ..., i n ] given by the previous ranking method. Same       Attention Layer. The attention function we used in this paper
+as the previous ranking method, we have a raw feature matrix              is defined as Equation 6:
+X ∈ Rn×dfeature . Each row in X represents the raw feature vector x i                                                 
+                                                                                                                        QK T
+                                                                                                                              
+for each item i ∈ S.                                                                     Attention(Q, K, V ) = softmax √        V,           (6)
+   Personalized Vector (PV ). Encoding the feature vectors of two                                                         d
+items can model the mutual influences between them, but to which          where matrices Q, K, V represent queries, keys and values respec-
+extent these influences may affect the user is unknown. A user-           tively. d is the dimensionality of matrix K to avoid large value of
+specific encoding function need to be learned. Though the rep-            the inner product. softmax is used to convert the value of inner-
+resentation of the whole initial list can partly reflects the user’s      product into the adding weight of the value vector V . In our paper,
+preferences, it is not enough for a powerful personalized encoding        we use self-attention where Q, K and V are projected from the same
+function. As shown in Figure 1 (b), we concat the raw feature ma-         matrices.
+trix X ∈ Rn×dfeature with a personalized matrix PV ∈ Rn×dpv to get           To model more complex mutual influences, we use the multi-
+the intermediate embedding matrix E ∈ Rn×(dfeature +dpv ) , which is
+                                                 ′                        head attention as shown in Equation 7:
+shown in Equation 3. PV is produced by a pre-trained model which                       ′
+                                                                                     S = MH(E) = Concat(head1 , ..., headh )W O
+will be introduced in the following section. The performance gain                                                                                  (7)
+of PV will be introduced in the evaluation section.                                         headi = Attention(EW Q , EW K , EW V ),
+                                       x i ; pv i 
+                                       1          1 
+                                                                          where W Q ,W K ,W V ∈ Rd ×d . W O ∈ Rhd×dmodel is the projection
+                                  ′    x i ; pv i                       matrix. h is the number of headers. The influence of different value
+                                 E =      2       2 
+                                                                    (3)   of h will be studied in the ablation study in the next section.
+                                             ...
+                                      
+                                                     
+                                      x i ; pv i                           Feed-Forward Network. The function of this position-wise
+                                                    
+                                       n          n
+                                                                          Feed-Forward Network (FFN) is mainly to enhance the model with
+   Position Embedding (PE). In order to utilize the sequential            non-linearity and interactions between different dimensions of the
+information in the initial list, we inject a position embedding PE ∈      input vectors.
+Rn×(dfeature +dpv ) into the input embedding. Then the embedding             Stacking the Encoding Layer. Here we use attention module
+matrix for encoding layer can be calculated using Equation 4. In          followed by the position-wise FFN as a block of Transformer[28]
+this paper, a learnable PE is used which we found that it slightly        encoder. By stacking multiple blocks, we can get more complex and
+outperforms the fixed position embedding used in [28].                    high-order mutual information.
+                            x i ; pv i   pe i 
+                            1         1     1                         4.4     Output Layer
+                       ′′   x ; pv i   pe i 
+                      E =  i 2       2 
+                                           +  2                  (4)
+                                 ···       ···                         The function of the output layer is mainly to generate a score for
+                           x i ; pv i  pe i                           each item i = i 1 , . . . , i n (labeled as Score(i) in Figure 1 (b)). We use
+                                              
+                            n         n     n
+RecSys ’19, September 16–20, 2019, Copenhagen, Denmark                                                                                                                       Changhua Pei et al.
+
+
+                                                                                      Attention              Softmax
+      FFN
+                                             x i1   pv i 1      +       e i1                       FFN                 Score(i 1 )                                            ′
+            Add & Norm                                                                                                                                         P(yi |Hu , u; θ )
+                                                              pe i 1
+              Dropout
+                                             x i2   pv i 2      +       e i2                       FFN                 Score(i 2 )                                 sigmoid         pv i
+            Feed Forward
+                                                              pe i 2
+                                                                                                                                                                    Layern
+      Attention
+                                             x i3   pv i 3      +       e i3                       FFN                 Score(i 3 )                                     ..
+                                        ..    ..      ..      pe i 3     ..                ..       ..          ..            ..         ..                             .
+            Add & Norm                   .     .       .                  .                 .        .           .             .          .
+                                                                                                                                                                    Layer1
+              Dropout                        x in   pv i n      +       e in                       FFN                 Score(in )
+                                                              pe i n
+            Multi-Head
+            Attention
+                                                                               Nx blocks of Transformer encoder.
+
+                                                           Input                        Encoding                     Output                               Hu       item i     user u
+                  E               Initial                                                                                          Re-ranked
+                                   List                    Layer                         Layer                       Layer            List
+
+   (a) One block of                                                    (b) Architecture of PRM.                                                       (c) The pre-trained model to
+ Transformer encoder.                                                                                                                                   generate pv i , i = i 1, ..., in .
+             Figure 1: The detailed network structure of our PRM (Personalized Re-ranking Model) and its sub-modules.
+
+                                                                                                                                                                                               ′
+one linear layer followed by a softmax layer. The output of softmax                                      where D is the set of items displayed to user u on the platform. θ
+layer is the probability of click for each item, which is labeled                                        is the parameter matrix of pre-trained model. yi is the label (click
+as P(yi |X , PV ; θˆ). We use P(yi |X , PV ; θˆ) as Score(i) to re-rank the                              or not) on item i. Inspired by the work[13], we employ the hidden
+items in one-step. The formulation of Score(i) is:                                                       vector before the sigmoid layer as the personalized vector pv i (in
+                                                                                                         Figure 1(c)) that feeds into our PRM model.
+   Score(i) = P(yi |X , PV ; θˆ) = softmax F (N x )W F + b F , i ∈ Sr
+                                                                
+                                                                                                             Figure 1(c) shows one possible architecture of the pre-trained
+                                                                         (8)                             model, other general models such as FM[25], FFM[23], DeepFM[16],
+                                                                                                         DCN[30], FNN[36] and PNN[24] can also be used as alternatives to
+where F (N x ) is the output of N x blocks of Transformer encoder.                                       generate PV .
+W F is learnable projection matrix, and b F is the bias term. n is the
+number of items in the initial list.                                                                     5     EXPERIMENTAL RESUTLS
+  In the training process, we use the click-through data as label
+                                                                                                         In this section, we first introduce the datasets and baselines used for
+and minimize the loss function shown in Equation 9.
+                                                                                                         evaluation. Then we compare our methods with baselines on these
+                                                                                                         datasets to evaluate the effectiveness of our PRM model. At the same
+                                yi log(P(yi |X , PV ; θˆ)
+                       Õ Õ
+                L=−                                                 (9)                                  time, the ablation study is conducted to help understand which part
+                           r ∈R i ∈Sr
+                                                                                                         of our model contributes most to the overall performance.
+4.5     Personalized Module
+                                                                                                         5.1         Datasets
+In this section, we introduce the approach to calculate the per-
+sonalized matrix PV , which represents interactions between user                                         We evaluate our approach based on two datasets: Yahoo! Webscope
+and items. The straightforward approach is to learn PV with PRM                                          v2.0 set 11 (abbreviated as Yahoo Letor dataset) and E-commerce
+model in an end-to-end manner via the re-ranking loss. However,                                          Re-ranking dataset2 To the best of our knowledge, there is no
+as explained in Section3, the re-ranking task is to refine the output                                    publically available re-ranking dataset with context information for
+of previous ranking approaches. The task-specific representation                                         recommendation. Therefore, we construct E-commerce Re-ranking
+learned on re-ranking task lacks users’ generic preferences. There-                                      dataset from a popular e-commerce platform. The overview of two
+fore, we utilize a pre-trained neural network to produce user’s                                          datasets are shown in Table 2.
+personalized embeddings PV which are then used as extra features                                            Yahoo Letor dataset. We process the Yahoo Letor dataset to
+for PRM model. The pre-trained neural network is learned from                                            be fit for the ranking model of recommendation using the same
+the whole click-through logs of the platform. Figure 1(c) shows                                          method in Seq2Slate[3]. Firstly, we convert the ratings (0 to 4)
+the structure of pre-trained model used in our paper. This sigmoid                                       to binary labels using a threshold Tb . Secondly, we use a decay
+                                                         ′                                               factor η to simulate the impression probabilities of items. All the
+layer outputs the click probability (P(yi |Hu , u; θ )) on item i for
+                                                                                                         documents in Yahoo Letor dataset are rated by the experts under
+user u given user’s all behavior history (Hu ) and the side informa-
+                                                                                                         the assumption that all documents for each query can be viewed by
+tion of the user. The side information of user includes gender, age
+                                                                                                         the users compeletely. However, in the real world recommendation
+and purchasing level, et.al. The loss of the model is calculated by a
+                                                                                                         scenario, items are viewed by the users in a top-down manner.
+point-wise cross entropy function which is shown in Equation 10.
+                                                                                                         As the screen of the mobile App can only show limited number
+                                              ′
+                   Õ
+            L=         (yi log(P(yi |Hu , u; θ ))                                                        of items, the higher the ranked position of one item, the smaller
+                  i ∈D                                           (10)                                    1 http://webscope.sandbox.yahoo.com
+                                                           ′
+                        + (1 − yi ) log(1 − P(yi |Hu , u; θ )),                                          2 Our dataset is available at https://github.com/rank2rec/rerank.
+Personalized Re-ranking for Recommendation                                                   RecSys ’19, September 16–20, 2019, Copenhagen, Denmark
+
+
+                Table 2: Overview of the datasets.                       is unacceptable because of the strict latency criterion for online
+                                                                         recommender service.
+                              Yahoo Letor    E-commerce
+                                                                             • DLCM[1]: It is a re-ranking model used in information re-
+                              Dataset        Re-ranking Dataset
+                                                                               trieval based on the initial list generated by LTR methods.
+   #Users             -                      743,720                           The GRU is used to encode the local context information into
+   #Docs/Items        709,877                7,246,323                         a global vector. Combing the global vector and each feature
+   #Records            29,921                14,350,968                        vector, it learns a more powerful scoring function than the
+   Relavance/Feedback {0,1,2,3,4}            {0,1}                             global ranking function of LTR.
+
+probability of that this item can be viewed by the user. In this         5.3    Evaluation Metrics
+paper, we use 1/pos(i)η as the decay probability, where pos(i) is the    For offline evaluation, we use Precision and MAP to compare differ-
+ranking position of item i in the initial list.                          ent methods. More specifically, we use Precision@5, Precision@10
+   E-commerce Re-ranking dataset. The dataset contains a large-          for precision and MAP@5, MAP@10 and MAP@30 for MAP. As the
+scale records in form of click-through data from a real world recom-     maximum length of initial list in our experiments is 30, MAP@30
+mendation system. Each record in the dataset contains a recommen-        represents total MAP and is denoted by MAP in this paper. The
+dation list for each user with users’ basic information, click-through   definitions of the metrics are as follows.
+labels and raw features for ranking.                                        Precision@k is defined as the the fraction of clicked items in
+                                                                         the top-k recommended items for all test samples, as shown in
+5.2     Baselines                                                        Equation 11.
+Both learning to rank (LTR) and re-ranking methods can act as our                                                     Ík
+baselines.                                                                                                 1 Õ         i=1 I(Sr (i))
+   LTR. The LTR methods are used in two tasks. Firstly, the LTR                        Precision@k =                                          (11)
+                                                                                                          |R|                  k
+                                                                                                               r ∈R
+methods can generate an initial list Sr for the re-ranking model
+from a candidate set Ir for each user request r . Secondly, the LTR          where R is the set of all user requests in the test dataset. Sr is
+methods which use pairwise or listwise loss function can act as          the ordered list of items given by the re-ranking model for each
+re-ranking methods by taking the initial list Sr as input and con-       request r ∈ R and Sr (i) is the i-th item. I is the indicator function
+ducting the ranking algorithm for another time. The representative       whether item i is clicked or not.
+LTR methods used in this paper include:                                      MAP@k is short for the mean average precision of all ranked
+                                                                         lists cut off by k in the test dataset. It is defined as follows.
+      • SVMRank[19]: This is a representative learning to rank method
+        which use the pairwise loss to model the scoring function.                                        Ík
+                                                                                           1 Õ             i=1 Precision@i ∗ I(Sr (i))
+      • LambdaMart[5]: This is a representative learning to rank                  MAP@k =                                                     (12)
+                                                                                          |R|                              k
+        method which use the listwise loss to model the scoring                                    r ∈R
+        function. LambdaMart is the state-of-the-art LTR among             For online A/B test, we use PV, IPV, CTR and GMV as metrics. PV
+        those LTR methods equipped with the listwise loss function       and IPV are defined as the total number of items viewed and clicked
+        according to [31]’s evaluation.                                  by the users. CTR is the clickthrough rate and can be calculated by
+      • DNN-based LTR: This is the learning to rank method which         IPV/PV. GMV is the total amount of money (revenue) user spent
+        is deployed in our online recommender system. It use the         on the recommended items.
+        standard Wide&Deep network structure[9] to model the
+        scoring function via the pointwise loss function.                5.4    Experimental Settings
+   Re-ranking. As mentioned in the related work section, the             For both baselines and our PRM model, we use the same value for
+existing re-ranking methods include DLCM[1], Seq2Slate[3] and            those critical hyper parameters. The hidden dimensionality d model
+GlobalRerank[37]. DLCM[1] and GlobalRerank[37] focus on re-              is set to 1024 for Yahoo Letor dataset and 64 for E-commerce Re-
+ranking in information retrieval. Seq2Slate[3] focuses on re-ranking     ranking dataset. The learning rate of Adam optimizer in our PRM
+in both recommendation and information retrieval. In this paper, we      model is the same with [28]. Negative log likelihood loss function
+only choose DLCM as baseline method. Seq2Slate and GlobalRerank          is used as shown in Equation 9. pdropout is set to 0.1. The batch size
+are not chosen as baselines because they all use the decoder struc-      is set to 256 for Yahoo Letor dataset and 512 for E-commerce Re-
+ture to generate the re-ranked list. Seq2Slate uses pointer network      ranking dataset. These settings are got by fine-tuning the baselines
+to generate re-ranked list sequentially. GlobalRerank uses RNN           to achieve better performance. We also try different experimental
+equipped with attention mechanism as the decoder. The decoder            settings, the results are consistent with the current settings and
+structure outputs the item one by one. Whether an item is selected       are ommited. The rest of the settings belonging to the customized
+depends on the items which are chosen before it. As a consequence,       parts of our model will be listed at the corresponding parts in the
+both Seq2Slate and GlobalRerank can not be parallelized in online        evaluation section.
+inference. The time complexity for Seq2Slate and GlobalRerank
+at interference phase is O(n) × RT , where n is the length of the        5.5    Offline Experiments
+initial list and RT is the time for a single ranking or re-ranking       In this section, we first conduct offline evaluations on Yahoo Letor
+request. The latency for re-ranking by Seq2Slate and GlobalRerank        dataset and E-commerce Re-ranking dataset. Then we show the
+RecSys ’19, September 16–20, 2019, Copenhagen, Denmark                                                                          Changhua Pei et al.
+
+
+results of online A/B test. We also conduct the ablation study to             As shown in Table 4, the performance of our model degrades
+help finding which part of our PRM model contributes most to the           greatly after removing position embedding. This confirms the im-
+performance.                                                               portance of sequential information given by the initial list. After
+                                                                           removing the position embedding, our model learns the scoring
+5.5.1 Offline Evaluation on Yahoo Letor dataset. In this section, we       function from the candidate set instead of an ordered list. Note
+conduct evaluation on Yahoo Letor dataset to discuss the following         that even without position embedding, our PRM-BASE still achieve
+questions:                                                                 comparable performance with DLCM, which further confirms that
+     • RQ0: Does our PRM model outperform the state-of-the-art             our PRM-BASE model can encode the initial list more effectively
+       methods and why?                                                    than DLCM.
+     • RQ1: Does the performance vary according to initial lists              The MAP of our model slightly decreases by 0.1% and 0.7% re-
+       generated by different LTR approaches?                              spectively when removing residual connections and dropout layer,
+                                                                           which indicates that our model is less severe to the problems such
+    The evaluation results are shown in Table 3. We compare the
+                                                                           as gradients vanishing and overfitting. The performance of our
+baselines and our PRM-BASE model based on two different initial
+                                                                           model first increases with the number of blocks (1->2->4) and de-
+lists which are generated by LambdaMART and SVMRank respec-
+                                                                           creases afterwards (4->6->8), as overfitting happens when we stack
+tively. PRM-BASE is the variant of our PRM model without the
+                                                                           8 encoding blocks together.
+personalized module. Note that Yahoo Letor dataset does not con-
+                                                                              We also tried different settings(h = 1, 2, 3, 4) in the multi-head
+tain user-related information, thus we only conduct PRM-BASE
+                                                                           attention layer. No significant improvements are observed in Ta-
+for comparison. SVMRank and LambdaMart are also used for re-
+                                                                           ble 4, which is different from the conclusions derived from NLP
+ranking. For SVMRank, we use the implementation in [19]. For
+                                                                           tasks[26]. The experiments in NLP show that when using more
+LambdaMart, we use the implementation from RankLib3 .
+                                                                           heads in multi-head attention mechanism, it is usually helpful since
+    Table 3 shows that our PRM-BASE achieves stable and significant
+                                                                           more information can be captured for the following reasons. (1)
+performance improvements comparing with all baselines. When
+                                                                           From Equation 7 we find that the function of each head is playing a
+based on the initial list generated by SVMRank, PRM-BASE out-
+                                                                           role of mapping the original feature vector into a different subspace.
+performs DLCM by 1.7% at MAP and 1.4% at Precision@5. The
+                                                                           Thus using more heads, we can model more interactions of items
+gap gets larger when comparing with SVMRank which has 5.6%
+                                                                           in different sub-spaces. (2) [26] indicates that using more heads is
+increase at MAP and 5.7% increase at Precision@5. When based on
+                                                                           helpful in encoding the information of long sequence. This is rea-
+the initial list generated by LambdaMART, PRM-BASE outperforms
+                                                                           sonable because the output vector for a certain item is the weighted
+DLCM by 0.7% at MAP and 2.1% at Precision@5. PRM-BASE also
+                                                                           sum of all item vectors in the list. When the sequence becomes
+achieves 2.6% improvements on MAP and 3.1% improvements on
+                                                                           longer, each item in the list contributes less to the output vector.
+Precision@5 comparing with LambdaMART .
+                                                                           However, in our re-ranking settings, all the items in the initial list
+    PRM-BASE uses the same training data as DLCM and does not
+                                                                           are highly homogenous. There are minor improvements when map-
+contain the personalized module. The performance gain over DLCM
+                                                                           ping the original feature vector into more different subspaces. As a
+mainly comes from the powerful encoding ability of Transformer.
+                                                                           consequence, we suggest to use only one head to save computation
+Multi-head attention mechanism performs better at modeling mu-
+                                                                           costs because the performance improvements are not obvious.
+tual influence between two items, especially when the length of
+encoding list gets longer[20]. In our model, the attention mecha-          5.5.2 Offline Evaluation on E-commerce Re-ranking dataset. We
+nism can model the interactions of any item-pairs in O(1) encoding         conduct the offline evaluation on E-commerce Re-ranking dataset
+distance.                                                                  to answer the following question.
+    As PRM-BASE uses the Transformer-like structure, there are
+many sub-modules which may contribute to the performance. We                   • RQ2: What is the performance of our PRM model equipped
+conduct the ablation study to help us understand which sub-design                with personalized module?
+helps the most to beat the baselines. The ablation study is conducted
+                                                                              The evaluation results are shown in Table 5. For our PRM models,
+on the initial list generated by SVMRank. Similar results were found
+                                                                           we not only evaluated the performance of PRM-BASE, but also
+when using the initial list generated by LambdaMART and we
+                                                                           evaluated the performance of the variant of model equipped with
+omits the results in this paper as space is limited. Table 4 show the
+                                                                           the pre-trained personalized vector PV , which is labelled as PRM-
+results of ablation in three parts: The first part (first row) shows the
+                                                                           Personalized-Pretrain. As our previous evaluation on Yahoo Letor
+performance of the baseline DLCM. The second part (second row)
+                                                                           dataset already confirms that our model and DLCM achieve better
+“Default” is the best performance of our PRM-BASE model. The
+                                                                           performance in all metrics and DLCM[1] also has consistent results,
+third part (the remaining rows) shows different ablation variants
+                                                                           we omit the comparison with SVMRank and LambdaMART on our
+of our PRM model which include: remove position embedding
+                                                                           E-commerce Re-ranking dataset. The initial list is generated by
+(PE), remove residual connection (RC), remove dropout layer, use
+                                                                           a DNN-based LTR method which is deployed in our real world
+different number of blocks and use different number of heads in
+                                                                           recommender system.
+multi-head attention. Note that we set b=4 and h=3 in our “Default”
+                                                                              Table 5 shows consistent results with Table 3 when comparing
+PRM model.
+                                                                           PRM-BASE with DLCM. Our PRM-BASE outperforms DLCM by
+                                                                           2.3% at MAP and 4.1% at Precision@5. Recall that on Yahoo Letor
+3 https://sourceforge.net/p/lemur/wiki/RankLib/                            dataset, PRM-BASE achieves 1.7% improvements on MAP and 1.4%
+Personalized Re-ranking for Recommendation                                                         RecSys ’19, September 16–20, 2019, Copenhagen, Denmark
+
+
+                                             Table 3: Offline evaluation results on Yahoo Letor dataset.
+                                                                                   Yahoo Letor dataset.
+               Init. List             Reranking
+                                                         Precision@5(%)   Precision@10(%) MAP@5(%)          MAP@10(%)         MAP(%)
+                                      SVMRank                 50.42             42.25           73.71         68.28            62.14
+                                    LambdaMART                51.35             43.08           74.94         69.54            63.38
+               SVMRank
+                                       DLCM                   52.54             43.26           76.52         70.86            64.50
+                                     PRM-BASE                 53.29             43.66          77.62          72.02            65.60
+                                      SVMRank                 50.41             42.34           73.82         68.27            62.13
+                                    LambdaMART                52.04             43.00           75.77         70.49            64.04
+               LambdaMART
+                                       DLCM                   52.54             43.16           77.81         71.88            65.24
+                                     PRM-BASE                 53.63             43.41          78.62          72.67            65.72
+
+
+Table 4: Ablation study of PRM-BASE on Yahoo Letor                             representative embeddings of users’ preferences. (2) Equipped with
+datasets with the initial list generated by SVMRank. All the                   long term and generic user embedding, our PRM model is able to
+numbers in the table are multiplied by 100.                                    learn better user-specific encoding function which can more pre-
+                                                                               cisely capture mutual influences of item-pairs for each user. Note
+                                  Yahoo Letor dataset                          that the architecture of the pre-trained model is not highly coupled
+                            P@5   P@10        MAP@5      MAP@10      MAP       with our PRM model, other general models[16, 23, 24, 30, 36] can
+                                                                               also be used as alternatives to generate PV .
+ DLCM                    52.54     43.26         76.52       70.86   64.50
+ Default(b=4,h=3)        53.29     43.66         77.62       72.02   65.60
+ Remove PE              52.55     43.56         76.11        70.74   64.73     5.6    Online Experiments
+ Remove RC              53.24     43.63         77.52        71.92   65.52     We also conduct online A/B test at a real world e-commerce recom-
+ Remove Dropout         53.17     43.42         77.41        71.80   65.17     mender system on online metrics which includes PV, IPV, CTR and
+ Block(b=1)             53.12     43.59         77.58        71.91   65.49     GMV. The meaning of these metrics is explained in the previous
+ Block(b=2)             53.19     43.58         77.51        71.86   65.49     “Evaluation Metrics” section. These metrics evaluate how much
+ Block(b=6)             53.22     43.63         77.64        72.02   65.61     willingness for users to view (PV), click (IPV, CTR) and purchase
+ Block(b=8)             52.85     43.32         77.43        71.65   65.14     (GMV) in a recommender system. For each algorithm, there are
+ Multiheads(h=1)        53.17     43.67         77.65        71.96   65.55     hundreds of thousands of users and millions of requests for online
+ Multiheads(h=2)        53.29     43.60         77.68        72.00   65.57     test.
+ Multiheads(h=4)        53.20     43.61         77.72        72.00   65.58        Table 6 shows the relative improvements of three methods to an
+                                                                               online base ranker (DNN-based LTR). Firstly, the online A/B test
+                                                                               shows that re-ranking helps increase the online metrics no matter
+improvements on Precision@5. The performance gain on our E-
+                                                                               what kinds of re-ranking methods are. Again, we can conclude that
+commerce Re-ranking dataset is much larger than on Yahoo Letor
+                                                                               re-ranking helps improving the performance by considering the
+dataset. This is highly related with the properties of Yahoo Letor
+                                                                               mutual influences of items in the initial list. It is noteworthy that
+dataset. Our statistics of the Yahoo Letor dataset show that the
+                                                                               0.77% increase (DLCM v.s. Without re-ranking) on PV is significant
+average click through rate is 30%, which mean that for each query
+                                                                               in our online system because it means that about billions of extra
+with 30 recommended documents, about 9 documents are clicked by
+                                                                               items are viewed by the users after using the re-ranking method.
+the users. However, the average click-through rate in our real world
+                                                                               Secondly, we can conclude that our PRM-BASE model brings an
+E-commerce Re-ranking dataset is no more than 5%. It means that
+                                                                               extra 0.50% absolute increase on viewed items and extra 0.69%
+ranking on Yahoo Letor dataset is much easier than on E-commerce
+                                                                               absolute increase on clicked items compared with DLCM. Lastly,
+Re-ranking dataset. This is also confirmed by the value of MAP for
+                                                                               by using the personalized module, our PRM-Personalized-Pretrain
+the same ranking methods on two datasets: DLCM can achieve 0.64
+                                                                               model can further improve the GMV by 6.29% absolute increase
+MAP on Yahoo Letor dataset but can only achieve 0.28 MAP on
+                                                                               compared with PRM-BASE. Recall that in offline experiments on
+E-commerce Re-ranking dataset. Combining Table 5 and Table 3,
+                                                                               E-commerce Re-ranking dataset, PRM-Personalized-Pretrain has
+we find that the harder the ranking task, the larger improvements
+                                                                               4.5% increase at MAP compared with PRM-BASE. The result shows
+of our PRM model.
+                                                                               that personalized encoding function with pre-trained users’ repre-
+   Table 5 shows that our PRM-Personalized-Pretrain achieves sig-
+                                                                               sentations can help capture more precise interactions of item-pairs
+nificant performance improvements comparing with PRM-BASE.
+                                                                               and bring significant performance gain for re-ranking method.
+PRM-Personalized-Pretrain outperforms PRM-BASE by 4.5% at
+MAP and 6.8% at Precision@5. This is mainly imported by the
+personalized vector PV , which is learned by a pre-trained model
+whose architecture is illustrated in Figure 1 (c). PRM-Personalized-           5.7    Visualizing Attention Weights
+Pretrain has two advantages: (1) The pre-trained model can fully               We visualize the attention weights learned by our model to answer
+utilize longer period of users’ logs to provide more generic and               the following question.
+RecSys ’19, September 16–20, 2019, Copenhagen, Denmark                                                                                 Changhua Pei et al.
+
+
+                                   Table 5: Offline evaluation results on E-commerce Re-ranking dataset.
+                                                                                         E-commerce Re-ranking dataset.
+           Init. List                     Re-ranking
+                                                                  Precision@5         Precision@10 MAP@5(%) MAP@10(%)               MAP(%)
+                                         DLCM                             12.21                9.73       29.32         30.28         28.19
+           DNN-based LTR               PRM-BASE                           12.71                9.99       29.80         30.83         28.85
+                                 PRM-Personalized-Pretrain               13.58                10.52      31.18          32.12        30.15
+
+
+Table 6: Performance improvements in online A/B test com-
+pared with a DNN-based LTR without re-ranking method.
+
+ Reranking                               PV       IPV       CTR   GMV
+ DLCM                                0.77%     1.75%      0.97%   0.13%
+ PRM-BASE                            1.27%     2.44%      1.16%   0.36%
+ PRM-Personalized-Pretrain           3.01%     5.69%       2.6%   6.65%
+
+
+
+
+                                                                                       (a) With position embedding.    (b) Without position embedding.
+
+
+                                                                                  Figure 3: Average attention weights on positions in the ini-
+                                                                                  tial list of two PRM models: w/o position embedding.
+
+                                                                                  distances as well as the position bias in recommendation list. Items
+                                                                                  ranked ahead of the list usually is more likely to be clicked and
+                                                                                  thus have more influences on those items at the tail of the list. For
+                                                                                  example, we observe that items at the first position have larger
+                                                                                  impacts on items at 30th position than those items at 26th position
+            (a) Category.                            (b) Price.
+                                                                                  even though the latter is more closer to it. The effect of position
+Figure 2: Average attention weights related to items’ at-                         embeddings is also obvious compared with the Figure 3(b), whose
+tributes.                                                                         attention weights between each position are more uniformally
+                                                                                  distributed.
+     • RQ3: Can self-attention mechanism learn meaningful in-
+        formation with respect to different aspects, for example,                 6     CONCLUSION AND FUTURE WORK
+        positions and characteristics of items?                                   In this paper, we proposed a personalized re-ranking model (PRM)
+   Attention on Characteristics. We first visualize the average                   to refine the initial list given by state-of-the-art learning to rank
+attention weights between items on two characteristics: category                  methods. In the re-ranking model, we used Transformer network
+and price. The results calculated on the test dataset are shown in                to encode both the dependencies among items and the interactions
+Figure 2. Each block in the heatmap represents the average atten-                 between the user and items. The personalized vector can bring
+tion weights between items belonging to seven main categories.                    further performance improvements to the re-ranking model. Both
+The darker the block, the larger the weight. From Figure 2(a) we can              the online and offline experiments demonstrated that our PRM
+conclude that the attention mechanism can successfully capture                    model can greatly improve the ranking performance on both pub-
+mutual-influences in different categories. The items with similar                 lic benchmark dataset and our released real-world dataset. Our
+categories tend to have larger attention weights, indicating larger               released real-world dataset can enable researchers to study the
+mutual influences. For example, “men’s shoes” has more influences                 ranking/re-ranking algorithms for recommendation systems.
+on “women’s shoes” than on “computer”. It is also easy to under-                     Our work explicitly models the complex item-item relationships
+stand that “computer”, “mobile phone” and “home appliance” have                   in the feature space. We believe that optimization in the label space
+large attention weights with each other because they are all elec-                can also helps. The pair-wise or list-wise loss function aims to dig
+tronics. Similar cases can be observed in Figure 2(b). In Figure 2(b),            more information in label space. It is interesting to construct more
+we classify the items into 7 levels according to their prices. The                pair-wise or list-wise ordering relations (e.g. order by stay time) in
+closer price between items, the larger the mutual influences.                     click-through data. Another future direction is learning to diversify
+   Attention on Positions. The visualization of average attention                 by re-ranking. Even though our model does not hurt the ranking
+weights on different positions in the initial list is shown in Figure 3.          diversities in practice. It is worthy to try to introduce the goal of
+Firstly, Figure 3(a) showed the self-attention mechanism in our                   diversification into our re-ranking model. We will further explore
+model can capture the mutual influences regardless of the encoding                this direction in the future work.
+Personalized Re-ranking for Recommendation                                                                           RecSys ’19, September 16–20, 2019, Copenhagen, Denmark
+
+
+REFERENCES                                                                                       mining. ACM, 217–226.
+ [1] Qingyao Ai, Keping Bi, Jiafeng Guo, and W Bruce Croft. 2018. Learning a Deep           [20] Wang-Cheng Kang and Julian McAuley. 2018. Self-Attentive Sequential Recom-
+     Listwise Context Model for Ranking Refinement. arXiv preprint arXiv:1804.05936              mendation. arXiv preprint arXiv:1808.09781 (2018).
+     (2018).                                                                                [21] Ping Li, Qiang Wu, and Christopher J Burges. 2008. Mcrank: Learning to rank
+ [2] Qingyao Ai, Xuanhui Wang, Nadav Golbandi, Michael Bendersky, and Marc                       using multiple classification and gradient boosting. In Advances in neural infor-
+     Najork. 2018. Learning groupwise scoring functions using deep neural networks.              mation processing systems. 897–904.
+     arXiv preprint arXiv:1811.04415 (2018).                                                [22] Tie-Yan Liu et al. 2009. Learning to rank for information retrieval. Foundations
+ [3] Irwan Bello, Sayali Kulkarni, Sagar Jain, Craig Boutilier, Ed Chi, Elad Eban,               and Trends® in Information Retrieval 3, 3 (2009), 225–331.
+     Xiyang Luo, Alan Mackey, and Ofer Meshi. 2018. Seq2Slate: Re-ranking and Slate         [23] Weiwen Liu, Ruiming Tang, Jiajin Li, Jinkai Yu, Huifeng Guo, Xiuqiang He, and
+     Optimization with RNNs. arXiv preprint arXiv:1810.02019 (2018).                             Shengyu Zhang. 2018. Field-aware Probabilistic Embedding Neural Network
+ [4] Chris Burges, Tal Shaked, Erin Renshaw, Ari Lazier, Matt Deeds, Nicole Hamilton,            for CTR Prediction. In Proceedings of the 12th ACM Conference on Recommender
+     and Greg Hullender. 2005. Learning to rank using gradient descent. In Proceedings           Systems (RecSys ’18). ACM, New York, NY, USA, 412–416. https://doi.org/10.1145/
+     of the 22nd international conference on Machine learning. ACM, 89–96.                       3240323.3240396
+ [5] Christopher JC Burges. 2010. From ranknet to lambdarank to lambdamart: An              [24] Yanru Qu, Bohui Fang, Weinan Zhang, Ruiming Tang, Minzhe Niu, Huifeng
+     overview. Learning 11, 23-581 (2010), 81.                                                   Guo, Yong Yu, and Xiuqiang He. 2018. Product-Based Neural Networks for User
+ [6] Christopher J Burges, Robert Ragno, and Quoc V Le. 2007. Learning to rank with              Response Prediction over Multi-Field Categorical Data. ACM Trans. Inf. Syst. 37,
+                                                                                                 1, Article 5 (Oct. 2018), 35 pages. https://doi.org/10.1145/3233770
+     nonsmooth cost functions. In Advances in neural information processing systems.
+                                                                                            [25] Steffen Rendle. 2010. Factorization Machines. In Proceedings of the 2010 IEEE
+     193–200.
+                                                                                                 International Conference on Data Mining (ICDM ’10). IEEE Computer Society,
+ [7] Zhe Cao, Tao Qin, Tie-Yan Liu, Ming-Feng Tsai, and Hang Li. 2007. Learning
+                                                                                                 Washington, DC, USA, 995–1000. https://doi.org/10.1109/ICDM.2010.127
+     to rank: from pairwise approach to listwise approach. In Proceedings of the 24th
+                                                                                            [26] Gongbo Tang, Mathias Müller, Annette Rios, and Rico Sennrich. 2018. Why
+     international conference on Machine learning. ACM, 129–136.
+                                                                                                 self-attention? a targeted evaluation of neural machine translation architectures.
+ [8] Jaime Carbonell and Jade Goldstein. 1998. The use of MMR, diversity-based
+                                                                                                 arXiv preprint arXiv:1808.08946 (2018).
+     reranking for reordering documents and producing summaries. In Proceedings of
+                                                                                            [27] Michael Taylor, John Guiver, Stephen Robertson, and Tom Minka. 2008. Softrank:
+     the 21st annual international ACM SIGIR conference on Research and development
+                                                                                                 optimizing non-smooth rank metrics. In Proceedings of the 2008 International
+     in information retrieval. ACM, 335–336.
+                                                                                                 Conference on Web Search and Data Mining. ACM, 77–86.
+ [9] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+                                                                                            [28] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+     Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, Rohan
+                                                                                                 Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+     Anil, Zakaria Haque, Lichan Hong, Vihan Jain, Xiaobing Liu, and Hemal Shah.
+                                                                                                 you need. In Advances in Neural Information Processing Systems. 5998–6008.
+     2016. Wide & Deep Learning for Recommender Systems. In Proceedings of the 1st
+                                                                                            [29] Oriol Vinyals, Meire Fortunato, and Navdeep Jaitly. 2015. Pointer networks. In
+     Workshop on Deep Learning for Recommender Systems (DLRS 2016). ACM, New
+                                                                                                 Advances in Neural Information Processing Systems. 2692–2700.
+     York, NY, USA, 7–10. https://doi.org/10.1145/2988450.2988454
+                                                                                            [30] Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang. 2017. Deep & Cross Network
+[10] Kyunghyun Cho, Bart Van Merriënboer, Dzmitry Bahdanau, and Yoshua Ben-
+                                                                                                 for Ad Click Predictions. In Proceedings of the ADKDD’17 (ADKDD’17). ACM,
+     gio. 2014. On the properties of neural machine translation: Encoder-decoder
+                                                                                                 New York, NY, USA, Article 12, 7 pages. https://doi.org/10.1145/3124749.3124754
+     approaches. arXiv preprint arXiv:1409.1259 (2014).
+                                                                                            [31] Liang Wu, Diane Hu, Liangjie Hong, and Huan Liu. 2018. Turning Clicks into
+[11] Kyunghyun Cho, Bart Van Merriënboer, Caglar Gulcehre, Dzmitry Bahdanau,
+                                                                                                 Purchases: Revenue Optimization for Product Search in E-Commerce. In The 41st
+     Fethi Bougares, Holger Schwenk, and Yoshua Bengio. 2014. Learning phrase
+                                                                                                 International ACM SIGIR Conference on Research &#38; Development in Information
+     representations using RNN encoder-decoder for statistical machine translation.
+                                                                                                 Retrieval (SIGIR ’18). ACM, New York, NY, USA, 365–374. https://doi.org/10.1145/
+     arXiv preprint arXiv:1406.1078 (2014).
+                                                                                                 3209978.3209993
+[12] David Cossock and Tong Zhang. 2008. Statistical analysis of Bayes optimal subset
+                                                                                            [32] Fen Xia, Tie-Yan Liu, Jue Wang, Wensheng Zhang, and Hang Li. 2008. Listwise
+     ranking. IEEE Transactions on Information Theory 54, 11 (2008), 5140–5154.
+                                                                                                 approach to learning to rank: theory and algorithm. In Proceedings of the 25th
+[13] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep neural networks
+                                                                                                 international conference on Machine learning. ACM, 1192–1199.
+     for youtube recommendations. In Proceedings of the 10th ACM Conference on
+                                                                                            [33] Jun Xu and Hang Li. 2007. Adarank: a boosting algorithm for information
+     Recommender Systems. ACM, 191–198.
+                                                                                                 retrieval. In Proceedings of the 30th annual international ACM SIGIR conference on
+[14] Yajuan Duan, Long Jiang, Tao Qin, Ming Zhou, and Heung-Yeung Shum. 2010.
+                                                                                                 Research and development in information retrieval. ACM, 391–398.
+     An empirical study on learning to rank of tweets. In Proceedings of the 23rd Inter-
+                                                                                            [34] Dawei Yin, Yuening Hu, Jiliang Tang, Tim Daly, Mianwei Zhou, Hua Ouyang,
+     national Conference on Computational Linguistics. Association for Computational
+                                                                                                 Jianhui Chen, Changsung Kang, Hongbo Deng, Chikashi Nobata, Jean-Marc
+     Linguistics, 295–303.
+                                                                                                 Langlois, and Yi Chang. 2016. Ranking Relevance in Yahoo Search. In Proceedings
+[15] Jerome H Friedman. 2001. Greedy function approximation: a gradient boosting
+                                                                                                 of the 22Nd ACM SIGKDD International Conference on Knowledge Discovery and
+     machine. Annals of statistics (2001), 1189–1232.
+                                                                                                 Data Mining (KDD ’16). ACM, New York, NY, USA, 323–332. https://doi.org/10.
+[16] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+                                                                                                 1145/2939672.2939677
+     DeepFM: A Factorization-machine Based Neural Network for CTR Prediction.
+                                                                                            [35] ChengXiang Zhai, William W Cohen, and John Lafferty. 2015. Beyond indepen-
+     In Proceedings of the 26th International Joint Conference on Artificial Intelligence
+                                                                                                 dent relevance: methods and evaluation metrics for subtopic retrieval. In ACM
+     (IJCAI’17). AAAI Press, 1725–1731. http://dl.acm.org/citation.cfm?id=3172077.
+                                                                                                 SIGIR Forum, Vol. 49. ACM, 2–9.
+     3172127
+                                                                                            [36] Jie Zhou, Ying Cao, Xuguang Wang, Peng Li, and Wei Xu. 2016. Deep recurrent
+[17] Sepp Hochreiter and Jürgen Schmidhuber. 1997. Long Short-Term Memory.
+                                                                                                 models with fast-forward connections for neural machine translation. arXiv
+     Neural Computation 9, 8 (Nov. 1997), 1735–1780.
+                                                                                                 preprint arXiv:1606.04199 (2016).
+[18] Thorsten Joachims. 2002. Optimizing search engines using clickthrough data.
+                                                                                            [37] Tao Zhuang, Wenwu Ou, and Zhirong Wang. 2018. Globally Optimized Mutual
+     In Proceedings of the eighth ACM SIGKDD international conference on Knowledge
+                                                                                                 Influence Aware Ranking in E-Commerce Search. arXiv preprint arXiv:1805.08524
+     discovery and data mining. ACM, 133–142.
+                                                                                                 (2018).
+[19] Thorsten Joachims. 2006. Training linear SVMs in linear time. In Proceedings of
+     the 12th ACM SIGKDD international conference on Knowledge discovery and data
+

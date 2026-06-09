@@ -1,0 +1,553 @@
+   Rapid Deployment of Anomaly Detection Models
+     for Large Number of Emerging KPI Streams
+       Jiahao Bu†¶ , Ying Liu†¶ , Shenglin Zhang‡∗ , Weibin Meng†¶ , Qitong Liu§ , Xiaotian Zhu§ , Dan Pei†¶
+                                            † Tsinghua University ‡ Nankai University § Tencent
+                       ¶ Beijing National Research Center for Information Science and Technology (BNRist)
+
+    Email: bjh16@mails.tsinghua.edu.cn, liuying@cernet.edu.cn, zhangsl@nankai.edu.cn, mwb16@mails.tsinghua.edu.cn
+                             {cloudliu, markxtzhu}@tencent.com, peidan@tsinghua.edu.cn
+
+
+   Abstract—Internet-based services monitor and detect anoma-          Second, with the popularity of DevOps and micro-service,
+lies on KPIs (Key Performance Indicators, say CPU utilization,         software upgrades become more and more frequent [13], many
+number of queries per second, response latency) of their appli-        of which result in the pattern changes of existing KPI streams,
+cations and systems in order to keep their services reliable. This
+paper identifies a common, important, yet little-studied problem       making the previous anomaly detection algorithms/parameters
+of KPI anomaly detection: rapid deployment of anomaly detection        outdated.
+models for large number of emerging KPI streams, without manual           Unfortunately, none of the existing anomaly detection ap-
+algorithm selection, parameter tuning, or new anomaly labeling for     proaches, including traditional statistical algorithms, super-
+any newly emerging KPI streams. We propose the first framework         vised learning, and unsupervised learning, are feasible to
+ADS (Anomaly Detection through Self-training) that tackles the
+above problem, via clustering and semi-supervised learning. Our        deal with the above scenario well. For traditional statistical
+extensive experiments using real-world data show that, with the        algorithms [6]–[9], to achieve the best accuracy, operators have
+labels of only the 5 cluster centroids of 70 historical KPI streams,   to manually select an anomaly detection algorithm and tune
+ADS achieves an averaged best F-score of 0.92 on 81 new KPI            its parameters for each KPI stream, which is infeasible for the
+streams, almost the same as a state-of-art supervised approach,        large number of emerging KPI streams. Supervised learning
+and greatly outperforming a state-of-art unsupervised approach
+by 61.40% on average.                                                  based methods [2], [10] require manually labeling anomalies
+                                                                       for each new KPI stream, which is not feasible for the
+                         I. I NTRODUCTION                              large number of emerging KPI streams either. Unsupervised
+   Internet-based services (e.g., online games, online shopping,       learning based methods [11], [12] do not require algorithm
+social networks, search engine) monitor KPIs (Key Perfor-              selection, parameter tuning, or manual labels, but they either
+mance Indicators, say CPU utilization, number of queries per           suffer from low accuracy [14] or require large amounts of
+second, response latency) of their applications and systems in         training data for each new KPI stream (e.g., six months
+order to keep their services reliable. Anomalies on KPI (e.g.,         worth of data) [12], which do not satisfy the requirement of
+a spike or dip in a KPI stream) likely indicate underlying             rapid deployment (e.g., within 3 weeks) of accurate anomaly
+failures on Internet services [1]–[5], such as server failures,        detection.
+network overload, external attacks, and should be accurately              In this paper, we propose ADS, the first framework that
+and rapidly detected.                                                  enables the rapid deployment of anomaly detection models
+   Despite the rich body of literature in KPI anomaly detec-           (say at most 3 weeks) for large number of emerging KPI
+tion [2], [6]–[12], there remains one common and important             streams, without manual algorithm selection, parameter tuning,
+scenario that has not been studied or well-handled by any              or new anomaly labeling for any newly emerging KPI streams.
+of these approaches. Specifically, when large number of KPI               Our idea of ADS is based on the following two observations.
+streams emerge continuously and frequently, operators need to          (1) In practice, many KPI streams (e.g., the number of queries
+deploy accurate anomaly detection models for these new KPI             per server in a well load balanced server cluster) are similar
+streams as quickly as possible (e.g., within 3 weeks at most),         due to their implicit associations and similarities, thus poten-
+in order to avoid that Internet-based services suffer from false       tially we can use the similar anomaly detection algorithms
+alarms (due to low precision) and/or missed alarms (because            and parameters for these similar KPI streams. (2) Clustering
+of low recall) and in turn impact on user experience and               methods such as ROCKA [15] can be used to cluster many
+revenue. Large number of new KPI streams emerge due to the             KPI streams into clusters according to their similarities. The
+following two reasons. First, new products can be frequently           number of clusters are largely determined by the nature of
+launched, such as in gaming platform. For example, in a top            the service (e.g., shopping, gaming, social network, search)
+gaming company G studied in this paper, on average over                and the type of KPIs (e.g., number of queries, CPU usage,
+ten new games are launched per quarter, which results in               memory usage), but not by the scale of the entire system.
+more than 6000 new KPI streams per 10 days on average.                 Thus for a given service, the number of clusters can be orders
+                                                                       of magnitude smaller than the number of KPI streams, and
+  ∗ Shenglin Zhang is the corresponding author.                        there is a good chance that a newly emerging KPI stream falls
+
+
+
+978-1-5386-6808-5/18/$31.00 ©2018 IEEE
+into one of the existing clusters resulted from historical KPI
+streams.
+   Utilizing the above two observations, ADS proposes to (1)
+cluster all existing/historical KPI streams into clusters, (2)
+manually label the anomalies of all cluster centroids, (3) assign
+each newly emerging KPI stream into one of the existing                       A                     B                      C
+
+clusters, and (4) combine the data of the new KPI stream            Fig. 1: Examples of anomalies in KPI streams. The red parts
+(unlabeled) and it’s cluster centroid (labeled) and use semi-       in the KPI stream denote anomalous points, and the orange
+supervised learning [16] to train a new model for each new          part denotes missing points (filled with zeros).
+KPI stream. During semi-supervised learning, ADS’s base                                   II. BACKGROUND
+model is supervised learning such as [2], thus is able to avoid
+algorithm selection and parameter tuning. Semi-supervised           A. Anomaly Detection for KPI Streams
+learning can train a new model for a new KPI stream using              A KPI stream of an Internet-based service is a time series
+an existing labeled KPI stream as long as these two KPI             with the format of (timestamp, value). It is essentially monitor-
+streams have similar data distribution, which is the case since     ing data collected from Simple Network Management Protocol
+they are in the same cluster. This way, ADS enjoys the              (SNMP), syslogs, web access logs or other data sources [17]–
+benefits of supervised learning, yet only needs to label a          [19]. It can be denoted as xt−m+1 , . . . , xt , where xi is a
+much smaller number of historical KPI streams (i.e., cluster        monitoring value at time i, i ∈ [t − m + 1, t], t is the present
+centroids) without labeling new KPI streams. Unsupervised           time, and m is the length of the KPI stream.
+learning based methods are not selected as the base model              Anomalous data points of a KPI stream usually have dif-
+of ADS due to low accuracy [14] or the requirement of long          ferent data characteristics from those of normal data points.
+period of data for each new KPI stream (e.g., six months worth      For example, a spike, a level shift or a dip in a KPI stream
+of data) [12], but they are nonetheless compared with ADS in        likely indicates an anomaly. Figure 1 shows three examples
+Section IV.                                                         of anomalies in KPI streams. Anomaly detection for the
+   The contributions of this paper are summarized as follows:       KPI stream xt−m+1 , . . . , xt is to determine whether xt is an
+                                                                    anomalous data point (let yt = 1 denote an anomalous data
+  • To the best of our knowledge, this paper is the first to
+                                                                    point and yt = 0 denote a normal one).
+    identify the common and important problem of rapid
+                                                                       Most anomaly detection algorithms, including traditional
+    deployment of anomaly detection models for large num-
+                                                                    statistical algorithms, supervised learning based methods and
+    ber of emerging KPI streams, without manual algorithm
+                                                                    unsupervised learning based methods, compute an anomaly
+    selection, parameter tuning, or new anomaly labeling for
+                                                                    score for a data point to denote how likely this data point
+    any newly generated KPI streams, and proposes the first
+                                                                    is anomalous. Operators then set a threshold to determine
+    framework ADS that tackles this problem.
+                                                                    whether each data point is anomalous or not. That is, only
+  • To the best of our knowledge, this paper is the first
+                                                                    if the anomaly score at time t exceeds this threshold, xt will
+    to apply semi-supervised learning to the KPI anomaly
+                                                                    be regarded as an anomalous data point.
+    detection problem. We adopt a robust semi-supervised
+                                                                       From the above definition, we can see that anomaly detec-
+    learning model, contrastive pessimistic likelihood estima-
+                                                                    tion for a KPI stream is essentially a two-class classification
+    tion (CPLE), which is suitable for KPI anomaly detection
+                                                                    problem – classifying a data point into an anomalous data point
+    and only requires similar (not necessarily the same) data
+                                                                    or a normal one. Consequently, we can use the intuitive classi-
+    distribution between the existing labeled KPI stream and
+                                                                    fication metrics of two-class classification methods, including
+    the new KPI stream.
+                                                                    precision, recall, and F-score, to evaluate the performance of
+  • We conduct extensive experiments using 70 historical KPI
+                                                                    anomaly detection algorithms.
+    streams and 81 new KPI streams from a top global online
+    game service G. With the labels of only the 5 cluster           B. Anomaly Detection Methods for KPI Streams
+    centroids of 70 historical KPI streams, ADS achieves an            Anomaly detection for KPI streams deals with the task
+    averaged best F-score of 0.92 on 81 new KPI streams, al-        of recognizing unexpected data points from normal behavior.
+    most the same as the state-of-art supervised approach [2]       Over the years, diverse traditional statistical algorithms have
+    which requires the labels for all 81 new KPI streams, and       been applied for KPI anomaly detection, including SVD [6],
+    greatly outperforms an unsupervised approach Isolation          Wavelet [7], ARIMA [8], Time Series Decomposition [1],
+    Forest [14] by 360% and the state-of-art unsupervised           Holt-Winters [9], etc. Each of the above algorithms computes
+    approach Donut [12] by 61.40% on average.                       an anomaly score for each data point in a KPI stream on
+   The rest of this paper is organized as follows. In Section II,   the basis of simple statistical assumptions. To achieve the
+we review the background, related works and motivation. The         best accuracy, operators have to manually select an anomaly
+framework of ADS is introduced in Section III. We report the        detection algorithm and tune its parameters for each KPI
+experimental results of evaluating ADS in Section IV. Finally,      stream. Since it is often the case that a large number of newly
+we give a conclusion of this paper in Section V.                    emerging KPI streams have to be carefully monitored [13],
+manual algorithm selection and parameter tuning for every
+newly emerging KPI stream becomes infeasible.
+   To address the problem posed by algorithm selection and
+parameter tuning, several supervised learning based methods
+such as EGADS [10] and Opprentice [2] have been proposed.
+For each KPI stream, these methods learn (traditional statisti-
+cal) algorithm selection and parameter tuning from operators’
+                                                                                              Application A
+manual labels of KPI anomalies. Obviously, manual anomaly
+labeling for a large number of newly emerging KPI streams
+is not feasible either.
+   Unsupervised learning has emerged as a promising field in
+KPI anomaly detection. For example, isolation based meth-
+ods [11] and variational autoencoders (VAE) [12] are applied
+                                                                                              Application B
+in detecting anomalies in (KPI) streams. These methods are
+trained without manual labels, and thus they can be applied        Fig. 2: The response latency streams of two different applica-
+for large volume of KPI streams. However, isolation based          tions.
+methods suffer from low accuracy [14] (see Section IV-C            moving average to extract baselines which successfully reduce
+for more details). In addition, Donut [12], which is based         the biases of noises and anomalies. In addition, it uses shape-
+on VAE, requires a long period (say six months) of training        based distance as the distance measure, and reduces its algo-
+data for newly emerging KPI streams. During this period, the       rithm complexity to O(m log(m)) using Fast Fourier Trans-
+Internet-based services may suffer from false alarms (due to       form. Finally, it uses DBSCAN to cluster KPI streams and
+low precision) and/or missed alarms (because of low recall)        chooses the centroid for every cluster. Extensive experiments
+and in turn impact user experience and revenue.                    in [15] have demonstrated ROCKA’s superior performance in
+   As discussed above, existing anomaly detection algorithms       clustering KPI streams for large Internet-based services. Please
+for KPI streams suffer from manual algorithm selection and         note that applying ROCKA to cluster KPI streams is not our
+parameter tuning (traditional statistical algorithms), or manual   contribution.
+anomaly labeling (supervised learning based methods), or low
+accuracy in real-world Internet-based service (unsupervised                         III. F RAMEWORK OF A DS
+learning based methods like isolation forests [11]), or long          As aforementioned, we propose ADS, a semi-supervised
+period of training time for newly generated KPI streams            learning based anomaly detection framework for KPI streams,
+(unsupervised learning based methods like Donut [12]).             to tackle the problem of rapid deployment of anomaly de-
+   Semi-supervised learning [16] is halfway between super-         tection models for large number of emerging KPI streams,
+vised and unsupervised learning. It uses unlabeled data to         without manual algorithm selection, parameter tuning, or new
+modify either parameters or models obtained from labeled           anomaly labeling for any newly generated KPI streams.
+data alone to maximize the learning performance. [20]–[22]            Figure 3 shows the framework of ADS. For historical KPI
+use semi-supervised learning for anomaly detection in other        streams, ADS preprocesses them with filling missing points
+domains, but are not designed for KPI streams (time series).       and standardization, clusters the preprocessed KPI streams
+                                                                   using ROCKA (Section III-A), and extracts features (namely,
+C. Clustering of KPI Streams                                       output results of different anomaly detection algorithms and
+   Millions of KPI streams bring a huge challenge to KPI           parameters) for the KPI streams on cluster centroids (Sec-
+anomaly detection. Luckily, many KPI streams are similar           tion III-B). Similarly, when a new KPI stream is generated,
+because of their implicit associations and similarities. For       ADS preprocesses it, and classifies it into one of the above
+example, Figure 2 shows two KPI streams of response latency        clusters (Section III-A), after which the features of this new
+collected from two different applications, and these two KPI       KPI stream are extracted (Section III-B). Based on the features
+streams are quite similar in shape. If we can identify similar     of the new KPI stream, and the features and labels of the new
+KPI streams, and group the huge volume of KPI streams into a       KPI stream’s cluster centroid, ADS trains a semi-supervised
+few clusters, we can reduce the overhead in anomaly detection.     learning model using the CPLE algorithm (Section III-C).
+   Time series clustering is a popular field which has caught      Finally, ADS detects anomalies in the new KPI stream based on
+lots of attention in the past 20 years. [23] summarized a          the above model and the severity threshold (aThld henceforth).
+large number of methods on this topic, most of which are
+designed for smooth and idealized data. However, the large         A. Preprocessing and Clustering
+number of spikes, dips and level shifts in KPI streams can           In Internet-based services, monitoring system malfunctions
+significantly change the shape of KPI streams. Therefore, the      and/or operator misconfigurations, though occur infrequently,
+above methods do not perform good for KPI streams.                 can lead to missing points in KPI streams. These missing
+   In this work, we adopt ROCKA [15], a rapid clustering           points can bring significant biases to ADS. Therefore, we fill
+algorithm for KPI streams based on their shapes. It applies        these missing points using linear interpolation following [15].
+        Historical                                                                   Feature                                     A data point
+                        Preprocessing     Clustering          Cluster
+            KPI                                                                     extraction                                   of the new
+                                                             centroids
+         streams                                                                                                                  KPI stream
+
+
+                                                                   label
+
+                                          KPI stream                                                         Semi-                 Anomaly
+                                           clusters                                                        supervised              detection
+                                                                                                            learning                model
+
+
+
+
+                                                                                                                                   A severity
+                                                                                                                                     value
+
+                                                                                     Feature                                    aThld
+        A new KPI       Preprocessing    Classification
+                                                                                    extraction
+         stream
+                                                                                                                                  Anomalous
+                                                                                                                                    or not
+
+
+                                                    Fig. 3: The framework of ADS
+   In addition, to make KPI steams of different amplitudes               anomaly detectors. This way, an anomaly detector with spe-
+and/or length scales comparable, we also standardize KPI                 cific sampled parameters acts as a feature extractor as follows:
+streams. This way, different KPI streams are clustered based
+on their shapes, rather than the absolute values of amplitudes                                   anomaly detector + sampled parameters
+and/or length scales.                                                           A data point −−−−−−−−−−−−−−−−−−−−→ feature
+   As discussed in section II-C, ADS adopts ROCKA [15] to
+                                                                            The feature extraction, training, and classification (detec-
+group KPI streams into a few clusters, and obtains a centroid
+                                                                         tion) in ADS are all designed to work with individual data
+KPI stream for each cluster.
+                                                                         points, not anomaly windows, so that the semi-supervised
+B. Feature Extraction                                                    learning algorithm can have enough data for training. Another
+   When training based on historical data, since the KPI                 benefit of this design choice is that the classifier can detect
+stream on the centroid of each cluster represents the cluster’s          anomalies fast on each data point.
+characteristics, we extract the features of the KPI stream on
+                                                                         TABLE I: Detectors and sampled parameters used in ADS.
+each cluster centroid. In addition, when training based on
+                                                                         Some abbreviations are MA (moving average), EWMA (ex-
+new data, we extract the features of the newly generated KPI
+                                                                         ponentially weighted MA), TSD (time series decomposi-
+stream. The features of the new KPI stream, the features and
+                                                                         tion), SVD (singular value decomposition), win(dow), and
+the anomaly labels of the new KPI stream’s cluster centroid,
+                                                                         freq(uency).
+together form the training set.
+   Here we introduce how to extract features for KPI streams.              Detectors / #Configurations            Sampled Parameters
+As is with [2], we use the output results of different                     Simple threshold [25] / 1              none
+anomaly detectors (namely, the anomaly severities measured                 Diff / 3                               last-point, last-day, last-week
+by anomaly detectors) as the features of KPI streams. This                 Simple MA [26] / 5
+                                                                           Weighted MA [27] / 5                   win = 10, 20, 30, 40, 50 points
+way, each detector serves as a feature extractor.                          MA of diff / 5
+   When an anomaly detector receives an incoming data point                EWMA [27] / 5                          α = 0.1, 0.3, 0.5, 0.7, 0.9
+of a KPI stream, it internally produces a non-negative value,              TSD [1] / 1
+called severity, to measure how anomalous that data point is.              TSD MAD / 1
+                                                                                                                  win = 1 week
+                                                                           Historical average [24] / 1
+For example, historical average [24] applies how many times                Historical MAD / 1
+of standard deviations the point is away from the mean as                  Holt-Winters [9] / 43 = 64              α, β, γ = 0.2, 0.4, 0.6, 0.8
+the severity, based on the assumption that the KPI stream data             SVD [6] / 5 × 3 = 15                    #row =10, 20, 30, 40, 50 points,
+                                                                                                                   #column =3, 5, 7
+follows Gaussian distribution; Holt-Winters [9] uses a residual            Wavelet [7] / 3 × 3 = 9                 win = 3, 5 ,7 days, freq = low,
+error (namely, the absolute difference between the actual value                                                    mid, high
+and the forecast value of each data point) to measure the                  ARIMA [8] / 1                           Estimation from data
+severity. In addition, most anomaly detectors are parameterized                            In total: 14 detectors / 117 configurations
+and have a set of internal parameters (say, historical average             Following [2], we implement 14 widely used anomaly
+has one parameter of window length, and Holt-Winters has                 detectors in ADS. All the 14 anomaly detectors and their
+three parameters {α, β, γ}). As a result, both detectors and             sample parameters are shown in Table I.
+their internal parameters decide the severity of a given data
+point.                                                                   C. Semi-Supervised Learning
+   In this work, for each (parameterized) anomaly detector,                After extracting features of anomaly detectors for both the
+ADS samples its parameters to generate one or more “fixed”               labeled KPI streams on cluster centroids and the unlabeled
+new KPI stream, we try to learn a model which is based on               where X is the data set of labeled data points, U is the one
+both labeled and unlabeled data, namely a semi-supervised               of unlabeled data points, and y0 = H(q), where
+learning model.                                                                                    (
+   As is summarized in [16], different semi-supervised learning                                      1 if qi ≥ 0.5
+                                                                                         H(qi ) =                                 (3)
+models have different advantages and disadvantages. Among                                            0 if qi < 0.5
+these methods, self-training based methods [20] apply an
+                                                                        where i ∈ {1, ..., |U |}.
+existing model to “label” unlabeled data, and employ the
+                                                                           This way, (the parameter vector θ of) the base-model, which
+newly labeled data together with the actual labeled data to
+                                                                        serves as the anomaly detection model, is trained based on
+retrain the model until the prediction result no longer changes
+                                                                        (X ∪ U) using actual and hypothesized labels (y ∪ y0 ), as
+or iteration ends.
+                                                                        well as the weights of data points w, where
+   In this work, we adopt CPLE [28], an extension model                                           (
+of self-training. CPLE is a resilient semi-supervised learning                                     1 if xi ∈ X
+framework for any supervised learning classifier (base-model                                wi =                                   (4)
+                                                                                                   0 qi otherwise
+henceforth) including random forest, SVM, decision tree, etc.
+It takes the prediction probabilities of base-model as input to         where i ∈ {1, ..., |U |}.
+fully utilize the unlabeled data. CPLE has the three following            In this work, we apply random forest as the base-model
+advantages:                                                             of CPLE because of its simplicity, parallelization, and low
+  • CPLE is flexible to change base-model, so we can set                memory usage, similar to Opprentice [2]. We do not claim
+    its base-model to achieve the best accuracy in anomaly              the adoption of random forest model as our contribution.
+    detection.                                                                                IV. E VALUATION
+  • CPLE needs low memory complexity, as opposed to
+    graph-based methods [29] which needs O(n2 ) memory                     To evaluate the performance of ADS, we have conducted
+    complexity.                                                         extensive experiments using real-world data collected from a
+  • CPLE is more robust than other semi-supervised learning
+                                                                        top global online game service. We first introduce the data
+    algorithms because it needs no strong assumptions such              set (Section IV-A) and metrics (Section IV-B) used for the
+    as (1) the accurate estimation for data distribution of             evaluation experiments. Then, we compare the performance
+    labeled and unlabeled data (as required by expectation              of ADS with that of supervised learning based method such as
+    maximization algorithms with generative mixture mod-                Opprentice, and unsupervised learning based method including
+    els [30]) and (2) low density (as required by transductive          iForest and Donut (Section IV-C). Finally, to highlight the
+    SVM [31]).                                                          importance of semi-supervised learning, we compare ADS with
+  • CPLE supports incremental learning. Therefore, when
+                                                                        the combination of ROCKA and Opprentice (Section IV-D).
+    more and more data points are added to a KPI stream,                A. Data Set
+    we can continuously train ADS to improve its accuracy.
+                                                                           We randomly pick 70 historical KPI streams for clustering
+   ADS applies CPLE to detect anomalies for KPI streams as              and 81 new ones for anomaly detection from a top global
+follows. For a base-model (a supervised learning based binary           online game service. These KPI streams are of the most
+classifier) f (x) with parameter vector θ, it can be denoted with       important three KPIs, including success rate, number of online
+the form f (x; θ) ∈ {0, 1}. Then the probability that a base-           players and latency. Table II lists the detailed information of
+model deems a data point as anomalous is g(x; θ) = p(f =                the 81 new KPI streams, including the number, interval and
+1|x, θ), where g(x; θ) ∈ [0, 1]. In addition, the negative log          length of the KPI streams of each KPI. In addition, it also
+loss for binary classifiers takes on the general form:                  lists the averaged number and percentage of anomalous data
+                                                                        points per KPI stream of each KPI, respectively.
+      J(y, p) = log p(y|p)
+                                                                           Note that the KPI streams of the same KPI may have
+                       N
+                   1 X                                           (1)    very different shapes and thus belong to different clusters.
+               =         [yi log pi + (1 − yi ) log(1 − pi )]           Therefore, experienced operators first manually group the 70
+                   N i=1
+                                                                        historical KPI streams into five clusters according to their
+where N is the number of the data points in the KPI streams             shapes, and then classify the new 81 KPI streams into the
+of training set, yi is the label of the i-th data point and pi is the   five clusters. This serves as the ground truth for clustering.
+i-th discriminative likelihood (DL) [32]. Usually, a machine               As mentioned in Section III-A, in this work we apply
+learning model is aiming to maximize the negative log loss.             ROCKA to cluster KPI streams. Based on the manual clus-
+   For the unlabeled data points in the training set (namely, the       tering results by operators, we find that ROCKA accurately
+data points of the newly generated KPI stream), we randomly             groups all the 70 historical KPI streams into the right cluster.
+assign a weight qi to the i-th data point. The objective of             In addition, ROCKA successfully classifies all the 81 new KPI
+CPLE is to minimize the function                                        streams into the correct cluster.
+                                                                           To evaluate the performance of anomaly detection methods,
+       E(q, θ|X, U) = J(y0 ,g(U; θ)) − J(y, g(X; θ))             (2)    operators also manually label anomalous data points for the
+                                         TABLE II: Description of the new 81 KPI streams
+
+                                                 # KPI     Interval   Length         #/percentage of anomalous
+                                   KPI
+                                                 streams   (minute)   (month)        data points per KPI stream
+                                  Latency           19         5         1                    150/1.7%
+                              # online players      58         5         1                    72/0.83%
+                                Success rate         4         5         1                    84/0.97%
+
+81 new KPI streams, as well as the 5 historical KPI streams
+that are on cluster centroids (calculated using ROCKA). Note
+that we focus on anomaly detection on newly emerging KPI                       1.0          ADS
+                                                                                            iForest
+                                                                                            Donut
+streams in this work, and thus only the new 81 KPI streams are                              Opprentice
+used for the following evaluation experiments. Therefore, there                0.8
+is no need to manually labeling the remaining 65 historical
+KPI streams.                                                                   0.6
+
+
+
+
+                                                                         CDF
+   As aforementioned, more than 6000 new KPI streams are
+produced per 10 days. However, manually clustering and                         0.4
+labeling anomalies for thousands of KPI streams is infeasible,
+considering the long period of KPI streams (one month).                        0.2
+Therefore, we randomly selected 151 KPI streams in our
+evaluation. We believe that the 151 KPI streams are sufficient                 0.0
+to evaluate ADS’s performance.                                                        0.0          0.2   0.4     0.6   0.8   1.0
+                                                                                                           F-score
+B. Evaluation Metrics                                                 Fig. 4: CDFs of the best F-scores of each new KPI stream
+    In real applications, the human operators generally do not        using ADS, iForest, Donut and Opprentice, respectively.
+care about the point-wise metrics. Therefore, we use a simple
+                                                                         Figure 4 shows the cumulative distribution functions (CDFs)
+strategy following [12]: if any point in an anomaly segment
+                                                                      of the best F-scores of each KPI stream (of the new 81 KPI
+in the ground truth can be detected by a chosen threshold,
+                                                                      streams) using the above four methods. Note that in this CDF
+we say this segment is detected correctly, and all points
+                                                                      figure, being closer to the upper left means worse performance,
+in this segment are treated as if they can be detected by
+                                                                      and being closer to the bottom right means better performance.
+this threshold. Meanwhile, the points outside the anomaly
+                                                                      We can see that both ADS and Opprentice perform superior
+segments are treated as usual. The precision, recall, F-score
+                                                                      in detecting anomalies for KPI streams, with 80% of best F-
+and best F-score are then computed accordingly.
+                                                                      scores over 0.8. Their performance is much better than that
+    As is with [12], we apply the best F-score as the metric
+                                                                      of iForest and Donut, for the following reasons: (1) iForest
+to evaluate anomaly detection methods. The best F-score in-
+                                                                      is sensitive to noises in the training set because it does not
+dicates the best possible performance of an anomaly detection
+                                                                      utilize any labels [11]. (2) Donut is a deep Bayesian model,
+method on a particular testing set, given an optimal global
+                                                                      which requires a lot of training data to get good results (say
+threshold. In practice, the best F-score is mostly consistent
+                                                                      six months worth of KPI streams) [12]. However, as Table II
+with Area Under the (ROC) Curve (AUC).
+    Note that in Section IV-C and Section IV-D, we tune aThld         shows, we have to train the model using 60% of one month,
+based on the labels of the testing set (namely, the back              namely 18 days, worth of newly emerging KPI streams, which
+40% of every new KPI stream) to obtain the best F-score.              is a too small amount of training data for Donut.
+Although it is not entirely practical in real-world applications,        To intuitively compare the best F-scores of ADS, iForest,
+it fully compares the best performance of ADS, iForest, Donut,        Opprentice and Donut, we list the average best F-scores of
+Opprentice and the combination of ROCKA and Opprentice.               the above four methods on the five clusters in TABLE III,
+                                                                      respectively. ADS and Opprentice perform well across all
+C. Evaluation of The Overall Performance                              the five clusters and much better than iForst and Donut,
+   To evaluate the performance of ADS in anomaly detection            demonstrating that it is important to utilize anomaly labels in
+for KPI streams, we calculate its best F-score, and compare it        anomaly detection for newly emerging KPI streams. Specifi-
+with that of iForest [11], Donut [12] and Opprentice [2].             cally, ADS improves the average best F-score by 61.40% (as
+   For each of the 81 new KPI streams, we train ADS using             opposed to Donut) to 360% (as opposed to iForest).
+the features extracted from the front 60% of it, as well as              Although the supervised learning based method, Opprentice,
+the features and manual labels of its cluster centroid (KPI           performs similarly to ADS, it needs much more labeling
+stream). Then we use this ADS model to detect anomalies on            works. For example, in this setting, ADS is trained based
+the back 40% of this new KPI stream. As for iForest, Donut            on only five labeled KPI streams on cluster centroids, while
+and Opprentice, we divide each new KPI stream (of the 81              Opprentice is trained using all the 81 labeled KPI streams.
+KPI streams) into training set and testing set, whose ratios are      As aforementioned, over 6000 new KPI streams are produced
+(front) 60% and (back) 40%, respectively.                             per 10 days in the studied online gaming service. Manually
+TABLE III: Average best F-scores of ADS, iForest, Opprentice, Donut and ROCKA+Opprentice in the five clusters, respectively
+
+                          Cluster   # KPI streams   ADS    iForest   Donut   Opprentice   ROCKA + Opprentice
+                            A             7         0.91     0.33     0.42     0.90             0.67
+                            B             9         0.91     0.21     0.37     0.91             0.88
+                            C             8         0.95     0.22     0.28     0.98             0.94
+                            D            53         0.93     0.19     0.67     0.94             0.90
+                            E             4         0.67     0.13     0.45     0.71             0.66
+                          Overall        81         0.92     0.20     0.57     0.93             0.87
+
+TABLE IV: The new KPI streams where ADS performs
+significantly better than ROCKA + Opprentice
+
+          KPI stream ID      ADS    ROCKA + Opprentice
+                α            0.86         0.62
+                β            0.91         0.20
+                γ            0.72         0.46
+                δ            0.80         0.55
+                ...           ...          ...                                                    KPI stream   α
+
+labeling all the newly emerging KPI streams to detect KPI
+anomalies is infeasible in practice. Consequently, Opprentice
+is not appropriate for our scenario.
+
+D. Evaluation of CPLE                                                                     The KPI stream on the centroid
+
+
+
+   To the best of our knowledge, this is the first work to            Fig. 5: The anomaly detection results of ROCKA + Opprentice
+apply semi-supervised learning to the KPI anomaly detection           on KPI stream α, and α’s cluster centroid KPI stream. The
+problem. We adopt a robust semi-supervised learning model,            red data points are anomalous determined by ROCKA +
+CPLE, which is suitable for KPI anomaly detection and only            Opprentice while in actual they are normal.
+requires similar (not necessarily the same) data distribution
+                                                                      fluctuation degrees, which is not uncommon in practice. This
+between the existing labeled KPI stream and the new KPI
+                                                                      lead to that ROCKA + Opprentice, which is trained based only
+stream.
+                                                                      on the centroid KPI stream, generates a lot of false alarms.
+   To evaluate the performance of CPLE, we compare the                   ADS addresses the above problem effectively using semi-
+performance of ADS, which is the combination of ROCKA                 supervised learning. In other words, it learns not only from the
+and CPLE, to that of the combination of ROCKA and a state-            labels of the centroid KPI stream, but also from the fluctuation
+of-art supervised learning method – Opprentice [2] (ROCKA             degree of the new KPI stream. This is consistent with the
++ Opprentice henceforth). We set up ROCKA + Opprentice as             observation that the model trained based on both labeled and
+follows. We first apply ROCKA to group the 70 historical KPI          unlabeled data should not be worse than the one trained based
+streams into five clusters, and classify the 81 new KPI streams       only on the labeled data [28].
+into these clusters. For each cluster, we train Opprentice using         The experiment results strongly demonstrate ADS’s robust-
+the features and manual labels of its centroid KPI streams.           ness in KPI anomaly detection.
+After that, we detect anomalies for the back 40% of each new
+KPI stream using the Opprentice model trained based on this                                  V. C ONCLUSION
+new KPI stream’s cluster centroid.                                       To the best of our knowledge, this paper is the first to iden-
+   TABLE III compares the average best F-scores of ADS                tify the common and important problem of rapid deployment
+and ROCKA + Opprentice on each cluster. We can see that               of anomaly detection models for large number of emerging
+ADS outperforms ROCKA + Opprentice on every cluster, and              KPI streams, without manual algorithm selection, parameter
+greatly outperforms it by 35.82% on cluster A. TABLE IV               tuning, or new anomaly labeling for any newly generated KPI
+lists the new KPI streams where ADS performs significantly            streams. We propose the first framework ADS that tackles this
+better than ROCKA + Opprentice, and the best F-scores of the          problem via clustering and semi-supervised learning, which
+above two methods on these KPI streams, respectively.                 is the first time that semi-supervised learning is applied to
+   Here we explain why ADS performs better than ROCKA +               KPI anomaly detection. Our extensive experiments using real-
+Opprentice. KPI stream clustering methods such as ROCKA               world data show that, with the labels of only the 5 cluster
+usually extract baselines (namely underlying shapes) from             centroids of 70 historical KPI streams, ADS achieves an aver-
+KPI streams and ignore fluctuations. However, the fluctuations        aged best F-score of 0.92 on 81 new KPI streams, almost the
+of KPI streams can impact anomaly detection. For example,             same as the state-of-art supervised approach [2], and greatly
+Figure 5 shows the new KPI stream α, and the KPI stream               outperforms an unsupervised approach Isolation Forest [14] by
+on the its cluster centroid. KPI stream α and the centroid KPI        360% and the state-of-art unsupervised approach Donut [12]
+stream have very similar baselines, but they have different           by 61.40% on average.
+   We believe that ADS is a significant step towards practical                   [13] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, Z. Zang, X. Jing, and
+anomaly detection on large-scale KPI streams in Internet-                             M. Feng, “Funnel: Assessing software changes in web-based services,”
+                                                                                      IEEE Transactions on Service Computing, 2016.
+based services. In the future, we plan to adopt more advanced                    [15] Z. Li, Y. Zhao, R. Liu, and D. Pei, “Robust and rapid clustering of
+techniques (e.g. transfer learning [33]) to further improve                           kpis for large-scale anomaly detection,” Quality of Service (IWQoS),
+ADS’s performance.                                                                    pp. 1–10, 2018.
+                                                                                 [16] O. Chapelle, B. Scholkopf, and A. Zien, “Semi-supervised learning
+                     VI. ACKNOWLEDGEMENTS                                             (chapelle, o. et al., eds.; 2006)[book reviews],” IEEE Transactions on
+                                                                                      Neural Networks, vol. 20, no. 3, pp. 542–542, 2009.
+  We thank Shuai Yang, Tianheng Zuo for their helpful sug-
+gestions. The work was supported by National Natural Science                     [17] W. Meng, Y. Liu, S. Zhang, D. Pei, H. Dong, L. Song, and X. Luo,
+                                                                                      “Device-agnostic log anomaly classification with partial labels,” Quality
+Foundation of China (NSFC) under grant No. 61402257, No.                              of Service (IWQoS), pp. 1–10, 2018.
+61472214, No. 61472210 and No. 61772307, and Tsinghua-                           [18] S. Zhang, Y. Liu, W. Meng, Z. Luo, J. Bu, S. Yang, P. Liang, D. Pei,
+Tencent Joint Laboratory for Internet Innovation Technology.                          J. Xu, Y. Zhang et al., “Prefix: Switch failure prediction in datacenter
+                                                                                      networks,” Proceedings of the ACM on Measurement and Analysis of
+                              R EFERENCES                                             Computing Systems, vol. 2, no. 1, p. 2, 2018.
+ [1] Y. Chen, R. Mahajan, B. Sridharan, and Z.-L. Zhang, “A provider-            [19] S. Zhang, W. Meng, J. Bu, S. Yang, Y. Liu, D. Pei, J. Xu, Y. Chen,
+     side view of web search response time,” in ACM SIGCOMM Computer                  H. Dong, X. Qu et al., “Syslog processing for switch failure diagnosis
+     Communication Review, vol. 43, no. 4. ACM, 2013, pp. 243–254.                    and prediction in datacenter networks,” in Quality of Service (IWQoS),
+ [2] D. Liu, Y. Zhao, H. Xu, Y. Sun, D. Pei, J. Luo, X. Jing, and M. Feng,            2017 IEEE/ACM 25th International Symposium on. IEEE, 2017, pp.
+     “Opprentice: towards practical and automatic anomaly detection through           1–10.
+     machine learning,” in Proceedings of the 2015 ACM Conference on             [20] C. Rosenberg, M. Hebert, and H. Schneiderman, “Semi-supervised self-
+     Internet Measurement Conference. ACM, 2015, pp. 211–224.                         training of object detection models,” 2005.
+ [3] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, and Z. Zang, “Rapid
+     and robust impact assessment of software changes in large internet-         [21] R. A. R. Ashfaq, X.-Z. Wang, J. Z. Huang, H. Abbas, and Y.-L.
+     based services,” in International Conference on emerging Networking              He, “Fuzziness based semi-supervised learning approach for intrusion
+     EXperiments and Technologies (CoNEXT), 2015, pp. 1–13.                           detection system,” Information Sciences, vol. 378, pp. 484–497, 2017.
+ [4] M. Ma, S. Zhang, D. Pei, X. Huang, and H. Dai, “Robust and rapid            [22] K. Noto, C. Brodley, and D. Slonim, “Frac: a feature-modeling approach
+     adaption for concept drift in software system anomaly detection,” in             for semi-supervised and unsupervised anomaly detection,” Data mining
+     IEEE International Symposium on Software Reliability Engineering                 and knowledge discovery, vol. 25, no. 1, pp. 109–133, 2012.
+     (ISSRE), 2018.
+ [5] Y. Sun, Y. Zhao, Y. Su, D. Liu, X. Nie, Y. Meng, S. Cheng, D. Pei,          [23] T. W. Liao, “Clustering of time series data—a survey,” Pattern recogni-
+     S. Zhang, X. Qu et al., “Hotspot: Anomaly localization for additive              tion, vol. 38, no. 11, pp. 1857–1874, 2005.
+     kpis with multi-dimensional attributes,” IEEE Access, vol. 6, pp. 10 909–   [24] S.-B. Lee, D. Pei, M. Hajiaghayi, I. Pefkianakis, S. Lu, H. Yan, Z. Ge,
+     10 923, 2018.                                                                    J. Yates, and M. Kosseifi, “Threshold compression for 3g scalable
+ [6] A. Mahimkar, Z. Ge, J. Wang, J. Yates, Y. Zhang, J. Emmons,                      monitoring,” in INFOCOM, 2012 Proceedings IEEE. IEEE, 2012, pp.
+     B. Huntley, and M. Stockert, “Rapid detection of maintenance induced             1350–1358.
+     changes in service performance,” in Proceedings of the Seventh
+     COnference on Emerging Networking EXperiments and Technologies,             [25] “Amazon    cloudwatch      alarm,”    http://docs.aws.amazon.com/
+     ser. CoNEXT ’11. New York, NY, USA: ACM, 2011, pp. 13:1–13:12.                   AmazonCloudWatch/latest/DeveloperGuide/ConsoleAlarms.html.
+     [Online]. Available: http://doi.acm.org/10.1145/2079296.2079309             [26] D. R. Choffnes, F. E. Bustamante, and Z. Ge, “Crowdsourcing service-
+ [7] P. Barford, J. Kline, D. Plonka, and A. Ron, “A signal analysis of               level network event monitoring,” in Proceedings of the ACM SIGCOMM
+     network traffic anomalies,” in Proceedings of the 2nd ACM SIGCOMM                2010 Conference, ser. SIGCOMM ’10. ACM, 2010, pp. 387–398.
+     Workshop on Internet measurment. ACM, 2002, pp. 71–82.                           [Online]. Available: http://doi.acm.org/10.1145/1851182.1851228
+ [8] Y. Zhang, Z. Ge, A. Greenberg, and M. Roughan, “Network
+     anomography,” in Proceedings of the 5th ACM SIGCOMM Conference              [27] B. Krishnamurthy, S. Sen, Y. Zhang, and Y. Chen, “Sketch-based change
+     on Internet Measurement, ser. IMC ’05. Berkeley, CA, USA:                        detection: methods, evaluation, and applications,” in Proceedings of the
+     USENIX Association, 2005, pp. 30–30. [Online]. Available: http:                  3rd ACM SIGCOMM conference on Internet measurement. ACM, 2003,
+     //dl.acm.org/citation.cfm?id=1251086.1251116                                     pp. 234–247.
+ [9] H. Yan, A. Flavel, Z. Ge, A. Gerber, D. Massey, C. Papadopoulos,            [28] M. Loog, “Contrastive pessimistic likelihood estimation for semi-
+     H. Shah, and J. Yates, “Argus: End-to-end service anomaly detection              supervised classification,” IEEE transactions on pattern analysis and
+     and localization from an isp’s point of view,” in INFOCOM, 2012                  machine intelligence, vol. 38, no. 3, pp. 462–475, 2016.
+     Proceedings IEEE. IEEE, 2012, pp. 2756–2760.
+[10] N. Laptev, S. Amizadeh, and I. Flint, “Generic and scalable framework       [29] G. Camps-Valls, T. V. B. Marsheva, and D. Zhou, “Semi-supervised
+     for automated time-series anomaly detection,” in Proceedings of the 21th         graph-based hyperspectral image classification,” IEEE Transactions on
+     ACM SIGKDD International Conference on Knowledge Discovery and                   Geoscience and Remote Sensing, vol. 45, no. 10, pp. 3044–3054, 2007.
+     Data Mining. ACM, 2015, pp. 1939–1947.                                      [30] K. Nigam, A. K. McCallum, S. Thrun, and T. Mitchell, “Text clas-
+[11] Z. Ding and M. Fei, “An anomaly detection approach based on isola-               sification from labeled and unlabeled documents using em,” Machine
+     tion forest algorithm for streaming data using sliding window,” IFAC             learning, vol. 39, no. 2-3, pp. 103–134, 2000.
+     Proceedings Volumes, vol. 46, no. 20, pp. 12–17, 2013.
+[12] H. Xu, W. Chen, N. Zhao, Z. Li, J. Bu, Z. Li, Y. Liu, Y. Zhao, D. Pei,      [31] T. Joachims, “Transductive inference for text classification using support
+     Y. Feng et al., “Unsupervised anomaly detection via variational auto-            vector machines,” in ICML, vol. 99, 1999, pp. 200–209.
+     encoder for seasonal kpis in web applications,” in Proceedings of the       [32] A. Y. Ng and M. I. Jordan, “On discriminative vs. generative classifiers:
+     2018 World Wide Web Conference on World Wide Web. International                  A comparison of logistic regression and naive bayes,” in Advances in
+     World Wide Web Conferences Steering Committee, 2018, pp. 187–196.                neural information processing systems, 2002, pp. 841–848.
+[14] Y.-L. Zhang, L. Li, J. Zhou, X. Li, and Z.-H. Zhou, “Anomaly detection
+     with partially observed anomalies,” in Companion of the The Web             [33] S. J. Pan, Q. Yang et al., “A survey on transfer learning,” IEEE
+     Conference 2018 on The Web Conference 2018. International World                  Transactions on knowledge and data engineering, vol. 22, no. 10, pp.
+     Wide Web Conferences Steering Committee, 2018, pp. 639–646.                      1345–1359, 2010.
+

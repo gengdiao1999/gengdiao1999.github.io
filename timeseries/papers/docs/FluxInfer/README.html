@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>FluxInfer: Automatic Diagnosis of Performance Anomaly for Online Database System（IEEE 2020）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>FluxInfer: Automatic Diagnosis of Performance Anomaly for Online Database System（IEEE 2020）</h1>
+
+<blockquote>作者：Ping Liu、Shenglin Zhang、Yongqian Sun、Yuan Meng、Jiahai Yang、Dan Pei</blockquote>
+<blockquote>机构：清华大学 计算机系；清华大学 网络研究院；南开大学；鹏城实验室；BNRist</blockquote>
+<blockquote>发表年份：2020</blockquote>
+<blockquote>会议/期刊：IEEE 2020（具体见 PDF）</blockquote>
+<blockquote>关联 PDF：同目录下 <code>FluxInfer.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>FluxInfer: Automatic Diagnosis of Performance Anomaly for Online Database System</td></tr>
+<tr><td>作者</td><td>Ping Liu、Shenglin Zhang、Yongqian Sun、Yuan Meng、Jiahai Yang、Dan Pei</td></tr>
+<tr><td>机构</td><td>清华大学；南开大学；鹏城实验室；BNRist</td></tr>
+<tr><td>发表年份</td><td>2020</td></tr>
+<tr><td>会议/期刊</td><td>IEEE 2020</td></tr>
+<tr><td>分类</td><td>数据库性能异常 / 根因定位 / KPI 依赖图 / PageRank</td></tr>
+<tr><td>核心问题</td><td>在线数据库性能异常触发几十~上百个 KPI 异常（alarm storm），运维难从告警洪流中快速定位根因相关 KPI</td></tr>
+<tr><td>主要贡献</td><td>(1) WUDG 加权无向依赖图：基于 PC 算法 + 互信息 + 偏相关构建；(2) 在 WUDG 上用 weighted PageRank 定位根因 KPI；(3) AC@3=0.90, AC@5=0.95, Avg@5=0.77，平均比 9 个 baseline 提升 64%/60%/53%</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>在线数据库（MySQL、PostgreSQL、Oracle 等）支撑了几乎所有互联网服务（搜索、电商、社交、游戏）。一次数据库性能异常（如响应时间飙升、连接打满、锁等待）会迅速拖垮上游业务。运维通常监控每个数据库实例的 100+ KPI（QPS、CPU USAGE、disk IO、page cache、connection count、replication lag 等），但当一次异常发生时往往<b>同时有几十到上百 KPI 异常</b>（图 1 真实例子：1 次数据库不可用，78 KPI 异常）。</p>
+
+<p>这些 KPI 分为两类：</p>
+<ul>
+<li><b>Root Cause Related KPI</b>：直接因果地由根因引起，例如工作负载激增 → QPS 飙升；</li>
+<li><b>Symptom KPI</b>：是 root cause 引起的下游表现，例如 QPS 飙升 → CPU USAGE 飙升。</li>
+</ul>
+
+<p>传统人工诊断流程：(1) 依赖领域知识画 KPI 之间的依赖关系；(2) 在依赖图上反向追溯到根因。但这种方法耗时、易错、不可扩展——大型互联网公司单日有 100+ 数据库异常，运维难以承受。同时由于告警风暴（一次异常 100+ KPI 同时告警），告警过滤规则的调参也极为繁琐。</p>
+
+<p>论文提出 <b>FluxInfer</b> 框架：</p>
+<ol>
+<li>离线构建 <b>WUDG（Weighted Undirected Dependency Graph）</b>——用 PC 算法 + 互信息 + 偏相关把 KPI 之间的因果结构"挖"出来，并对每条边赋权重；</li>
+<li>在线根因定位——当 anomaly 发生时，把所有异常 KPI 作为 PageRank 种子节点，在 WUDG 上跑 weighted PageRank，分数最高的 top-k KPI 即为根因相关 KPI。</li>
+</ol>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<ul>
+<li><b>告警风暴</b>：一次异常 100+ KPI 同时告警，无法靠人筛选。</li>
+<li><b>手动诊断慢 / 易错</b>：依赖经验画依赖图，新人不可用。</li>
+<li><b>DAG-based 算法不适用</b>：很多场景下 KPI 之间的依赖是有向 / 无向混合，DFS、Random Walk 只能在 DAG 上工作。</li>
+<li><b>告警过滤规则调参繁琐</b>：每实例最佳阈值不同。</li>
+<li><b>根因 KPI 数量不固定</b>：top-1 / top-3 / top-5 都要尽量包含真根因。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>系统总览</b>：FluxInfer 包含三大阶段——(1) 数据平滑（消除数据噪声）；(2) WUDG 构建（基于 PC 算法：先用互信息建初始骨架 → 对每条边做条件独立性检验 → 检测 V-structure → 对剩余边赋偏相关权重）；(3) 加权 PageRank 根因定位（异常 KPI 作为 seed，PageRank score 排序得 top-k）。</p>
+
+<p><b>关键概念</b>：</p>
+
+<ul>
+<li><b>KPI</b>：Key Performance Indicator。</li>
+<li><b>Symptom KPI</b>：症状 KPI，受根因影响而异常。</li>
+<li><b>Root Cause Related KPI</b>：根因相关 KPI。</li>
+<li><b>Alarm Storm</b>：告警风暴。</li>
+<li><b>WUDG</b>：Weighted Undirected Dependency Graph。</li>
+<li><b>PC Algorithm</b>：基于条件独立性检验的因果发现算法。</li>
+<li><b>Mutual Information (MI)</b>：互信息。</li>
+<li><b>Partial Correlation</b>：偏相关。</li>
+<li><b>Conditional Independence Test</b>：条件独立性检验。</li>
+<li><b>V-structure</b>：在因果图中，三节点 $X - Z - Y$、$X \not\!\perp\!\!\!\perp Y$、$X \perp\!\!\!\perp Y$ 时 $Z$ 是 collider。</li>
+<li><b>Weighted PageRank</b>：带边权重的 PageRank。</li>
+</ul>
+
+<p><b>数学原理</b>：</p>
+
+<p><b>KPI 序列平滑</b>：</p>
+
+<p>$$x_t^{\text{smooth}} = \text{linear\_interp}(x_t)$$</p>
+
+<p><b>互信息（MI）</b>：</p>
+
+<p>$$I(X;Y) = \sum_{x,y} p(x,y) \log \frac{p(x,y)}{p(x)p(y)}$$</p>
+
+<p><b>偏相关</b>：</p>
+
+<p>$$\rho_{XY \cdot S} = \frac{\text{Cov}(X, Y | S)}{\sqrt{\text{Var}(X | S) \cdot \text{Var}(Y | S)}}$$</p>
+
+<p><b>条件独立性检验</b>：</p>
+
+<p>$$I(X, Y | S) :\; X \perp\!\!\!\perp Y \mid S \iff \text{MI}_{X,Y|S} \le \tau$$</p>
+
+<p><b>WUDG 边权</b>：</p>
+
+<p>$$w(X, Y) = |\rho_{XY \cdot S}|$$</p>
+
+<p><b>加权 PageRank 方程</b>：</p>
+
+<p>$$\text{PR}(v) = (1 - d) \cdot \text{seed}(v) + d \cdot \sum_{u \in \text{In}(v)} \frac{w(u, v) \cdot \text{PR}(u)}{\sum_{v' \in \text{Out}(u)} w(u, v')}$$</p>
+
+<p><b>根因 KPI 排序</b>：</p>
+
+<p>$$R = \arg\text{top-}k_v\;\text{PR}(v)$$</p>
+
+<p><b>AC@k</b>：</p>
+
+<p>$$\text{AC@k} = \frac{\#\{\text{anomalies with ground-truth root cause } \in \text{top-}k\}}{\#\{\text{total anomalies}\}}$$</p>
+
+<p><b>Avg@k</b>：</p>
+
+<p>$$\text{Avg@k} = \frac{1}{k} \sum_{i=1}^{k} \mathbb{1}[\text{rank}_i \le k]$$</p>
+
+<p><b>与现有方法的差异</b>：与 iDice、HotSpot、CloudRanger 等 DAG-based 方法相比，FluxInfer 把因果图扩到 WUDG（无向加权），用 PageRank 处理；与 Personalized PageRank、Random Walk 等 baseline 相比，FluxInfer 的边权来自偏相关，更精确。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：KPI 历史时序；当前异常触发的异常 KPI 集合 $A$。</li>
+<li>输出：top-k 根因相关 KPI 排序。</li>
+</ul>
+
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>数据平滑</b>：线性插值补缺 / 降噪。</li>
+<li><b>WUDG 构建</b>：</li>
+<li>完全图初始化；</li>
+<li>计算两两互信息，去除 MI 低于阈值的边；</li>
+<li>对每条边做条件独立性检验，移除可被 $S$ 条件独立的边；</li>
+<li>检测 V-structure；</li>
+<li>用偏相关赋值边权。</li>
+<li><b>加权 PageRank 根因定位</b>：</li>
+<li>异常 KPI 集合 $A$ 作为 seed 节点；</li>
+<li>迭代 PageRank 至收敛；</li>
+<li>按 PR score 排序输出 top-k。</li>
+</ul>
+
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+def smooth(series_list):
+    """Algorithm 1: 线性插值 / 降噪。"""
+    smoothed = []
+    for x in series_list:
+        x = fill_missing(x)
+        x = moving_average(x, window=5)
+        smoothed.append(x)
+    return smoothed
+
+def build_WUDG(series_list, alpha=0.05, max_cond_size=3):
+    """基于 PC 算法构建加权无向依赖图。"""
+    N = len(series_list)
+    adj = np.ones((N, N), dtype=bool) - np.eye(N, dtype=bool)
+    # Phase 1: 互信息骨架
+    for i in range(N):
+        for j in range(i+1, N):
+            mi = mutual_information(series_list[i], series_list[j])
+            if mi < MI_THRESHOLD:
+                adj[i, j] = adj[j, i] = False
+    # Phase 2: 条件独立性检验
+    for cond_size in range(max_cond_size+1):
+        for i in range(N):
+            for j in range(i+1, N):
+                if not adj[i, j]: continue
+                S = choose_cond_set(i, j, cond_size)
+                if conditional_independence_test(series_list[i], series_list[j], S, alpha):
+                    adj[i, j] = adj[j, i] = False
+    # Phase 3: V-structure 检测
+    colliders = find_v_structures(adj, series_list)
+    orient_edges(adj, colliders)
+    # Phase 4: 边权 = 偏相关绝对值
+    W = np.zeros((N, N))
+    for i in range(N):
+        for j in range(i+1, N):
+            if adj[i, j]:
+                W[i, j] = W[j, i] = abs(partial_corr(series_list[i], series_list[j]))
+    return W, adj
+
+def weighted_pagerank(W, seed_nodes, d=0.85, tol=1e-6, max_iter=200):
+    """加权 PageRank 根因定位。"""
+    N = W.shape[0]
+    pr = np.zeros(N)
+    pr[seed_nodes] = 1.0 / len(seed_nodes)
+    out_sum = W.sum(axis=1) + 1e-9
+    for _ in range(max_iter):
+        pr_new = np.zeros(N)
+        for v in range(N):
+            s = 0.0
+            for u in range(N):
+                if W[u, v] > 0:
+                    s += W[u, v] * pr[u] / out_sum[u]
+            pr_new[v] = (1 - d) * (1.0 if v in seed_nodes else 0.0) + d * s
+        if np.linalg.norm(pr_new - pr, 1) < tol:
+            break
+        pr = pr_new
+    return pr
+
+def diagnose(series_list, anomalous_kpis, k=5):
+    W, adj = build_WUDG(series_list)
+    pr = weighted_pagerank(W, anomalous_kpis)
+    top_k = np.argsort(-pr)[:k]
+    return [(v, pr[v]) for v in top_k]
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四。</li>
+</ol>
+
+<ol>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>数据平滑：$O(N \cdot T)$；</li>
+<li>WUDG 构建：$O(N^2 \cdot 2^{|S|})$；</li>
+<li>加权 PageRank：$O(|E| \cdot \text{iter})$；</li>
+<li>在线推理：$O(|E|)$。</li>
+</ul>
+
+<ol>
+<li><b>训练与推理</b>：</li>
+</ol>
+<ul>
+<li>训练（离线）：历史 KPI → 数据平滑 → WUDG 构建；</li>
+<li>推理（在线）：异常 KPI → seed → PageRank → top-k。</li>
+</ul>
+
+<ol>
+<li><b>示例</b>：电商数据库异常触发 78 个 KPI 告警（CPU USAGE、QPS、page cache、connection count、replication lag 等）。FluxInfer 离线构建 WUDG（含 100+ 节点 / 边）；在线 PageRank 把 QPS 排到第 1，CPU USAGE 排到第 2。运维据此判断"工作负载激增"为根因，调整限流。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[历史 KPI 时序] --> B[数据平滑]
+    B --> B1[线性插值补缺]
+    B --> B2[Moving Average 降噪]
+    B1 --> C[完全图初始化]
+    B2 --> C
+    C --> D[互信息 MI 骨架]
+    D --> E[条件独立性检验]
+    E --> E1[条件集大小 0]
+    E --> E2[条件集大小 1]
+    E --> E3[条件集大小 2]
+    E1 --> F[V-structure 检测]
+    E2 --> F
+    E3 --> F
+    F --> G[边方向调整]
+    G --> H[偏相关计算]
+    H --> I[WUDG 边权赋值]
+    I --> J[离线 WUDG 保存]
+    J --> K[在线 异常触发]
+    K --> L[异常 KPI 集合作为 seed]
+    L --> M[加权 PageRank]
+    M --> M1[初始化 PR]
+    M --> M2[迭代 PR update]
+    M --> M3[收敛]
+    M3 --> N[PR score 排序]
+    N --> O[Top-k 根因 KPI 输出]
+    O --> P[运维人员 / 告警平台]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[历史 KPI 采集] --> S2[数据平滑]
+    S2 --> S3[完全图初始化]
+    S3 --> S4[互信息 MI 计算]
+    S4 --> S5{MI > 阈值?}
+    S5 -->|否| S6[移除边]
+    S5 -->|是| S7[保留边进入下一阶段]
+    S6 --> S8{条件独立性检验}
+    S7 --> S8
+    S8 -->|独立| S9[移除边]
+    S8 -->|相关| S10[保留边]
+    S9 --> S11[V-structure 检测]
+    S10 --> S11
+    S11 --> S12[边方向调整]
+    S12 --> S13[偏相关计算 -> 边权]
+    S13 --> S14[WUDG 完成]
+    S14 --> S15[部署 离线图]
+    S15 --> S16[在线 数据库异常触发]
+    S16 --> S17[获取异常 KPI 集合]
+    S17 --> S18[作为 PageRank seed]
+    S18 --> S19[加权 PageRank 迭代]
+    S19 --> S20[收敛]
+    S20 --> S21[PR score 排序]
+    S21 --> S22[Top-k 根因 KPI]
+    S22 --> S23[输出给运维]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ WUDG 加权无向依赖图</b>：首次把 PC 算法 + 互信息 + 偏相关用于系统异常根因定位。</li>
+<li><b>+ 加权 PageRank 根因定位</b>：替代传统 DFS、Random Walk 等 DAG-only 算法。</li>
+<li><b>+ 边权来自偏相关绝对值</b>：更精确表达依赖强度。</li>
+<li><b>+ 告警风暴下的根因 KPI 排序</b>：从 78 个告警中准确定位 top-k。</li>
+<li><b>+ 大幅领先 9 个 SOTA baseline</b>：AC@3=0.90 / AC@5=0.95 / Avg@5=0.77，平均提升 64% / 60% / 53%。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>：自建 testbed 注入 5 类数据库异常（CPU 抢占、IO 瓶颈、连接数打满、锁等待、磁盘满）；每类异常持续 1-5 分钟，10s 增量。</li>
+<li><b>Baseline</b>（共 9 个）：</li>
+<li>Personalized PageRank、Random Walk、Traversing+Pearson Correlation</li>
+<li>PC algorithm、Greedy Hill Climbing</li>
+<li>iDice、HotSpot、CloudRanger</li>
+<li>RootCause（其他根因定位 baseline）</li>
+<li><b>主要指标</b>：AC@1、AC@3、AC@5、Avg@5。</li>
+<li><b>关键结果数字</b>：</li>
+<li><b>FluxInfer</b>：AC@3=0.90、AC@5=0.95、Avg@5=0.77；</li>
+<li><b>相对 9 个 baseline 平均提升</b>：AC@3 +64%、AC@5 +60%、Avg@5 +53%；</li>
+<li>在小 k（k=3）上提升尤为显著；</li>
+<li>在大型 KPI 集合（100+ 节点）上仍能秒级返回 top-k。</li>
+<li><b>消融实验</b>：</li>
+<li>去掉边权（PageRank 在无权 WUDG）：性能下降；</li>
+<li>去掉 V-structure：边方向不可信，定位精度下降；</li>
+<li>PC vs MMPC vs 直接偏相关：PC 骨架 + 偏相关边权最优；</li>
+<li>阻尼因子 $d$ 的影响：$d=0.85$ 最优。</li>
+<li><b>效率</b>：WUDG 构建离线完成，分钟-小时级；在线 PageRank 秒级。</li>
+<li><b>可视化</b>：WUDG 图；top-k 根因柱状图；AC@k 曲线。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>在线数据库（MySQL、PG、Oracle）性能异常根因定位</b>：告警风暴下排序。</li>
+<li><b>微服务系统 KPI 根因定位</b>：把微服务 KPI 当节点，依赖关系当边。</li>
+<li><b>云原生数据库（TiDB、OceanBase、PolarDB）监控</b>：100+ KPI 自动根因。</li>
+<li><b>网络设备（路由器、交换机）性能诊断</b>：端口流量 + CPU + 内存 + 队列 + 错误码。</li>
+<li><b>存储系统（分布式文件系统、对象存储）异常根因</b>：节点、磁盘、网络多维度。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>TraceSieve_ISSRE23</code>（追踪异常检测 / 微服务）</li>
+<li><code>liu_imc15_Opprentice</code>（KPI 异常检测 / 无监督）</li>
+<li><code>label-less-v3</code>（日志异常检测 / 无监督）</li>
+<li><code>LogAnomaly</code>（日志异常检测）</li>
+<li><code>OmniAnomaly_camera-ready</code>（多变量时序异常检测）</li>
+<li><code>08723601</code>（KPI 周期自适应）</li>
+<li><code>chenwenxiao_infocom2019</code>（多源指标故障定位）</li>
+<li><code>www2018</code>（基于 KPI 的 AIOps / 异常检测）</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>KPI</b>：Key Performance Indicator。</li>
+<li><b>WUDG</b>：Weighted Undirected Dependency Graph。</li>
+<li><b>MI</b>：Mutual Information。</li>
+<li><b>Partial Correlation</b>：偏相关。</li>
+<li><b>PC Algorithm</b>：基于条件独立性检验的因果发现算法。</li>
+<li><b>V-structure</b>：因果图中的 V 型结构。</li>
+<li><b>Conditional Independence Test</b>：条件独立性检验。</li>
+<li><b>Weighted PageRank</b>：加权 PageRank。</li>
+<li><b>Damping Factor $d$</b>：阻尼因子。</li>
+<li><b>Root Cause Related KPI</b>：根因相关 KPI。</li>
+<li><b>Symptom KPI</b>：症状 KPI。</li>
+<li><b>Alarm Storm</b>：告警风暴。</li>
+<li><b>AC@k</b>：Top-k 准确率。</li>
+<li><b>Avg@k</b>：平均前 k 名准确率。</li>
+<li><b>DFS</b>：Depth-First Search。</li>
+<li><b>iDice / HotSpot / CloudRanger</b>：根因定位 baseline。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: PC Algorithm, <i>Causation, Prediction, and Search</i>（Spirtes et al., 2000）。</li>
+<li>Paper: PageRank, <i>The PageRank Citation Ranking</i>（Brin & Page, 1998）。</li>
+<li>Paper: Weighted PageRank, <i>Weighted PageRank Algorithm</i>（Xing & Ghorbani, 2004）。</li>
+<li>Paper: iDice, <i>Identifying Root Cause of Inter-datacenter Traffic Anomalies</i>（Li et al., CoNEXT 2017）。</li>
+<li>Paper: HotSpot, <i>HotSpot: Anomaly Localization for Edged KPIs</i>（Yuan et al., IWQOS 2017）。</li>
+<li>Paper: CloudRanger, <i>CloudRanger: Root Cause Identification for Cloud Native Systems</i>（Kalander et al., ICAC 2016）。</li>
+<li>工具：MySQL、PostgreSQL、PC algorithm、NetworkX、PageRank。</li>
+<li>相关论文：<code>TraceSieve_ISSRE23</code>、<code>liu_imc15_Opprentice</code>、<code>label-less-v3</code>、<code>LogAnomaly</code>、<code>OmniAnomaly_camera-ready</code>、<code>08723601</code>、<code>chenwenxiao_infocom2019</code>、<code>www2018</code>。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

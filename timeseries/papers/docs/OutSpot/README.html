@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OutSpot: Efficient and Robust KPI Outlier Detection for Large-Scale Datacenters（IEEE TC 2023）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>OutSpot: Efficient and Robust KPI Outlier Detection for Large-Scale Datacenters（IEEE TC 2023）</h1>
+
+<blockquote>作者：Yongqian Sun、Daguo Cheng、Tiankai Yang、Yuhe Ji、Shenglin Zhang、Man Zhu、Xiao Xiong、Qiliang Fan、Minghan Liang、Dan Pei、Tianchi Ma、Yu Chen</blockquote>
+<blockquote>机构：南开大学；清华大学；南加州大学；快手；海河实验室</blockquote>
+<blockquote>发表年份：2023</blockquote>
+<blockquote>会议/期刊：IEEE Transactions on Computers（Volume 72, Issue 10, October 2023）</blockquote>
+<blockquote>关联 PDF：同目录下 <code>OutSpot.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>---</td><td>---</td></tr>
+<tr><td>标题</td><td>OutSpot: Efficient and Robust KPI Outlier Detection for Large-Scale Datacenters</td></tr>
+<tr><td>作者</td><td>Yongqian Sun、Daguo Cheng、Tiankai Yang、Yuhe Ji、Shenglin Zhang、Man Zhu、Xiao Xiong、Qiliang Fan、Minghan Liang、Dan Pei、Tianchi Ma、Yu Chen</td></tr>
+<tr><td>机构</td><td>南开大学；清华大学；南加州大学；快手；海河实验室</td></tr>
+<tr><td>发表年份</td><td>2023</td></tr>
+<tr><td>会议/期刊</td><td>IEEE TC</td></tr>
+<tr><td>分类</td><td>KPI 异常检测 / 深度生成模型 / 大规模数据中心</td></tr>
+<tr><td>核心问题</td><td>大规模数据中心（数千万 KPI）需要同时检测"子序列异常"和"整条 KPI 异常"；现有方法要么只关注历史模式（subsequence），要么只关注同周期模式（time series），无法兼顾</td></tr>
+<tr><td>主要贡献</td><td>(1) 把 HAC 与 CVAE 结合，先聚类再生成，兼顾两类异常；(2) 提出软阈值 + 中值滤波后处理提升准确率；(3) 在两个工业数据集上 F1 0.95/0.91、AUC 0.99/0.99；(4) 发布标注工具与数据集</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>数据中心需要监控数千万 KPI（CPU、内存、TCP 重传率、磁盘 I/O 等），每个 KPI 是一组等间隔采样的单变量时序。论文把 KPI 异常分为三类：点异常（point outlier，单个数据点偏离）、子序列异常（subsequence outlier，连续一段偏离）、整条 KPI 异常（outlier time series，整条 KPI 与同周期其他 KPI 偏离）。点异常通常由自动恢复与负载均衡引发，工程师往往忽略；子序列异常和整条 KPI 异常意味着设备持续异常或管理失误，需要立即处置。</p>
+
+<p>现有异常检测方法的局限：(1) 多数方法只关注"点"，不关注"段"或"整条"；(2) 子序列异常检测方法需为每条 KPI 训练独立模型，资源消耗巨大；(3) 整条 KPI 异常检测方法学的是"同周期其他 KPI 的模式"，可能漏掉"该 KPI 自身异常但其他 KPI 正常"的情况；(4) 深度生成模型的重建概率在高维数据上反而给异常更高分，判别能力下降；(5) 标注工作量大。</p>
+
+<p>论文提出 OutSpot：先用 HAC（层次凝聚聚类）把数千万 KPI 按模式分簇（论文场景中 3 簇），再在每簇上用 CVAE 学习"历史模式 + 同周期模式"，最后比较重建形状与原始形状判定异常，配合软阈值（ST）+ 中值滤波（MF）后处理。</p>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<ul>
+<li><b>大规模 KPI 检测效率</b>：HAC 把数千万 KPI 分簇，避免每条 KPI 训练一个模型。</li>
+<li><b>子序列异常 + 整条 KPI 异常同时检测</b>：CVAE 同时学两种模式。</li>
+<li><b>重建概率不可靠</b>：用重建形状比较替代概率。</li>
+<li><b>后处理优化</b>：软阈值（ST）+ 中值滤波（MF）提高准确率。</li>
+<li><b>多模式 KPI</b>：HAC 聚类解决"一种模型无法覆盖多种 KPI"问题。</li>
+<li><b>标注工具缺失</b>：发布 GUI 标注工具与公开数据集。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>系统总览</b>：OutSpot 工作流为：(1) 用 Z-Score/形状特征聚类（HAC）；(2) 在每簇上用 CVAE 学习正常模式（条件 = 簇 ID + 同周期 KPI 上下文）；(3) 重建每个 KPI 序列；(4) 用 ST + MF 后处理得到异常分数。</p>
+
+<p><b>关键概念</b>：</p>
+
+<ul>
+<li><b>KPI（Key Performance Indicator）</b>：关键性能指标，等间隔单变量时序。</li>
+<li><b>Point Outlier（点异常）</b>：单点偏离。</li>
+<li><b>Subsequence Outlier（子序列异常）</b>：连续一段偏离。</li>
+<li><b>Outlier Time Series（整条 KPI 异常）</b>：整条 KPI 偏离同周期其他 KPI。</li>
+<li><b>HAC（Hierarchical Agglomerative Clustering）</b>：层次凝聚聚类。</li>
+<li><b>CVAE（Conditional VAE）</b>：条件变分自编码器。</li>
+<li><b>ST（Soft Threshold）</b>：软阈值。</li>
+<li><b>MF（Median Filter）</b>：中值滤波。</li>
+</ul>
+
+<p><b>数学原理</b>：</p>
+
+<ul>
+<li><b>CVAE 编码-解码</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\mu, \sigma = \text{Encoder}(x, c), \quad z \sim \mathcal{N}(\mu, \sigma^2)</p>
+<br>\[\]<br>
+<br>\[\]<br>
+<p>\hat{x} = \text{Decoder}(z, c)</p>
+<br>\[\]<br>
+
+<p>其中条件 $c$ = 簇 ID + 同周期其他 KPI 上下文。</p>
+
+<ul>
+<li><b>CVAE 损失</b>（ELBO）：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\mathcal{L} = \mathbb{E}_{q_\phi(z|x,c)}[\log p_\theta(x|z, c)] - D_{KL}(q_\phi(z|x, c) || p(z))</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>重建误差</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>e_t = |x_t - \hat{x}_t|</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>软阈值（ST）</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\tau_t = \mu_e + \alpha \cdot \sigma_e</p>
+<br>\[\]<br>
+
+<p>$\alpha$ 控制灵敏度。</p>
+
+<ul>
+<li><b>中值滤波（MF）</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\hat{e}_t = \text{median}(e_{t-w}, \ldots, e_{t+w})</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>异常判定</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>\text{outlier} = \mathbb{1}[\hat{e}_t > \tau_t]</p>
+<br>\[\]<br>
+
+<ul>
+<li><b>聚类</b>：</li>
+</ul>
+
+<br>\[\]<br>
+<p>d(C_i, C_j) = \min_{u \in C_i, v \in C_j} d(u, v)</p>
+<br>\[\]<br>
+
+<p><b>与现有技术的差异</b>：与单点异常检测（USAD、DONUT）相比，OutSpot 关注子序列与整条 KPI；与子序列异常检测（SR、CPC）相比，OutSpot 用聚类 + CVAE 避免每条 KPI 训练；与整条 KPI 异常检测（Opprentice）相比，OutSpot 同时学两种模式。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：大规模 KPI 时序集合。</li>
+<li>输出：每条 KPI 的异常分数 + 异常区间。</li>
+</ul>
+
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>特征提取</b>：Z-Score + 形状统计。</li>
+<li><b>HAC 聚类</b>：分簇。</li>
+<li><b>CVAE 训练</b>：每簇一个模型。</li>
+<li><b>重建 + 误差计算</b>。</li>
+<li><b>ST + MF 后处理</b>。</li>
+<li><b>阈值化</b>。</li>
+</ul>
+
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+def outspot_train(kpis, n_clusters=3):
+    features = [extract_features(k) for k in kpis]
+    clusters = hac(features, n_clusters)
+    models = {}
+    for c in range(n_clusters):
+        cluster_kpis = [kpis[i] for i in range(len(kpis)) if clusters[i] == c]
+        context = build_context(cluster_kpis)  # 同周期其他 KPI
+        cvae = train_cvae(cluster_kpis, context)
+        models[c] = cvae
+    return models
+
+def outspot_detect(kpi, models, alpha=1.5, w=3):
+    cluster = predict_cluster(kpi)
+    context = build_context_single(kpi)
+    x_hat = models[cluster].reconstruct(kpi, context)
+    e = np.abs(kpi - x_hat)
+    e_smooth = median_filter(e, w)
+    tau = e_smooth.mean() + alpha * e_smooth.std()
+    return (e_smooth > tau).astype(int)
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四。</li>
+</ol>
+
+<ol>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>聚类：$O(N^2 \log N)$，$N$ 为 KPI 数；</li>
+<li>CVAE 训练：每簇 $O(K T d)$，$K$ 为每簇 KPI 数，$T$ 为序列长度；</li>
+<li>推理：单条 KPI 毫秒级；</li>
+<li>总计：在 GPU 上分钟级到小时级。</li>
+</ul>
+
+<ol>
+<li><b>训练与推理</b>：CVAE 无监督训练；推理用 ST + MF + 阈值化。</li>
+</ol>
+
+<ol>
+<li><b>示例</b>：某数据中心 18 类 KPI 用 HAC 分 3 簇；每簇 CVAE 重建；某条 CPU 使用率 KPI 在凌晨出现持续高负载（子序列异常），重建误差超阈值 → 异常告警。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[大规模 KPI 时序] --> B[特征提取]
+    B --> C[HAC 聚类 K 簇]
+    C --> D1[簇 1 CVAE 训练]
+    C --> D2[簇 2 CVAE 训练]
+    C --> D3[簇 3 CVAE 训练]
+    D1 --> E[重建]
+    D2 --> E
+    D3 --> E
+    E --> F[重建误差计算]
+    F --> G[中值滤波 MF]
+    G --> H[软阈值 ST]
+    H --> I[异常分数]
+    I --> J[阈值化 -> 异常标签]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[采集大规模 KPI] --> S2[特征提取]
+    S2 --> S3[HAC 聚类]
+    S3 --> S4[每簇 CVAE 训练]
+    S4 --> S5[重建 KPI]
+    S5 --> S6[重建误差]
+    S6 --> S7[中值滤波]
+    S7 --> S8[软阈值]
+    S8 --> S9[异常判定]
+    S9 --> S10[告警]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ HAC + CVAE 双层架构</b>：聚类解决模式多样性，CVAE 解决双模式学习。</li>
+<li><b>+ 子序列 + 整条 KPI 同时检测</b>：避免两种异常漏检。</li>
+<li><b>+ 形状比较替代概率</b>：提高高维数据上的判别能力。</li>
+<li><b>+ ST + MF 后处理</b>：实用性强。</li>
+<li><b>+ 公开工具与数据集</b>：GUI + 标注数据。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>：A - 全球短视频服务商（快手）；B - 国内三大通信运营商之一。</li>
+<li><b>Baseline</b>：USAD、DONUT、SR、CPC、Opprentice、Isolation Forest、PCA 等 7 种。</li>
+<li><b>主要指标</b>：F1-score、AUC。</li>
+<li><b>关键结果数字</b>：</li>
+<li>数据集 A：F1 0.95、AUC 0.99；</li>
+<li>数据集 B：F1 0.91、AUC 0.99；</li>
+<li>显著优于 7 个基线。</li>
+<li><b>消融实验</b>：分别去掉 HAC、CVAE、ST、MF，验证每部分贡献。</li>
+<li><b>效率分析</b>：可扩展到数千万 KPI；推理毫秒级。</li>
+<li><b>可视化</b>：KPI 重建曲线、聚类分布。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>数据中心 KPI 监控</b>：CPU、内存、TCP、磁盘 I/O 等。</li>
+<li><b>服务器健康监测</b>：定位持续异常服务器。</li>
+<li><b>运维容量规划</b>：发现异常流量模式。</li>
+<li><b>金融数据中心监控</b>：交易系统基础设施异常。</li>
+<li><b>云服务基础设施</b>：IaaS 层资源异常。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>Revisiting-VAE-for-Unsupervised-Time-Series-Anomaly-Detection-A-Frequency-Perspective</code>（VAE 频域）</li>
+<li><code>Final_AutoKAD_ISSRE23_Camera-Ready-v2.3</code>（自动 KPI 模型选择）</li>
+<li><code>Empirical_Analysis</code>（多变量时序异常检测实证）</li>
+<li><code>MonitorAssistant_CameraReady-v1.5_submitted</code>（LLM 监控助手）</li>
+<li><code>Beyond_Sharing_Conflict-Aware_Multivariate_Time_Se</code>（多变量时序异常）</li>
+<li><code>A-survey-on-intelligent-management-of-alerts-and-incidents-in-IT-services</code>（AIOps 综述）</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>KPI（Key Performance Indicator）</b>：关键性能指标。</li>
+<li><b>Point Outlier</b>：点异常。</li>
+<li><b>Subsequence Outlier</b>：子序列异常。</li>
+<li><b>Outlier Time Series</b>：整条 KPI 异常。</li>
+<li><b>HAC（Hierarchical Agglomerative Clustering）</b>：层次凝聚聚类。</li>
+<li><b>CVAE（Conditional VAE）</b>：条件变分自编码器。</li>
+<li><b>ST（Soft Threshold）</b>：软阈值。</li>
+<li><b>MF（Median Filter）</b>：中值滤波。</li>
+<li><b>ELBO</b>：证据下界。</li>
+<li><b>ELBO Loss</b>：重建 + KL 损失。</li>
+<li><b>Reconstruction Error</b>：重建误差。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: USAD（KDD 2020）——单模态基线。</li>
+<li>Paper: DONUT（KDD 2022）——VAE 时序异常检测。</li>
+<li>Paper: SR、CPC ——子序列异常检测。</li>
+<li>Paper: Opprentice ——整条 KPI 异常检测。</li>
+<li>Paper: Isolation Forest、PCA ——传统基线。</li>
+<li>工具：OutSpot 标注工具（公开）。</li>
+<li>数据集：OutSpot 数据集 A、B（公开）。</li>
+<li>相关论文：<code>Revisiting-VAE-for-Unsupervised-Time-Series-Anomaly-Detection-A-Frequency-Perspective</code>、<code>Final_AutoKAD_ISSRE23_Camera-Ready-v2.3</code>、<code>Empirical_Analysis</code>、<code>MonitorAssistant_CameraReady-v1.5_submitted</code>、<code>Beyond_Sharing_Conflict-Aware_Multivariate_Time_Se</code>。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

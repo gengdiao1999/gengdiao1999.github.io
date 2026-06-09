@@ -1,0 +1,1049 @@
+Received January 12, 2020, accepted February 6, 2020, date of publication February 10, 2020, date of current version February 18, 2020.
+Digital Object Identifier 10.1109/ACCESS.2020.2972691
+
+
+
+
+Efficient and Robust Syslog Parsing for Network
+Devices in Datacenter Networks
+SHENGLIN ZHANG 1 , (Member, IEEE), YING LIU 2,3 , (Member, IEEE), WEIBIN MENG 3,4 ,
+JIAHAO BU 3,4 , SEN YANG 5 , YONGQIAN SUN 1 , DAN PEI 3,4 , (Senior Member, IEEE),
+JUN XU 6 , (Senior Member, IEEE), YUZHI ZHANG 1 , LEI SONG 7 , AND MING ZHANG 8
+1 College of Software, Nankai University, Tianjin 300071, China
+2 Institute for Network Sciences and Cyberspace, Tsinghua University, Beijing 100084, China
+3 BNRist, Beijing 100084, China
+4 Department of Computer Science and Technology, Tsinghua University, Beijing 100084, China
+5 Facebook, Inc., Menlo Park, CA 94025, USA
+6 School of Computer Science, Georgia Institute of Technology, Atlanta, GA 30332, USA
+7 Baidu, Inc., Beijing 100085, China
+8 China Construction Bank, Beijing 100033, China
+
+Corresponding author: Yongqian Sun (sunyongqian@nankai.edu.cn)
+This work was supported by the National Key Research and Development Program of China under Grant 2018YFB0204304.
+
+
+
+  ABSTRACT Syslog parsing is of vital importance for the detection, diagnosis and prediction of network
+  device failures in a datacenter. A common approach to syslog parsing is to extract templates from historical
+  syslogs, after which syslogs are matched to these templates. To address the problems in the existing syslog
+  parsing techniques, we propose a novel framework, Craftsman, which identifies frequent combinations of
+  (syslog) words and then applies them as templates. Craftsman empirically extracts templates accurately,
+  is extremely efficient in template matching, and naturally supports incremental learning. To compare the
+  performance of Craftsman and three other template learning techniques designed for network devices,
+  we experiment them on two-years’ worth of syslogs collected from network devices deployed across 10+
+  datacenters of a tier-one service provider. The experiments demonstrate that Craftsman achieves a close-to-
+  one accuracy (as measured by rand index), and improves the computational efficiency by 6.88 to 10.25 times
+  in template matching, and by 730 to 6847 times in syslog parsing. It also improves the accuracy (as measured
+  by F1 measure) of failure prediction by 13.07% to 188%. In addition, we demonstrate Craftsman’s superior
+  generality by comparing it with three widely-applied log parsing methods over five large log datasets
+  collected from servers, distributed systems and applications.
+
+
+  INDEX TERMS Syslog parsing, network device, prefix tree, datacenter network, frequent pattern.
+
+I. INTRODUCTION                                                                                 unstructured texts, they have to be properly parsed before
+Nowadays, cloud service providers employ a large number                                         they can be effectively used [13]–[15]. In this paper, we focus
+of network devices in their datacenter networks, and net-                                       on syslog parsing techniques that can lead to more accurate
+work device failures are not rare any more. For example,                                        and efficient network device failure detection, diagnosis and
+Microsoft’s datacenter networks have deployed tens of thou-                                     prediction.
+sands of network devices [1], and there occur more than 400                                        The current approach to parsing network device syslogs
+network device failures per year [2]. Since a network device                                    is to learn message templates from syslogs and then match
+failure can dramatically degrade the the performance of a                                       the syslogs to the templates [4], [8], [9]. Therefore, sys-
+datacenter, researchers have paid much attention on the detec-                                  log parsing includes template learning and template match-
+tion/diagnosis/prediction of network device failures [3]–[7].                                   ing. For example, in the syslog message OSPF Neigh-
+Network device syslogs have been recognized as a rich source                                    bor 10.231.44.249 (Vlan-interface18) from Exstart to
+of information for failure detection, diagnosis, and predic-                                    Exchange, 10.231.44.249 and Vlan-interface18 are param-
+tion [4], [5], [8]–[12]. However, since syslogs are usually                                     eters that vary from one message to another and are not parts
+                                                                                                of a template, whereas the rest, i.e., OSPF Neighbor . . . from
+     The associate editor coordinating the review of this manuscript and                        Exstart to Exchange, sketches out the event and hence is a
+approving it for publication was Yulei Wu               .                                       template that summarizes this and other similar syslogs.
+
+                      This work is licensed under a Creative Commons Attribution 4.0 License. For more information, see http://creativecommons.org/licenses/by/4.0/
+VOLUME 8, 2020                                                                                                                                                        30245
+                                                         S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+   Despite the crucial role that syslog parsing plays in net-             Craftsman is extremely efficient in matching a syslog mes-
+work device failure detection, diagnosis and prediction as                sage to its template. Craftsman also empirically guarantees
+aforementioned, existing syslog parsing techniques for net-               that the template learned from a given syslog accurately
+work devices, e.g., Statistical Template Extraction (STE) [9]             characterizes the event that the syslog represents. Craftsman
+and LogSimilarity [4], have low accuracy in learning the                  is, to the best of our knowledge, the first framework that
+‘‘correct’’ set of templates, and are inefficient in matching             leverages the idea of prefix-tree and frequent patterns to
+syslogs to templates. The large number of network devices                 achieve an accurate, efficient, and incrementally retrainable
+(say more than 10 thousand) in modern datacenter networks                 log parsing method.
+generate tens of millions of syslogs everyday. Therefore,                    To compare the performance of Craftsman to those of
+a syslog parsing method which is inefficient in matching                  SignatureTree, STE, and LogSimilarity, we apply the sys-
+a syslog message to its template will consume too much                    logs collected from 2, 223 network devices over a two-year
+computational resources.                                                  period. These network devices are deployed across more than
+   Some syslog parsing techniques, e.g., the signature tree               10 datacenters owned by a tier-1 cloud service provider.
+based method1 [8] and STE [9], do not support incremental                 We evaluate the accuracy of the four techniques based on
+learning in the sense that the entire set of templates has to be          manual classifications of syslogs. Craftsman achieves close-
+re-parsed (i.e., relearn templates and rematch all the syslogs            to-one accuracy in template learning, and it respectively
+to them) when a new template is added. Typically, the syslog              improves the computational efficiency of template matching
+based failure detection/diagnosis/prediction method applies               by 6.88 and 10.25 times compared to LogSimilarity and
+machine learning methods to learn the failure patterns from               STE. In addition, STE and SignatureTree consume 6847 and
+historical syslogs and failures [4], [9], [16]–[21]. The under-           730 times more computational resources than Craftsman in
+lying detection/diagnosis/prediction model, which is trained              log parsing (i.e., template learning and matching), respec-
+based on the template library, has to be retrained every once             tively, as neither of them is incrementally retrainable. More-
+in a while to kept up-to-date. It is highly desirable for the             over, Craftsman improves the prediction accuracy by 13.07%
+template library to be incrementally retrainable for the fol-             and 35.42% (using PreFix [5] as the failure prediction
+lowing reason. Network operators frequently conduct soft-                 method), or 155% and 188% (using Hidden Semi-Markov
+ware or firmware upgrades on network devices to introduce                 Model (HSMM) [16] as the failure prediction method), com-
+new features, or fix bugs in the previous version [22]. These             pared to LogSimilarity and STE, respectively. The evalua-
+updates can generate new subtypes of syslogs that cannot                  tion experiment results clearly demonstrate the benefits of
+match any existing template, thus requiring new templates                 Craftsman: highly accurate, incrementally retrainable, and
+to be learned from these new messages and added to the                    extremely efficient in matching a syslog message to its tem-
+template library. Consequently, new templates have to be                  plate. The implementation of Craftsman is publicly available
+learned from these new syslogs and then added to the template             now at [23], and we hope that this can help researchers
+library. Only the syslogs that arrive after the previous upgrade          further understand the intuition, framework and performance
+need to match the new template library if the log parsing                 of Craftsman.
+model is incrementally retrainable. Otherwise, the log parsing               In addition, to demonstrate how Craftsman is general
+method has to re-parse all historical syslogs based on the                in parsing syslogs for other types of logs, we com-
+new template library. The unincrementally retrainable man-                pare Craftsman with log parsing methods designed for
+ner, which STE and SignatureTree fall into, is prohibitively              servers (supercomputers), distributed systems and applica-
+expensive computationally. That is because a large datacenter             tions. These methods include Iterative Partitioning Log Min-
+usually deploys tens of thousands of network devices, and                 ing (IPLoM) [24], Log Key Extraction (LKE) [25] and
+detects/diagnoses/predicts failures based on historical syslogs           LogSig [26]. The comparison experiments are conducted
+and failures for a long period (e.g., two years).                         over five large log datasets ranging from supercomput-
+   We propose a novel framework, Craftsman, which has                     ers (Blue Gene/L and High Performance Cluster) to stan-
+high accuracy in identifying the ‘‘correct’’ templates, and               dalone software (Proxifier) to distributed systems (HDFS
+is incrementally retrainable and computationally efficient in             and Zookeeper). Craftsman achieves an averaged accuracy
+template matching. Usually, a ‘‘correct’’ message template                of 96.25% across the five datasets, which is better than
+is a combination of words that occur frequently in syslogs.               the above three methods. Moreover, Craftsman has a much
+Therefore, Craftsman dynamically builds a prefix-tree struc-              smaller log parsing (i.e., template learning and matching)
+ture of these frequent words, and applies the prefix-tree to              time (4.98s) per day than the other three methods (35 min
+construct the template library. Because this prefix-tree struc-           to 5.38 day), and it consumes much less memory space
+ture as well as the template library dynamically and incre-               (32.4 MB) compared with these methods (90.6 MB to
+mentally evolve with the arrival of new syslogs (may be of the            23.5 GB). The experiment results show Craftsman’s superior
+new message subtypes), Craftsman is incrementally retrain-                generality on diverse types of logs.
+able in nature. Moreover, thanks to the prefix-tree structure,               A preliminary version of this paper appears as [27]. The
+                                                                          rest of the paper is organized as follows. We provide an
+  1 We refer to this method as SignatureTree hereafter                    introduction to datacenter network architecture and network
+
+30246                                                                                                                                    VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+                                                                                   routers that are manufactured by several different vendors.
+                                                                                   In this work, we study syslog parsing for the most important
+                                                                                   and populous network devices – routers and switches – in
+                                                                                   datacenter networks.
+
+                                                                                    B. NETWORK DEVICE SYSLOG
+                                                                                   Each network device reports, from time to time, the observed
+                                                                                   hardware/software condition or (anomalous) event, in a sys-
+                                                                                   log message. Examples of such conditions or events include
+                                                                                   state changes of interfaces, links, or neighbors (e.g., the state
+                                                                                   of an interface changes from up to down), operational main-
+                                                                                   tenance (e.g., operators log in/out), environmental condi-
+                                                                                   tion alerts (e.g., high temperature), etc. Although syslogs
+                                                                                   are designed mainly for debugging software and hardware
+                                                                                   problems, they can also be used for detecting, diagnosing,
+FIGURE 1. Typical datacenter network architecture.                                 and predicting network incidents [4], [5], [8], [9]. Hence,
+                                                                                   usually dedicated servers are deployed in a datacenter to
+                                                                                   collect syslogs from all its network devices [27].
+device syslog in Section II, followed by the intuition of                             As can be seen from several example syslogs shown
+Craftsman in Section III. The design of Craftsman is elab-                         in Table 1, a syslog message usually has a simple structure
+orated in Section IV, and we present the evaluation experi-                        consisting of several fields, including a timestamp recording
+ments in Section V. The related works, including Signature-                        when the network device generates the syslog message, a net-
+Tree, STE, LogSimilarity, and the log parsing methods in                           work device ID identifying the network device that generates
+other areas, are discussed in Section VI. Finally, we conclude                     the message, a message type that describes the rough char-
+our paper in Section VII.                                                          acteristics of the message, and a message body depicting the
+                                                                                   details of the event. The syntax and semantics of the message
+II. BACKGROUND                                                                     type field and the detailed message field vary with network
+In this section, we first briefly introduce in Section II-A the                    device vendors and models [27].
+architecture of a datacenter network and the important role
+that switches and routers play in it, and then describe in                          III. INTUITION OF Craftsman
+Section II-B network device syslogs in details.                                    The syslogs of network devices are essentially unstruc-
+                                                                                   tured texts in diverse forms. Moreover, a specific IP
+A. DATACENTER NETWORK ARCHITECTURE                                                 address or interface ID that appears in a syslog may never
+Nowadays, computer servers in a datacenter are connected via                       appear again. Consequently, it is quite difficult, if possible,
+a network of commodity Ethernet switches and routers [28].                         to learn failure patterns from raw syslogs for failure detec-
+Figure 1 shows a typical datacenter network architecture [29].                     tion/diagnosis/prediction.
+It is comprised of several layers. At the bottom layer, servers                       As shown in Table 1, each syslog includes a message type
+are mounted on racks and connected to a ToR switch via                             field that describes the schematic characteristics of the event.
+Ethernet NICs. Tens of ToRs are in turn connected to a                             However, there can be multiple subtypes in a message type.
+primary aggregation switch and a backup one for redun-                             For example, although in Table 2 there are 21 syslogs that
+dancy purposes (L2). These two aggregation switches then                           belong to the message type ‘‘10OSPF/5/OSPF_NBR_CHG’’
+forward the traffic from ToRs to access routers (L3), each                         and describe the changes of OSPF neighbors, the detailed
+of which aggregates traffic forwarded from multiple ToRs,                          messages can be quite different. The detailed message field of
+and route it to core routers. Each datacenter network is con-                      syslogs is essentially free-form text, and a network device’s
+nected to other datacenter networks and the Internet via core                      OS usually ‘‘printf’’ed this field with detailed informa-
+routers. Several types of middleboxes, such as load balancers,                     tion, such as the location (line card/port/interface), pack-
+VPNs, firewalls, and intrusion detection and prevention sys-                       age loss ratio, IP address, etc., as parameters. For instance,
+tems (IDPSes), are also deployed in datacenter networks to                         the detailed message field of the syslog message in the
+improve performance and/or enhance security.                                       first line of Table 2, i.e., OSPF Neighbor 10.231.51.249
+    Switches and routers are the most populous type of network                     (Vlan-interface03) from Init to Exstart, means that the
+devices in a cloud datacenter. The number of switches and                          event impacts the interface numbered Vlan-interface03 of
+routers in a datacenter has also grown expolsively recently.                       the network device with IP address 10.231.51.249, and
+For example, Guo et al. reported that there were tens of                           thus the state of the OSPF status changes from Init to
+thousands of switches and routers across Microsoft’s data-                         Exstart. In other words, the 10.231.51.249 and the Vlan-
+centers [1]. Similarly, the tier-1 cloud service provider we are                   interface03 parts are the parameters describing detailed
+working with also deploys tens of thousands of switches and                        information (hereafter, we collectively refer to this type of
+
+VOLUME 8, 2020                                                                                                                                30247
+                                                             S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+TABLE 1. Examples of network device syslogs.
+
+
+
+
+TABLE 2. An example of the syslog sequence before a switch failure.
+
+
+
+
+words as parameter words), whereas the rest parts, i.e., OSPF                 TABLE 3. Syslog message subtypes of SIF.
+Neighbor . . . from Init to Exstart, are predefined outputs by
+the network device’s OS and can be used as a subtype for the
+syslogs of the message type 10OSPF/5/OSPF_NBR_CHG
+(hereafter, we collectively refer to this type of words as tem-
+plate words). When we apply the same symbol (e.g., an aster-
+isk as shown in Table 3) to mask the variable of the detailed
+message field of the 21 syslogs (i.e., IP address or vlan-
+interface number), we can see that there are only four different
+syslog structures, or subtypes.
+                                                                              subtypes are retained without relying on any domain knowl-
+   However, manually obtaining all subtypes without domain
+                                                                              edge. [27]
+knowledge is almost impossible because not every part that
+                                                                                After investigating thousands of real-world network device
+should be masked in the detailed message can be as eas-
+                                                                              syslogs, we have the following two observations:
+ily characterizable as the interface number or IP address.
+In addition, although part of the syslog subtypes can be                         •   Parameters words are much less than template words.
+obtained with support from vendors, these subtypes may                               As shown in Table 2 and Table 3, it is obvious
+change due to software upgrades. Therefore, our objective                            that, in a syslog message, the number of parameter
+is to automatically obtain message templates in which the                            words is usually much smaller that that of template
+need-to-be-masked parts are removed and the message                                  words. For example, in the syslogs of the message type
+
+30248                                                                                                                                        VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+                                                                                   In addition, motivated by the excellent performance of prefix-
+                                                                                   tree in packet forwarding [31], we believe that the prefix-tree
+                                                                                   structure is extremely efficient in matching syslogs to their
+                                                                                   templates. Craftsman is, to the best of our knowledge, the first
+                                                                                   framework that leverages the idea of prefix-tree and frequent
+                                                                                   patterns to achieve an accurate, efficient, and incrementally
+                                                                                   retrainable log parsing method.
+                                                                                      Figure 2 shows the architecture of Craftsman. For a given
+                                                                                   switch model, Craftsman learns templates from historical
+                                                                                   syslogs, and builds a template library, based on which Crafts-
+                                                                                   man matches historical syslogs to template sequences. If a
+FIGURE 2. The framework of Craftsman.
+                                                                                   realtime syslog message cannot match any template in the
+                                                                                   template library, Craftsman will incrementally learn a tem-
+                                                                                   plate from it and extend the library. Otherwise, Craftsman
+     ‘‘10OSPF/5/OSPF_NBR_CHG’’, there are six template                             will match the realtime syslogs to template sequences. Both
+     words, and only two parameter words. It is consistent                         template learning and template matching should be efficient
+     with the common practice that the OS of a network                             because of the large number (say tens of millions) of syslogs
+     device usually reserves only a small number of positions                      generated everyday in a large datacenter.
+     for parameters in the ‘‘printf’’ function of a syslog mes-                       In the following, we first introduce the design and
+     sage. In addition, the parameter words of different sys-                      construction of the prefix-tree in Section IV-A, and then
+     logs are usually different, whereas the template words of                     demonstrate how Craftsman facilitates incremental template
+     the syslogs belonging to the same subtype are the same.                       learning in Section IV-B. We then describe how Craftsman
+     Therefore, in a large set of syslogs, parameter words are                     support efficient template matching in Section IV-C. Finally,
+     much less than template words.                                                we show the space complexity of Craftsman in Section IV-D.
+   • A message type has a small number of subtypes, and
+     each subtype has a large number of syslogs. Typically,                         A. DESIGN AND CONSTRUCTION OF PREFIX-TREE
+     there are a limited number (usually < 10) of subtypes in
+     each message type. That is because a message type usu-                        Algorithm 1 Prefix-Tree Construction in Craftsman [27]
+     ally includes a small number of different events, which                       Input: A message set DM containing all the different sys-
+     are sketched out by subtypes or templates. Moreover,                              logs of a specific message type, and a threshold k
+     in a large cloud datacenter, there are a quite large number                   Output: A prefix-tree, T
+     of syslogs belonging to the same message type. As a                            1: Scan the message set DM once
+     result, a subtype usually has a great many syslogs.                            2: Calculate the support for each word in I
+                                                                                    3: Let L be the list of words in the descending order of their
+IV. FRAMEWORK OF Craftsman                                                             supports
+Our objective in syslog parsing is to automatically, accurately,                    4: Create the root of T and label it as the message type
+and efficiently learn template and subtype information from                         5: for each message in DM do
+syslogs without relying on any domain knowledge, and effi-                          6:   Sort its words according to their order in L
+ciently match syslogs to their templates. As aforementioned,                        7:   Let the sorted word list be [p|P], where p is the first
+three syslog parsing methods, i.e., SignatureTree, STE, and                              element and P is the remaining list
+LogSimilarity, were proposed. However, they are not well                            8:   Call insert_tree([p|P], T )
+suited for our application scenario because of their low accu-                      9: end for
+racy in template (or subtype) learning, or their inefficiency                      10: for Child C in T do
+in template matching, or their inability to be incrementally                       11:   if C has more than k children then
+retrained.                                                                         12:      Eliminate all the children of C
+   Inspired by the Frequent Pattern Tree (FP-tree) [30],                           13:   end if
+which is designed for storing compressed, crucial information                      14: end for
+about frequent patterns in database, we propose Craftsman,                         15: return T
+an incrementally retrainable technique with high accuracy
+in template (subtype) learning, and high efficiency in tem-                           Let I = a1 , a2 , . . . , am be the set of distinct words that
+plate matching. Craftsman constructs a prefix-tree structure                       occur in a message set DM = hM1 , M2 , . . . , Mn i, where each
+to encode and learn message templates. Intuitively, a syslog                       Mi is a syslog message. The support (i.e., the frequency of
+subtype, or a template, is usually the longest combination of                      occurrences) of a word combination (i.e., a set of words) A,
+words with high frequency (see Section III for more details),                      is the number of distinct messages containing A in DM . A is
+and thus learning a template can be transformed to identifying                     considered a template if A is occurring frequently (i.e., with
+such longest combination of frequent words from syslogs.                           a large support) [27].
+
+VOLUME 8, 2020                                                                                                                                30249
+                                                               S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+          FIGURE 3. An example of constructing a prefix-tree. ‘‘IP (*)’’ denotes the IP address is 10.231.*.249, and ‘‘Interface (*) denotes the
+          interface is Vlan-interface*’’.
+
+
+
+
+   The second column of Table 4 shows an exam-                                  is parsed, since its ordered word list h‘‘OSPF’’, ‘‘Neigh-
+ple syslog message set DM = hM1 , M2 , . . . , M13 i,                           bor’’, ‘‘from’’, ‘‘to’’, ‘‘Full’’, ‘‘Loading’’, ‘‘10.231.53.249’’
+in which every message belongs to the message type                              (IP (53)), ‘‘Vlan-interface07 (Interface (07))’’i shares a com-
+‘‘10OSPF/5/OSPF_NBR_CHG’’. The prefix-tree for this                             mon prefix h‘‘OSPF’’, ‘‘Neighbor’’, ‘‘from’’, ‘‘to’’i with
+DM is constructed, using the algorithm shown in Algorithm I,                    the existing path/branch, a new branch h‘‘Full’’, ‘‘Load-
+as follows [27].                                                                ing’’, ‘‘10.231.53.249’’ (IP (53)), ‘‘Vlan-interface07 (Inter-
+   First, our prefix-tree construction algorithm scans DM                       face (07))’’i is created as a subtree of node h‘‘to’’i. The rest
+once (line 1 in Algorithm I), and derives a list L of                           11 messages in Table 4 are parsed similarly, resulting in the
+words in the descending order of their frequency of occur-                      final prefix-tree shown in Figure 3 (b).
+rences. Clearly, the words and their frequency in L is listed                      Finally, we prune the tree until it satisfies the following
+in Table 5. [27]                                                                node degree constraint (lines 10 through 14 in Algorithm I).
+   Then, we create the root of a tree which is labeled with                     Intuitively, as mentioned in Section III, there should be only
+the message type, which in this case is ‘‘10OSPF/5/OSPF_                        a small number of subtypes for each message type, and,
+NBR_CHG’’, as shown in Figure 3 (a). Our prefix-                                for each subtype, there should be many different syslogs
+tree construction algorithm scans DM for a second time                          that match to it. Therefore, if a node has too many children
+(lines 5 through 9 in Algorithm I). The parsing of M1                           (say exceeding a threshold k, and operators empirically set
+leads to the construction of the first path/branch of the                       5 ≤ k ≤ 10), all its children (or subtrees) are deleted from
+tree: h‘‘OSPF’’, ‘‘Neighbor’’, ‘‘from’’, ‘‘to’’, ‘‘Exstart’’,                   the tree and the node will become a leaf itself. In the pruned
+‘‘Init’’, ‘‘10.231.51.249’’ (IP (51)), ‘‘Vlan-interface03 (Inter-               prefix-tree, each root-to-leaf path is a message template
+face (03))’’i (a word in a prefix-tree is called the nword                      (i.e., type + subtype). For example, h‘‘OSPF’’, ‘‘Neighbor’’,
+of the node containing the word). Note these words are                          ‘‘from’’, ‘‘to’’, ‘‘Exstart’’, ‘‘Init’’i is a message template,
+ordered according to the order of the words in L. When M2                       as shown in Figure 3 (b). [27]
+
+30250                                                                                                                                          VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+TABLE 4. Different messages belonging to message type ‘‘10OSPF/5/OSPF_NBR_CHG’’ in Table 2, and the words ordered according to L.
+
+
+
+
+TABLE 5. The words and their frequency in L.
+
+
+
+
+   Definition 1 ( [27]): As illustrated by the above example,                      syslog message to another including software module IDs,
+given a specific message type, the prefix-tree is defined as                       physical locations, the number of sessions, etc.
+follows:
+                                                                                    B. INCREMENTAL TEMPLATE LEARNING
+   1) Its root is labeled by the message type, and each root-                      As mentioned earlier, for a given message type, new sub-
+      to-leaf path corresponds to a message template.                              types of messages can emerge due to software or firmware
+   2) Each non-root node in the prefix-tree has only one                           upgrades, and new templates need to be generated for
+      attribute/field, namely nword, which registers which                         these messages to match to. As shown in Figure 3 (a)
+      word this node represents.                                                   and Algorithm 1, this is accomplished via inserting new
+   It remains to describe the function insert_tree([p|P], T ) in                   nodes/branches to the prefix-tree. It is also clear from
+Algorithm 1. It works as follows. If @N ,                                          Algorithm 1 that such insertions can be done incremen-
+N .nword = p.nword, and N is a child of T , then create                            tally, by scanning only the recently arrived syslogs (after
+a new node N , and make it a child of T . If P 6 = 8, call                         the software or firmware upgrade) twice. More specifically,
+insert_tree(P, N ) recursively [27].                                               when a new message Mnew that does not match any template
+   Note that as shown in Figure 3 (b), a prefix-tree is built                      arrives, a new branch is inserted into the prefix-tree by call-
+for each message type, and the parameters of syslogs are                           ing insert_tree() (line 8) in Algorithm 1. Please note that,
+removed by pruning nodes from a prefix-tree. Although we                           if one or more words in Mnew do not exist in L, we will add
+use IP addresses and interface numbers as examples to illus-                       these words to the tail of L. When a network device starts to
+trate the framework of Craftsman, Craftsman is also capable                        generate new subtypes of messages, it is highly likely that, in
+of removing other types of parameters that varies from one                         one day, these messages will contain enough number (more
+
+VOLUME 8, 2020                                                                                                                              30251
+                                                          S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+                                                                           Algorithm 2 Matching a Syslog Message to Its Template
+                                                                           Input: A prefix-tree T , and a syslog message M
+                                                                           Output: The template ID of M
+                                                                            1: current_node = the root of T
+                                                                            2: S = the list of words in M , which is sorted based on L
+                                                                            3: current_word = the first word in S
+                                                                            4: while current_node is not a leaf do
+                                                                            5:   for each child of current_node do
+                                                                            6:      if child.nword = current_word then
+                                                                            7:         current_node = child
+                                                                            8:         current_word = the next word in S
+                                                                            9:         break
+                                                                           10:      end if
+                                                                           11:   end for
+FIGURE 4. The prefix-tree after Mnew is added.
+                                                                           12:   if current_node remains unchanged then
+                                                                           13:      return A new template should be generated for M
+than the pruning threshold k) of distinct parameter words                  14:   end if
+(such as ‘‘10.231.55.249’’, ‘‘Vlan-interface07’’ in Figure 3)              15: end while
+as the children of a node, so that this node becomes a leaf                16: return the template ID of the leaf node
+itself after the pruning [27].
+   We illustrate this incremental learning process by
+an example shown in Figure 4. Suppose that a new
+message Mnew = ‘‘OSPF 1 Neighbor 10.231.53.249                             all the words of each template, which is the method used in
+(Vlan-interface23) from ExStart to Down’’ arrives, and that                STE, the computational complexity will be O(H ×log H ×U ),
+right before this arrival, the prefix-tree is the one shown in             where U is the number of templates and usually U ≥ 300.
+Figure 3 (b), but with all leaf nodes (‘‘10.231.53.249 (IP                 Moreover, the computational complexity of LogSimilarity in
+(53))’’, ‘‘Vlan-interface03 (Interface (03))’’, etc.) pruned.              matching a syslog message to its template is O(H × U ).
+Then the newly arrived message Mnew results in the inser-                  Therefore, matching syslogs to templates using Craftsman is
+tion of the branch (‘‘Down’’→‘‘10.231.53.249’’→‘‘Vlan-                     much more efficient than using STE or LogSimilarity.
+interface23’’) to the prefix-tree, and the new branch                         Considering the large number (tens of millions in general)
+(‘‘10.231.53.249’’→‘‘Vlan-interface23’’) will eventually be                of syslogs generated per day in a large datacenter, an efficient
+pruned as explained earlier.                                               template matching approach is really important. As demon-
+   Although SignatureTree is also designed based on the tree               strated in Section V-B, compared to STE and LogSimilarity,
+structure, it is trained based on all the historical syslogs, rather       Craftsman consumes much less computational resources in
+than trained incrementally. Each node in a SignatureTree is a              matching syslogs to templates in practice.
+combination of words, rather than a word alone. It is diffi-
+cult, if not impossible, to improve SignatureTree to support               D. SPACE COMPLEXITY
+incremental training.                                                      We now discuss the space complexity of Craftsman. Obvi-
+                                                                           ously, Craftsman consumes the maximum memory when a
+C. TEMPLATE MATCHING                                                       prefix-tree is fully constructed (lines 9 in Algorithm I) before
+   Now a historical/recent syslog message can be matched to a              its children are eliminated (we refer to this prefix-tree as a
+specific template, which is usually represented as a numerical             full prefix-tree hereafter). This is because after the children
+value. The process of matching a syslog message to its tem-                are eliminated, the pruned prefix-tree that needed to be stored
+plate is illustrated in Algorithm 2. At first, we sort the words           in memory has no node with too many (> k) children.
+in the syslog message based on L (line 2 in Algorithm 2).                     A full prefix-tree consists of two parts: a pruned prefix-tree
+After that, we match each word to the nword in the prefix-tree             which denotes the set of log templates, and many eliminated
+until the leaf node is reached (line 4 to line 15 in Algorithm 2).         children representing the parameters of logs. In the worst
+Obviously, the template of the syslog message is the same as               case, each template denotes a separate root-to-leaf path of a
+that of the leaf node (line 16 in Algorithm 2). If the syslog              pruned prefix-tree, and there are no two templates share the
+message cannot match any template, a new template should                   same node in the tree. Consequently, the pruned prefix-tree
+be learned for it (line 12 to line 14 in Algorithm 2).                     as well as the template set consume the same size of memory.
+   Matching a syslog message to its template using Craftsman               Usually, the template set contains less than 10,000 templates,
+is extremely efficient. Suppose that the height of the prefix-             and each template has less than 20 words. That is, the mem-
+tree is H (H ≤ 10 in general), the computational complexity                ory consumed by the pruned prefix-tree is smaller than that
+of Algorithm 2 is O(H × k) (recall that typically k < 10).                 consumed by 10, 000 × 20 words. This is a small memory
+However, if we compare every word of a syslog message to                   space considering today’s server memory.
+
+30252                                                                                                                                     VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+   Apart from the pruned prefix-tree, we should also con-
+sider the memory consumed by those eliminated parameter
+words. Empirically, there are usually less than 10, 000, 000
+parameter words in a full prefix-tree, which consumes a
+small memory space comparing with the total memory size
+of servers.
+   In conclusion, a full prefix-tree, which consumes the max-
+imum memory in Craftsman’s process of template learn-
+ing, consumes a small memory space considering today’s
+server memory. When Craftsman is applied to match logs
+to templates, it only has to store a pruned final prefix-tree
+in memory, which consumes much less memory than its
+corresponding full prefix-tree.                                                    FIGURE 5. Comparison of the rand indexes of Craftsman, SignatureTree,
+                                                                                   STE and LogSimilarity across four message types.
+V. EVALUATION
+In this section, we evaluate and compare the performance                           switches of this switch model, and analyze all the syslogs
+of Craftsman to those of SignatureTree, STE and LogSim-                            of these switches. That is, billions of syslogs are analyzed
+ilarity, which were proposed to parse syslogs for network                          for the above switches, and thus manually classifying all
+devices, using syslogs collected from real-world sources.                          the syslogs is prohibitive. Thereby, we randomly collect a
+We evaluate the accuracy of these four techniques in                               sample of the syslogs for the evaluation as follows. We first
+Section V-A, and compare their efficiency in template match-                       randomly pick four message types (see Table 1 for defini-
+ing in Section V-B. Then the advantage of incremental learn-                       tions) from all switches. For each message type, we randomly
+ing of Craftsman is demonstrated in Section V-C, followed                          collect 500 syslogs. The network operators then manually
+by the evaluation of space complexity in Section V-D and                           classify the syslogs based on the event each message rep-
+the comparison of the failure prediction results using the four                    resents. Considering the large number of the syslogs that
+techniques to parse logs in Section V-E. In the end, we show                       should be manually classified (2000), this is a large amount
+Craftsman’s generality in Section V-F.                                             of work. After that, we run Craftsman, SignatureTree, STE,
+   In cooperation with a a tier-1 cloud service provider,                          and LogSimilarity to learn the templates of these syslogs,
+we collect all syslogs over a two-year period from all                             respectively [27].
+2,223 switches of a specific (switch) model across more than                          We apply the Rand index [32] technique to quantitatively
+10 datacenters owned by this cloud service provider. Among                         compare the accuracy of the four techniques. Rand index
+the above switches, 131 ones suffered from 228 failures                            is a popular technique for evaluating the similarity between
+during that two-year-period.                                                       two data clustering techniques. We evaluate the accuracy of
+   The implementation of Craftsman is publicly available                           each technique by calculating the Rand index between the
+at [23], and we hope that researchers can better understand                        manual classification results and the templates learned by the
+the performance of Craftsman using this implementation.                            technique. Specifically, among the template learning results
+                                                                                   of a specific technique for a given message type, we randomly
+A. EVALUATION OF TEMPLATE LEARNING ACCURACY                                        select two messages, i.e., x and y, and define true positive (tp),
+As mentioned earlier, three techniques were proposed in                            true negative (tn), false positive (fp), and false negative (fn) as
+previous works for parsing syslogs for network devices,                            follows:
+i.e., SignatureTree [8], STE [9], and LogSimilarity [4]. In                           • tp: x and y are manually classified into the same cluster
+addition, we propose a novel template extraction technique,                              and they have the same template;
+i.e., Craftsman, for accurately, efficiently, and incrementally                       • tn: x and y are manually classified into different clusters
+learning templates from syslogs. After analyzing the four                                and they have different templates;
+techniques, we believe that Craftsman and SignatureTree are                           • fp: x and y are manually classified into different clusters
+more accurate in template extraction than STE and LogSimi-                               and they have the same template;
+larity in our scenario (see Section VI-A for more details). To                        • fn: x and y are manually classified into the same cluster
+demonstrate our analysis, we here compare the accuracy of                                and they have different templates;
+the four techniques using real-world switch syslogs [27].
+                                                                                   Then the Rand index can be calculated using the above terms
+   Learning templates from syslogs is equivalent to classi-
+                                                                                   as follows:
+fying syslogs based on the events they represent. Since the
+                                                                                                                        tp + tn
+network operators analyze switch syslogs every day, they are                                      Rand index =                                     (1)
+really familiar with the event that a given syslog message                                                         tp + tn + fp + fn
+represents. Therefore, we can use the manual classification                        [27]
+results of syslogs by network operators as the ground truth.                         Figure 5 shows the Rand indexes of Craftsman, Signature-
+As aforementioned, we pick one switch model and all the                            Tree, STE, and LogSimilarity across the above four message
+
+VOLUME 8, 2020                                                                                                                                     30253
+                                                           S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+TABLE 6. Comparison of the template matching time of Craftsman,             TABLE 7. Comparison of the log parsing (i.e., template learning and
+SignatureTree, STE and LogSimilarity for 10 million syslogs.                matching) time per day for Craftsman, SignatureTree, STE and
+                                                                            LogSimilarity.
+
+
+
+
+types. Note that all the parameters of the four methods are
+set best for accuracy. For example, the pruning threshold
+of Craftsman is set as k = 6 through all the evaluation                     Craftsman. However, Craftsman is much more efficient in log
+experiments in Section V. Both Craftsman and SignatureTree                  parsing (including template learning and template matching)
+have averaged close-to-one Rand indexes and perform supe-                   than SignatureTree, as described in Section V-C.
+rior across all the four message types. In contrast, STE and
+LogSimilarity achieve relatively low averaged Rand indexs,                  C. EVALUATION OF INCREMENTAL LEARNING
+i.e., 62.10% and 59.31%, respectively. This is because STE                  As aforementioned in Section IV-B, Craftsman learns tem-
+cannot match some specific syslogs to any template, and                     plates in an incremental manner, and thus when new subtypes
+LogSimilarity may match some specific syslogs of differ-                    of syslogs occur, it is not necessary that the template library
+ent subtypes to the same template (see Section VI-A for                     has to be rebuilt and all the historical syslogs have to rematch
+more details). Craftsman and SignatureTree are both word                    the new templates. To demonstrate how Craftsman’s incre-
+frequency based techniques, i.e., both Craftsman and Signa-                 mental learning accelerate log parsing (i.e., template learning
+tureTree are constructed based on the frequency of words                    and matching) in practice, we here compare the log parsing
+in messages. As a consequence, the templates extracted by                   time of Craftsman, SignatureTree, LogSimilarity and STE.
+Craftsman and SignatureTree are almost identical. How-                      Specifically, we collect all the syslogs of the last day in the
+ever, as shown in Section V-C, Craftsman can construct                      two-year period, and apply the above four methods to learn
+a prefix-tree and learn templates incrementally, whereas                    and match templates. The experimental setup is the same as
+SignatureTree cannot. [27]                                                  that in Section V-B. Since it is often the case that new subtypes
+                                                                            of syslogs can be generated everyday, the template library
+B. EVALUATION OF TEMPLATE MATCHING EFFICIENCY                               should be rebuilt, and all the historical syslogs should rematch
+As mentioned in Section IV-C, theoretically, Craftsman and                  the new templates for SignatureTree and STE per day, but not
+SignatureTree, both of which are with the prefix-tree struc-                for Craftsman and LogSimilarity. [27]
+ture, are much more efficient than STE and LogSimilarity in                    Table 7 shows the time consumed for template learning
+template matching. To demonstrate how Craftsman improves                    and matching per day for Craftsman, SignatureTree, STE,
+the efficiency of template matching (compared to STE and                    and LogSimilarity. Both Craftsman and LogSimilarity are
+LogSimilarity) in practice, we use Craftsman, SignatureTree,                incrementally retrainable, and thus they can incrementally
+STE, and LogSimilarity to match randomly selected 10 mil-                   learn the template library, and match only one-day’s worth
+lion historical syslogs, and compute how much time it takes to              of syslogs to the templates. However, both STE and Signa-
+complete the template matching. We apply 10 million syslogs                 tureTree have to rebuild the template library, and match all the
+because a large cloud datacenter usually generates tens of                  historical syslogs, i.e., two-year’s worth of syslogs to the tem-
+millions of network device syslogs everyday, and thus tens                  plates. Hence Craftsman and LogSimilarity consume much
+of millions of syslogs have to match templates for anomaly                  less time compared to STE and SignatureTree. More specif-
+detection, diagnosis or prediction. Note that matching histor-              ically, Craftsman improves the computational efficiency by
+ical syslogs does not need to retrain the model.                            730 times compared to SignatureTree. In addition, because
+   We implement Craftsman, SignatureTree, STE and                           STE is neither incrementally retrainable nor efficient in tem-
+LogSimilarity in C++, and deploy them on the same server                    plate matching, it consumes 6847 times more computational
+(CPU information: 12 Intel(R) Xeon(R) CPU E5645 @                           resources than Craftsman [27].
+2.40GHz) with a single thread. The CPU utilization remains
+100% while the process of each technique is running so                      D. EVALUATION OF SPACE COMPLEXITY
+that we can use the total time to evaluate the computational                As is discussed in Section IV-D, Craftsman is not only effi-
+efficiency of these log parsing methods [33].                               cient in learning templates and matching logs to templates,
+   Table 6 shows the time consumed for Craftsman,                           but also consumes small memory space. To demonstrate the
+SignatureTree, STE, and LogSimilarity in matching                           space complexity of Craftsman, we use the same dataset on
+10 million historical syslogs, respectively. More specifically,             the same server with that of the evaluation experiments in
+compared to LogSimilarity and STE, Craftsman respec-                        Section V-B. We monitor the memory consumed by each
+tively improves the computational efficiency by 6.88 and                    method in learning templates and matching logs to templates,
+10.25 times. Thanks to the prefix-tree structure, Craftsman                 and record the memory values every second.
+is extremely efficient in matching syslogs to templates in                     Table 8 lists the maximum and average memory con-
+practice. Because SignatureTree also leverages the prefix-                  sumed by each method, respectively. We can see that Crafts-
+tree structure, it has the same template matching time with                 man, Signature Tree, and LogSimilarity all consume a
+
+30254                                                                                                                                      VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+TABLE 8. Comparison of the memory consumed by Craftsman,
+SignatureTree, STE and LogSimilarity for 10 million syslogs.
+
+
+
+
+small memory space considering the large memory of mod-
+ern servers. Specifically, they consumes about 60-120 MB
+memory, whereas a today’s server usually has tens to hun-
+dreds of GB memory. Because for each log, STE has to store
+the position of every word as well as the log’s length, it con-
+sumes much more memory than the other three methods. In
+addition, both Craftsman and Signature Tree use the same
+prefix-tree structure to learn and store templates, thus they
+have the same space complexity.
+
+E. EVALUATION OF FAILURE PREDICTION ACCURACY
+Since Craftsman, SignatureTree, STE and LogSimilarity are
+all log parsing techniques for failure diagnosis or prediction,
+we evaluate the four techniques based on not only template
+learning results, but also failure prediction results follow-                      FIGURE 6. The PRCs of Craftsman, SignatureTree, STE, and LogSimilarity,
+ing [13], [14]. In the previous work [5], we proposed a sys-                       using PreFix and HSMM as the failure prediction method, respectively.
+log based failure prediction framework, PreFix, to determine
+whether a switch failure will occur in the near future during
+runtime. PreFix has been demonstrated with high accuracy in                        validation technique that provides an insight on how a pre-
+predicting switch failures using real-world data. In addition,                     diction model will generalize to an independent dataset [36].
+HSMM is also a popular failure prediction technique used for                       In k-fold cross-validation, the time bins are randomly parti-
+predicting failures based on logs [16]. It was demonstrated                        tioned into k equal sized subsamples. In each cross-validation
+with high accuracy using data collected from commercial                            process, a single subsample is used as the validation data
+cellular networks. Therefore, we apply PreFix and HSMM                             to test the prediction technique, and the remaining k − 1
+as the failure prediction techniques to demonstrate the log                        subsamples are used for training the technique. The cross-
+parsing performance of Craftsman, SignatureTree, STE, and                          validation process is repeated k times so that each of the k
+LogSimilarity, and how they impact the performance of fail-                        subsamples is used exactly once as the validation data. We
+ure prediction. The parameters of PreFix and HSMM are set                          then average the k results to generate a single estimation. The
+follows [5] and [16], respectively.                                                benefit of k-fold cross-validation is that all time bins are used
+   A system’s capability to predict failure is usually assessed                    for both training and validation, and each time bin is used
+by the following three intuitive metrics: Precision, Recall                        for validation exactly once. Since 10-fold cross-validation is
+and F1 measure [16], [34]. Hence we use these metrics to                           commonly used, we also apply it in our evaluation [35].
+evaluate the performance of each technique. For a time bin,                           Figure 6 shows the precision recall curves (PRCs) of
+according to the ground truth provided by network operators,                       the failure prediction results by PreFix and HSMM, using
+we know the outcome as either an ominous time bin or a non-                        Craftsman, SignatureTree, STE, and LogSimilarity to parse
+ominous one (the definition of ominous time bins and non-                          logs, respectively. Because the templates extracted by Crafts-
+ominous time bins follows [5]). For each technique, we label                       man and SignatureTree are almost identical, they have the
+its outcome as a true positive (TP), true negative (TN), false                     same PRCs. Through the PRCs, we can see that applying
+positive (FP), and false negative (FN). True positives are omi-                    Craftsman for learning templates achieves significantly better
+nous time bins that are accurately determined as such by the                       failure prediction accuracy than applying STE and LogSim-
+technique, and true negatives are time bins that are accurately                    ilarity, whether using PreFix or HSMM as the failure
+determined as non-ominous. If the technique determines that                        prediction system.
+a time bin is an ominous one when, in fact, it is actually                            To intuitively compare the best accuracy of Craftsman,
+non-ominous, we then label the outcome as a false positive.                        SignatureTree, STE, and LogSimilarity, Table 9 shows the
+False negatives are ominous time bins that are incorrectly                         Precision, Recall and F1 measure when the prediction sys-
+missed by the technique. We calculate the Precision, Recall                        tems (PreFix and HSMM) achieve the best F1 measure.
+                                       TP                 TP
+and FPR as follows: Precision = TP+FP      , Recall = TP+FN   ,                    When using PreFix to predict switch failures, Craftsman
+                2∗Precision∗Recall
+F1 mesure = Precision+Recall [27].                                                 (as well as SignatureTree) achieves higher precision and
+   We use the k-fold cross validation model to evaluate the                        higher recall than STE and LogSimilarity, respectively. As a
+four techniques [35]. k-fold cross validation is a model                           result, Craftsman improves PreFix’s prediction accuracy
+
+VOLUME 8, 2020                                                                                                                                       30255
+                                                              S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+TABLE 9. Precision, Recall and F 1 measure of Craftsman, SignatureTree, STE and LogSimilarity.
+
+
+
+
+TABLE 10. Summary of the syslog datasets for demonstrating Craftsman’s generality.
+
+
+
+
+(F1 measure) by 13.07% (as compared to LogSimilarity)
+to 35.42% (as compared to STE). With HSMM as the fail-
+ure prediction method, whereas the four techniques achieve
+approximate Recalls, Craftsman and SignatureTree improve
+the Precision of the failure prediction system by 202% (as
+compared to LogSimilarity) to 253% (as compared to STE)
+and the F1 measure by 155% (as compared to LogSimilarity)
+to 188% (as compared to STE).
+
+F. EVALUATION OF GENERALITY
+The above evaluation experiments have demonstrated Crafts-
+man’s superior performance in parsing network device logs.
+However, can Craftsman be applied in other types of                            FIGURE 7. Rand indexes of Craftsman, LogSig, IPLoM, and LKE on the
+logs, e.g., logs of servers (supercomputers), distributed sys-                 datasets of HDFS, BGL, HPC, Zookeeper and Proxifier.
+tems, applications? To study how general Craftsman is,
+we apply five large log datasets, ranging from supercom-
+puters (Blue Gene/L and High Performance Cluster) to stan-                     details) which sketch out the events that the logs represent.
+dalone software (Proxifier) to distributed systems (HDFS and                   We use these message subtypes (events) as the ground truth
+Zookeeper). As concluded in [37], IPLoM [24], LKE [25] and                     to evaluate the accuracy of each log parsing method.
+LogSig [26] are three widely-employed log parsers in parsing                      As is with Section V-A, we use Rand index to quantita-
+logs for servers, distributed systems and applications (more                   tively compare the accuracy of the above five log parsing
+detailed information can be seen in Section VI-B). Therefore,                  methods. Please note that we run the experiments of LKE
+we compare Craftsman with the above three methods.                             and LogSig 10 times to avoid bias (of clustering). Since
+   Table 10 summarizes the five large log datasets that                        the other methods are deterministic, we run them once. The
+are used to evaluate Craftsman’s generality. These datasets                    implemented prototypes of Craftsman, LogSig, IPLoM, and
+have a total of 16,441,570 log messages. We collect the                        LKE are running on the same experimental setup as described
+above five open log datasets with the generous support from                    in Section V-B. In addition, as with the existing works [26],
+their authors. Specifically, HDFS logs are collected from                      [37], from each dataset, we randomly pick 2000 log mes-
+a node cluster of Amazon EC2 platform with 203 server                          sages to evaluate each method’s accuracy (as measured by
+nodes [38]. The dataset of BGL is collected from a                             Rand index), for the reason that training LKE and LogSig on
+BlueGene/L supercomputer system, which has 131,072 pro-                        large dataset consumes too much time. For example, it takes
+cessors and 32,768 GB memory [39]. In addition, HPC is                         about 5.38 days to train LKE by parsing all the BGL data.
+an open dataset collected from a high performance cluster of                   That is, 10 times of log parsing will consume more than
+Los Alamos National Laboratory with 49 nodes (6,152 cores                      53 days, which makes the training nearly infeasible.
+and 128 GB memory per node). The dataset of Zookeeper is                          Figure 7 shows the Rand indexes of Craftsman, LogSig,
+collected from a Zookeeper installation on a node cluster with                 IPLoM, LKE on the datasets of HDFS, BGL, HPC,
+32 server nodes, and the dataset of Proxifier is from a desktop                Zookeeper and Proxifier, respectively. Craftsman achieves
+software Proxifier [37]. All the above five open datasets have                 an average Rand indexes of 96.25% on the five datasets,
+released the log message subtypes (see Table 3 for more                        which is the highest among the five log parsing methods.
+
+30256                                                                                                                                         VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+TABLE 11. The log parsing (including template learning and matching)               three simple failure prediction techniques based on not only
+time and memory cosumed per day of Craftsman, LogSig, IPLoM, and LKE
+on the BGL dataset.                                                                the characteristics of failure events, but also the correlation
+                                                                                   between failure events and non-failure events [40]. Realizing
+                                                                                   the the importance of the sequential feature of log files to
+                                                                                   failure prediction, Fronza et al. used random indexing (RI) to
+                                                                                   represent the sequence of operations extracted from logs, and
+                                                                                   then applied weighted support vector machine to associate
+This demonstrates that it can be used to parse logs not only                       sequences to the class of failures or that of non-failures [41].
+for network devices, but also for servers (supercomputers),                        Salfner et al. applied HSMM to recognize the patterns of logs
+distributed systems and applications. Because LogSig, and                          that indicate an imminent failure directly [16].
+LKE all rely on well-studied data mining models, rather
+than the heuristic rules extracted from the characteristics
+of log messages, they perform not good on one or more                               A. LOG PARSING METHODS FOR NETWORK DEVICES
+datasets. On the contrary, both Craftsman and IPLoM lever-                         Syslog parsing techniques for network devices including
+age the heuristic rules, and they achieve superior overall                         routers and switches have been well studied in [4], [8], [9].
+accuracy (the averaged Rand indexes of IPLoM is 93.86%).                           Specifically, inspired by the signature abstraction applied in
+The comparison results are consistent with the conclusion                          spam detection, Qiu et al. proposed SignatureTree [8]. The
+in [37] that it is important for log parsing methods to exploit                    idea behind this technique is that a syslog message subtype is
+the special characteristics of log data.                                           usually a combination of words with high frequency. There-
+   Although LogSig, IPLoM, and LKE achieve relatively                              fore, for syslogs that belong to a given message type, the tech-
+high accuracy on some dataset, none of these methods is                            nique constructs a SignatureTree whose root node is the
+incrementally retrainable. That is to say, if new subtypes                         message type and the child nodes are arranged on the basis of
+of logs (events) occur (because of software updates, etc.),                        the frequency of the combinations of words in syslogs. Using
+we have to rebuild the template library and rematch all the                        the frequency of the combinations of words rather than that of
+historical log messages to the newly generated templates.                          words themselves leads to that SignatureTree is not incremen-
+Take the BGL dataset as an example. The dataset contains                           tally retrainable. That is, we have to retrain the SignatureTree,
+the log data of 214 days. Because usually new subtypes of                          learn the templates, and match all the historical syslogs when
+logs (events) occur everyday, the model has to be retrained                        new subtypes of syslogs occur (probably due to upgrades).
+and all the logs should rematch the new templates per day for                      Considering the large number of syslogs generated every day
+LogSig, IPLoM, and LKE. However, Craftsman is incremen-                            (tens of millions) and the long period of historical syslogs
+tally retrainable, and thus only the newly added logs should                       (two years), relearning the templates and rematching all the
+rematch templates everyday. As shown in the second line of                         historical syslogs to templates does consume a huge amount
+Table 11, it takes Craftsman much less time to log parsing                         of computational resources. Therefore, SignatureTree is not
+(including template learning and matching) per day on the                          suitable for learning templates in our scenario [27].
+BGL dataset than LogSig, IPLoM, and LKE.                                              In addition, Kimura et al. presented an STE approach
+   We also compare the memory consumed for the above                               that extracts log message templates using a statistical clus-
+four methods as shown in the third (maximum memory)                                tering algorithm [9]. The high level idea is that template
+and fourth (average memory) lines of Table 11. As is with                          words appear more frequently than parameter words, and
+Section V-D, we carefully monitor the memory consumed by                           that syslogs that belong to the same subtype usually have
+each method when they are used to parse logs for the BGL                           similar structures with the positions of words. Specifically,
+dataset, and record the memory values per second. Craftsman                        for a word w that appears in the x-th position of a syslog
+consumes much less memory compared with LogSig, IPLoM                              message that contains L words, the word score for w is
+and LKE on the BGL dataset. It demonstrates that Craftsman                         Score(w, x, L) = Probability(w|x, L). Then using clustering
+is efficient in space complexity for diverse types of logs.                        techniques, STE classifies words with high word scores into
+   In conclusion, because Craftsman leverages the heuristic                        template words. However, STE can miss some templates, and
+rules extracted from the characteristics of log messages, and it                   thus some subtypes of syslogs cannot match any templates.
+is incrementally retrainable, it achieves superior performance                     For example, suppose that the syslogs that belong to sub-
+not only on network device logs, but also on other types of                        types U0 , U1 , . . . , Un have the same number of words. If the
+log data. In other words, Craftsman is general enough to be                        syslogs that belong to U0 occur much less often than those
+applied to parse diverse types of log data.                                        belonging to U1 , U2 , . . . , Un , each of the template words in
+                                                                                   U0 will have a relatively small word score, and thus it will be
+VI. RELATED WORKS                                                                  classified into parameter words. Thereby, syslogs belonging
+Using log files for failure detection, diagnosis and detection                     to U0 cannot match any template. As a result, as the evaluation
+has been widely applied in ISP networks [13], [16], comput-                        experiments show in Sections V-A, STE has a relatively low
+ers [14], [17]–[21], [40], [41], and online ad services [42].                      accuracy. Moreover, STE is neither incrementally retrainable
+Liang et al. investigated the RAS event logs and developed                         nor efficient in template matching [27].
+
+VOLUME 8, 2020                                                                                                                                30257
+                                                      S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+   To learn templates in an incremental manner,                        VII. CONCLUSION
+Kimura et al. [4] developed an online message template                 In this paper, we propose a novel syslog parsing technique,
+extraction technique, named LogSimilarity. In this technique,          Craftsman, to accurately, efficiently and incrementally learn
+they first classified words into five classes on the basis of          templates for network devices in distributed systems. We
+the tendency to constitute a log template: only symbols,               evaluate and compare the performance of Craftsman to
+only letters, only symbols and letters, only numbers and               those of SignatureTree, STE and LogSimilarity using real-
+letters, and only numbers or numbers and symbols. When                 world network device syslogs collected from more than
+a new syslog message arrives, according to the number of               10 datacenters over a two-year period. Both Craftsman and
+words in different classes in the message, the technique will          SignatureTree achieve much higher accuracy than STE and
+assign this message to an existing template cluster or create          LogSimilarity. Our experiments also show that Signature-
+a new template cluster from this message. In this technique,           Tree, STE and LogSimilarity consume much more com-
+message templates are learned on the basis of the classes of           putational resources than Craftsman, as they are either not
+words rather than the words themselves, and thus syslogs that          incrementally retrainable, or inefficient in template matching.
+belong to different subtypes can be easily assigned to the same        Moreover, we apply Craftsman to parse diverse types of logs,
+template cluster. For example, the syslogs of message type             and Craftsman achieves good performance across all types
+‘‘10OSPF/5/OSPF_NBR_CHG’’ in Table 2 can be assigned                   of logs. In summary, the evaluation results clearly demon-
+to one or two template clusters in this technique, rather than         strate the benefits of Craftsman: highly accurate, extremely
+the four clusters shown in Table 3 [27].                               efficient in template matching, incrementally retrainable and
+                                                                       very general to diverse types of logs.
+                                                                          Although Craftsman is efficient and robust in log parsing,
+B. LOG PARSING METHODS FOR SERVERS                                     it has the following three limitations: (1) Although Craftsman
+(SUPERCOMPUTERS), DISTRIBUTED SYSTEMS AND                              fully uses the syntax information of logs, it does not under-
+APPLICATIONS                                                           stand or utilize the semantics information of logs or tem-
+Data driven log parsing methods have been widely                       plates. (2) It cannot find similar templates and merge them to
+studied to automatically parse logs of servers, distributed            reduce the total number of templates. (3) It is trained and used
+systems and applications [24]–[26], [43]. These methods                for log parse on one certain type of logs (e.g., switch logs),
+leverage data mining techniques to extract templates from log          and thus cannot be used for cross-type log parse. Therefore,
+messages.                                                              in the future we will apply the methods in natural language
+   To the best of our knowledge, SLCT [43] is the first work           processing (say word embedding methods) to address the
+aiming to automatically parse logs, and it has been widely             above three limitations.
+applied in log mining tasks [44]. Motived by association
+rule mining, SLCT passes over logs twice with three steps:             APPENDIX
+(1) word vocabulary construction, (2) cluster candidates con-          EXTENSIONS FROM THE CONFERENCE VERSION
+struction, and (3) log template generation.
+                                                                       A preliminary version of this submission has appeared in the
+   IPLoM [45] is designed based on the heuristic rules
+                                                                       following conference paper: Shenglin Zhang, Weibin Meng,
+extracted from the characteristics of log messages. It has also
+                                                                       Jiahao Bu, Sen Yang, Ying Liu, Dan Pei, Jun (Jim) Xu,
+been widely used in log mining studies [46]. IPLoM parses
+                                                                       Yu Chen, Hui Dong, Xianping Qu, Lei Song. Syslog Process-
+logs by hierarchically partitioning log messages through three
+                                                                       ing for Switch Failure Diagnosis and Prediction in Datacenter
+steps: (1) partition by event size, (2) partition by token posi-
+                                                                       Networks. IEEE/ACM International Symposium on Quality
+tion, (3) partition by search for mapping, and (4) log template
+                                                                       of Service (IWQOS), 2017. This submission differs from the
+generation.
+                                                                       conference version as follows.
+   LKE [25] is a log parsing technique developed by
+Microsoft, which has been used in unstructured log min-                   1) We introduce the term ‘‘syslog parsing’’, which
+ing [25]. It is designed based on both clustering models and                 includes not only the template learning as described in
+heuristic rules. Similarly, it has three steps in parsing logs               the conference version, but also the template matching
+including (1) log clustering, (2) cluster splitting, and (3) log             as described in this version. In other words, Crafts-
+template generation.                                                         man cares about both template learning and template
+   LogSig [26] is a data mining based log parsing method that                matching, and the later one is newly added in this
+has been demonstrated in [47]. It parses logs through a three-               version.
+step process: (1) word pair generation, (2) log clustering, and           2) We elaborate the intuition of Craftsman in Section III.
+(3) log template generation.                                                 After investigating thousands of real-world network
+   None of the above methods is incrementally retrainable,                   device syslogs, we have the following two observa-
+and thus if they are applied to parse logs for a large volume of             tions: (a) parameters words are much less than template
+network device syslogs with a long period, they will consume                 words, and (b) a message type has a small number of
+too much computational resources. Consequently, they are                     subtypes, and each subtype has a large number of sys-
+not suitable in our scenario.                                                log messages. Based on these observations, we design
+
+30258                                                                                                                                 VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+      Craftsman to accurately, efficiently, and incrementally                       [4] T. Kimura, A. Watanabe, T. Toyono, and K. Ishibashi, ‘‘Proactive failure
+      parse syslogs.                                                                    detection learning generation patterns of large-scale network logs,’’ in
+                                                                                        Proc. IEEE 11th Int. Conf. Netw. Service Manage. (CNSM), Nov. 2015,
+   3) We introduce how to efficiently match a syslog mes-                               pp. 8–14.
+      sage to its template in Section IV-C. The computational                       [5] S. Zhang, Y. Liu, W. Meng, Z. Luo, J. Bu, S. Yang, P. Liang, D. Pei,
+      complexity of template matching using Craftsman is                                J. Xu, and Y. Zhang, ‘‘Prefix: Switch failure prediction in datacenter
+                                                                                        networks,’’ in Proc. ACM SIGMETRICS, Irvine, CA, USA, Jun. 2018,
+      O(H × k), where H is the height of the Craftsman and                              pp. 1–29.
+      usually H ≤ 10, and k is the threshold of Craftsman                           [6] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, Z. Zang, X. Jing,
+      pruning and usually k ≤ 10. Therefore, matching                                   and M. Feng, ‘‘FUNNEL: Assessing software changes in Web-based
+                                                                                        services,’’ IEEE Trans. Services Comput., vol. 11, no. 1, pp. 34–48,
+      a syslog message to its template using Craftsman is                               Jan. 2018.
+      extremely efficient.                                                          [7] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, and Z. Zang, ‘‘Rapid
+   4) We leverage real-world data to evaluate Craftsman’s                               and robust impact assessment of software changes in large Internet-
+                                                                                        based services,’’ in Proc. CONEXT, Heidelberg, Germany, Dec. 2015,
+      efficiency in template matching in Section V-B. Specif-                           pp. 1–13.
+      ically, we compare the running time of Craftsman                              [8] T. Qiu, Z. Ge, D. Pei, J. Wang, and J. Xu, ‘‘What happened in my
+      in template matching to that of SignatureTree, STE,                               network: Mining network events from router syslogs,’’ in Proc. 10th ACM
+                                                                                        SIGCOMM Conf. Internet Meas. (IMC), 2010, pp. 472–484.
+      and LogSimilarity. The evaluation experiments demon-                          [9] T. Kimura, K. Ishibashi, T. Mori, H. Sawada, T. Toyono, K. Nishimatsu,
+      strate that Craftsman respectively improves the compu-                            A. Watanabe, A. Shimoda, and K. Shiomoto, ‘‘Spatio-temporal factor-
+      tational efficiency by 6.88 and 10.25 times compared to                           ization of log data for understanding network events,’’ in Proc. IEEE
+                                                                                        INFOCOM, Apr. 2014, pp. 610–618.
+      LogSimilarity and STE.                                                       [10] X. Zhang, Z. Li, J. Chen, X. He, R. Yao, J.-G. Lou, M. Chintalapati, F. Shen,
+   5) We theoretically demonstrate the space complexity                                 D. Zhang, Y. Xu, Q. Lin, B. Qiao, H. Zhang, Y. Dang, C. Xie, X. Yang, and
+      of Craftsman in Section IV-D, and apply real-world                                Q. Cheng, ‘‘Robust log-based anomaly detection on unstable log data,’’ in
+                                                                                        Proc. 27th ACM Joint Meeting Eur. Softw. Eng. Conf. Symp. Found. Softw.
+      logs to prove this in Section V-D. Craftsman con-                                 Eng., 2019, pp. 807–817.
+      sumes about 120MB memory when it is used to                                  [11] W. Meng, Y. Liu, S. Zhang, D. Pei, H. Dong, L. Song, and X. Luo,
+      parse 10 million logs, which is quite a small memory                              ‘‘Device-agnostic log anomaly classification with partial labels,’’ in
+                                                                                        Proc. IEEE/ACM 26th Int. Symp. Quality Service (IWQoS), Jun. 2018,
+      space considering the large memory space of today’s                               pp. 1–10.
+      servers.                                                                     [12] W. Meng, Y. Liu, Y. Zhu, S. Zhang, D. Pei, Y. Liu, Y. Chen, R. Zhang,
+   6) We leverage both PreFix and HSMM to show how                                      S. Tao, and P. Sun, ‘‘Loganomaly: Unsupervised detection of sequential
+                                                                                        and quantitative anomalies in unstructured logs,’’ in Proc. 28th Int. Joint
+      Craftsman improves the accuracy of failure prediction                             Conf. Artif. Intell. (IJCAI), Int. Joint Conf. Artif. Intell. Org., vol. 7, 2019,
+      in Section V-E. In addition to HSMM, we also apply                                pp. 4739–4745.
+      PreFix, which was proposed by us recently, to demon-                         [13] F. Salfner and S. Tschirpke, ‘‘Error log processing for accurate fail-
+                                                                                        ure prediction,’’ in Proc. 1st USENIX Conf. Anal. Syst. Logs (WASL),
+      strate how Craftsman improves the performance of                                  2008, pp. 1–8.
+      failure prediction.                                                          [14] Z. Zheng, Z. Lan, B. H. Park, and A. Geist, ‘‘System log pre-processing
+   7) We apply new datasets and new baseline methods to                                 to improve failure prediction,’’ in Proc. IEEE/IFIP Int. Conf. Dependable
+                                                                                        Syst. Netw. (DSN), Jun. 2009, pp. 572–577.
+      demonstrate Craftsmans’s generality in Section V-F.                          [15] J. Zhu, S. He, J. Liu, P. He, Q. Xie, Z. Zheng, and M. R. Lyu, ‘‘Tools
+      To demonstrate how Craftsman is general to other types                            and benchmarks for automated log parsing,’’ in Proc. 41st Int. Conf. Softw.
+      of logs, we apply it to parse five types of logs, and                             Eng., Softw. Eng. Pract., 2019, pp. 121–130.
+                                                                                   [16] F. Salfner and M. Malek, ‘‘Using hidden semi-Markov models for effective
+      compare it with three widely-used log parsing meth-                               online failure prediction,’’ in Proc. 26th IEEE Int. Symp. Reliable Distrib.
+      ods designed for servers (supercomputers), distributed                            Syst. (SRDS), Oct. 2007, pp. 161–174.
+      systems and applications.                                                    [17] E. W. Fulp, G. A. Fink, and J. N. Haack, ‘‘Predicting computer system
+                                                                                        failures using support vector machines,’’ WASL, vol. 8, p. 5, Dec. 2008.
+   8) We try our best to improve the presentation quality
+                                                                                   [18] M. Du, F. Li, G. Zheng, and V. Srikumar, ‘‘Deeplog: Anomaly detection
+      of this paper. The paper has been carefully revised                               and diagnosis from system logs through deep learning,’’ in Proc. ACM
+      thoroughly. For example, in Section III and Section IV                            SIGSAC Conf. Comput. Commun. Secur., 2017, pp. 1285–1298.
+      we apply new examples of syslog messages to bet-                             [19] M. Du and F. Li, ‘‘Spell: Online streaming parsing of large unstruc-
+                                                                                        tured system logs,’’ IEEE Trans. Knowl. Data Eng., vol. 31, no. 11,
+      ter demonstrate the intuition, the process of prefix-                             pp. 2213–2227, Nov. 2019.
+      tree construction, and the benefit of incremental                            [20] B. Debnath, M. Solaimani, M. A. G. Gulzar, N. Arora, C. Lumezanu, J. Xu,
+      learning.                                                                         B. Zong, H. Zhang, G. Jiang, and L. Khan, ‘‘LogLens: A real-time log
+                                                                                        analysis system,’’ in Proc. IEEE 38th Int. Conf. Distrib. Comput. Syst.
+                                                                                        (ICDCS), Jul. 2018, pp. 1052–1062.
+REFERENCES                                                                         [21] K. Zhang, J. Xu, M. R. Min, G. Jiang, K. Pelechrinis, and H.
+ [1] C. Guo, L. Yuan, D. Xiang, Y. Dang, R. Huang, D. Maltz, Z. Liu,                    Zhang, ‘‘Automated it system failure prediction: A deep learning
+     V. Wang, B. Pang, H. Chen, Z.-W. Lin, and V. Kurien, ‘‘Pingmesh: A large-          approach,’’ in Proc. IEEE Int. Conf. Big Data (Big Data), Dec. 2016,
+     scale system for data center network latency measurement and analysis,’’           pp. 1291–1300.
+     in Proc. ACM Conf. Special Interest Group Data Commun. (SIGCOMM),             [22] A. A. Mahimkar, H. H. Song, Z. Ge, A. Shaikh, J. Wang, J. Yates, Y. Zhang,
+     2015, pp. 139–152.                                                                 and J. Emmons, ‘‘Detecting the performance impact of upgrades in large
+ [2] P. Gill, N. Jain, and N. Nagappan, ‘‘Understanding network failures in data        operational networks,’’ in Proc. SIGCOMM, New Delhi, India, Aug. 2010,
+     centers: Measurement, analysis, and implications,’’ in Proc. SIGCOMM,              pp. 303–314.
+     2011, pp. 350–361.                                                            [23] The Publicly Available Implementation of Craftsman. [Online]. Available:
+ [3] Y. Wu, M. Zhao, A. Haeberlen, W. Zhou, and B. T. Loo, ‘‘Diagnos-                   https://github.com/slzhangsd/Craftsman
+     ing missing events in distributed systems with negative provenance,’’         [24] A. A. Makanju, A. N. Zincir-Heywood, and E. E. Milios, ‘‘Clustering event
+     ACM SIGCOMM Comput. Commun. Rev., vol. 44, no. 4. ACM, 2014,                       logs using iterative partitioning,’’ in Proc. 15th ACM SIGKDD Int. Conf.
+     pp. 383–394.                                                                       Knowl. Discovery Data Mining, 2009, pp. 1255–1264.
+
+VOLUME 8, 2020                                                                                                                                                   30259
+                                                                      S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+[25] Q. Fu, J.-G. Lou, Y. Wang, and J. Li, ‘‘Execution anomaly detection in                                      SHENGLIN ZHANG (Member, IEEE) received
+     distributed systems through unstructured log analysis,’’ in Proc. 9th IEEE                                  the B.S. degree in network engineering from the
+     Int. Conf. Data Mining (ICDM), Dec. 2009, pp. 149–158.                                                      School of Computer Science and Technology,
+[26] L. Tang, T. Li, and C.-S. Perng, ‘‘Logsig: Generating system events from                                    Xidian University, Xi’an, China, in 2012, and the
+     raw textual logs,’’ in Proc. 20th ACM Int. Conf. Inf. Knowl. Manage., 2011,                                 Ph.D. degree in computer science from Tsinghua
+     pp. 785–794.                                                                                                University, Beijing, China, in 2017. He is cur-
+[27] S. Zhang, W. Meng, J. Bu, S. Yang, Y. Liu, D. Pei, J. Xu, Y. Chen,                                          rently an Assistant Professor with the College of
+     H. Dong, and X. Qu, ‘‘Syslog processing for switch failure diagnosis and
+                                                                                                                 Software, Nankai University, Tianjin, China. His
+     prediction in datacenter networks,’’ in Proc. IEEE/ACM 25th Int. Symp.
+                                                                                                                 current research interests include failure detection,
+     Quality Service (IWQoS), Jun. 2017, pp. 1–10.
+[28] M. Al-Fares, A. Loukissas, and A. Vahdat, ‘‘A scalable, commodity data                                      as well as diagnosis and prediction in data center
+     center network architecture,’’ in Proc. SIGCOMM, Seattle, WA, USA,                                          networks.
+     Aug. 2008, pp. 63–74.
+[29] R. Potharaju and N. Jain, ‘‘Demystifying the dark side of the middle:
+     A field study of middlebox failures in datacenters,’’ in Proc. Conf. Internet
+     Meas. Conf. (IMC), 2013, pp. 9–22.
+[30] J. Han, J. Pei, and Y. Yin, ‘‘Mining frequent patterns without can-
+     didate generation,’’ ACM SIGMOD Rec., vol. 29, no. 2, pp. 1–12,
+     2000.
+[31] K. Sklower, ‘‘A tree-based packet routing table for Berkeley unix,’’ in Proc.
+                                                                                                                 YING LIU (Member, IEEE) received the B.S.
+     USENIX Winter, 1991, pp. 93–99.
+[32] W. M. Rand, ‘‘Objective criteria for the evaluation of clustering                                           degree in information engineering, the M.S.
+     methods,’’ J. Amer. Stat. Assoc., vol. 66, no. 336, pp. 846–850,                                            degree in computer science, and the Ph.D. degree
+     Dec. 1971.                                                                                                  in applied mathematics from Xidian University,
+[33] M. Yamada, A. Kimura, F. Naya, and H. Sawada, ‘‘Change-point detection                                      in 1995, 1998, and 2001, respectively. She made
+     with feature selection in high-dimensional time-series data,’’ in Proc. 23rd                                her postdoctoral research at the Department of
+     Int. Joint Conf. Artif. Intell., 2013, pp. 1827–1833.                                                       Computer Science and Technology, Tsinghua Uni-
+[34] F. Salfner, M. Lenk, and M. Malek, ‘‘A survey of online failure prediction                                  versity, from 2001 to 2003, where she is currently
+     methods,’’ ACM Comput. Surv., vol. 42, no. 3, p. 10, 2010.                                                  an Associate Professor with the Institute for Net-
+[35] G. McLachlan, K.-A. Do, and C. Ambroise, Analyzing Microarray Gene                                          work Sciences and Cyberspace. Her research inter-
+     Expression Data, vol. 422. Hoboken, NJ, USA: Wiley, 2005.                         ests include multicast routing, network architecture, and router design and
+[36] R. Kohavi, ‘‘A study of cross-validation and bootstrap for accuracy esti-         implementation.
+     mation and model selection,’’ in Proc. 14th Int. Joint Conf. Artif. Intell.
+     (IJCAI), vol. 2, 1995, pp. 1137–1143.
+[37] P. He, J. Zhu, S. He, J. Li, and M. R. Lyu, ‘‘An evaluation study on log
+     parsing and its use in log mining,’’ in Proc. 46th Annu. IEEE/IFIP Int.
+     Conf. Dependable Syst. Netw. (DSN), Jun. 2016, pp. 654–661.
+[38] W. Xu, L. Huang, A. Fox, D. Patterson, and M. I. Jordan, ‘‘Detecting large-
+     scale system problems by mining console logs,’’ in Proc. ACM SIGOPS
+     22nd Symp. Oper. Syst. Princ., 2009, pp. 117–132.
+[39] A. Oliner and J. Stearley, ‘‘What supercomputers say: A study of five                                       WEIBIN MENG received the B.S. degree
+     system logs,’’ in Proc. 37th Annu. IEEE/IFIP Int. Conf. Dependable Syst.                                    in software engineering from Jilin University,
+     Netw. (DSN), Jun. 2007, pp. 575–584.                                                                        Changchun, China, in 2016. He is currently pursu-
+[40] Y. Liang, Y. Zhang, M. Jette, A. Sivasubramaniam, and R. Sahoo, ‘‘Blue-                                     ing the Ph.D. degree with the Department of Com-
+     gene/l failure analysis and prediction models,’’ in Proc. Int. Conf. Depend-                                puter Science and Technology, and the Institute
+     able Syst. Netw. (DSN), Jul. 2006, pp. 425–434.
+                                                                                                                 for Network Sciences and Cyberspace, Tsinghua
+[41] I. Fronza, A. Sillitti, G. Succi, M. Terho, and J. Vlasenko,
+                                                                                                                 University, Beijing, China. His research interests
+     ‘‘Failure prediction based on log files using Random Indexing and
+     Support Vector Machines,’’ J. Syst. Softw., vol. 86, no. 1, pp. 2–11,                                       include anomaly detection, Syslog analysis, and
+     Jan. 2013.                                                                                                  failure prediction in datacenter networks.
+[42] M. Shatnawi and M. Hefeeda, ‘‘Real-time failure prediction in online ser-
+     vices,’’ in Proc. IEEE Conf. Comput. Commun. (INFOCOM), Apr. 2015,
+     pp. 1391–1399.
+[43] R. Vaarandi, ‘‘A data clustering algorithm for mining patterns from event
+     logs,’’ in Proc. 3rd IEEE Workshop IP Oper. Manage. (IPOM), Apr. 2003,
+     pp. 119–126.
+[44] R. Vaarandi, ‘‘Mining event logs with slct and loghound,’’ in Proc. Netw.
+     Oper. Manage. Symp. (NOMS), 2008, pp. 1071–1074.
+[45] A. Makanju, A. N. Zincir-Heywood, and E. E. Milios, ‘‘A lightweight
+                                                                                                                 JIAHAO BU received the B.S. degree in electronic
+     algorithm for message type extraction in system application logs,’’
+     IEEE Trans. Knowl. Data Eng., vol. 24, no. 11, pp. 1921–1936,                                               engineering from Tsinghua University, Beijing,
+     Nov. 2012.                                                                                                  China, in 2016, where he is currently pursuing
+[46] A. Makanju, A. N. Zincir-Heywood, and E. E. Milios, ‘‘Fast entropy based                                    the master’s degree with the Department of Com-
+     alert detection in super computer logs,’’ in Proc. Int. Conf. Dependable                                    puter Science and Technology, and the Institute for
+     Syst. Netw. Workshops (DSN-W), Jun. 2010, pp. 52–58.                                                        Network Sciences and Cyberspace. His research
+[47] L. Tang, T. Li, L. Shwartz, F. Pinel, and G. Y. Grabarnik, ‘‘An integrated                                  interests include deep generative model and semi-
+     framework for optimizing automatic monitoring systems in large it infras-                                   supervised learning in KPI anomaly detection.
+     tructures,’’ in Proc. 19th ACM SIGKDD Int. Conf. Knowl. Discovery Data
+     Mining, 2013, pp. 1249–1257.
+
+
+
+
+30260                                                                                                                                                 VOLUME 8, 2020
+S. Zhang et al.: Efficient and Robust Syslog Parsing for Network Devices in Datacenter Networks
+
+
+
+
+                         SEN YANG received the B.S. degree in electronic                          YUZHI ZHANG received the B.S. and M.S.
+                         engineering from Shanghai Jiao Tong University,                          degrees in computer science from the Department
+                         in 2010, the M.S. degree in electronics and com-                         of Computer Science and Technology, Tsinghua
+                         munication engineering from Shanghai Jiao Tong                           University, in 1985 and 1987, respectively, and the
+                         University, in 2013, the M.S. degree in electri-                         Ph.D. degree in computer science from the Insti-
+                         cal and computer engineering from the Georgia                            tute of Computing Technology, Chinese Academy
+                         Institute of Technology, in 2013, and the Ph.D.                          of Sciences, in 1991. He is currently the Dean
+                         degree in electrical and computer engineering                            of the College of Software, Nankai University,
+                         from the Georgia Institute of Technology, in 2018.                       and is also a distinguished professor. His research
+                         He is currently a Research Scientist at Facebook,                        interests include deep learning and other aspects
+Inc. His research interests include network management and scheduling                             of artificial intelligence.
+in general.
+
+
+
+                          YONGQIAN SUN received the B.S. degree in
+                          statistical speciality from Northwestern Polytech-
+                          nical University, Xi’an, China, in 2012, and the
+                          Ph.D. degree in computer science from Tsinghua
+                          University, Beijing, China, in 2018. He is cur-
+                          rently an Assistant Professor with the College of
+                          Software, Nankai University, Tianjin, China. His
+                          research interests include anomaly detection, root
+                          cause localization, and high performance switch-
+                          ing in the datacenter.                                                  LEI SONG received the B.S. degree in information
+                                                                                                  security from the School of Computer Science,
+                                                                                                  Wuhan University, Wuhan, China, in 2009. He is
+                                                                                                  currently a Senior Engineer with Baidu, Inc.
+                          DAN PEI (Senior Member, IEEE) received the
+                          B.E. and M.S. degrees in computer science from
+                          the Department of Computer Science and Tech-
+                          nology, Tsinghua University, in 1997 and 2000,
+                          respectively, and the Ph.D. degree in computer
+                          science from the Computer Science Department,
+                          University of California, Los Angeles (UCLA),
+                          in 2005. He is currently an Associate Professor
+                          with the Department of Computer Science and
+                          Technology, Tsinghua University. His research
+interest includes network and service management in general. He is a Senior
+Member of the ACM.
+
+
+
+                        JUN (JIM) XU (Senior Member, IEEE) received
+                        the Ph.D. degree in computer and information
+                        science from The Ohio State University, in 2000.
+                        He is currently a Professor with the College of                           MING ZHANG received the B.S. degree in com-
+                        Computing, Georgia Institute of Technology. His                           puter software from the School of Computer Sci-
+                        current research interests include data streaming                         ence, Beijing University of Technology, Beijing,
+                        algorithms for the measurement and monitoring                             China, in 2001. He is currently an Engineer with
+                        of computer networks and hardware algorithms,                             China Construction Bank.
+                        and data structures for high-speed routers. He
+                        received the US National Science Foundation
+(NSF) CAREER Award, in 2003, the ACM Sigmetrics Best Student Paper
+Award, in 2004, and the IBM Faculty Awards, in 2006 and 2008, respec-
+tively. He was named an ACM Distinguished Scientist, in 2010.
+
+
+
+
+VOLUME 8, 2020                                                                                                                                30261
+

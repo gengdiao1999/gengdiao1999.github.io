@@ -1,0 +1,773 @@
+   Localizing Failure Root Causes in a Microservice
+              through Causality Inference
+                                   Yuan Meng1,4 , Shenglin Zhang2∗ , Yongqian Sun2
+                Ruru Zhang2 , Zhilong Hu2 , Yiyin Zhang3 , Chenyang Jia3 , Zhaogang Wang3 , Dan Pei1,4
+                                         1
+                                         Tsinghua University, 2 Nankai University, 3 Alibaba Group
+                       4
+                           Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+   Abstract—An increasing number of Internet applications are                                                           Upstream
+                                                                                                                                                                    Metr ics:
+applying microservice architecture due to its flexibility and clear                                                     Middleware
+                                                                                                                                          Order
+                                                                                                                                                                    Web QPS
+                                                                                                                        Communication   Creation         Middlewar e1 Pr ovider QPS
+logic. The stability of microservice is thus vitally important for                                    Get Coupon                                                     ......
+these applications’ quality of service. Accurate failure root cause
+localization can help operators quickly recover microservice
+failures and mitigate loss. Although cross-microservice failure                                A Microservice: Discount Coupon
+root cause localization has been well studied, how to localize                               KPI:                                                        Metr ics:
+                                                                                                                                                  System CPU Utilization
+failure root causes in a microservice so as to quickly mitigate this                       Web RT                             v
+                                                                                                                                             System Memor y Utilization
+microservice has not yet been studied. In this work, we propose                    Middlewar e1 Pr ovider RT
+                                                                                                                                                      JVM FGC Time
+                                                                                             ......
+a framework, MicroCause, to accurately localize the root cause                                                                                             ......
+monitoring indicators in a microservice. MicroCause combines a
+simple yet effective path condition time series (PCTS) algorithm                                                                                                     Metr ics:
+                                                                                                                        Downstream
+which accurately captures the sequential relationship of time                                             Middleware                                      Middlewar e1 Consumer QPS
+                                                                                                           Database                     Inventory           Middlewar e4 Send QPS
+series data, and a novel temporal cause oriented random walk                                                   Notice                                        Middlewar e4 Send RT
+(TCORW) method integrating the causal relationship, temporal                                                                                                           ......
+
+order, and priority information of monitoring data. We evaluate
+MicroCause based on 86 real-world failure tickets collected            Fig. 1. An example of microservices architecture. FGC means full garbage
+from a top tier global online shopping service. Our experiments        collection in java virtual machine.
+show that the top 5 accuracy (AC@5) of MicroCause for intra-
+microservice failure root cause localization is 98.7%, which is
+greatly higher (by 33.4%) than the best baseline method.               example, as shown in Fig. 1. For a microservice, there are usu-
+                                                                       ally upstream components (e.g., a microservice, a middleware)
+                           I. I NTRODUCTION                            calling it, and it can call some downstream components (e.g.,
+   Microservice has gained an increasing popularity in recent          a microservice, a middleware). For example, the order creation
+years, especially for the applications that need to support a          microservice will call the discount coupon service when a
+broad range of platforms, e.g., IoT, mobile, and Web [1]. The          customer places an order. To implement its function, the dis-
+performance quality of microservice is of vital importance             count coupon microservice will call the inventory microservice
+to the Internet company, because a microservice failure can            and some middlewares, e.g., the notice publishing platform,
+degrade the user experience and bring economic loss [2], [3].          database. Moreover, a microservice is typically deployed on
+Therefore, an efficient root cause localization of online fail-        one or more containers or virtual machines. Typically, there
+ures, which enables rapid service recovery and loss mitigation,        are mainly three types of components that may lead to a
+becomes increasingly more important for microservices.                 microservice failure: upstream component, downstream com-
+   In the microservice architecture, an application is decoupled       ponent, deployment environment.
+into multiple microservices. Recently, several works have been            Operators have configured a collection of indicators to
+proposed to understand how a failure is propagated across              continuously monitor the performance of each microservice.
+microservices and try to localize the root cause microservice          As shown in Fig. 1, these indicators include KPIs which
+that leads to this failure [4]–[6]. However, localizing failure        are user perceived indicators such as response time (RT) of
+root causes within a microservice has not yet been investigated.       Web users, and metrics include upstream component related
+It is important for operators to further understand why a              indicators (e.g., queries per second (QPS) of Web users),
+microservice fails, otherwise they cannot take measures to             downstream component related indicators (e.g., middleware
+mitigate the failure.                                                  RT), deployment environment related indicators (e.g., CPU
+   To find the root cause of a microservice failure, we need           utilization of the underlying container). When a KPI becomes
+to know how a microservice works. Here we take “discount               abnormal, it usually indicates a microservice failure, caused
+coupon” microservice in the online shopping platform as an             by the microservice’s upstream component, downstream com-
+                                                                       ponent, or deployment environment, which usually becomes
+  * Shenglin Zhang is the corresponding author.                        anomalous. Typically, the anomalous component or deploy-
+
+
+
+978-1-7281-6887-6/20/$31.00 © 2020 IEEE
+ment environment can be reflected by an anomaly in one                                  In TCORW, we successfully integrate three types infor-
+or more metrics. Besides, an anomalous metric can further                               mation: (1) causal relationship of monitoring indicators,
+tell why this root cause component becomes anomalous.                                   (2) anomaly information of metrics including occurrence
+Consequently, the root cause of a microservice failure can be                           time and anomaly degree, and (3) metric priority which
+denoted by an anomalous metric. For example, as shown in                                is obtained based on domain knowledge.
+Fig. 2, a microservice failure indicated by the anomalous RT                          • Combining PCTS and TCORW, we propose a novel
+(KPI) is caused by the anomalous Web QPS (metric).                                      framework, MicroCause, to infer the top N root causes
+                                                                                        of the failure in a microservice. To the best of our
+                                     W-QPS
+                                                                                        knowledge, this is the first work to localize failure root
+                                                                                        causes in a microservice.
+                                                                                      • We collected 86 online failure tickets from a large online
+                               CPU                  MC1-QPS                             shopping platform in three months. We evaluate the Mi-
+                                             GC-T             Thread
+                 Mem
+                        Load                                                            croCause and the baseline methods based on these cases.
+                                               MC1-RT                                   The AC@5 of MicroCause is 98.7%, which is higher
+                                                                                        33.4% than the best performance of baseline method.
+                                                          Root cause
+                                                         Anomalous KPI
+                                                                                                             II. P RELIMINARIES
+                               W-RT
+                                                                                       In this section, we first introduce the architecture of mi-
+                                                                                    croservice in Section II-A, followed by the statement of the
+Fig. 2. An example of the causal graph of a microservice failure. W-RT is Web
+RT and W-QPS is Web QPS. Mem, Load, CPU are the memory utilization,                 studied problem in Section II-B. The basic concepts of the PC
+load, and CPU utilization of the underlying container, respectively. GC-T and       algorithm and random walk are depicted in Section II-C and
+Thread are respectively the number of garbage collections and that of threads       Section II-D, respectively.
+in the underlying java virtual machine. MC1-RT and MC1-QPS are the average
+consumers’ RT and QPS of middleware1, respectively.
+                                                                                    A. Microservice Architecture
+   Currently, operators usually manually localize the root cause                      Microservice becomes increasingly more popular recently
+metric when a microservice failure occurs. However, due to                          due to its flexibility, scalability, and ease of deployment. In
+the large number and complicated dependency relationship of                         the microservice architecture, an application is decoupled into
+KPIs and metrics, this manual way is time-consuming, labor-                         multiple microservices, each of which is responsible for a
+intensive, and error-prone. Therefore, in this work we aim to                       specific function, e.g., querying data, creating orders. In this
+design an automotive framework to robustly localize the root                        way, a microservice, due to its reusability, can serve several
+cause metric in a microservice. Usually, localizing failure root                    applications at the same time. Therefore, there are direct or
+causes for computer systems has two main parts: learning the                        indirect calling relationships among microservices in diverse
+relationship of components to construct dependency graphs,                          application scenarios.
+and inferring root causes through random walk [7]–[9].
+   However, this idea faces two major challenges in our
+scenario as follows.                                                                                     Order                       View inventory
+
+   • Traditional causal graph construction method, which is
+                                                                                                                      Inventory
+      designed for independent and identically distributed (iid)                                          Order
+      data, cannot fully utilize propagation delays.                                                     Creation
+                                                                                                                                       Address
+   • Current random walk algorithm, which is based on the
+      assumption that, an abnormal metric more correlated with
+      an anomalous KPI is more likely to be the root cause, is                                             Discount
+                                                                                                            Coupon
+                                                                                                                           Freight
+
+      not always true in our scenario.
+We make the following contributions in this paper when                              Fig. 3. The call graph of microservices in the process of placing an order
+addressing the above challenges:
+   • To tackle the first challenge, we design a novel PCTS                             Here we take the process of placing an order, which is
+      (path condition time series) algorithm to learn the depen-                    a frequently used application on online shopping platforms,
+      dency graph of monitoring indicators with propagation                         as an example. As Fig. 3 shows, this application involves
+      delays being fully utilized. In PCTS, we first adopt the                      several microservices. Firstly, the order creation microservice
+      improved PC [10] to learn the causal graph of each point                      receives a user’s request and calls the inventory microservice
+      of time series. Then we generate the edges between two                        to check whether there are enough commodities. After that,
+      time series and generate a failure causal graph.                              the inventory microservice calls the address microservice to
+   • To tackle the second challenge, we propose a novel tem-                        calculate the closest warehouse and counts its inventory of the
+      poral cause oriented random walk (TCORW) approach.                            requested commodity. Besides, the order creation microservice
+
+
+
+                                                                                2
+calls the address microservice to generate the delivery address,                                                            ID indicating where the failure occurs, a KPI representing
+calls the discount coupon microservice to check whether this                                                                which KPI becomes anomalous, and a timestamp showing
+order can use any coupon, and calls the freight microservice                                                                when this failure happens. Therefore, it can be denoted as
+to deliver the commodity. Consequently, an application is                                                                   a tuple, i.e., {microservice ID, KPI, timestamp}. For example,
+completed through a series of callings among microservices.                                                                 {Microservice A, Web RT, 17:18} is a microservice failure.
+                                                                                                                               Problem definition: With the above definitions, our objec-
+B. Problem Statement
+                                                                                                                            tive can be formulated as follows. Given one failure ticket,
+   Failure and anomaly: A microservice failure is an event                                                                  MicroCause will try to localize the top N metrics that are
+that the microservice is not functional and seriously impacts                                                               most likely to be the root cause of the failure.
+the user’s quality of experience. For example, when the order
+creation microservice create orders very slowly or even cannot                                                              C. PC Algorithm
+create any order, this service is failed. It must be observable,                                                               Causality learning aims to discover the causal relationship
+from a person, an application, or another microservice [11].                                                                from data, which can help to better understand physical
+Besides, a microservice is anomalous, e.g., its underlying                                                                  mechanisms. The data needed can come from well-designed
+containers suffer from extremely high memory utilization, is                                                                comparative experiments. However, due to cost, ethics, and
+when its behavior deviates from the normal one. However, for                                                                other reasons, the use of experimental data for causal analysis
+a microservice an anomaly status does not necessarily lead to a                                                             is nearly infeasible in practice. In recent years, using obser-
+failure, thanks to its load balancing mechanism, self-recovery                                                              vational data for causal analysis has been demonstrated to be
+strategy, etc.                                                                                                              effective in many fields [12] [13]. Causality usually has two
+   KPI and metric: Usually, operators carefully configure a                                                                 representations, namely, causal graph and structural equation.
+collection of microservices’ indicators to continuously monitor                                                             Compared to the structural equation, causal graph is more
+applications’ status, quickly locate the root causes of failures,                                                           commonly used in practical applications because it is more
+and timely mitigate failures, to guarantee the quality of users’                                                            intuitive. The most popular method to construct a causal graph
+experience. These indicators, which are essentially time series                                                             from observational data is PC algorithm, which was proposed
+data, can be classified into two categories: key performance                                                                by Peter Spirtes and Clark Glymour [14].
+indicator (KPI) and metric. A KPI, e.g., the average response                                                                  PC algorithm aims to learn the causal relationship among
+time of a microservice, is a user-perceived indicator that                                                                  random variables. Suppose we prepare to learn a causal graph
+directly reflects the quality of service. When a KPI of a                                                                   among M random variables. The input is N independent
+microservice becomes anomalous, the microservice will be                                                                    identically distributed samples. Each sample contains M val-
+deemed to be failed. A metric, on the other hand, indicates                                                                 ues, which represent the observed values of the M random
+the status of a microservice’s underlying component. It can be                                                              variables, respectively. PC algorithm will output a directed
+the CPU utilization of a microservice’s underlying physical                                                                 acyclic graph (DAG) G with M nodes, where each node
+machine/virtual machine/container, the queries per second                                                                   represents one random variable. [9] treated each time series
+(QPS) of its upstream microservice, or the response time of                                                                 as one random variable, and the data at each time point as a
+its downstream microservice. An anomalous metric can be                                                                     sample. PC algorithm is based on the assumption that there is
+the potential root cause of an abnormal KPI indicating a                                                                    no edge between variable A and variable B. Formally, given
+microservice failure. However, an anomaly of metric does not                                                                a variable set S, A is independent of B, denoted as A ⊥ B|S.
+necessarily lead a KPI to be anomalous. For example, when                                                                   There are four steps in PC algorithm:
+a microservice’s underlying database fails and the database                                                                    1) Construct a fully connected graph of the M random
+related metrics become anomalous, the microservice may be                                                                          variables (all nodes are connected).
+normal due to the load balancing strategy.                                                                                     2) Perform a conditional independence test on each ad-
+                    1.00                                                                            700                            jacent variables under the significance level α. If a
+                                                                                                    600
+   Y values for metric
+
+
+
+
+                                   Metric
+                                                                                                     Y values for KPI
+
+
+
+
+                    0.98
+                    0.96
+                                   KPI                                                              500
+                                                                                                    400
+                                                                                                                                   conditional independence exists, the edge between the
+                    0.94                                                                            300
+                                                                                                    200
+                                                                                                                                   two variables is removed. In this step, the size of the
+                    0.92
+                           21:34   23:34    01:34   03:34   05:34   07:34   09:34   11:34   13:34
+                                                                                                    100
+                                                                                                                                   conditional variable set S increases step by step until
+                                                                                                                                   there are no more variables that can be added into S.
+                                      Fig. 4. Failure ticket in microservice A
+                                                                                                                               3) Determine the direction of some edges based on v-
+   To get readers better understand the difference between KPI                                                                     structure [15].
+and metric, and that between anomaly and failure, we give                                                                      4) Determine the direction of the rest of the edges.
+an example in Fig. 4. Microservice A becomes anomalous at
+02:34 and 13:34, because one of its metrics behaves abnormal                                                                D. Random Walk
+then. However, the microservice fails only at 13:34 because                                                                   Random walk is a statistical model that consists of a series
+its KPI becomes abnormal at that time.                                                                                      of trajectories, each step of which is random. Random walk
+   Failure ticket: In our scenario, a failure ticket of microser-                                                           can be performed in various types of spaces, e.g., a graph, a
+vice usually consists of three key elements: a microservice                                                                 vector. Typically, the random walk algorithm is as follows.
+
+
+
+                                                                                                                        3
+   Step 1. Generate a relationship graph G, where V is the                        the data is independent and identically distributed (denoted
+node set and E is the edge set. eij ∈ E is set to 1 when node                     as iid), and thus it cannot capture the propagation delays
+vi is one of the causes of vj .                                                   of different metrics and KPIs. For example, path condition
+   Step 2. Calculate a matrix Q:                                                  (PC) algorithm, which is a popular causal graph learning
+   1) Forward step (walk from the result node to the cause                        algorithm and has been used to learn the causal relationship
+      node). Specifically, we assume that the node which is                       of APIs [9], [14], treats each time point of metric/KPI as one
+      more related to the abnormal node is more likely to be                      iid data sample. However, the causal graph ignoring sequential
+      the root cause. Thus Qij = R(vabnormal , vj ), where                        patterns can fail to accurately learn the causal relationships.
+      R(vabnormal , vj ) is the correlation coefficient between                   For instance, as shown in Fig. 5, PC algorithm treats the data
+      vabnormal and vj , and eji = 1.                                             points at 17:18 (in the dotted box) as a iid data sample, and
+   2) Backward step (walk from cause node to result node). To                     assumes that the data sample is independent with the data
+      avoid the algorithm getting trapped into the node which                     sample at 17:16 and that at 17:17. Therefore, PC algorithm can
+      has low correlation with the abnormal node, random                          only learn that an anomaly of middleware consumer QOS can
+      walk enables a step from the cause node to the result                       cause middleware consumer RT to be anomalous. However,
+      node. Formally, if eji ∈ E and eij ∈        / E, Qji =                      when a metric becomes anomalous, it can also lead a KPI or
+      ρR(vabnormal , vi ), where ρ is a parameter controlling                     another metric to be anomalous after some period of time due
+      the impact of the backward step and ρ ∈ [0, 1].                             to propagation delays. For example, when Web QPS becomes
+   3) Self step (stay in the present node). If the algorithm                      anomalous at 17:16, it causes Web RT to be anomalous at
+      walks to a node where its neighbor nodes all have lower                     17:17 and Middleware consumer QPS to to be anomalous at
+      correlation with the abnormal node, this node likely                        17:18. Because PC algorithm ignores the propagation delays
+      denotes a root cause. Then the walker should stay in                        among metrics and KPIs, it cannot accurately deduce that the
+      the present node, and Qii = max[0, R(vabnormal , vi ) −                     root cause of a Web RT anomaly is an anomalous Web QPS.
+      maxk:eki ∈E R(vabnormal , vk )].                                               Correlation based random walk may not accurately
+   Step 3. Normalize every row of Q, and get the transition                       localize root cause. Random walk has been widely used for
+probability matrix Q̄ as follows:                                                 root cause localization [7]–[9]. It is based on the assumption
+                                                                                  that, an anomalous metric, which is more correlated with the
+                                     Qij                                          anomalous KPI, is more likely to be the root cause. However,
+                             Q̄ij = P                                  (1)
+                                     j Qij                                        in our scenario, the monitoring indicators (KPIs and metrics)
+  Step 4. Do random walk over G, and the probability of                           are heterogeneous. Usually, the monitoring indicators of the
+random walk from vi to vj is Q̄ij .                                               same category are more correlated than those of different
+  After the above four steps, the node which is visited the                       categories. For example, the anomalous KPI in Fig. 6, Web
+most frequently is the most likely to denote the root cause.                      RT, is more correlated with the middleware consumer RT.
+                                                                                  However, it is not correlated with the root cause metric, i.e.,
+          III. C HALLENGES AND D ESIGN OVERVIEW                                   Web QPS. That is because both Web RT and middleware
+A. Challenges                                                                     consumer RT experience large spikes when they become
+  The objective of MicroCause is to robustly localize the                         anomalous. On the contrary, a Web QPS more likely suffers
+root cause metric in a microservice. Motivated by the popular                     from a level shift when an anomaly occurs.
+design of failure root cause localization models for computer                               400           Anomalous KPI:Web RT
+                                                                                            200
+systems [7]–[9], MicroCause has two main parts, i.e., causal                                  0   18:42              19:42          20:42   21:45   22:45   23:45
+graph construction aiming to learn the relationship of compo-                                30           Root Cause:Web QPS
+                                                                                             20
+nents, and random walk trying to infer root causes. The design                               10
+                                                                                                  18:42              19:42          20:42   21:45   22:45   23:45
+of MicroCause faces the two following challenges.                                           5.0           Middleware1 Consumer RT
+                                                                                            2.5
+                                                                                            0.0   18:42              19:42          20:42   21:45   22:45   23:45
+                                   17:15   17:16   17:17   17:18                            0.5
+                                                                                                          JVM FGC Time
+                         Web RT
+                                                                                            0.4
+
+                                                                                                  18:42              19:42          20:42   21:45   22:45   23:45
+                       Web QPS
+
+                                                                                  Fig. 6. Monitoring indicators of failure case {Microservice A, Web RT, 22:45-
+                     Middleware1
+                                                                                  22:55}
+                    Consumer QPS
+
+                     Middleware1                                                  B. Design Overview
+                     Consumer RT
+                                                                                     To solve the above problem, we propose MicroCause,
+                                                                                  which is a failure root cause localization framework in the
+Fig. 5. Causal relationship among a KPI and three metrics. A circle denotes
+a time point of a KPI/metric, and an arrow represents a causal relationship       microservice through causality inference. In Fig. 7, we demon-
+  iid based causal graph cannot capture propagation de-                           strate how the MicroCause works via a failure ticket X
+lays. Usually, a causal graph learning algorithm assumes that                     {Microservice A, Web RT, 17:18}. When the online anomaly is
+
+
+
+                                                                              4
+                                                  Fig. 7. The overall architecture of MicroCause
+
+detected in KPI (e.g. Web RT), MicroCause will be activated.                  time that this algorithm is adopted in the root cause analysis
+Based on the empirical failure propagation time, the monitor-                 in the network system.
+ing indicators of the failure microservice, which are from 4
+hours before failure time to this moment will be used as the                      In improved PC algorithm, given a failure case, such as
+MicroCause ’s input. For the failure ticket X, the monitoring                 failure case X, the monitoring indicators of microservice A
+indicators of the microservice A, which are from 13:18 to                     dataset Iit , t = 0, . . . , T, i = 1, . . . , N with N time series ,
+17:18, will be used.                                                          including metrics and KPIs, will be used as input. Here we
+   The input dataset will be used to generate the failure causal              treat each time point in one time series as one variable Itj ,
+graph based on the PCTS algorithm we propose for the time                     which also represents one node in the causal graph. Because
+series causal graph learning. In the meantime, the metrics in                 there is one sample for the variable Itj , t = 0, . . . , T in
+the input dataset will be checked whether there are anomalies                 the observed time series. We define the max lag as τmax ,
+in anomaly detection module. The failure causal graph learning                which means the maximum time lag of the causal impact.
+module and the anomaly detection module can be processed                      Therefore, if we want to find the cause of Iti , only the past
+in parallel. Then the temporal cause oriented random walk                     variables from It to It−τmax should be taken into consider-
+(denoted as TCORW) will give the top N potential root cause                   ation. Then we can use the sliding window to construct the
+of the failure based on the failure causal graph and the anomaly              independence test samples. We will initialize the preliminary
+information of the metrics.                                                            b ti ) = (It−1 , . . . , It−τ ) for each variable Iti . If
+                                                                              parents P(I                            max
+                                                                              we assume the instantaneous causality, we can add It \ Iti .
+                       IV. M ETHODOLOGY
+                                                                              Then we conduct conditional independence tests like the PC
+                                                                                                             j           b ti ) if the null hypothesis
+A. Failure Causal Graph Learning                                              algorithm, and remove It−τ         from P(I
+                                                                                j           i
+    In the previous works [7]–[9], the dependency graph (e.g.,                It−τ ⊥ It |S cannot be rejected at the significance level
+                                                                                                                                           j
+the call graph of APIs) is essential for the failure root cause               αIP C , given the conditional set S. S ∈ I−            t \ It−τ , where
+                                                                               −
+localization. However, in our scenario, we cannot build the                   It = (It−1 , It−2 , . . . , It−τmax ). This stage converges if no
+graph via system tools [8] [7], because we investigate the                    more conditions can be tested and all independent parents
+relationship among the monitoring indicators, not the API                     with Iti are removed from P(I     b ti ). However, the result of the
+or virtual machine. Thanks to the research of causal infer-                   improved PC is a causal graph (denoted as GC ), which each
+ence [14] [15] [16], we can use the observation data to obtain                node represents one time point of the monitoring indicators,
+the relationship between indicators. In [9], they use the PC                  as shown in the Fig. 5. It can not be used to localize the root
+algorithm [14] to learn causal graph of the APIs. They treated                cause. Because we need a graph, which each node represents
+the monitoring data (time series) of APIs as iid data. It means               an indicator. Then we can localize the root cause by taking
+they assumed the independent relationship between It−τ and                    the propagation path.
+It , where It = (It1 , . . . , ItN ) for the time series dataset with N
+variables. Only the instantaneous causal relationship (e.g. from                 In PCTS, we improve GC to the graph where each node
+Iti to Itj ) can be learnt based on this assumption. However, the             represents one monitoring indicator. We assume if there is
+                                                                                              j
+causal relationship between time series often has time lag, e.g.              one edge from It−τ   to Iti in GC , the final causal graph should
+the relationship in Fig. 5. The PC algorithm will fail to report              have the edge from I j to I i . We denote the final failure causal
+lots of sequential causal relationship between the time series.               graph as GF CG and the edge set of GF CG is EF CG . It can
+    Here we propose PCTS, which is built on the top of the                                       i
+                                                                              be formed that if It−τ  ∈ P(Ib tj ), τ = 0, · · · , τmax , then eij ∈
+improved PC algorithm [10], to learn the failure causal                       EF CG . The Fig. 2 shows GF CG of failure ticket X. There
+graph based on the monitoring indicators. The improved                        are several metrics impacting the anomalous KPI (Web RT)
+PC algorithm [10] has been used in climate science [10],                      , such as system CPU utilization, system memory utilization
+sociology [17]. To the best of our knowledge, it is the first                 and middleware1 Consumer RT.
+
+
+
+                                                                          5
+B. Anomaly Detection                                                           Step 1: Cause oriented random walk: In this step, we
+   In MicroCause, we assume that the root cause metrics                     propose cause oriented random walk to find the possible root
+should become anomalous in some time before failure time.                   cause via the causal relationship between the metrics and KPIs.
+We adopt the SPOT [18], to detect anomaly of the metrics.                   In the traditional random walk (introduced in Section II-D),
+Because SPOT detects the sudden change in time series via                   they use correlation to quantify the relationship between met-
+the extreme value theory. It accords with the characteristics of            rics and anomalous KPI. The applied researches have proved
+the anomaly metrics in microservice. For each time point in                 “correlation is not equal to causality” [19] [20]. Because the
+the time series, SPOT will generate a threshold based on the                correlation cannot remove the third variable’s impact (named
+extreme value distributions of the past data. The time point,               as confounder in the causality research). In cause oriented
+whose value is higher than the high threshold or lower than                 random walk, we calculate Qij via partial correlation [21],
+the low threshold, will be treated as an anomaly. Based on the              which can remove the effect of confounders We calculate the
+physical meaning of the metrics, we list the detection type of              matrix Q in random walk as follows:
+the metrics in Table I.                                                        1) Forward step (walk from result indicator to cause indi-
+                              TABLE I
+                                                                                  cator):
+                  SPOT DETECTION TYPE OF METRICS
+                                                                                          Qij = Rpc (vak , vj |P a(vak ) \ vj , P a(vj ))                       (3)
+           Metric type                 Detection type
+      All queries per second,
+                               High threshold and low threshold                  Here the Rpc represents the partial correlation, and we
+          memory-related
+                                                                                 take the Pearson correlation as the correlation algorithm
+          All success rate              Low threshold
+               Others                  High threshold                            of partial correlation. P a(vak ) is the parent node set of
+                                                                                 vak . P a(vak ) \ vj means that vj is removed from the
+   In addition to detecting the anomalies of indicators, we also                 parent node set of vak . We take the P a(vak ) \ vj and
+evaluate the anomaly degree of metrics based on the SPOT                         P a(vj ) as the confounders in partial correlation.
+result in this module. Here we define the anomaly degree of                   2) Backward step (walk from cause indicator to result
+the metric i as ηmax  i
+                           . Given a time series of metric Mi =                  indicator): We also allow the walker to walk backward to
+M0 , M1 , . . . , MT , the index set of the anomaly point of Mi
+   i    i           i
+                                                                                 avoid getting trapped in the node which has low causal
+is O. We denote the threshold in SPOT for Mti is φMti .                          relationship with vak . If eji ∈ E and eij ∈   / E, Qji is
+                  i                                                              set as :
+   Then the ηmax       is calculated as follows:
+
+                    i
+                                   |Mki − φMki |                                         Qji = ρRpc (vak , vi |P a(vak ) \ vi , P a(vi ))                       (4)
+                   ηmax = max                                     (2)
+                             k∈O        φMki                                     where ρ is a parameter controlling the impact of the
+                                                                                 backwark step and ρ ∈ [0, 1].
+For the metrics, which are detected with both high thresh-
+                                            i                                 3) Self step (stay in the present node): We encourage the
+old and low threshold, the max value of ηmax      of this two
+                                                                                 walker stay in the present node if no neighbors have
+conditions will be used. After the anomaly detection module,
+                                                                                 high causal correlation with vak . We set the Qii as:
+the anomaly time and anomaly degree of each metric will be
+output. For example, QPS of Web in failure ticket X becomes                         Qii = max[0, Rpc (vak , vi | P a(vak ) \ vi , P a(vi )) − Ppc
+                                                                                                                                                      max
+                                                                                                                                                            ]
+anomalous at 17:17 with the anomaly degree 10.62. YGC time                           max
+                                                                                    Ppc  =     max       Rpc (vak , vk | P a(vak ) \ vk , P a(vk ))             (5)
+                                                                                              k:eki ∈E
+of JVM becomes anomalous at 17:17 with the anomaly degree
+18.35. The memory utilization of system does not become                     Then we get the transition probability matrix Q̄ as follows by
+anomalous.                                                                  normalizing every row of Q,
+
+C. Temporal Cause Oriented Random Walk                                                                           Qij
+                                                                                                         Q̄ij = P                                               (6)
+   In the last modules, we get the anomalous metrics in the                                                       j Qij
+
+anomaly detection module and the anomaly causal graph                          With Q̄ij , we start the random walk from vak . The walker
+GF CG in the failure causal graph learning module. Here                     walks into next node from vi following the probability vector
+we denote the node set as V and the edge set as E. Each                     Qi . After Nrw steps, the walker stops and each node is
+node vi represents one monitoring indicator, including KPIs                 visited ci times. For example, for failure ticket X, after 1000
+and metrics. And each edge eij ∈ E is set to 1 when                         steps, Web QPS are visited the most times, which is 270.
+the indicator (node) vi is one cause of indicator (node) vj .               Middleware1 RT ranks as the second with 182 times and the
+Because each of node in GF CG is one time series and different              JVM YGC time is visited 75 times.
+monitoring indicators have different characteristics, we design                Step 2: Potential root cause score: Beside the casual
+the temporal cause oriented random walk (TCORW) to rank                     relationship with the anomalous KPI, we also take the anomaly
+the potential root causes (metrics) and give the top N root                          i
+                                                                            degree ηmax    of the metrics into the consideration to localize
+causes.                                                                     the root cause. Because some metrics which impact the
+   There are three steps in TCORW:                                          anomalous KPI may not be anomalous, such as the memory
+
+
+
+                                                                        6
+utilization of system in Fig. 2. Here we define the potential            platform, which has hundreds of millions of users.
+root cause score of metric i as γi . It is calculated as:
+                                                                         A. Experimental Setup
+                                        i
+                   γi = λc̄i + (1 − λ)η̄max                   (7)
+                                                                            1) Dataset: In the large online shopping platform with
+                                         i                               thousands of applications, there are hundreds of microservices
+c̄i is the normalized visit time ci .  η̄max   is the normalized
+                   i                                                     working online for the operation of the whole system. From
+anomaly degree ηmax    . λ controls the contribution of metric’s
+causal relationship with the anomalous KPI and the anomaly               Sep. 2019 to Jan. 2020, we collected 86 online failure tickets
+degree of the metric.                                                    by monitoring more than 400 microservices’ status. Each of
+    Step 3: Rank the root causes: For the time series moni-              these cases is checked by the professional operator to get
+toring data, the anomaly time is a non-negligible information            the root cause. The dataset of each microservice contains 64
+to infer the root cause. However some metrics may look                   metrics and 4 KPIs. The four KPIs is Web RT, Middleware1
+like that they become abnormal at the same time, owing                   Provider RT, Middleware2 Receive RT and Middleware3 Re-
+to the data aggregation and the instantaneous propagation                ceive RT. All the metrics are listed in Table II, which can be
+of the anomaly. Different metrics reflect the performance of             divided into three types according to the its relationship with
+different parts in microservice. They have different priorities          the microservice.
+in the propagation path. For example, when the QPS of Web                   2) Evaluation Metric: To evaluate MicroCause and the
+(upstream) rises in microservice A, the consumer QPS of                  baseline algorithms, we introduce two performance metrics:
+middleware1 (downstream) will grow up because tasks of the               AC@k and Avg@k. These two metrics are the most com-
+microservice A increase. The CPU of system of microservice               monly used metrics to evaluate the rank result of the root cause
+A increases likewise. But the consumer QPS of middleware1                localization task in recent works [7]–[9]. AC@k represents the
+cannot impact QPS of Web. Here we classify the metrics                   probability that top k results given by each algorithm includes
+into three levels, which is summarized in Table II. Normally             the real root causes for all given failure cases. When the k is
+the high level metrics (e.g. Level 1) impact the low level               small, the higher AC@k indicates the algorithm identifies the
+metrics(e.g. Level 2). Therefore, the high level metrics have a          actual root cause more accurate. It prompts the efficiency of
+higher priority to be considered as the root cause.                      operators’ further investigation because of the smaller search
+    In this step, we design an algorithm, which combines the             space. Given the failure cases set A, AC@k is calculated as
+potential root cause score of the metric, the priority of the met-       follows:
+ric and the anomaly time of the metric to rank all the potential                                   1 X i<k Ra [i] ∈ Vrc
+                                                                                                          P                 a
+root cause of the failure ticket, as shown in Algorithm 1. We                         AC@k =                           a |)
+                                                                                                                                      (8)
+                                                                                                  |A|       min(k, |Vrc
+will give the top N results of the RankResultSet returned by                                         a∈A
+Algorithm 1.                                                                      a
+                                                                         where R [i] is the result of rank of all metrics for failure case
+                                                                              a
+                                                                         a. Vrc is the root cause set for failure case a. Avg@k evaluates
+ Algorithm 1: Rank the root cause                                        the overall performance of each algorithm by computing the
+  Input: 1 Levels of metrics, 2 γi of metric i,                          average AC@k, which defines as:
+  3 anomaly time ti of metric i
+  Output: RankResultSet                                                                                1 X
+                                                                                           Avg@k =         AC@j                       (9)
+  ResultSet ← [ ]                                                                                      k
+                                                                                                           1≤j≤k
+  for j=1,2,3 do
+                                                                           3) Baseline Algorithms:
+      Rj ← rank metrics in Level j by γi in descending
+       order.                                                              1) Anomaly Time Order: We will rank the metrics based
+      ResultSet ← append the top 2 result in Rj                               on the start of the anomaly time of each metric.
+  end                                                                      2) TON18 [8], MonitorRank [7]: [8] used a tracer tool
+  RankResultSet ← rank ResultSet by ti in ascending                           named PreciseTracer and nova APIs to construct the
+   order                                                                      dependency graph between the virtual machines. The
+                                                                              dependency graph is used to localize the root cause
+   For failure ticket X, the top 1 metric in RankResultSet is                 virtual machine based on random walk (denoted as RW-
+QPS of Web. Because QPS of Web is at Level 1 in the priority                  1). MonitorRank used the Hadoop tools to generate the
+of the metrics. QPS of Web gets abnormal and the young                        call graph between APIs, the call graph is used to trace
+garbage collection count of java virtual machine at the same                  the root cause API based on RW. In our scenario, we
+time at 17:17. The labelled root cause of failure ticket X is                 can not obtain the call graph or dependency graph based
+QPS of Web.                                                                   on system tools, therefore we use the PCTS to generate
+                                                                              the graph needed in their algorithms.
+                       V. E XPERIMENT                                      3) CloudRanger [9]: CloudRanger used the PC algorithm
+  In this section, we evaluate MicroCause based on the 86                     to generate the dependency graph between the APIs in
+online failure cases in a microservice based online shopping                  the cloud native system. Then a second-order random
+
+
+
+                                                                     7
+                                                              TABLE II
+M ETRICS AND ITS PRIORITY IN FAILURE PROPAGATION . YGC MEANS YOUNG GARBAGE COLLECTION . FGC MEANS FULL GARBAGE COLLECTION . QPS
+      Metrics     Metrics                           MEANS THE QUERIES PER SECOND .                                Priority
+      Type
+      Upstream     Web QPS; Middleware1 Provider QPS; Middleware2 Receive QPS; Middleware3 Receive QPS                                              Level 1
+                   Java virtual machine (JVM) related: JVM YGC Count; JVM YGC Time; JVM FGC Count; JVM FGC Time; JVM Max Heap                       Level 2
+                   Memory; JVM Used Heap Memory; JVM Usage Heap Memory; JVM Max Nonheap Memory; JVM Used Nonheap Memory; JVM
+                   Memory Usage Metaspace Pools; JVM Memory Usage Code Cache Pools; JVM Max Mapped Bufferpool; JVM Used Mapped
+                   Bufferpool; JVM Max Direct Bufferpool; JVM Used Direct Bufferpool; JVM Thread Count; JVM Deamon Thread Count; JVM
+      Self         Deadlock Thread Count; JVM Runnable Thread Count; JVM File Descriptor Utilization;
+                   System related: System CPU Utilization; System CPU Steal; System Load1 Utilization; System Load5 Utilization; System Load15      Level 2
+                   Utilization; System Load1; System Load5; System Load15; System Memory Utilization; System Swap Utilization; System Net
+                   In; System Net Out; System Net Retran Utilization; System Net Established; System Disk Utilization; System Disk Read; System
+                   Disk Write; System Dish Inode;
+                   Queries per second (QPS): Middleware1 Consumer QPS; Middleware4 Read QPS; Middleware1 Write QPS; Middleware5 Read                Level 2
+                   QPS; Middleware5 Write QPS; Middleware2 Send QPS; Middleware3 Send QPS;
+                   Response time (RT): Middleware1 Consumer RT; Middleware4 Read RT; Middleware4 Write RT; Middleware5 Read RT;                     Level 3
+      Downstream
+                   Middleware5 Write RT; Middleware2 Send RT; Middleware3 Send RT;
+                   Success rate: Middleware1 Consumer success rate; Middleware4 Read success rate; Middleware4 Write success rate; Middleware5      Level 3
+                   Read success rate; Middleware5 Write success rate; Middleware2 Send success rate; Middleware3 Send success rate;
+
+
+     walk (denoted as RW-2) is used to trace the root cause                       in Table IV show the importance of the proposed PCTS
+     API.                                                                         algorithm. Specifically, PCTS outperforms PC by at least
+  4) Microscope [22]: Microscope used the PC algorithm to                         1.8% and 3.7% in AC@1 and AC@3 this task,respectively. In
+     construct the non-communicating service dependencies                         most commonly used AC@5 in practical application, PCTS
+     and used the network connection information to con-                          achieves 5.1% improvement than PC.
+     struct the communicating service instance dependencies.
+                                                                                                              TABLE IV
+     Then they used the Pearson correlation coefficient of                             C OMPARISON OF THE CAUSAL GRAPH LEARNING ALGORITHMS
+     service level objective between the anomalous front                                    Method        AC@1     AC@2    AC@5    Avg@5
+     service and the root cause candidates, which are the                                 MicroCause      46.7%    62.7%   98.7%   69.7%
+     anomalous parent services of the anomalous service in                              MicroCause w/PC    44.9%   59.0%   93.6%   67.4%
+     the dependency graph.
+                                                                                      Case study: Fig. 8 shows the failure causal graph of failure
+B. Evaluation of the overall performance                                          ticket X via PC algorithm. Unlike the graph via PCTS (Fig. 2),
+                                                                                  the graph is divided into two parts. Because there is no path
+   The accuracy of MicroCause and the baseline method are
+                                                                                  from the Web RT, the random walker can not walk into the real
+listed in Table III, which shows the best performance of all
+                                                                                  root cause Web QPS. This phenomenon is not rare. In [12],
+method obtained by MicroCause. Specifically, we outperform
+                                                                                  the author declared the isolated subgraphs generated by the PC
+TON18 and MonitorRank, the best performance baseline, by
+                                                                                  algorithm based on time series data. It is because we treat the
+12.0% and 14.7% on AC@1 and AC@2, respectively. As for
+                                                                                  time series as iid data when we use PC algorithm. In fact, we
+AC@5, the proposed algorithm achieves at least 29.1% im-                                                                           1
+                                                                                  treat the It = (It1 , . . . , ItN ) and It−τ = (It−τ            N
+                                                                                                                                       , . . . , It−τ ) as
+provement over other methods. In general, MicroCause shows
+                                                                                  independent samples, which means there is no edge between
+the best performance in this task, and it’s Avg@5 achieves                          i
+                                                                                  It−τ  and Itj . But it is acknowledged the causal relationship
+69.7%, which is equivalent to more than 40% relative im-
+                                                                                  between time series is often along with the time lag. Therefore
+provement compared with the second place.
+                                                                                  the time lag causal relationships in practice can not be recog-
+                             TABLE III                                            nized via PC algorithm, such as the impact from QPS of Web
+      R ESULT OF M ICRO C AUSE AND THE BASELINE ALGORITHMS
+                                                                                  to memory utilization of the system, which is not instantaneous
+          Method                AC@1       AC@2        AC@5       Avg@5           because of the time of the program initialization.
+         MicroCause             46.7%      62.7%       98.7%      69.7%
+  TON18 [8], MonitorRank [7]    34.7%      48.0%       65.3%      48.2%
+      CloudRanger [9]           19.0%      32.9%       69.6%      46.8%                                                             Root cause
+                                                                                                     Thread
+      Microscope [22]           12.2%      21.9%       29.3%      23.9%                                                             Anomalous KPI
+                                                                                                                         Load
+    Anomaly Time Order          11.4%      21.5%       43.0%      28.4%
+                                                                                                              Mem
+                                                                                                                                   W-QPS
+                                                                                                     CPU
+C. Evaluation of Failure Causal Graph Learning
+   In this part, we will analyze the performance of failure                                                   W-RT
+                                                                                                                           GC-C            GC-T
+
+causal graph learning part. PCTS will be compared with
+the PC algorithm, which is used in the previous root cause                        Fig. 8. Failure causal graph via PC algorithm of failure ticket X. Mem is
+localization works [9] [12]. Here we take the significance                        the System Memory Utilization. Cpu is the System CPU Utilization. Load
+level of independent test in PC as 0.05, which is a common                        is the System Load1. W-QPS is the Web QPS. GC-C and GC-T are the
+                                                                                  young garbage collection count of java virtual machine and the young garbage
+setting in previous works. For all algorithms, the TCORW will                     collection time of virtual machine respectively. W-RT is the anomalous KPI:
+be used to localize the root cause. The results summarized                        Web RT.
+
+
+
+                                                                              8
+D. Evaluation of TCORW                                                                                                                   level objective metric to represent each service and learn the
+   In this part, we analyze the performance of root cause                                                                                non-communicating relationship between the microservices
+analysis part: TCORW. Here the RW-1 [8] [7] and RW-2 [9]                                                                                 via the causality method, such as PC. But there is no clear
+will be used as the baseline algorithms. The results are shown                                                                           communicating relationship in a microservice. We have to
+in Table V. All the results are based on PCTS for the root cause                                                                         learn the dependence relationship between different metrics
+analysis. In all methods, the MicroCause achieves the best                                                                               to localize the root cause in a microservice.
+performance for the task of failure root cause localization and
+MicroCause w/RW-1 works better than MicroCause w/RW-2                                                                                       As listed in Table VI, root cause localization for system
+based on all the evaluation metrics. Overall, the performance                                                                            failures typically include two parts: learning the relationship
+will be reduced remarkably if we use PC to replace PCTS                                                                                  of components to construct dependency graphs, and inferring
+(e.g., more than 30% performance drop in AC@5 ), which                                                                                   root causes through random walk.
+proves the effectiveness of the proposed TCORW algorithm.                                                                                                           TABLE VI
+                                          TABLE V                                                                                         T HE RELATIONSHIP LEARNING METHODS AND ROOT CAUSE INFERENCE
+                                                                                                                                               METHODS USED IN PREVIOUS WORKS FOR FAILURE ROOT CAUSE
+                       C OMPARISON OF TCORW WITH THE BASELINE METHOD
+                                                                                                                                                                   LOCALIZATION
+                          Method        AC@1   AC@2     AC@5    Avg@5                                                                                                            Relationship     Root cause
+                        MicroCause      46.7%   62.7%   98.7%    69.7%                                                                            Type            Model
+                                                                                                                                                                                   learning        inference
+                     MicroCause w/RW-1  34.7%   48.0%   65.3%    48.2%                                                                                          TON18 [8]       OpenStack APIs   Random walk
+                     MicroCause w/RW-2  29.3%   46.7%   62.7%    46.3%                                                                                        MonitorRank [7]    Hadoop tools    Random walk
+                                                                                                                                                 Cross-                                          Second order
+                                                                                                                                                              CloudRanger [9]        PC
+                                                                                                                                               microservice                                      random walk
+E. Evaluation of The Parameters in MicroCause                                                                                                                                                       Pearson
+                                                                                                                                                              Microscope [22]        PC
+                                                                                                                                                                                                  correlation
+   In this part, we will analyze the impact of parameters λ                                                                                       Intra-
+and ρ in TCORW on the root cause localization performance                                                                                                       MicroCause          PCTS           TCORW
+                                                                                                                                               microservice
+of MicroCause. Here we change the λ from 0 to 1 and the
+results can be found in Fig. 9(a). The best performance of                                                                               A. Relationship Learning
+MicroCause is achieved when the λ is equal to 0.1. When
+the λ changes from 0.1 to 0.7, AC@1, AC@2, Avg@5 almost                                                                                    There are mainly two types of relationship learning meth-
+do not change, and AC@5 remains above 90.0%. From this                                                                                   ods used in previous failure root cause localization models:
+point, MicroCause is robust to the λ in TCORW, when λ is                                                                                 system tool based methods and data analysis based methods
+less than 0.8.                                                                                                                           as follows:
+               1.2
+                                                           AC@1
+                                                                                 1.3
+                                                                                                                             AC@1
+                                                                                                                                           • System tool based methods: Kim et al. proposed Mon-
+               1.1                                         AC@2                  1.2                                         AC@2
+               1.0
+                                                           AC@5
+                                                           Avg@5
+                                                                                 1.1                                         AC@5
+                                                                                                                             Avg@5
+                                                                                                                                             itorRank [7] to localize the root cause API of failures in
+                                                                                 1.0
+                                                                                                                                             service-oriented architectures. MonitorRank generated a
+ perfermance
+
+
+
+
+                                                                   perfermance
+
+
+
+
+               0.9
+                                                                                 0.9
+               0.8
+               0.7
+                                                                                 0.8                                                         call graph of the studied APIs, which was easily gener-
+                                                                                 0.7
+               0.6                                                               0.6                                                         ated by those batch processing systems (e.g., Hadoop), to
+               0.5                                                               0.5
+               0.4                                                               0.4
+                                                                                                                                             learn APIs’ relationship. Besides, Weng et al. [8] inferred
+                     0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0                       0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0
+                                       in TCORW                                                          in TCORW                            the dependencies of virtual machines in a cloud platform
+                                      (a)                                                               (b)                                  to localize failure root causes at the virtual machine
+                                                                                                                                             level. The APIs of OpenStack were applied to obtain
+Fig. 9. The performance of MicroCause based on different λ and ρ in
+TCORW                                                                                                                                        physical relationships, and a popular trace analysis tool,
+                                                                                                                                             PreciseTracer, was used to capture call relationships.
+   Here we change the ρ from 0 to 1 and the results are
+                                                                                                                                           • Data analysis based methods: In [23], Chen et al.
+shown in Fig. 9(b). The results show the performance of the
+                                                                                                                                             adopted a Bayesian network as a diagnostic tool to infer
+MicroCause is not influenced by ρ, when the ρ is greater than
+                                                                                                                                             the relationship between alerting signals and outages in
+0. MicroCause is not sensitive to ρ in TCORW, based on the
+                                                                                                                                             cloud service systems. Moreover, in [24], the AutoRe-
+experiments with the online shopping platform dataset.
+                                                                                                                                             gressive eXogenous (ARX) model was used to learn the
+                                                  VI. R ELATED W ORK                                                                         invariant relationship of monitoring indicators. Based on
+   Because it is of vital importance to quickly localize the                                                                                 historical alarms, [9] applied the PC algorithm to learn
+root causes of computer system failures for assuring the                                                                                     the causal relationships of service APIs.
+quality of users’ experience, a large number of methods have                                                                               In our scenario, however, we cannot obtain the relationship
+been proposed for this purpose. However, these works all aim                                                                             of KPIs and metrics within a microservice through system
+to localize the root cause cross-microservices. Normally there                                                                           tools. Besides, the previously proposed methods, e.g., the
+are clear calling relationships between the microservices.                                                                               Bayesian network, ARX, and the PC algorithm, which can-
+The system tools or network connection information can                                                                                   not capture the sequential relationship of KPIs and metrics,
+be used to learn the communicating [8] [7] [22]. For the                                                                                 do not achieve satisfactory performance in our scenario as
+non-communicating relationship, [9] [22] use the one service                                                                             demonstrated in Section V-B.
+
+
+
+                                                                                                                                     9
+B. Root Cause Inference                                                               [5] X. Zhou, X. Peng, T. Xie, J. Sun, C. Ji, D. Liu, Q. Xiang, and
+                                                                                          C. He, “Latent error prediction and fault localization for microservice
+   Motivated by the successful applications of random walk                                applications by learning from system trace logs,” in Proceedings of
+in biological research (e.g.,, inferring the source of scent),                            the 2019 27th ACM Joint Meeting on European Software Engineering
+                                                                                          Conference and Symposium on the Foundations of Software Engineering,
+[7] introduced random walk on the generated calling graph                                 2019, pp. 683–694.
+to trace the root cause APIs of failures. Random walk was                             [6] Q. Du, T. Xie, and Y. He, “Anomaly detection and diagnosis for
+also used to analyze the root cause virtual machines of                                   container-based microservices with performance monitoring,” in Algo-
+                                                                                          rithms and Architectures for Parallel Processing, J. Vaidya and J. Li,
+failures in cloud platforms [8]. To improve the performance                               Eds. Cham: Springer International Publishing, 2018, pp. 560–572.
+of random walk, [9] proposed a second-order random walk,                              [7] M. Kim, R. Sumbaly, and S. Shah, “Root cause detection in a service-
+which calculates the transition probability between two edges                             oriented architecture,” ACM SIGMETRICS Performance Evaluation Re-
+                                                                                          view, vol. 41, no. 1, pp. 93–104, 2013.
+rather than that of two nodes. However, neither the native                            [8] J. Weng, J. H. Wang, J. Yang, and Y. Yang, “Root cause analysis of
+random walk method nor the second-order one achieves good                                 anomalies of multitier services in public clouds,” IEEE/ACM Transac-
+performance in our scenario, namely, they are more likely to                              tions on Networking, vol. 26, no. 4, pp. 1646–1659, 2018.
+                                                                                      [9] P. Wang, J. Xu, M. Ma, W. Lin, D. Pan, Y. Wang, and P. Chen,
+generate false root causes. This is because they neither fully                            “Cloudranger: root cause identification for cloud native systems,” in
+utilize the temporal information of KPI anomaly and metric                                2018 18th IEEE/ACM International Symposium on Cluster, Cloud and
+anomalies, nor leverage the priority information of metrics,                              Grid Computing (CCGRID). IEEE, 2018, pp. 492–502.
+                                                                                     [10] J. Runge, P. Nowack, M. Kretschmer, S. Flaxman, and D. Sejdinovic,
+which has been demonstrated in Section V-B.                                               “Detecting and quantifying causal associations in large nonlinear time
+                                                                                          series datasets,” Science Advances, vol. 5, no. 11, p. eaau4996, 2019.
+                          VII. C ONCLUSION                                           [11] S. Zhang, Y. Liu, W. Meng, Z. Luo, J. Bu, S. Yang, P. Liang, D. Pei,
+                                                                                          J. Xu, Y. Zhang et al., “Prefix: Switch failure prediction in datacenter
+   Microservice-based architectures are becoming more com-                                networks,” Proceedings of the ACM on Measurement and Analysis of
+mon in current large-scale Internet systems. Quick failure root                           Computing Systems, vol. 2, no. 1, pp. 1–29, 2018.
+cause localization can improve quality of service and reduce                         [12] P. Chen, Y. Qi, P. Zheng, and D. Hou, “Causeinfer: automatic and
+                                                                                          distributed performance diagnosis with hierarchical causality graph in
+loss in efficiency and revenue. In this paper, we first propose to                        large distributed systems,” in IEEE INFOCOM 2014-IEEE Conference
+investigate the failure root cause in a microservice, which is an                         on Computer Communications. IEEE, 2014, pp. 1887–1895.
+important step in the failure localization of the whole system.                      [13] E. K. Kao, “Causal inference under network interference: A framework
+                                                                                          for experiments on social networks,” arXiv preprint arXiv:1708.08522,
+We design a framework, MicroCause, to localize the failure                                2017.
+root cause in a microservice, which achieves high performance                        [14] P. Spirtes, C. N. Glymour, R. Scheines, and D. Heckerman, Causation,
+in the experiments based on 86 the online failure tickets. In                             prediction, and search. MIT press, 2000.
+                                                                                     [15] L. G. Neuberg, “Causality: models, reasoning, and inference, by judea
+MicroCause, we design PCTS, which can learn the causal                                    pearl, cambridge university press, 2000,” Econometric Theory, vol. 19,
+graph of monitoring indicators. We believe this method can                                no. 4, pp. 675–685, 2003.
+be used in other time series related root cause localization                         [16] C. Heinze-Deml, M. H. Maathuis, and N. Meinshausen, “Causal
+                                                                                          Structure Learning,” arXiv:1706.09141 [stat], Jun. 2017, arXiv:
+problems.                                                                                 1706.09141. [Online]. Available: http://arxiv.org/abs/1706.09141
+                                                                                     [17] A. Bovet and H. A. Makse, “Influence of fake news in twitter during the
+                    VIII. ACKNOWLEDGEMENT                                                 2016 us presidential election,” Nature communications, vol. 10, no. 1,
+                                                                                          pp. 1–14, 2019.
+   We thank the anonymous reviewers for their valuable                               [18] A. Siffer, P.-A. Fouque, A. Termier, and C. Largouet, “Anomaly detec-
+feedbacks. We thank Juexing Liao and Ping Liu for their                                   tion in streams with extreme value theory,” in Proceedings of the 23rd
+                                                                                          ACM SIGKDD International Conference on Knowledge Discovery and
+helpful suggestions and proofreading. This work has been                                  Data Mining, 2017, pp. 1067–1075.
+supported by the National Key R&D Program of China under                             [19] Y. Meng, S. Zhang, Z. Ye, B. Wang, Z. Wang, Y. Sun, Q. Liu, S. Yang,
+grant No. 2019YFB1802504, the National Natural Science                                    and D. Pei, “Causal analysis of the unsatisfying experience in realtime
+                                                                                          mobile multiplayer games in the wild,” in 2019 IEEE International
+Foundation of China under Grant No. 61902200, the Funda-                                  Conference on Multimedia and Expo (ICME), July 2019, pp. 1870–1875.
+mental Research Funds for the Central Universities under grant                       [20] R. Kold-Christensen and M. Johannsen, “Methylglyoxal metabolism
+No. 63191424, the China Postdoctoral Science Foundation                                   and aging-related disease: Moving from correlation toward causation,”
+                                                                                          Trends in Endocrinology & Metabolism, 2019.
+under Grant No. 2019M651015, and the Beijing National                                [21] K. Baba, R. Shibata, and M. Sibuya, “Partial correlation and conditional
+Research Center for Information Science and Technology                                    correlation as measures of conditional independence,” Australian & New
+(BNRist).                                                                                 Zealand Journal of Statistics, vol. 46, no. 4, pp. 657–664, 2004.
+                                                                                     [22] J. Lin, P. Chen, and Z. Zheng, “Microscope: Pinpoint performance issues
+                                                                                          with causal graphs in micro-service environments,” in Service-Oriented
+                             R EFERENCES                                                  Computing, C. Pahl, M. Vukovic, J. Yin, and Q. Yu, Eds. Cham:
+                                                                                          Springer International Publishing, 2018, pp. 3–20.
+ [1] https://www.itproportal.com/features/microservices-architecture-is-             [23] Y. Chen, X. Yang, Q. Lin, H. Zhang, F. Gao, Z. Xu, Y. Dang, D. Zhang,
+     helping-organisations-in-achieving-new-heights, accessed January 16,                 H. Dong, Y. Xu et al., “Outage prediction and diagnosis for cloud service
+     2020.                                                                                systems,” pp. 2659–2665, 2019.
+ [2] https://tech.sina.com.cn/it/2019-03-03/doc-ihsxncvf9295268.shtml,               [24] W. Cheng, K. Zhang, H. Chen, G. Jiang, Z. Chen, and W. Wang,
+     accessed February 1, 2020.                                                           “Ranking causal anomalies via temporal and dynamical analysis on
+ [3] https://www.epochtimes.com/gb/19/2/12/n11038862.html,          accessed              vanishing correlations,” in Proceedings of the 22nd ACM SIGKDD
+     February 1, 2020.                                                                    International Conference on Knowledge Discovery and Data Mining,
+ [4] C. Heinze-Deml, M. H. Maathuis, and N. Meinshausen, “Causal struc-                   2016, pp. 805–814.
+     ture learning,” Annual Review of Statistics and Its Application, vol. 5,
+     pp. 371–391, 2018.
+
+
+
+
+                                                                                10
+

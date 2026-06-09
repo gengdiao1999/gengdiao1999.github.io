@@ -1,0 +1,883 @@
+                FluxRank: A Widely-Deployable Framework to Automatically
+            Localizing Root Cause Machines for Software Service Failure Mitigation
+
+                                       Ping Liu †¶ , Yu Chen§ , Xiaohui Nie†¶ , Jing Zhu†¶ ,
+                                    Shenglin Zhang∗∗ , Kaixin Sui‡ , Ming Zhang k , Dan Pei∗†¶
+                       † Tsinghua University § Baidu ∗∗ Nankai University ‡ BizSeer k China Construction Bank
+                       ¶ Beijing National Research Center for Information Science and Technology (BNRist)
+
+
+
+
+   Abstract—The failures of software service directly affect user                                    Service critical KPI
+experiences and service revenue. Thus operators monitor both                                                                         Mitigation
+                                                                                                                             •    Switch traffic
+service-level KPIs (e.g., response time) and machine-level KPIs          Failure start time
+                                                                                                                             •    Rollback version
+                                                                                  𝑇"
+(e.g., CPU usage) on each machine underlying the service.                                                                    •    Restart instances
+When a service fails, the operators must localize the root cause                                                             •    …                    operator
+machines, and mitigate the failure as quickly as possible. Existing                                                              Root Cause Analysis
+                                                                         Mitigation start time                               • Analyze source codes
+approaches have limited application due to the difficulty to obtain               𝑇#                                         • Analyze logs
+the required additional measurement data. As a result, failure                                                               • …
+                                                                                                                                                       developer
+localization is largely manual and very time-consuming.
+   This paper presents FluxRank, a widely-deployable framework
+                                                                                Normal
+that can automatically and accurately localize the root cause                                 Confirmation Mitigation       Root Cause Analysis
+machines, so that some actions can be triggered to mitigate the
+service failure. Our evaluation using historical cases from five      Fig. 1: The process of troubleshooting. When a critical KPI
+real services (with tens of thousands of machines) of a top search
+company shows that the root cause machines are ranked top 1           (e.g., response time) of a software service is anomalous, on-
+(top 3) for 55 (66) cases out of 70 cases. Comparing to existing      call operators first take a few minutes to confirm if the service
+approaches, FluxRank cuts the localization time by more than          actually has a failure. If the failure is confirmed, then operators
+80% on average. FluxRank has been deployed online at one              must immediately take mitigation actions to return the service
+Internet service and six banking services for three months, and       to normal. After a successful mitigation, developers have
+correctly localized the root cause machines as the top 1 for 55
+cases out of 59 cases.                                                enough time to localize the root cause by analyzing the source
+   Index Terms—KPI, failure mitigation, recommendation                codes, logs, configurations, etc..
+
+                       I. I NTRODUCTION                               service is typically a complex distributed system, consisting
+   The failures of a software service directly affect user ex-        of many (e.g., 10∼100) modules (e.g. web server module,
+periences and service revenue [1–3]. Thus service operators           database module, computation module, etc.). Each module
+monitor both service-level KPIs (Key Performance Indicators)          could be deployed on many (e.g. hundreds of) machines in
+(e.g., response time) and machine-level KPIs (e.g., CPU usage)        multiple data centers, and each machine can have more than
+on each machine (e.g., servers or virtual machines) underlying        100 machine-level KPIs. Thus, it is both challenging and often
+the service [4, 5]. When some service KPIs become anoma-              unnecessary for operators to quickly pinpoint the exact root
+lous, indicating a service failure, the operators must mitigate       cause before the mitigation, for the following two reasons.
+the failure as quickly as possible.                                   On one hand, at the time of mitigation, operators typically
+   In practice, the process of troubleshooting commonly con-          do not have the necessary details for the root cause (design,
+sists of three steps: failure confirmation, mitigation and root       codes, application logs etc.) of the service. On the other
+cause analysis. As shown in Fig. 1, when a critical KPI (e.g.,        hand, localizing the faulty machines, indicated by changes of
+response time) of a software service is anomalous, on-call            machine-level KPIs, is often sufficient to mitigate the failure
+operators first take a few minutes to confirm if the service          in modern service architecture (e.g. microservice) using tools
+really has a failure. If the failure is confirmed, then operators     such as Kubernetes [6] and Mesos [7].
+must immediately take some actions (e.g., switch traffic away         A. Limitations of Existing Approaches
+from the faulty machines or restarting the faulty machines) to
+put the service back to normal as soon as possible, without              In this paper, we focus on localizing the root causes to the
+pinpointing the exact root cause (e.g., the exact reason why          extent (e.g. faulty machines) where mitigation can be done
+the machines are faulty). The mitigation time must be as short        (e.g. rebooting) as opposed to analyzing the exact root cause.
+in order to prevent larger loss. After a successful mitigation,       There are many previous works on root cause localization.
+developers have enough time to find and fix the exact root            Most of these works [8–18] localize root cause by constructing
+cause (e.g., bugs in the code, configuration or design).              dependency graphs. some works [13–18] focus on localizing
+   It is important to highlight that a mitigation process is          root cause in computer networks, and the dependencies are
+different from a root cause analysis process. A large software        inferred from the links in the network topology. However, a
+                                                                      software service’s dependency graph cannot be inferred by
+  ∗ Dan Pei is the correspondence author.                             this way. Sherlock [8] needs to deploy an agent on each host
+                                           Software Service                                     Software Service                                       Ranked Digests
+                              Web server   Database       Computation   …       Web server      Database       Computation   …                               DC-1         disk
+    Failure time
+                                                                                                                                             1   Database                memory
+                      Change        DC-1        DC-2         DC-3       Digest           DC-1       DC-2          DC-3              Digest                                                      Mitigation
+    Service KPI                                                                                                                                                            …
+                                                                                                                                                                                           •   Switch traffic
+                   quantification          …          …             … distillation              …          …             …         ranking
+                                                                                                                                                                                           •   Rollback version
+                         1                                                  2                                                        3                       DC-2&DC-3   memory
+                                        disk                                           disk                                disk                                                            •   Restart machines
+                                                 quantified                                                                                  2 Computation                 …                   …
+                                      network                                        network         Digest              network                                                  operator •
+                                      memory      KPI data
+                                                                                     memory      • machine set           memory
+                                         …                                              …        • KPI set                  …                …               …
+    Machine KPIs
+
+
+                                                    Fig. 2: Overview of FluxRank
+to infer the dependency graph, then localizes the root cause traffic away from the fault machines or restarting the faulty
+by analyzing correlations across logs from the same clients machines). 5) After a successful mitigation, the development
+and across different clients. MonitorRank [9] uses the trace engineers (not the operators) will take time to analyze the
+logs to construct the dependency graph, and then localizes the codes and logs to find and fix the exact root cause (e.g.. bugs
+root cause by a random walk algorithm. CauseInfer [10] uses in code, configuration.)
+wire-captured service calls to construct the service dependency       In the above approach, simply localizing the root cause
+graph and applies the PC-algorithm [19] to construct a metric machines and getting rid of them from the service can already
+causality graph, then localizes the root cause across the two mitigate the service failure, since there are typically many
+level graphs. FChain [11] constructs the dependency graph by other working machines whose functions are identical to
+Sherlock [8]’s algorithm. BRCA [12] mines the dependency those of the faulty machines, taking advantage of the high-
+graph based on service’s historical KPI anomaly alerts.             availability architecture prevalent in software services.
+   The dependency graphs required by these approaches are             However, in the above approach, the first step is inefficient
+often very challenging to obtain in practice due to the difficulty and inaccurate (see more details in Challenge 1 below), and the
+to collect the additional necessary data mentioned above. second and third steps are manual, thus the failure mitigation
+Furthermore, it is also very challenging to maintain the graphs still take too long in S. We analyzed 8 recorded failure cases
+for the rapidly changing software services, especially those in a software service (with 29 modules running on 11,519
+developed under the philosophy of Agile and DevOps. The machines) during a 9-month period in S. The maximum
+quick change of the codes makes the dependency graph mitigation time is 175 minutes and the mean is 59 minutes.
+elusive. As a result, the application of the above approaches         Inspired by above practical approach and realizing its in-
+faces a lot of limitations, and the root cause localization in efficiency, this paper proposes a widely-deployable system
+practice is still mainly manual and time-consuming.                 called FluxRank that can automatically localize the root
+B. Intuitions and Core Ideas                                        cause machines underlying a given software service failure.
+   Solving real world troubleshooting problems using machine FluxRank uses the same measurement data, i.e. machine KPIs,
+learning is promising (a lot of monitoring data). However, readily available in almost all software services, and mimics
+directly training machine learning models using monitoring the first three steps of the above approach, but makes each step
+data in an end-to-end manner does not work due to: 1) not well efficient, accurate, and automatic so that the overall mitigation
+defined problems, 2) incomplete information, 3) insufficient time can be greatly reduced.
+failure cases, and 4) the lack of interpretability. Our core high-    Fig. 2 shows the overview of FluxRank. FluxRank is
+level idea is to utilize domain knowledge (which is often not triggered by the service failure (i.e., service KPI becomes
+captured or learnable in the data, but abstractable or mimicable anomalous. Anomaly detection of service KPI [20–29] is not
+from manual troubleshooting process) to design a system part of FluxRank). The input of FluxRank includes: service
+architecture in which each component has a well defined failure time and all machine KPI data. It has three phases
+problem, sufficient data, and an interpretable algorithm. This (see the bold arrows in Fig. 2): change quantification, digest
+way, a seemingly unsolvable end-to-end machine learning distillation and digest ranking. First, the changes of all ma-
+problem in troubleshooting becomes solvable with a domain chine KPIs are quantified in the change quantification phase.
+knowledge inspired architecture.                                    Second, all KPIs are organized into digests by a clustering
+   Therefore, our idea is inspired by the current manual algorithm in the digest distillation phase. Each digest contains
+five-step failure mitigation method developed over the years a set of machines that are from the same module and a set
+by a top global search engine service provider S (that we of KPIs that represent the anomalous pattern of the module.
+work with). 1) In the background, operators use some online Third, all digests are automatically ranked by their potential
+statistical algorithms (e.g., static threshold) [20–22]) to detect as the root cause location in the digest ranking phase. Finally,
+anomalies on large number of service and machine KPIs. 2) based on the digest ranking results, operators mitigate the loss
+After a service fails, operators manually scan through machine by triggering some automatic actions. Change quantification
+KPIs to find the set of KPIs and faulty machines which mimics step 2 in the manual mitigation process, while digest
+become anomalous around the service failure time. 3) Then distillation and digest ranking mimics step 3.
+operators manually rank the potential combinations of faulty
+                                                                    C. Challenges and Contributions
+machines according to operators’ experience. 4) To mitigate
+the failure, operators manually trigger automatic action on the       Below we summarize the challenges faced by FluxRank
+highest-ranked machine combinations one by one (e.g., switch and this papers’ contributions.
+
+
+
+                                                                                                           2
+   Challenge 1: How to quickly quantify the changes of                  ternet services (with hundreds of machines) and six banking
+massive number of diverse KPIs around the service failure               services (each with tens of machines). Over the course of three
+time? Although many anomaly detection algorithms [20–27]                months of online deployment, it successfully analyzed 59 real
+have been proposed over the years, each monitored KPI needs             cases, and the result shows the RCDs can be ranked to top
+its own algorithm and parameters. Given the large number                one for 55 cases.
+(e.g., millions) of diverse KPIs, careful algorithm selection and          The rest of the paper is organized as follows. The design of
+parameter tuning for each KPI becomes infeasible, resulting             FluxRank are presented in §II, §III, and §IV. §V introduces the
+in inaccurate anomaly detection results and more difficulties           system implementation. §VI presents our offline evaluation,
+in steps 2 and 3. However, different from a general anomaly             and §VII presents operational experience in real deployment.
+detection scenario where the anomaly can happen at any time,            Related work and conclusion are given in §VIII and §IX.
+in our scenario the service failure time is already given and                           II. C HANGE Q UANTIFICATION
+we just need to develop an algorithm that can quantify the
+changes of machine KPIs around the service failure time. The               As aforementioned, in the phase of change quantification
+remaining challenge is that the algorithm must be flexible to           we try to quantify the changes of machine KPIs which are
+work on diverse KPIs, and be lightweight and fast enough so             measured by change degrees. Change degrees can be used to
+that it can quickly analyze the massive number of KPIs.                 compare among different types of KPIs (e.g., CPU utilization,
+   Challenge 2: How to cluster KPIs with physical sig-                  memory utilization, I/O rate). In addition, the KPIs of root
+nificance? A failure in one module can propagate to other               cause machines will first change when a service failure hap-
+modules, and a faulty machine might have multiple KPIs                  pens, followed by the KPI changes of the machines that are
+anomalous at the same time. As a result, one service failure            impacted by this failure. Therefore, the change start time (Tc )
+often coincides in time with many machine KPI anomalies.                is also helpful to localize root cause machines.
+Operators often summarize the machine KPI anomalies ac-                    Clearly, the design goal of change quantification is to
+cording to their domain knowledge in an ad hoc manner.                  rapidly and accurately identify the change start time and
+Our challenge is to automatically and systematically cluster            determine the change degree around the time of service failure
+the KPIs with similar anomaly degrees at the related ma-                for a large number of diverse KPIs. Recall that traditional
+chines/modules in a way that is intuitive to the operators to           anomaly detection algorithms such as [20–23] cannot achieve
+determine the mitigation actions.                                       the above goal because they are labor-intensive in algorithm
+   Challenge 3: How to rank the clustering results? For a               selection and parameter tuning for a large number of diverse
+large software service, it is often the case that there are often       KPIs. Consequently, we propose to use a two-step design in
+concurrent but unrelated anomalies at the machine level. This           change quantification: (1) apply absolute derivative to identify
+means that, for a service failure, above phase 2 might output           change start time and (2) use Kernel Density Estimation
+multiple clustering results. Therefore, in phase 3 we have to           (KDE) to determine change degree.
+rank the clustering results from phase 2 such that the ones             A. Change Start Time
+which are most relevant to the failure should appear at the                Finding the change start time (Tc ) of a KPI can be converted
+top. However, ranking clusters (different KPIs with different           into a classic change point detection problem. Many previous
+anomaly degrees at different machines) have not been studied            methods, including supervised learning [30–34] and unsuper-
+before, and there are no known metrics or ranking algorithm             vised learning [35–47], have been proposed to address this
+that can directly deal with such clustering results.                    problem. For a large distributed software service, hundreds of
+   This paper’s contributions can be summarized as follows:             thousands to millions of KPIs should be analyzed for a single
+   Contribution 1. We propose a non-parametric lightweight              service failure. Hence supervised learning methods cannot be
+algorithm based on Kernel Density Estimation for quantifying            used due to the infeasible labeling efforts. In addition, the
+and comparing the changes of large number of diverse KPIs               algorithm should rapidly identify Tc for mitigation, and thus
+around a specific time, addressing challenge 1.                         the above unsupervised learning methods which are inefficient
+   Contribution 2. To address challenge 2, we propose a                 in computing cannot be applied in our scenario either.
+vector representation of the changes, a distance function, and a           As aforementioned, different from the general change point
+DBSCAN-based clustering algorithm that organizes the KPIs               detection problem where a change can happen at any time,
+into digests to represent the anomaly patterns of the modules.          in our scenario the service failure time is given, and we just
+   Contribution 3. To address challenge 3, we propose a fea-            need to develop an algorithm that can detect KPI changes
+ture vector and a logistic regression based ranking algorithm           around the failure time. As shown in Fig. 1, the failure start
+that can rank the Root Cause Digest (RCD) at the top.                   time Tf can be determined based on the service KPI, and the
+   Contribution 4. Our experiments on 70 real offline failure           mitigation start time Tm is when operators confirm the failure
+cases of five production services (with tens of thousands of            and start mitigation. Due to the delay of failure propagation,
+machines) in a top global software service provider show that           the KPIs of root cause machines can change before Tf . To
+the RCDs can be ranked to top one for 55 cases, and to top              identify the change start time of KPIs, we set a look-back
+three for 64 cases. Compared to existing approach, FluxRank             window [Tf − w1 , Tm ], where w1 is time length before Tf . In
+reduces the localization time by more than 80% on average.              practice, w1 is a configurable parameter. On the one hand, if
+   Contribution 5. FluxRank is a widely-deloyable frame-                w1 is set too large, FluxRank may falsely include some KPI
+work. We have successfully deployed FluxRank on one In-                 changes which are irrelative to the service failure. On the other
+
+
+
+                                                                    3
+         1.0
+         0.8
+   CDF   0.6                                                                                                                                    Abs_Dev_max
+         0.4
+         0.2
+                                                                                                                                                              CUSUM_max
+         0.0
+           0.0       2.5        5.0        7.5         10.0      12.5     15.0    17.5       20.0
+                       Failure start time - root cause start time (minutes)
+Fig. 3: The CDF of the delays between the change start time
+of root cause machines’ KPIs and the start time of failures in
+82 failures within one year in S.
+           1.0
+           0.8
+           0.6
+     CDF
+
+
+
+
+           0.4
+           0.2                                                                 Abs_Dev_max
+                                                                               CUSUM_max
+           0.0
+                 0         25         50         75       100       125     150     175                 Fig. 5: The top figure is an anomalous CPU IDLE KPI. The
+                                                      Distance
+                                                                                                        first change (in [20, 40]) is normal, and the second change
+Fig. 4: Change point detection results of CUSUM [35]                                                    (in [80, 100]) is anomalous. The bottom two figures are the
+and Abs Dev for 91 manually labeled anomalous KPIs.                                                     output scores of CUSUM [35] and Abs Dev when analyze
+CUSUM max and Abs Dev max are denoted the two algo-                                                     the anomalous CPU IDLE. CUSUM [35] has higher control
+rithms that are applied the maximum output score.                                                       CUSUM H and lower control CUSUM L. CUSUM max
+hand, if w1 is set too small, FluxRank may miss some KPI                                                denotes the maximum value of all data in CUSUM H and
+changes of root cause machines. After analyzing 82 failures                                             CUSUM L.
+within one year in S, we get the delays between the change                                              start times.
+start time of root cause machines’ KPIs and the start time of                                              Specifically, Fig. 5 shows the two algorithms’ output scores
+failures as shown in Fig. 3, and find that 80% of the delays are                                        of an anomalous CPU IDLE KPI which is one of the 91
+less than 9 minutes, and the maximum delay is 19 minutes.                                               anomalous KPIs. The first change ( in [20, 40]) of CPU IDLE
+Therefore, we empirically set w1 to 30 min during evaluation.                                           is normal, and the second change (in [80, 100]) is anomalous.
+                                                                                                        Because derivative can directly reflect the change degree, we
+   In practice, the number of KPI data points within the look-                                          can see that the largest score of Abs Dev corresponds to the
+back window can be small, because the monitoring interval                                               correct change start time of the CPU IDLE KPI. CUSUM [35]
+can be per minute (50% of cases in our scenario), and the                                               can also detect the correct change start time if the proper
+small number of data points cannot support the complex                                                  threshold can be chosen, but it is impossible to manually
+change point detection algorithms. We thus focus on the                                                 choose the thresholds for tens of thousands of machine KPIs.
+algorithms that involve only simple calculation. In this work,                                          Thus we have to use CUSUM max. Due to the cumulative
+we desing a simple yet effective change point detection algo-                                           sum, the score of CUSUM [35] will continue to increase if
+rithm, Abs Dev, which applys the absolute derivative of KPI                                             there are small changes after the correct change start time, as
+data, to automatically, accurately and efficiently identify the                                         is the case in the bottom left of Fig. 5. So the largest score
+change start time. Abs Dev calculates the absolute derivative                                           of CUSUM [35] cannot correspond to the correct change start
+value [48] of each KPI data point. We deem that the KPI data                                            time. Therefore, we choose Abs Dev to detect the change start
+point achieving the maximum output score (absolute derivative                                           times of KPIs.
+value) of Abs Dev within the look-back window has the most
+significant change, and it represents the change start time.                                            B. Change Degree
+This way, the change start time is efficiently and accurately                                              As described in §I, the first challenge of FluxRank is to
+identified without any manual parameter tuning.                                                         design a non-parametric lightweight algorithm for quantifying
+   CUSUM [35] is a simple common change detection al-                                                   and comparing the changes of large number of diverse KPIs.
+gorithm. To compare the performance of CUSUM [35] and                                                   Thus, we propose to use the observation probability of change
+Abs Dev for change start time detection, we manually labeled                                            to represent the change degree, because the probability is natu-
+the change start times (Tclabel ) of 91 anomalous KPIs which                                            rally quantitative and can be compared between different types
+contain all types of KPIs in our study. We use the distance                                             of KPIs. We cannot find other metrics to represent and quantify
+between Tc and Tclabel to compare the performance of different                                          KPI changes, which can satisfy the above requirements.
+algorithms: distance = |Tc − Tclabel |. Fig. 4 shows the                                                   Specifically, the change start time Tc is already obtained
+detection results of CUSUM [35] and Abs Dev. CUSUM max                                                  in §II-A, thus we collect data {xi } in the time interval
+and Abs Dev max are denoted the two algorithms that are                                                 [Tc − w2 , Tc ), and data {xj } in the time interval [Tc , Tm ]
+applied the maximum output score method. We can see                                                     (we will introduce the selection of w2 shortly). Obviously,
+that the distances of Abs Dev max are much smaller than                                                 {xi } are the data before the change and {xj } are the data
+CUSUM max. Further more, The distances of Abs Dev max                                                   after the change. Then, the mathematical representation of the
+are close to 0, which means the detected change start times                                             observation probability of a change is: P ({xj }|{xi }). This
+of Abs Dev max are very close to the labeled correct change                                             formula denotes the probability of observing {xj } after change
+
+
+
+                                                                                                    4
+                                                   TABLE I: The 47 types of machine KPIs
+    Type (#number)                                           KPI & Corresponding Kernel Function
+                                     Beta: CPU IDLE; CPU HT IDLE. Poisson:CPU CONTEXT SWITCH. Gaussian:CPU INTERRUPT;
+    CPU-Related (8)
+                                 CPU SERVER LOADAVG 1; CPU SERVER LOADAVG 15; CPU SERVER LOADAVG 5; CPU WAIT IO.
+                              Beta: DISK TOTAL USED PERCENT; FD USED PERCENT; DISK TOTAL INODE USED PERCENT. Poisson:
+                                  DISK FS ERROR; FD USED. Gaussian: DISK PAGE IN; DISK PAGE OUT; DISK TOTAL AVG WAIT;
+    Disk-Related (15)
+                             DISK TOTAL IO UTIL; DISK TOTAL READ KB; DISK TOTAL READ REQ; DISK TOTAL READ AVG WAIT;
+                                        DISK TOTAL WRITE AVG WAIT; DISK TOTAL WRITE KB; DISK TOTAL WRITE REQ.
+                            Beta: MEM USED PERCENT; MEM USED ADD SHMEM PERCENT. Poisson: MEM BUFFERS; MEM CACHED;
+  Memory-Related (6)
+                                                            MEM USED; MEM USED ADD SHMEM.
+                             Beta: NET MAX NIC INOUT PERCENT. Poisson: NET TCP IN ERRS; NET TCP RETRANS; NET TCP LOSS;
+                             NET UP NIC NUMBER. Gaussian: NET TCP ACTIVE OPENS; NET TCP CURR ESTAB; NET TCP IN SEGS;
+  Network-Related (13)
+                                    NET TCP OUT SEGS; NET TCP TIME WAIT; NET TOTAL IN BITPS; NET TOTAL OUT BITPS;
+                                                                NET TOTAL SOCKETS USED.
+  OS kernel-Related (5)    Poisson: SYS OOM; SYS PAGING PROCS; SYS RUNNING PROCS; SYS STOPPED PROCS; SYS ZOMBIE PROCS.
+
+under the premise of observing {xi } before change. This                 (KDE) [49], which can estimate proper probability distribu-
+probability indicates the degree of the change: the smaller the          tions for different types of KPIs. KDE [49] is a non-parametric
+probability, the larger the change degree.                               approach to estimate the probability density function (PDF) of
+   To calculate the probability of P ({xj }|{xi }), we first cal-        a random variable based on observation
+                                                                                                          n
+                                                                                                                   samples.
+culate the probability of each data point in {xj }: P (xj |{xi }).                                    1X
+                                                                                              fˆ(x) =       K(x; xi )
+Suppose that {xi } is generated by a random variable X, thus                                          n i=1
+the probability distribution of X can be estimated by {xi }. To
+                                                                          where K is a kernel function which is determined by the
+differentiate the upward changes and downward changes, we
+                                                                         physical meaning of {xi }, and n is the size of {xi }.
+compute the overflow probability P (X ≥ xj |{xi }) and the
+                                                                            In the above framework, {xi } are used to estimate the
+underflow probability P (X ≤ xj |{xi }). We assume {xj } are
+                                                                         probability distribution for random variable X. In order to
+independent identically distributed (i.i.d.) samples, then we can
+                                                                         obtain a precise model, w2 should be large to more samples in
+derive the overflow probability Po ({xj }|{xi }) and underflow
+                                                                         {xi }. However, many KPIs have periodic fluctuations, and the
+probability Pu ({xj }|{xi }) of {xj } as:
+                                                                         probability distribution of X can change over time. Therefore,
+                                    l
+                                    Y                                    a too large w2 will lead to inaccurate model, and we set
+               Po ({xj }|{xi }) =         P (X ≥ xj |{xi })
+                                    j=1
+                                                                         w2 = 1h based on empirical experience.
+                                    l                                       After analyzing the physical meaning of 47 machine KPIs in
+                                                                         our study, we find that three types of distributions can cover
+                                    Y
+              Pu ({xj }|{xi }) =          P (X ≤ xj |{xi })
+                                    j=1                                  all the 47 KPIs: Beta distribution, Poisson distribution and
+                                                                         Gaussian distribution, as shown in Table I. The same KPI’s
+ where l is the number of data points in {xj }. Apparently, a            kernel function only needs to be selected once. Further, esti-
+very small Po ({xj }|{xi }) represents a upward change, and a            mating distributions based on KPIs’ physical meaning is more
+very small Pu ({xj }|{xi }) denotes a downward change.                   precise and stable than other sampling based methods which
+   The number of samples in {xj } depends on not only                    depend on the quality of the samples. The three distributions
+the length of (Tm − Tc ], but also the collection interval of            are discussed as follows.
+KPI data. If two KPIs have different collection intervals,                  Beta Distribution: it is the dual distribution of Binomial
+Po ({xj }|{xi }) and Pu ({xj }|{xi }) will be very different,            distribution. Binomial distribution describes the distribution of
+because both Po ({xj }|{xi }) and Pu ({xj }|{xi }) depend on             number of successes in a trial containing multiple Bernoulli
+the number of data points in {xj }. In order to compare                  tests, given that each Bernoulli test would result in a success
+KPI changes with different collection intervals, we use the              with probability p. Beta distribution describes the probability
+geometric mean directly, and convert the negative value to               distribution of p, given the number of tests and the number of
+the positive value. Thus the scores of upward change o and               successes. Therefore, it is suitable for the random behavior of
+downward change u would be:                                              percentages and proportions (e.g., CPU IDLE). For x ∈ [0, 1],
+                             l
+                          1X                                             the PDF of Beta distribution is:
+                  o=−           log P (X ≥ xj |{xi })
+                          l j=1                                                                           xα−1 (1 − x)β−1
+                                                                                          f (x; α, β) =
+                             l                                                                               B(α, β)
+                          1X
+                 u=−            log P (X ≤ xj |{xi })                     where B is Beta function, and α and β can be estimated
+                          l j=1
+                                                                         by the method of moments [50], which is a commonly used
+   Then, the remaining question is how to estimate the proba-            estimation method for Beta distribution.
+bility distribution of X given {xi }. A common solution is to               Poisson Distribution: it describes the number of times a
+assume that X follows Gaussian distribution and estimate the             random event occurs in a time interval or in a space. For
+probability distribution by sample mean and sample variance.             example, SYS OOM, which denotes the frequency of out of
+However, many KPIs do not follow Gaussian distribution. For              memory (OOM), follows Poisson distribution. The PDF of
+example, the KPI CPU IDLE, which represents the percentage               Poisson distribution is:
+of CPU idle time, ranges from 0 to 1. It does not follow
+                                                                                                             λx e−λ
+Gaussian distribution. So we adopt Kernel Density Estimation                                    f (x; λ) =
+                                                                                                               x!
+
+
+                                                                     5
+ where λ is the expected number of events per interval, which          B. Clustering Algorithm
+can be set to xi .
+                                                                          Currently, four classic clustering algorithms are commonly
+   Gaussian Distribution: it is the default kernel function of         used: K-means [54], Gaussian mixture [55], hierarchical clus-
+KDE [49]. The KPIs will be modeled by Gaussian distribution            tering [55], and DBSCAN [56].
+if they cannot be modeled by the above two distributions. The
+                                                                          K-means [54] and Gaussian mixture [55] both require the
+details of Gaussian kernel function can be found in [49].
+                                                                       number of clusters as the input, which is not available in
+   Finally, for each KPI, the change quantification algorithm          our scenario. Hierarchical clustering [55] does not need the
+outputs three values: upward change degree o, downward                 cluster number, but it requires a distance function for two sub-
+change degree u, and change start time Tc . o and u will be used       clusters. It is not easy to derive a correlation distance between
+for digest distillation, and Tc will be used for digest ranking.       two clusters. Thus K-means [54], Gaussian mixture [55],
+                 III. D IGEST D ISTILLATION                            Hierarchical clustering [55] are not applicable in our scenario.
+                                                                       DBSCAN [56] only depends on the distance function without
+   For a large software service deployed in multiple data
+                                                                       the input of cluster number. It has two parameters: eps and
+centers, it usually consists of 10∼100 modules, and has tens
+                                                                       minPts. eps specifies the radius of a neighborhood, which
+of thousands of KPIs. Although the Change Quantification
+                                                                       controls whether two items would have an edge in the neighbor
+algorithm can filter out a lot of normal KPIs, there are still
+                                                                       graph. minPts(minP ts ≥ 2) specifies the minimum points
+plenty of anomalous KPIs left. In one case of our experiment
+                                                                       within distance eps of core point. As suggested in [56, 57], we
+(§VI), the number of anomalous KPIs is 10,653. Manually
+                                                                       can fix minPts by domain knowledge and use the k-dist method
+Screening these KPIs one by one is still a daunting job for
+                                                                       to determine eps. However, minPts is hard to determine in
+operators. To localize faulty machines quickly, these KPIs
+                                                                       practice. So we fix minPts to the minimum value 2.
+should be organized in a legible way. We propose to cluster
+                                                                          Additional constraint: In theory, machines from different
+the KPIs into digests, which is a legible way for operators to
+                                                                       modules can be clustered together. Some of these clusters can
+easily understand the status of the software service.
+                                                                       be intuitively explained, such as data center level network
+   The basic idea of Digest Distillation is to cluster the
+                                                                       outage, but most of them cannot be intuitively explained.
+machines with similar KPI change patterns. The input is all
+                                                                       Therefore, we adopted a conservative approach that only
+the quantified KPI changes in §II. First, the change degrees (o
+                                                                       machines from the same module would be clustered.
+and u) of each machine’s KPIs can form a vector to represent
+                                                                          After clustering, the machines are clustered into several
+the change pattern of the machine:
+                                                                       groups. Each group is called a digest, which consists of a
+                       (o0 , u0 , ..., ok , uk )                       set of machines and a set of KPIs. “M1” and “M2” in Fig. 6
+                                                                       are two example digests.
+ where ok and uk are the change degrees of the KPI k. Second,
+the machines are clustered into digests (clusters) based on                                IV. D IGEST R ANKING
+their vectors. We now introduce two key factors of clustering:
+distance function and clustering algorithm.                               As shown in Fig. 2, the last phase is to rank digests output
+                                                                       by phase 2 (§III). The distilled digests need to be ranked in
+A. Distance function                                                   order to quickly localize the root cause machines. We propose
+   Distance function calculates the similarity between two             a ranking algorithm to rank the digests so that the one most
+vectors. Our intuition is to group into a cluster the machines         relevant to the root cause can be listed at the top. Here we
+whose KPIs change together. Although Euclidean distance is             adopt Learning-to-rank [58]’s pointwise approach to train a
+a widely adopted distance function, it cannot capture “two             classifier using logistic regression [59]. Learning-to-rank [58]
+KPIs changing other” well. Euclidean distance measures the             is the application of machine learning in the construction of
+absolute distance of two vectors. When two KPIs change                 ranking models. Next we will introduce the features that are
+together, their Euclidean distance may be large for different          used to train the Learning-to-rank model.
+change degrees but their correlation is very strong. Therefore,           We observed that root cause machines have the following
+we adopt correlation as the distance function.                         characteristics:
+   We compared three common correlation methods: Pearson                  Observation 1: The change start times of some KPIs of
+Correlation [51], Kendall’s tau [52], and Spearman Corre-              root cause machines are earlier than Tf (see Fig. 1), which
+lation [53]. The result r of these three methods is a value            means that these KPIs have changes before failure start time.
+in [−1, 1], where 1 means a complete positive correlation, 0           This is reasonable because it takes some times for the failure
+means no correlation, and -1 means a complete negative corre-          of the root cause machines to affect the service’s critical KPI.
+lation. We use the following formula to transform correlation             Observation 2: The change start times of some KPIs of
+r into distance: Distance = 1 − r.                                     root cause machines are similar to each other, while the change
+   According to our experiment (§VI-C), Pearson Correla-               start times of the KPIs of other machines might not be similar
+tion [51] performs the best. The reason is that Kendall’s              because it takes time for the failure to propagate from root
+tau [52] and Spearman Correlation [53] are ranking-based               cause machines to other machines and modules and the time
+methods, thus little difference of the values will make the            taken might be affected by some random factors.
+ranking change greatly. Pearson Correlation [51] is not based             Observation 3: Some KPIs of root cause machines have
+on the ranking, thus it is more suitable for our study.                large change degrees.
+
+
+
+                                                                   6
+                                                                 Downward Upward                                             Service name         input
+      Module       Machine       Ratio              KPI
+                                                                 Change (o) Change (u)                           Web         Failure start time
+                                         CPU_HT_IDLE             45.3       0.0                                  Apache                           output
+                                                                                                                                  Results
+                                         CPU_IDLE                34.6       0.0                                                                           operator
+                                         CPU_SERVER_LOADAVG_1    0.1        28.3                                                        Task
+                                                                            25.5                                           Controller
+               DC1_m1_1 ;                CPU_SERVER_LOADAVG_5    0.1
+               DC1_m1_2;       0.036                                                                                         RestAPI
+       M1                                                                   24.3
+               ……            (27/750)    CPU_SERVER_LOADAVG_15 0.2
+                                                                                                              Query         KPI data
+               DC1_m1_27;                                                                                                                         Results
+                                         NET_TCP_OUT_SEGS        0          22.5                                            Service data
+                                         NET_TCP_IN_SEGS         0          21.4                              Database                  FluxRank
+                                         MEM_CACHED              6.5        1.8                            OpenTSDB & Mongo            Computation
+                                         …                       …          …                                                                  Spark
+                                                                                                              Write Data
+               DC1_m2_1;                 MEM_BUFFERS             21.9       4.6
+               ……
+               DC1_m2_31;      0.21
+                                         CPU_SERVER_LOADAVG_15   0.36       9.0                            Data Collector
+       M2                                DISK_TOTAL_READ_REQ     0.45       8.6                                 Kafka
+               DC2_m2_1      (65/312)
+               ……
+                                         …                       …          …
+               DC2_m2_34;
+        …      …             …           …                       …          …                           Fig. 7: The implementation of FluxRank
+Fig. 6: The ranked digests output by FluxRank for a failure                                     Finally, motivated by Observation 4, we calculate the ratio
+that 27 machines’s CPU got overloaded. DC denotes the data                                   of the machines in the digest d to the total number of machines
+center. Each row represents a digest.                                                        of the same module, denoted by ratio.
+                                                                                                We use logistic regression to learn the best linear com-
+   Observation 4: The ratio of the number of root cause                                      bination of the features. All training digests are labeled by
+machines is related to the root cause, because more root cause                               the operators’ mitigation records, and the label details are
+machines have larger effects.                                                                described in §VI-A.
+   Next, we will construct the features for each digest ac-                                     The KPIs within a digest also need to be ranked so that
+cording to above observations. Let us introduce the notations                                operators can directly localize the anomalous KPIs. For a
+firstly. d denotes a digest, and I denotes a machine. We use the                             digest d, all KPIs within candidate set are ranked by their
+superscript to denote the KPI and use the subscript to denote                                maxkd in descending order, and they are ranked ahead of all
+the machine. For example, okI denotes the upward change                                      other KPIs. In other words, the top one KPI of a digest d is
+degree of KPI k on machine I.                                                                the one with the largest change degree in d’s candidate set.
+   Choosing Candidate KPI Set. Motivated by Observation                                         Fig. 6 shows the ranked digests for a real failure (see details
+1, for a digest d, we firstly choose KPIs which change before                                of the failures in §VI-G) that 27 machines got CPU overload
+failure start time Tf as the candidate KPI set, denoted by                                   out of 11519 machines. We can see that the top 1 digest
+candidate set. More specifically, all features of a digest d are                             contains the 27 root cause machines, and the top 5 KPIs are
+constructed from its candidate set. Tc k{I} denotes the change                               CPU related KPIs. From FLuxRank’s recommended results,
+start times of KPI k from the machines {I} of digest d. We use                               Operators can easily understand that 27 machines of module
+   k                                                     k
+Tˆc to denote the mean of Tc k{I} . For a KPI k, if Tˆc ≤ Tf ,                               M1 from datacenter DC1 got CPU overload.
+then KPI k belongs to the digest’s candidate set.                                                            V. S YSTEM I MPLEMENTATION
+   Feature Extraction. Firstly, features are extracted from the                                 Since a large software service has tens of thousands of KPIs,
+change start times of KPIs in candidate set. More specif-                                    FluxRank is implemented as a highly efficient distributed
+ically, motivated by Observation 1, we use the maximum,                                      system, as shown in Fig. 7. It basically has five components:
+minimum, summation and mean to represent the distribution                                    Web UI, Controller, FluxRank Computation, Database and
+         k
+of {Tˆc } of all KPIs’ in candidate set, denoted by max Tc ,                                 Data Collector.
+min Tc , sum Tc , mean Tc .                                                                     Web UI displays the data of KPIs and service. When a
+   Secondly, we calculate the standard deviation of Tc k{I} ,                                failure happens, the operator can input the service name and
+denoted by std   ˆ k . If std
+                           ˆ k is small, it means that KPI k of                              the failure time in the Web UI to trigger FluxRank. Controller
+all the machines in {I} have changes together in a short time.                               is a key component to connect other components. Its basic
+Motivated by Observation 2, we use the maximum, minimum,                                     function is to read and write the database, trigger the task
+                                                            ˆ k}                             of FluxRank and store the results to the database, which is
+summation and mean to represent the distribution of {std
+                                                                                             implemented with RestAPI [60]. FluxRank Computation im-
+of all KPIs’ in candidate set, denoted by max std, min std,
+                                                                                             plements FluxRank’s change quantification, digest distillation
+sum std, mean std.
+                                                                                             and digest ranking procedures with Spark [61]. After a task is
+   Thirdly, for each KPI k in candidate set, we calculate the                                submitted, FluxRank can output the recommendation results
+mean of ok{I} , denoted by ôk , and the mean of uk{I} , denoted                             of faulty machines and related anomalous KPIs within one
+by ûk . ôk and ûk represent KPI k’s average change degree                                 minute. According to the results, operators could take some
+of all machines {I}. Then we use the maximum value of                                        actions (e.g. switch traffic, reboot) to mitigate the failure.
+{ôk , ûk } to denote KPI k’s maximum change degree, denoted                                Database stores all the KPI data and service meta data
+by maxkd . Motivated by Observation 3, we use the maximum,                                   (including service, modules, machines, etc.). It is implemented
+minimum, summation and mean to represent the distribution                                    with OpenTSDB [62] and Mongo [63]. Data Collector is the
+of {maxkd } of all KPIs’ in candidate set, denoted by max d,                                 agent deployed at each machines to collect all the KPI data.
+min d, sum d, mean d.                                                                        It use Kafka [64] to write real-time data to the database.
+
+
+                                                                                         7
+                                  TABLE II: Failure cases from five real production systems
+       Service   #Modules    #Machines                                         Description                                          #Case
+         p1        29         11,519     an application system for desktop clients that handles billions of user requests per day    10
+         p2        17          2,147     an application system for mobile clients that handles billions of user requests per day     48
+         p3        91          5,747                         a monitoring system A for the whole company                              7
+         p4        85          3,872                             a financial service system like paypal                               1
+         p5         7           238                          a monitoring system B for the whole company                              4
+
+                 VI. O FFLINE E VALUATION                                TABLE III: Statistical analysis of internal distance and
+                                                                         cross distance using Pearson [51], Kendall’s tau [52], Spear-
+   In historical section, we present the details of our offline          man [53], and Euclidean. The internal distance represents the
+evaluation. 70 real failure cases from five production software          distance between RCMs, and the cross distance represents the
+services (with tens of thousands of machines) from company               distance between RCMs and non-RCMs.
+S are used to evaluate FluxRank’s performance. In §VI-C, we
+compare different distance functions of clustering algorithm.                                      Internal Distance      Cross Distance
+                                                                                                   mean        std        mean       std
+Then we compare the localization performance of fluxRank                            Pearson        0.193     0.093        1.005    0.154
+with a baseline algorithm in §VI-D. In §VI-E, we analyze the                      Kendall’s tau    0.391     0.123        1.012     0.13
+search space reduction of localization. The localization time                      Spearman        0.357     0.125        1.012     0.14
+                                                                                   Euclidean        34.3      19.0         86.3     25.8
+of FluxRank and manual are compared in §VI-F. Finally, we
+introduce some typical cases in §VI-G.
+                                                                         the failure datacenter. Therefore, we consider the result of
+A. Dataset
+                                                                         FluxRank is successful if any of the RCDs is ranked to top.
+   Failure Cases: We collected 70 real cases from five dif-              For the 70 failures, FluxRank outputs 83,948 digests in phase
+ferent software services of S. The operators recorded the                2 and 277 RCDs in phase 3.
+mitigation details of these cases, including when the failure
+                                                                         C. Choosing the Distance Function
+started, what the root causes were, how the failure was
+mitigated, and the timeline of the whole mitigation processes.              We use an experiment to compare four distance functions
+Table II summarizes these failure cases.                                 (§III): Pearson correlation [51], Kendall’s tau [52], Spearman
+   KPI Set: Since KPIs are the fundamental input of the failure          correlation [53], and Euclidean distance.
+localization, KPIs should somehow reflect the root cause of                 We randomly sample 10 root cause modules from the 70
+failures. To make our experiment general and easily under-               cases, and the root cause modules contain both RCMs and non-
+stood, here we use the standard machine KPIs of the Linux                root cause machines (non-RCMs). A good distance function
+system as the KPI set. Table I shows the 47 standard machine             should produce small internal distance between two RCMs,
+KPIs of the Linux system for the evaluation, consisting of               and it should produce large cross distance between a RCM and
+states of CPU, memory, disk, network and OS kernel. The                  a non-RCM. We do not put any restrictions to the distance
+value of the KPIs can be collected from the special files in             between two non-RCMs, because the non-RCMs can be in
+the /proc directory of Linux system.                                     different states and hence behave differently in their KPIs.
+   Labels of Cases: The operators added two labels to each                  Table III shows the statistical analysis for the internal
+failure case based on the recorded diagnosis details: root cause         distance and cross distance. We find that all four functions
+machines (RCM) and relevant KPI (RK).                                    produce larger values on cross distances than on internal
+   Root Cause Machines (RCM) refers to the machine where                 distances. So all of them are qualified. But we also observe
+the root cause took place. A failure may have multiple RCMs.             that Pearson correlation performs best in terms of relative
+   Relevant KPI (RK) is a KPI relevant to root cause. A failure          difference. The average cross distance of Pearson correlation
+case usually has multiple RKs. For example, if a machine has             is 5 times of the internal distance. For the other three functions,
+a sudden overload of computation tasks, multiple CPU-related             the ratio is around 2 to 3 times. Therefore, we believe Pearson
+KPIs (e.g. CPU idle) will reflect sudden changes. Any of these           correlation is the best one, and apply it in our algorithm.
+KPIs can help operators to recognize the CPU overload.                   D. Baseline Comparison
+B. Evaluation Methodology                                                   We choose PAL [65] as our baseline. As discussed in §I,
+   Root Cause Digest (RCD): RCD output by FluxRank is a                  there are many previous works on root cause localization, but
+digest satisfying the following conditions: 1) All machines of           most of them rely on the dependency graphs. It is difficult to
+a digest are RCMs. 2) The top-five KPIs of a digest contain              construct the graphs for the online large distributed software
+one or more RK(s).                                                       services. Therefore, we only choose PAL [65] as our baseline
+   A failure case may have one or multiple RCDs. If the root             which does not rely on the dependency graph.
+cause comes from a single module, the case usually has one                  PAL [65] localizes the root cause by sorting the start times
+RCD. Some of the cases have multiple RCDs, in which the                  of KPIs’ anomalous changes. PAL [65] can localize root cause
+clustering algorithm fails to cluster all RCMs together for              at machine level and output a ranking result, but it does not
+some single root cause module cases. If the root cause is the            cluster the machines. So each result item is single machine.
+failure of a datacenter, e.g. power outage, all modules deployed         During evaluation, for each case, if top k results of PAL [65]
+in this datacenter will fail in such a case. Presenting any one          contains one or more root cause machines, then we consider
+of the RCDs to the operators is helpful enough to localize               it successfully localizes the root cause machine.
+
+
+
+                                                                     8
+     TABLE IV: The performances of different models.                                         1.0
+                                                                                             0.8
+          Model          Recall@1      Recall@2      Recall@3                                0.6
+
+
+
+
+                                                                           CDF
+     FluxRank(5-fold)   0.78(55/70)   0.89(62/70)   0.94(66/70)                              0.4
+     FluxRank(3-fold)   0.78(55/70)   0.9(63/70)    0.94(66/70)
+                                                                                             0.2
+     FluxRank(2-fold)   0.85(60/70)   0.89(62/70)   0.94(66/70)
+         PAL [65]       0.14(10/70)   0.21(15/70)   0.27(19/70)                              0.0
+                                                                                                   0       500       1000         1500    2000     2500         3000         3500     4000
+                                                                                                                     number of anomalous machines per case
+   As described in §IV, FluxRank applies logistic regres-
+sion [59] to train a pointwise ranking model. To evaluate its           Fig. 8: CDF of the number of anomalous machines of 70 cases
+performance, we use Recall@K, which is a commonly used                                       1.0
+                                                                                             0.8
+metric of ranking. For FluxRank:                                                             0.6
+
+
+
+
+                                                                           CDF
+                 # of cases whose top-k digests contain RCDs                                 0.4
+   Recall@K =
+                                # of all cases                                               0.2
+                                                                                             0.0
+, and the PAL [65] ’s Recall@K is :                                                             0.1        0.2       0.3         0.4     0.5     0.6      0.7          0.8      0.9
+            # of cases whose top-k machines contain RCMs                                                         #anomalous machines / #total machines per case
+ Recall@K =
+                             # of all cases                                Fig. 9: CDF of anomalous machines ratio of 70 cases
+ We apply n-fold cross-validation [66] on our dataset. We ap-                                                                                              Manually Localization
+
+
+
+
+                                                                            Time cost(minutes)
+                                                                                                 250
+plied 2-fold, 3-fold, and 5-fold cross-validations for FluxRank.                                 200                                                       FluxRank
+Table IV shows the results. It is clear that the FluxRank                                        150
+achieves much better performance. Its Recall@3 is 0.94,                                          100
+meaning it ranks 66/70 RCDs cases into top 3. Furthermore,                                        50
+the performance of FluxRank is stable among different folds of                                     0
+                                                                                                       0         5          10           15        20            25            30
+cross validations. We can see that the performance of PAL [65]          Fig. 10: The time cost of manually localiztion and FluxRank
+is not good, the reasons are as follows. First, for a large-scale       for 33 failure cases.
+distributed software service, the root cause of a failure is very
+complex and the root cause machines are related to many                 G. Case Study
+features. Simply sorting the start times of KPIs’ anomalous                Due to the limited space, we only introduce in Table II three
+changes cannot localize the root cause machines. Second,                representative cases from the 70 failure causes, whose RCDs
+different KPIs have different collection intervals, the smallest        are ranked as top one, top two and out of top three.
+interval can be ten second, and the greatest interval can be one           RCD ranked the first. This case is a CPU overload
+minute or even larger. Therefore, KPIs with different collection        failure. The service runs on 11,519 machines (p1 in Table
+intervals cannot be sorted.                                             II). The root cause of this failure is a faulty configuration that
+E. Reducing Search Space of Localization                                causes CPU overload on 27 machines. In this case, the testers
+   Anomalous machines are the machines which contain one or             were doing some offline stress tests. Due to an operator’s
+more anomalous KPIs. Fig. 8 shows the number of anomalous               faulty configuration, the CPUs of some online machines were
+machines of the 70 cases. There are about 80% cases which               overloaded. After a few minutes, on-call operators found that
+have more than 300 anomalous machines. Fig. 9 shows that                the response time of the service is anomalous. Then, the
+about 80% cases have more than 20% anomalous machines.                  on-call operators tried to mitigate the failure according to
+Compared with screening all the massive anomalous machines,             their experience. They spent about one hour, with no success.
+FluxRank can rank the root cause to top-k digests. So operators         Then, this failure was escalated, and the operators stopped all
+only need to check top-k digests, which can significantly               stress tests that may influence online service. Eventually, they
+reduce the operators workload.                                          successfully mitigated the failure, but spent about two hours in
+F. Time Cost                                                            total. When the operators discussed this failure later on, they
+   The time cost of localization starts from the mitigation start       found that the Root Cause Machines are 27 machines whose
+time Tm and ends when the root cause machines are localized.            CPUs got overloaded. Fig. 6 shows the output of FluxRank
+FluxRank is triggered at Tm by operators. When operators                for this case, FluxRank successfully recommends the RCD at
+obtain FluxRank’s ranked digests, they will take few minutes            top one. The recommended RCD contains the 27 anomalous
+to confirm the results. Therefore, the time cost of localization        machines, and the top 5 anomalous KPIs are all CPU-related
+by FluxRank consist of two parts: running time of FluxRank              KPIs, belonging to the first row in Table I.
+and manual confirmation time by operators.                                 RCD ranked second. This case is an insufficient resource
+   We experimented with two servers, each server has 130G               failure. The service, which is the major monitoring service of
+memory and 256 cores. The running time of FluxRank is about             S, runs on 5,747 machines (p3 in Table II). The root cause is
+1 minute. We set the confirmation time to 5 minutes by oper-            that module A has insufficient resource to handle the increased
+ators experience, which is a relative large (thus conservative)         traffic. Module B has strong dependencies on module A. So
+value. So the time cost of FluxRank is 6 minutes. because there         when module A’s machines become anomalous, module B’s
+are only 33 out of 70 cases recorded the manually time cost,            machines also become anomalous. The features of module B’s
+we only compare these 33 cases’s time cost between manually             digest is very similar with module A’s digest. As FluxRank
+localization and FluxRank, as shown in Fig. 10. FluxRank                does not explicitly analyze the dependencies between modules,
+reduce the diagnosis time by more than 80% on average.                  the digest of module B is ranked first, and that of module
+
+
+
+                                                                    9
+A (the RCD) is ranked second. This case is representative                TABLE V: The details of 59 online cases from 7 real services.
+of all cases whose RCDs are ranked as top 2 and top 3 by                 The valid case represents the case whose RCD is ranked first.
+FluxRank. We plan to investigate incorporating dependencies                       #module   #machine   #KPI/machine     (#valid case)
+into FluxRank in a widely-deployable way in the future.                                                                / (#total case)
+                                                                             s1     15         520          591              2/2
+   RCD is not ranked into top three. This case is a memory                   s2      3         30           120              1/1
+overload failure. The service, which is the major mobile                     s3      4         40           302              3/3
+business service that handles billions of user requests per day,             s4      4         38           520              3/5
+runs on 2147 machines (p2 in Table II). The reason why the                   s5      3         35           424              1/1
+                                                                             s6      4         38           512              3/5
+RCD is not ranked into top three is that this service is deployed            s7      7         26           311             42/42
+on many VMs, and the resource KPIs of the VMs are not
+monitored. Therefore, the sudden changes on resource KPIs                                   VIII. R ELATED W ORK
+of these VMs cannot be clearly represented by the physical                  For a large-scale distributed software service, diagnosing
+machines’ resource KPIs they are on. The lesson we learned is            failure is a challenging and classic research topic. §I has
+that the VM KPI should also be monitored, which can enable               overviewed the dependence-based failure diagnosis work, and
+FluxRank to successfully localize such failure in the future.            below we provide other representative related works.
+On the other hand, analyzing similar cases helps identify KPIs              Log-based troubleshooting: System log is an important
+that should have been monitored in a very targeted manner and            clue for diagnosis [67–70]. Works [71, 72] train the normal
+gradually helps improve the coverage the monitoring.                     pattern from history data and use these patterns to detect the
+                  VII. O NLINE D EPLOYMENT                               anomalies. For large-scale service, the volume of logs is huge.
+   FluxRank has been successfully deployed online on one                 Directly analyzing the log has a high overhead. FluxRank is
+Internet service (with hundreds of machines) in S and six                light-weight because it only focuses on the KPI data.
+banking services (each with tens of machines) in two large                  Trace-based troubleshooting: Pinpoint [73] and Dep-
+banks for three months. Table V shows the details of the 7 real          per [74] collect the execution path information (traces). When
+services and the online performance of FluxRank. A valid case            failure happens, traces are useful to localize the root cause.
+is one whose RCD is ranked first. We can see that FluxRank               But works [73, 74] need to modify the source code of service.
+ranked the RCDs to top-1 for 55 cases in the 59 online cases.            Generally, a large-scale service is developed by many teams
+Because the RCDs of other 4 cases are not ranked into top 3,             with different languages over the years, the overhead of
+so Table V only shows the top-1 results. Next we introduce               modifying source code is often too high. FluxRank can be
+the details of some representative valid cases.                          easily deployed without modifying any source code.
+   Valid Case 1: The root cause of this case (in the Internet                                 IX. C ONCLUSION
+service) is that the number of database reading operations
+of a database module increased. When operators found the                    This paper presents FluxRank, a widely-deployable frame-
+response time KPI of the service is anomalous, they used                 work that can automatically and accurately localize the root
+FluxRank to localize the root cause machines. The top one                cause machines underlying software service failures, so that
+digest of the recommendation result contains 4 machines and              some actions can be triggered to mitigate the service failure.
+16 anomalous KPIs. Operators observed that these 4 machines              Our evaluation using historical cases from five real services
+came from the database module, and the top five anomalous                (with tens of thousands of machines) show that the true faulty
+KPIs are all related to the database reading operations. There-          machines are ranked top 1 (top 3) for 55 (66) cases out
+fore, they quickly and successfully mitigated the failure by             of 70 cases. Compared to existing approach FluxRank cuts
+switching from these 4 machines to backup database servers.              the localization time by more than 80% on average (to less
+   Valid Case 2: On Oct. 26, 2018, one banking service’s                 than 6 minutes). FluxRank has been successfully deployed
+number of failed transaction increased significantly, which is           online on one Internet service (with hundreds of machines)
+a failure. The root cause is that someone started a process              and six banking services (each with tens of machines) for
+occupying most of CPU and memory of the web-proxy ma-                    three months, and correctly localized the root cause machines
+chines. FluxRank quickly localized the root cause machines               as the top 1 for 55 cases out of 59 cases.
+within 3 mins. The top one digest of the recommended RCD                    In the future, we plan to extend the FluxRank’s framework
+showed the web-proxy machines’s CPU and memory usage                     to include the text-based machine logs, also widely available
+became anomalous. So the operator stopped the process and                but more challenging to analyze, to provide more detailed
+the banking service returned to normal.                                  localization information within the identified faulty machines.
+   There are 4 cases that FluxRank did not recommend the
+RCDs at the top. The reasons are: 1) The root cause of                                       ACKNOWLEDGMENT
+the failure, e.g., the business logic error, is not reflected in           The authors gratefully acknowledge the contribution of
+the KPIs, This is the limitation of FluxRank, which only                 Juexing Liao and Fuying Wang for proofreading this pa-
+utilizes monitored machine KPIs. We plan to improve on this              per. This work has been supported by the Beijing National
+limitation in the future. 2) For the problems in data collection         Research Center for Information Science and Technology
+system, there are many missing data in the KPIs. The lessons             (BNRist) key projects, the Fundamental Research Funds for
+are that the underlying monitoring system needs to be robust             the Central Universities (Grant No. 63191427), and CERNET
+in order for FluxRank to work reliably.                                  Innovation Project (Grant No. NGII20180121).
+
+
+
+                                                                    10
+                              R EFERENCES                                              [22] H. Yan, A. Flavel et al., “Argus: End-to-end service anomaly detection
+                                                                                            and localization from an isp’s point of view,” in INFOCOM, 2012
+ [1] L. Hook, “Amazon failure disrupts hundreds of thousands of websites.”                  Proceedings IEEE. IEEE, 2012, pp. 2756–2760.
+     https://www.ft.com/content/b809c752-fded-11e6-96f8-3700c5664d30,                  [23] B. Krishnamurthy, S. Sen, Y. Zhang, and Y. Chen, “Sketch-based change
+     march 1, 2017.                                                                         detection: methods, evaluation, and applications,” in Proceedings of the
+ [2] J.    NOVET,       “Microsoft      confirms     azure     storage   issues             3rd ACM SIGCOMM conference on Internet measurement. ACM, 2003,
+     around        the       world.”       https://venturebeat.com/2017/03/15/              pp. 234–247.
+     microsoft-confirms-azure-storage-issues-around-the-world,          march          [24] F. Knorn and D. J. Leith, “Adaptive kalman filtering for anomaly
+     15, 2017.                                                                              detection in software appliances,” in INFOCOM Workshops 2008, IEEE.
+ [3] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, and Z. Zang, “Rapid                  IEEE, 2008, pp. 1–6.
+     and robust impact assessment of software changes in large internet-based          [25] A. Mahimkar, Z. Ge et al., “Rapid detection of maintenance induced
+     services,” in Proceedings of the 11th ACM Conference on Emerging                       changes in service performance,” in Proceedings of the Seventh COn-
+     Networking Experiments and Technologies. ACM, 2015, p. 2.                              ference on emerging Networking EXperiments and Technologies. ACM,
+ [4] S. Zhang, Y. Liu, D. Pei, Y. Chen, X. Qu, S. Tao, Z. Zang, X. Jing, and                2011, p. 13.
+     M. Feng, “Funnel: Assessing software changes in web-based services,”              [26] D. Liu, Y. Zhao et al., “Opprentice: Towards practical and automatic
+     IEEE Transactions on Service Computing, 2016.                                          anomaly detection through machine learning,” in Proceedings of the
+ [5] Y. Sun, Y. Zhao, Y. Su, D. Liu, X. Nie, Y. Meng, S. Cheng, D. Pei,                     2015 ACM Conference on Internet Measurement Conference, ser. IMC
+     S. Zhang, X. Qu et al., “Hotspot: Anomaly localization for additive                    ’15. New York, NY, USA: ACM, 2015, pp. 211–224.
+     kpis with multi-dimensional attributes,” IEEE Access, vol. 6, pp. 10 909–         [27] H. Xu, W. Chen et al., “Unsupervised anomaly detection via variational
+     10 923, 2018.                                                                          auto-encoder for seasonal kpis in web applications,” in Proceedings of
+ [6] D. Bernstein, “Containers and cloud: From lxc to docker to kubernetes,”                the 2018 World Wide Web Conference on World Wide Web. International
+     IEEE Cloud Computing, no. 3, pp. 81–84, 2014.                                          World Wide Web Conferences Steering Committee, 2018, pp. 187–196.
+ [7] B. Hindman, A. Konwinski, M. Zaharia, A. Ghodsi, A. D. Joseph, R. H.              [28] J. Bu, Y. Liu, S. Zhang, W. Meng, Q. Liu, X. Zhu, and D. Pei, “Rapid
+     Katz, S. Shenker, and I. Stoica, “Mesos: A platform for fine-grained                   deployment of anomaly detection models for large number of emerging
+     resource sharing in the data center.” in NSDI, vol. 11, no. 2011, 2011,                kpi streams,” in 2018 IEEE 37th International Performance Computing
+     pp. 22–22.                                                                             and Communications Conference (IPCCC). IEEE, 2018, pp. 1–8.
+ [8] P. Bahl, R. Chandra, A. Greenberg, S. Kandula, D. A. Maltz, and                   [29] M. Ma, S. Zhang, D. Pei, X. Huang, and H. Dai, “Robust and rapid
+     M. Zhang, “Towards highly reliable enterprise network services via                     adaption for concept drift in software system anomaly detection,”
+     inference of multi-level dependencies,” in ACM SIGCOMM Computer                        in 2018 IEEE 29th International Symposium on Software Reliability
+     Communication Review, vol. 37, no. 4. ACM, 2007, pp. 13–24.                            Engineering (ISSRE). IEEE, 2018, pp. 13–24.
+ [9] M. Kim, R. Sumbaly, and S. Shah, “Root cause detection in a service-              [30] S. Reddy, M. Mun, J. Burke, D. Estrin, M. Hansen, and M. Srivas-
+     oriented architecture,” in ACM SIGMETRICS Performance Evaluation                       tava, “Using mobile phones to determine transportation modes,” ACM
+     Review, vol. 41, no. 1. ACM, 2013, pp. 93–104.                                         Transactions on Sensor Networks (TOSN), vol. 6, no. 2, p. 13, 2010.
+[10] P. Chen, Y. Qi, P. Zheng, and D. Hou, “Causeinfer: automatic and                  [31] Y. Zheng, Y. Chen, Q. Li, X. Xie, and W.-Y. Ma, “Understanding
+     distributed performance diagnosis with hierarchical causality graph in                 transportation modes based on gps data for web applications,” ACM
+     large distributed systems,” in INFOCOM, 2014 Proceedings IEEE.                         Transactions on the Web (TWEB), vol. 4, no. 1, p. 1, 2010.
+     IEEE, 2014, pp. 1887–1895.                                                        [32] I. Cleland, M. Han, C. Nugent, H. Lee, S. McClean, S. Zhang, and
+[11] H. Nguyen, Z. Shen, Y. Tan, and X. Gu, “Fchain: Toward black-box                       S. Lee, “Evaluation of prompted annotation of activity data recorded
+     online fault localization for cloud systems,” in Distributed Computing                 from a smart phone,” Sensors, vol. 14, no. 9, pp. 15 861–15 879, 2014.
+     Systems (ICDCS), 2013 IEEE 33rd International Conference on. IEEE,                [33] M. Han, Y.-K. Lee, S. Lee et al., “Comprehensive context recognizer
+     2013, pp. 21–30.                                                                       based on multimodal sensors in a smartphone,” Sensors, vol. 12, no. 9,
+[12] X. Nie, Y. Zhao et al., “Mining causality graph for automatic web-based                pp. 12 588–12 605, 2012.
+     service diagnosis,” in Performance Computing and Communications                   [34] K. D. Feuz, D. J. Cook, C. Rosasco, K. Robertson, and M. Schmitter-
+     Conference (IPCCC), 2016 IEEE 35th International. IEEE, 2016, pp.                      Edgecombe, “Automated detection of activity transitions for prompting,”
+     1–8.                                                                                   IEEE transactions on human-machine systems, vol. 45, no. 5, pp. 575–
+[13] S. Kandula, R. Mahajan, P. Verkaik, S. Agarwal, J. Padhye, and P. Bahl,                585, 2015.
+     “Detailed diagnosis in enterprise networks,” ACM SIGCOMM Computer                 [35] F. Gustafsson and F. Gustafsson, Adaptive filtering and change detection.
+     Communication Review, vol. 39, no. 4, pp. 243–254, 2009.                               Citeseer, 2000, vol. 1.
+[14] T. Ahmed, B. Oreshkin, and M. Coates, “Machine learning approaches                [36] F. Desobry, M. Davy, and C. Doncarli, “An online kernel change
+     to network anomaly detection,” in Proceedings of the 2nd USENIX Work-                  detection algorithm,” IEEE Transactions on Signal Processing, vol. 53,
+     shop on Tackling Computer Systems Problems with Machine Learning                       no. 8, pp. 2961–2974, 2005.
+     Techniques. USENIX Association, 2007, pp. 1–6.                                    [37] E. Keogh and J. Lin, “Clustering of time-series subsequences is mean-
+[15] Y. Liu, L. Zhang, and Y. Guan, “A distributed data streaming algorithm                 ingless: implications for previous and future research,” Knowledge and
+     for network-wide traffic anomaly detection,” ACM SIGMETRICS Per-                       information systems, vol. 8, no. 2, pp. 154–177, 2005.
+     formance Evaluation Review, vol. 37, no. 2, pp. 81–82, 2009.                      [38] A. Aue, S. Hörmann, L. Horváth, M. Reimherr et al., “Break detection in
+[16] R. Jiang, H. Fei, and J. Huan, “Anomaly localization for network data                  the covariance structure of multivariate time series models,” The Annals
+     streams with graph joint sparse pca,” in Proceedings of the 17th ACM                   of Statistics, vol. 37, no. 6B, pp. 4046–4087, 2009.
+     SIGKDD international conference on Knowledge discovery and data                   [39] K. Yamanishi and J.-i. Takeuchi, “A unifying framework for detecting
+     mining. ACM, 2011, pp. 886–894.                                                        outliers and change points from non-stationary time series data,” in
+[17] J. Gao, G. Jiang, H. Chen, and J. Han, “Modeling probabilistic measure-                Proceedings of the eighth ACM SIGKDD international conference on
+     ment correlations for problem determination in large-scale distributed                 Knowledge discovery and data mining. ACM, 2002, pp. 676–681.
+     systems,” in 2009 29th IEEE International Conference on Distributed               [40] M. Yamada, A. Kimura, F. Naya, and H. Sawada, “Change-point
+     Computing Systems. IEEE, 2009, pp. 623–630.                                            detection with feature selection in high-dimensional time-series data.”
+[18] C. Wang, I. A. Rayan, G. Eisenhauer, K. Schwan, V. Talwar, M. Wolf,                    in IJCAI, 2013, pp. 1827–1833.
+     and C. Huneycutt, “Vscope: middleware for troubleshooting time-                   [41] D. Barry and J. A. Hartigan, “A bayesian analysis for change point
+     sensitive data center applications,” in ACM/IFIP/USENIX International                  problems,” Journal of the American Statistical Association, vol. 88, no.
+     Conference on Distributed Systems Platforms and Open Distributed                       421, pp. 309–319, 1993.
+     Processing. Springer, 2012, pp. 121–141.                                          [42] X. Xuan and K. Murphy, “Modeling changing dependency structure
+[19] M. Kalisch and P. Bühlmann, “Estimating high-dimensional directed                     in multivariate time series,” in Proceedings of the 24th international
+     acyclic graphs with the pc-algorithm,” Journal of Machine Learning                     conference on Machine learning. ACM, 2007, pp. 1055–1062.
+     Research, vol. 8, no. Mar, pp. 613–636, 2007.                                     [43] P. R. Rosenbaum, “An exact distribution-free test comparing two multi-
+[20] S.-B. Lee, D. Pei et al., “Threshold compression for 3g scalable                       variate distributions based on adjacency,” Journal of the Royal Statistical
+     monitoring,” in INFOCOM, 2012 Proceedings IEEE. IEEE, 2012, pp.                        Society: Series B (Statistical Methodology), vol. 67, no. 4, pp. 515–530,
+     1350–1358.                                                                             2005.
+[21] A. H. Yaacob, I. K. Tan et al., “Arima based network anomaly detection,”          [44] J. Zhang and M. Small, “Complex network from pseudoperiodic time
+     in Communication Software and Networks, 2010. ICCSN’10. Second                         series: Topology versus dynamics,” Physical review letters, vol. 96,
+     International Conference on. IEEE, 2010, pp. 205–209.                                  no. 23, p. 238701, 2006.
+
+
+
+
+                                                                                  11
+[45] L. Lacasa, B. Luque, F. Ballesteros, J. Luque, and J. C. Nuno, “From               [63] MongoDB, accessed Jan. 11, 2019, https://www.mongodb.com/.
+     time series to complex networks: The visibility graph,” Proceedings of             [64] Kafka, accessed Jan. 11, 2019, https://kafka.apache.org/.
+     the National Academy of Sciences, vol. 105, no. 13, pp. 4972–4975,                 [65] H. Nguyen, Y. Tan, and X. Gu, “Pal: P ropagation-aware a nomaly
+     2008.                                                                                    l ocalization for cloud hosted distributed applications,” in Managing
+[46] D. Rybach, C. Gollan, R. Schluter, and H. Ney, “Audio segmentation                       Large-scale Systems via the Analysis of System Logs and the Application
+     for speech recognition using segment features,” in Acoustics, Speech and                 of Machine Learning Techniques. ACM, 2011, p. 1.
+     Signal Processing, 2009. ICASSP 2009. IEEE International Conference                [66] R. Kohavi et al., “A study of cross-validation and bootstrap for accuracy
+     on. IEEE, 2009, pp. 4197–4200.                                                           estimation and model selection,” in Ijcai, vol. 14, no. 2. Montreal,
+[47] P. Fearnhead, “Exact and efficient bayesian inference for multiple                       Canada, 1995, pp. 1137–1145.
+     changepoint problems,” Statistics and computing, vol. 16, no. 2, pp.
+                                                                                        [67] W. Meng, Y. Liu, S. Zhang, D. Pei, H. Dong, L. Song, and X. Luo,
+     203–213, 2006.
+                                                                                              “Device-agnostic log anomaly classification with partial labels,” in
+[48] P. Wilmott, S. Howson, S. Howison, J. Dewynne et al., The mathematics
+                                                                                              2018 IEEE/ACM 26th International Symposium on Quality of Service
+     of financial derivatives: a student introduction. Cambridge university
+                                                                                              (IWQoS). IEEE, 2018, pp. 1–6.
+     press, 1995.
+[49] B. W. Silverman, Density estimation for statistics and data analysis.              [68] S. Zhang, Y. Liu, W. Meng, Z. Luo, J. Bu, S. Yang, P. Liang, D. Pei,
+     CRC press, 1986, vol. 26.                                                                J. Xu, Y. Zhang et al., “Prefix: Switch failure prediction in datacenter
+[50] D. C. Montgomery, G. C. Runger, and N. F. Hubele, Engineering                            networks,” Proceedings of the ACM on Measurement and Analysis of
+     statistics. John Wiley & Sons, 2009.                                                     Computing Systems, vol. 2, no. 1, p. 2, 2018.
+[51] J. Benesty, J. Chen et al., “Pearson correlation coefficient,” in Noise            [69] S. Zhang, W. Meng, J. Bu, S. Yang, Y. Liu, D. Pei, J. Xu, Y. Chen,
+     reduction in speech processing. Springer, 2009, pp. 1–4.                                 H. Dong, X. Qu et al., “Syslog processing for switch failure diagnosis
+[52] M. G. Kendall, “A new measure of rank correlation,” Biometrika, vol. 30,                 and prediction in datacenter networks,” in 2017 IEEE/ACM 25th Inter-
+     no. 1/2, pp. 81–93, 1938.                                                                national Symposium on Quality of Service (IWQoS). IEEE, 2017, pp.
+[53] W. Pirie, “Spearman rank correlation coefficient,” Encyclopedia of                       1–10.
+     statistical sciences, 1988.                                                        [70] W. Meng, Y. Liu, Y. Zhu, S. Zhang, D. Pei, Y. Liu, Y. Chen, R. Zhang,
+[54] J. A. Hartigan and M. A. Wong, “Algorithm as 136: A k-means                              S. Tao, P. Sun, and R. Zhou, “Loganomaly: Unsupervised detection of
+     clustering algorithm,” Journal of the Royal Statistical Society. Series                  sequential and quantitative anomalies in unstructured logs,” in Proceed-
+     C (Applied Statistics), vol. 28, no. 1, pp. 100–108, 1979.                               ings of the Twenty-Eighth International Joint Conference on Artificial
+[55] L. Rokach and O. Maimon, “Clustering methods,” in Data mining and                        Intelligence, IJCAI-19. International Joint Conferences on Artificial
+     knowledge discovery handbook. Springer, 2005, pp. 321–352.                               Intelligence Organization, 7 2019, pp. 4739–4745.
+[56] M. Ester, H.-P. Kriegel, J. Sander, X. Xu et al., “A density-based                 [71] Q. Fu, J.-G. Lou et al., “Execution anomaly detection in distributed
+     algorithm for discovering clusters in large spatial databases with noise.”               systems through unstructured log analysis,” in Data Mining, 2009.
+     in Kdd, vol. 96, no. 34, 1996, pp. 226–231.                                              ICDM’09. Ninth IEEE International Conference on. IEEE, 2009, pp.
+[57] D. Y. Yoon, N. Niu, and B. Mozafari, “Dbsherlock: A performance                          149–158.
+     diagnostic tool for transactional databases,” in Proceedings of the 2016           [72] W. Xu, L. Huang et al., “Detecting large-scale system problems by min-
+     International Conference on Management of Data. ACM, 2016, pp.                           ing console logs,” in Proceedings of the ACM SIGOPS 22nd symposium
+     1599–1614.                                                                               on Operating systems principles. ACM, 2009, pp. 117–132.
+[58] T.-Y. Liu et al., “Learning to rank for information retrieval,” Foundations        [73] M. Y. Chen, E. Kiciman et al., “Pinpoint: Problem determination in
+     and Trends® in Information Retrieval, vol. 3, no. 3, pp. 225–331, 2009.                  large, dynamic internet services,” in Dependable Systems and Networks,
+[59] F. E. Harrell, “Ordinal logistic regression,” in Regression modeling                     2002. DSN 2002. Proceedings. International Conference on. IEEE,
+     strategies. Springer, 2001, pp. 331–343.                                                 2002, pp. 595–604.
+[60] RestAPI, accessed Jan. 11, 2019, https://www.restapitutorial.com/.                 [74] B. H. Sigelman, L. A. Barroso et al., “Dapper, a large-scale distributed
+[61] Spark, accessed Jan. 11, 2019, https://spark.apache.org/.                                systems tracing infrastructure,” Technical report, Google, Inc, Tech.
+[62] OpenTSDB, accessed April 22, 2018, http://opentsdb.net/.                           Rep., 2010.
+
+
+
+
+                                                                                   12
+

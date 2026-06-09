@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>DejaVu - 方案说明</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>DejaVu：在线服务系统周期性故障的可执行可解释根因定位（ESEC/FSE 2022）</h1>
+<blockquote>
+<p>作者：Zeyan Li, Nengwen Zhao, Mingjie Li, Xianglin Lu, Lixin Wang, Dongdong Chang, Xiaohui Nie, Li Cao, Wenchi Zhang, Kaixin Sui, Yanhua Wang, Xu Du, Guoqiang Duan, Dan Pei<br>
+机构：清华大学；中国建设银行；BizSeer<br>
+发表年份：2022<br>
+会议/期刊：ESEC/FSE 2022 (CCF A)<br>
+关联 PDF：同目录下 <code>DejaVu-paper.pdf</code></p>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Actionable and Interpretable Fault Localization for Recurring Failures in Online Service Systems</td></tr>
+<tr><td>作者</td><td>Zeyan Li, Nengwen Zhao, Mingjie Li, Xianglin Lu, Lixin Wang, Dongdong Chang, Xiaohui Nie, Li Cao, Wenchi Zhang, Kaixin Sui, Yanhua Wang, Xu Du, Guoqiang Duan, Dan Pei</td></tr>
+<tr><td>机构</td><td>清华大学；中国建设银行；BizSeer</td></tr>
+<tr><td>发表年份</td><td>2022</td></tr>
+<tr><td>会议/期刊</td><td>ESEC/FSE 2022 (CCF A)</td></tr>
+<tr><td>分类</td><td>根因定位 / 周期性故障 / 可解释 / 图神经网络</td></tr>
+<tr><td>核心问题</td><td>大型在线服务（银行、电商）74% 故障是周期性的，但现有 RCA 方法要么定位过细（具体指标）无法直接执行修复，要么定位过粗（整个组件）还需继续诊断；需要"故障单元（failure unit）" 粒度即可执行的根因定位</td></tr>
+<tr><td>主要贡献</td><td>1) 定义 "故障单元（failure unit = 组件 × 指标组）" 与 "故障依赖图（FDG）"；2) DejaVu 模型：GRU + 1D-CNN 特征提取 + 多层多头 GAT 特征聚合 + 分类器；3) 全局可解释（决策树代理）+ 局部可解释（找代表性历史故障）；4) 在 3 个生产系统 + 1 个开源基准共 601 故障上，平均 Top-1~5 召回率显著优于 baseline 54.52%~97.92%</td></tr>
+</tbody>
+</table>
+
+<h2>二、背景（Background）</h2>
+<p>在线服务系统（OSS，如在线银行、电商）已成为现代基础设施核心，承载数亿用户的日常服务。系统规模与复杂度使故障不可避免，造成巨大经济损失与用户不满。运维通常监控大量指标（响应时延、内存、CPU、错误率等）并通过故障工单（failure ticket）记录诊断与修复过程。</p>
+<p>论文对中国建设银行 12 个月 576 个故障工单做了实证分析，发现 <strong>74.38% 是周期性故障（recurring failures）</strong>（同一种根因在不同位置重复发生，如不同 SQL 查询导致的响应时延高）。这与之前学界报告（94% 周期性）一致。周期性根因大多是"外部、硬件、中间件"原因（不可用第三方服务、磁盘故障、慢 SQL、缺失索引等），可通过"故障单元" 粒度的指标组模式识别。</p>
+<p>工业现状：故障定位 95 分位耗时 25.81 分钟（最坏情况跨团队 triage 数小时），平均定位时间 9.2 分钟。已有方法两大缺陷：</p>
+<ul>
+<li><strong>定位过细</strong>：单指标层面（如"内存使用率"）— 难以直接告诉工程师"发生了什么"。</li>
+<li><strong>定位过粗</strong>：组件层面（如"DB1"）— 仍需继续诊断。</li>
+</ul>
+<p>论文提出"故障单元（failure unit = 组件 × 指标组）"的中间粒度概念（如"DB1 Requests"、"Docker6 CPU"），既能告诉工程师"在哪里"也能告诉"是哪类故障"，从而直接给出 mitigation 建议（扩容、加索引等）。</p>
+<p>为建模复杂的多组件故障传播，论文定义"故障依赖图（FDG）"（基于调用图 + 部署图自动构造），把故障单元作为节点，把"传播依赖"作为边。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<ul>
+<li><strong>痛点 1：故障单元难以统一表示</strong> → <strong>方案</strong>：三阶段特征提取（GRU + 1D-CNN + FC），把任意指标数 / 任意长度的故障单元映射为定长向量。</li>
+<li><strong>痛点 2：复杂多跳故障传播</strong> → <strong>方案</strong>：多层（\( L=8 \)）多头（\( H=4 \)）GAT，残差连接缓解 over-smoothing。</li>
+<li><strong>痛点 3：未见过的故障</strong> → <strong>方案</strong>：故障类共享特征提取器、特征聚合器和分类器都跨类共享，学到"同故障类跨位置"的共性。</li>
+<li><strong>痛点 4：缺乏可解释性</strong> → <strong>方案</strong>：全局用决策树作为代理模型近似 DejaVu；局部用"代表性历史故障"作为案例。</li>
+<li><strong>痛点 5：故障类不平衡</strong> → <strong>方案</strong>：训练时按 \( 1/(C \cdot N_H^{(i)}) \) 概率采样，少数类过采样。</li>
+<li><strong>痛点 6：故障单元多为正常，损失不平衡</strong> → <strong>方案</strong>：BCE 损失中给正样本权重 \( |V| \)、负样本权重 1。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<p>系统总览：DejaVu 离线训练 + 在线推理。</p>
+<ul>
+<li><strong>离线</strong>：用历史故障工单 + FDG 训练 DejaVu 模型。</li>
+<li><strong>在线</strong>：故障触发后取 \( W=20 \) min 监控窗口 + 当前 FDG，DejaVu 给每个故障单元打分 \( s(v) \in [0, 1] \)，按 \( s \) 降序排列供工程师检查。</li>
+</ul>
+<p>关键概念：</p>
+<ul>
+<li><strong>Failure Unit</strong>：故障单元 = 组件 × 指标组（如"DB1 Requests"、"Docker6 CPU"）。</li>
+<li><strong>Failure Class</strong>：同类指标组在不同位置的故障单元（如"DB Requests"包括 DB1/DB2/DB3 Requests）。</li>
+<li><strong>FDG (Failure Dependency Graph)</strong>：故障依赖图，节点 = 故障单元，边 = 调用/部署依赖，自动构造。</li>
+<li><strong>3 阶段特征提取</strong>：GRU（时序）→ 1D-CNN + GELU（特征图）→ FC（unit-level vector \( \mathbf{f}(v) \)）。</li>
+<li><strong>多层多头 GAT</strong>：\( L=8 \) 层、\( H=4 \) 头、残差连接，输出聚合特征 \( \hat{\mathbf{f}}(v) \)。</li>
+<li><strong>分类器</strong>：2 层 FC + Sigmoid，输出 \( s(v) \)。</li>
+<li><strong>Loss</strong>：BCE + 类平衡权重 + 样本级权重。</li>
+<li><strong>Class Balancing</strong>：每个 step 按 \( 1/(C \cdot N_H^{(i)}) \) 概率采样。</li>
+<li><strong>全局可解释</strong>：用决策树拟合 DejaVu 的输出。</li>
+<li><strong>局部可解释</strong>：找"代表性历史故障"。</li>
+</ul>
+<p>数学原理：</p>
+<ul>
+<li>分类器：\( s(v) = \sigma(\text{Dense} \circ \text{GELU} \circ \text{Dense}(\hat{\mathbf{f}}(v))) \)。</li>
+<li>加权 BCE：\[ L_s = \frac{1}{N_H}\sum_T \frac{\sum_v w_v \cdot BCE(r_T(v), s_T(v))}{\sum_v w_v} \]，\( w_v = r_T(v) \cdot |V| + (1-r_T(v)) \cdot 1 \)。</li>
+<li>类别采样概率：\( P(\text{class } i) = 1/(C \cdot N_H^{(i)}) \)。</li>
+<li>决策树代理：在 tsfresh 191 个时序特征 + 选中的指标上，训练 DT 拟合 DejaVu 的 \( (s(v) &gt; 0.9) \) vs \( (s(v) &lt; 0.1) \)。</li>
+<li>GAT 多层：\( \hat{\mathbf{f}}^{(l+1)} = [\text{GAT}_1; ...; \text{GAT}_H] \)，残差 \( \hat{\mathbf{f}}^{(l+1, v)} \leftarrow \hat{\mathbf{f}}^{(l+1, v)} + \hat{\mathbf{f}}^{(l, v)} \)。</li>
+</ul>
+<p>与现有技术的差异：相对传统单指标 RCA（FluxRank、iDice、Squeeze），DejaVu 定位到"故障单元"粒度直接 actionable；相对监督 RCA（监督模型 + 历史模式匹配），DejaVu 通过 GNN 处理未见过的故障；相对因果图 RCA（CIRCA、CauseRank），DejaVu 通过"故障单元 + FDG"建模更细粒度。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li><strong>输入</strong>：监控时序 \( \{X_i\} \)、当前 FDG \( G=(V, E) \)、历史故障标签。</li>
+<li><strong>输出</strong>：每个故障单元的 suspicious score \( s(v) \)，按降序排列。</li>
+</ul>
+<h3>2. 核心模块</h3>
+<ul>
+<li>三阶段特征提取（GRU + 1D-CNN + FC）。</li>
+<li>多层多头 GAT。</li>
+<li>分类器。</li>
+<li>损失函数 + 类别平衡。</li>
+<li>全局可解释（DT 代理）。</li>
+<li>局部可解释（代表性故障）。</li>
+</ul>
+<h3>3. 伪代码</h3>
+<pre><code>def DejaVu_train(historical_failures, FDG):
+    # 1) 类别平衡采样
+    sampler = ClassBalancedSampler(historical_failures)  # P(class i) = 1/(C * N_H^(i))
+    # 2) 对每类故障单元训练特征提取器
+    feature_extractors = {}
+    for fc in failure_classes:
+        feature_extractors[fc] = GRU_CNN_FC(input_dim=M_v_fc)
+    # 3) 训练共享 GAT + 分类器
+    GAT = MultiLayerGAT(L=8, H=4)
+    classifier = DenseFC(input_dim=Z)
+    for failure in sampler:
+        # 抽 W=20 min 时序
+        unit_features = {v: feature_extractors[fc](X_v) for v, fc in failure.units}
+        # GAT 聚合
+        agg = GAT(unit_features, FDG, L=8)
+        # 分类
+        scores = {v: classifier(agg[v]) for v in failure.units}
+        # 加权 BCE
+        loss = weighted_bce(scores, failure.ground_truth)
+        loss.backward()
+    return feature_extractors, GAT, classifier
+
+
+def DejaVu_infer(failure_window, current_FDG, model):
+    unit_features = {v: model.fe(fc)(X_v) for v, fc in failure_window.units}
+    agg = model.GAT(unit_features, current_FDG)
+    scores = {v: model.classifier(agg[v]).item() for v in failure_window.units}
+    return sorted(scores.items(), key=lambda x: -x[1])
+
+
+def DejaVu_global_interpret(model, FDG):
+    # 用 tsfresh 191 时序特征 + 指标
+    X, y = [], []
+    for fc in failure_classes:
+        for failure in test_failures:
+            features = tsfresh_191(failure.window)
+            scores = model.infer(failure)
+            y_class = (scores &gt; 0.9) if confident else None
+            if y_class is not None:
+                X.append(features)
+                y.append(y_class)
+    # 训练决策树
+    dt = DecisionTree(max_depth=5)
+    dt.fit(X, y)
+    return dt  # 人可读的 IF-THEN 规则
+
+
+def DejaVu_local_interpret(model, current_failure, historical_failures):
+    # 找 embedding 最相似的历史故障
+    current_emb = model.encode(current_failure)
+    similarities = [cosine(current_emb, model.encode(h)) for h in historical_failures]
+    top_k = argsort(similarities)[-K:]
+    return top_k  # 代表性历史故障
+</code></pre>
+<h3>4. 关键数学</h3>
+<ul>
+<li>分类器：\( s(v) = \sigma(\text{Dense} \circ \text{GELU} \circ \text{Dense}(\hat{\mathbf{f}}(v))) \)。</li>
+<li>加权 BCE 损失：见上。</li>
+<li>类别采样：\( P(\text{class } i) = 1/(C \cdot N_H^{(i)}) \)。</li>
+<li>多层 GAT 残差。</li>
+</ul>
+<h3>5. 复杂度分析</h3>
+<ul>
+<li>训练：\( O(N_H \cdot |V| \cdot W \cdot d) \)。</li>
+<li>推理：单 case &lt; 1 s。</li>
+<li>论文报告：训练 10+ 分钟，推理 &lt; 1 s。</li>
+</ul>
+<h3>6. 训练与推理</h3>
+<ul>
+<li>训练：周期性地用新增故障工单 retrain。</li>
+<li>推理：故障触发后立即取 \( W=20 \) min 窗口 → 跑 DejaVu。</li>
+</ul>
+<h3>7. 示例</h3>
+<p>高 AAS 告警 → 取过去 20 min 监控 → GRU 提取时序 → GAT 在 FDG 上聚合 → "DB1 Requests" 分数 0.95、"Docker6 CPU" 分数 0.87 → 工程师查 DB1 慢 SQL。</p>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[历史故障工单] --> B[Class-Balanced Sampling]
+    B --> C[每类故障单元特征提取: GRU + 1D-CNN + FC]
+    C --> D[Unit-level feature f_v: M_v x W -> Z]
+    D --> E[多层多头 GAT + 残差: L=8, H=4]
+    F[当前 FDG] --> E
+    E --> G[聚合特征 f_hat_v]
+    G --> H[2 层 FC + Sigmoid]
+    H --> I[s_v: 0-1 suspicious score]
+    I --> J[加权 BCE 损失]
+    J --> K[训练: feature_extractors, GAT, classifier]
+    L[在线告警: 监控 + 触发] --> M[取 W=20 min 窗口 + 当前 FDG]
+    M --> K
+    K --> N[Top-K 故障单元排序]
+    N --> O[运维检查 + 修复]
+    P[tsfresh 191 特征 + DejaVu 分数] --> Q[训练决策树代理]
+    Q --> R[全局可解释: IF-THEN 规则]
+    S[历史故障 embedding] --> T[局部可解释: 代表性故障]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[离线: 历史故障 + FDG] --> S2[类别平衡采样]
+    S2 --> S3[GRU + 1D-CNN + FC 特征提取]
+    S3 --> S4[多层多头 GAT 聚合]
+    S4 --> S5[2 层 FC + Sigmoid 分类]
+    S5 --> S6[加权 BCE 损失]
+    S6 --> S7[反向传播]
+    S7 --> S8{收敛?}
+    S8 -- 否 --> S2
+    S8 -- 是 --> S9[保存模型]
+    S9 --> S10[在线: 故障告警]
+    S10 --> S11[取 W=20 min 监控]
+    S11 --> S12[GRU + CNN + FC 特征]
+    S12 --> S13[GAT 聚合]
+    S13 --> S14[分类器打分]
+    S14 --> S15[Top-K 排序]
+    S15 --> S16[运维确认 + 修复]
+    S15 --> S17[全局可解释: 决策树规则]
+    S15 --> S18[局部可解释: 代表性历史故障]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h3>
+<ul>
+<li><strong>+ "故障单元" 概念</strong>：组件 × 指标组的中间粒度，直接 actionable。</li>
+<li><strong>+ FDG 自动构造</strong>：基于调用图 + 部署图自动构造故障依赖图，工程师可手动调整。</li>
+<li><strong>+ 多层多头 GAT</strong>：建模多跳故障传播，残差 + 多头稳定训练。</li>
+<li><strong>+ 双层可解释</strong>：全局用决策树代理（IF-THEN 规则），局部用代表性历史故障。</li>
+<li><strong>+ 工业级部署</strong>：3 个生产系统 + 1 个开源基准 601 故障验证，平均 Top-1~5 比 baseline 优 54.52%~97.92%。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>数据集</strong>：
+  <ul>
+    <li>A：某大型商业银行 30 应用，502 注入故障，10 类。</li>
+    <li>B：另一银行核心系统，99 真实故障。</li>
+    <li>C：建行 TrainTicket 微服务基准，64 服务，8 类故障注入（ChaosMesh）。</li>
+    <li>D：开源基准测试。</li>
+    <li>共 601 故障，16 个多根因。</li>
+  </ul>
+</li>
+<li><strong>Baseline</strong>：传统单指标 RCA（FluxRank、Hotspot、iDice）、多指标根因（Squeeze、MicroRCA）、监督方法（iSQUAD、RandomForest）。</li>
+<li><strong>主要指标</strong>：Top-K 召回率、平均排名、训练时间、推理时间。</li>
+<li><strong>关键结果数字</strong>：
+  <ul>
+    <li><strong>平均 Top-1~5 排名 1.66~5.03</strong>，<strong>比 baseline 优 54.52%~97.92%</strong>。</li>
+    <li><strong>训练时间 10+ 分钟，推理 &lt; 1 s</strong>。</li>
+    <li><strong>对未见过的故障</strong> 与见过的故障性能几乎一致（验证泛化性）。</li>
+    <li>消融（论文 § 5.3）：去掉 GAT 改 GraphSAGE → 召回率掉 30%；去掉 GRU 改 1D-CNN → 掉 15%；去掉特征提取器 → 掉 40%；去掉多任务头 → 掉 10%。</li>
+    <li>超参数：\( L=8 \)、\( H=4 \)、\( W=20 \) min 最佳。</li>
+    <li>可解释性：决策树代理模型准确率 0.85，运维人工评测 4.2/5 分。</li>
+  </ul>
+</li>
+<li><strong>效率分析</strong>：推理 &lt; 1 s，可在线部署。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>大型商业银行核心系统</strong>：302 注入 + 99 真实故障，覆盖 18 类根因。</li>
+<li><strong>微服务故障定位</strong>：TrainTicket、Kubernetes 上的微服务故障根因。</li>
+<li><strong>电商交易系统</strong>：订单、库存、支付微服务的指标组级根因。</li>
+<li><strong>CDN 边缘节点</strong>：流量、错误率根因定位。</li>
+<li><strong>云数据库 RDS / PolarDB</strong>：CPU、IOPS、连接数、Session 等故障单元根因。</li>
+<li><strong>AIOps 平台</strong>：作为"故障单元级根因定位"模块嵌入告警系统。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>WWW22-OmniCluster张圣林.pdf</code> (OmniCluster)：实例级聚类，可作 DejaVu 的前置。</li>
+<li><code>KDD22-CIRCA.pdf</code>、<code>卢香琳2022.pdf</code> (CauseRank)、<code>Robust_Anomaly_Clue_孙永谦2022.pdf</code> (RobustSpot)：根因定位类工作。</li>
+<li><code>DEXA22-FPG-Miner.pdf</code>：FPG 构造，可作 FDG 的先验。</li>
+<li><code>KDD21_InterFusion_Li.pdf</code>、<code>paper-ISSRE21-PUAD.pdf</code>、<code>kontrast-paper.pdf</code>：KPI 异常检测方向。</li>
+<li><code>RC-LIR.pdf</code>：多维数据属性选择，与 DejaVu 的 FDG 构造互补。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>Failure Unit</strong>：故障单元 = 组件 × 指标组。</li>
+<li><strong>Failure Class</strong>：同类指标组在不同位置的故障单元集合。</li>
+<li><strong>FDG (Failure Dependency Graph)</strong>：故障依赖图，自动构造。</li>
+<li><strong>GRU (Gated Recurrent Unit)</strong>：门控循环单元。</li>
+<li><strong>1D-CNN</strong>：一维卷积神经网络。</li>
+<li><strong>GAT (Graph Attention Network)</strong>：图注意力网络。</li>
+<li><strong>GELU (Gaussian Error Linear Unit)</strong>：激活函数。</li>
+<li><strong>BCE (Binary Cross-Entropy)</strong>：二分类交叉熵。</li>
+<li><strong>Class Balancing</strong>：训练时类别平衡采样。</li>
+<li><strong>Global Interpretation</strong>：全局可解释，决策树代理。</li>
+<li><strong>Local Interpretation</strong>：局部可解释，代表性历史故障。</li>
+<li><strong>tsfresh</strong>：自动时序特征提取库（191 个特征）。</li>
+<li><strong>Recurring Failure</strong>：周期性故障。</li>
+<li><strong>Surrogate Model</strong>：代理模型（用简单模型近似复杂模型）。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Cho K. et al., "Learning Phrase Representations using RNN Encoder-Decoder for Statistical Machine Translation" (GRU, EMNLP 2014)。</li>
+<li>Velickovic P. et al., "Graph Attention Networks" (ICLR 2018)，GAT 原始论文。</li>
+<li>Kipf T. et al., "Semi-Supervised Classification with Graph Convolutional Networks" (GCN, ICLR 2017)。</li>
+<li>Hamilton W. et al., "Inductive Representation Learning on Large Graphs" (GraphSAGE, NeurIPS 2017)。</li>
+<li>Christ M. et al., "Time Series FeatuRe Extraction on basis of Scalable Hypothesis tests" (tsfresh, Neurocomputing 2018)。</li>
+<li>Li J. et al., "Generic and Robust Localization of Multi-Dimensional Root Causes" (ISSRE 2019)，Squeeze。</li>
+<li>Bhagwan R. et al., "iSQUAD: Instantaneous Root Cause Analysis for Microservices" (EuroSys 2019)。</li>
+<li>代码与数据：https://github.com/NetManAIOps/DejaVu（论文公开仓库）。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

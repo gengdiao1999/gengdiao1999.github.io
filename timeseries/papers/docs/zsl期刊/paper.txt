@@ -1,0 +1,1032 @@
+34                                                             IEEE TRANSACTIONS ON SERVICES COMPUTING,                          VOL. 11, NO. 1,   JANUARY/FEBRUARY 2018
+
+
+
+
+              FUNNEL: Assessing Software Changes
+                   in Web-Based Services
+                 Shenglin Zhang, Ying Liu, Member, IEEE, Dan Pei, Senior Member, IEEE, Yu Chen,
+                          Xianping Qu, Shimin Tao, Zhi Zang, Xiaowei Jing, and Mei Feng
+
+       Abstract—The detection of performance changes in software change roll-outs in Internet-based services is crucial for an operations
+       team, because it allows timely roll-back of a software change when performance degrades unexpectedly. However, it is infeasible to
+       manually investigate millions of performance measurements of many roll-outs. In this paper, we present an automated tool, FUNNEL,
+       for rapid and robust impact assessment of software changes in large Internet-based services. FUNNEL automatically collects the
+       related performance measurements for each software change. To detect significant performance behavior changes, FUNNEL adopts
+       singular spectrum transform (SST) algorithm as the core algorithm, uses various techniques to improve its robustness and reduce its
+       computational cost, and applies a difference-in-difference (DiD) method to differentiate the true causality from the random correlations
+       between the performance change and the software change. Evaluation through historical data in real-word services shows that
+       FUNNEL achieves accuracy of more than 99.7 percent. Compared with previous methods, FUNNEL’s detection delay is 38.02 to 64.99
+       percent shorter, and its computation speed is 4.59-7,098 times faster. In real deployment, FUNNEL achieves a 98.21 percent precision,
+       high robustness, fast detection speed, and shows its capability in detecting unexpected behavior changes.
+
+       Index Terms—Software change, performance change, singular spectrum transform, difference in difference
+
+                                                                                       Ç
+1    INTRODUCTION
+
+I  N large web-based services such as search engine, online
+   shopping, and social networking, the operations team
+needs to frequently conduct software changes, i.e., software
+                                                                                           service performance (e.g., advertisement click count), hard-
+                                                                                           ware health (e.g., server memory utilization), and so on.
+                                                                                              If the KPIs on the server subset perform as expected, the
+upgrades and configuration changes, in order to deploy                                     software change will be rolled out to all servers. Otherwise,
+new features, fix bugs, and improve service performance.                                   the software change should be rolled back as soon as
+Although each software change is extensively tested on test-                               possible. Generally, service performance degradation may
+beds before deployment, errors and bugs may still occur                                    induce poor user experience [1], [2] or revenue drop [4], [5].
+in the operational environment because of diverse hard-                                       Thus it is important to detect significant KPI changes rap-
+ware/software systems, complex interactions, and the large                                 idly, whether positive or negative, to allow a timely roll-
+scale of devices [1], [2]. Therefore, the operations team typi-                            back. However, the operations team generally assesses the
+cally deploys software changes using a “Dark Launching”                                    impact of software changes manually in Web-based serv-
+[3] approach. Instead of rolling out a software change to all                              ices, which has been demonstrated to be error-prone,
+servers at one time, the operations team deploys the software                              cumbersome, and almost impossible to scale to a larger size.
+change on a subset of servers at the beginning and continu-                                As a result, some critical issues caused by software changes
+ously monitors a predefined list of Key Performance Indica-                                may fly under the operations team’s radar, hurting the
+tors (KPIs) to determine the impact of the software change.                                applications performance and user experience [1], [2].
+The KPIs cover a wide range of performances, including                                        In this study, we focus on software changes and their
+user-perceived issues (e.g., Web page response delay),                                     impact on KPIs. Our objective is to build an automated tool
+                                                                                           that detects behavior changes rapidly and accurately in a
+                                                                                           broad range of KPIs after a software change, and accurately
+ S. Zhang and Y. Liu are with the Institute for Network Sciences and
+  Cyberspace, and the Tsinghua National Laboratory for Information                         determines whether the behavior changes are caused by the
+  Science and Technology, Tsinghua University, Beijing 100084, China.                      software change. Usually, KPI changes caused by software
+  E-mail: slzhangsd@gmail.com, liuying@cernet.edu.cn.                                      changes include level shifts, e.g., a sudden increase in mem-
+ D. Pei is with the Department of Computer Science and Technology, and
+  the Tsinghua National Laboratory for Information Science and                             ory utilization, or ramp-ups/ramp-downs, e.g., a deteriorat-
+  Technology, Tsinghua University, Beijing 100084, China.                                  ing condition. Similar to [6], we focus on level shifts and
+  E-mail: peidan@tsinghua.edu.cn.                                                          ramp up/downs induced by software changes in this paper.
+ Y. Chen, X. Qu, S. Tao, and Z. Zang are with the Baidu, Inc., Beijing                    How to reduce the detection delay, i.e., the delay between
+  100085, China. E-mail: chenyu034@hotmail.com, {quxianping, taoshimin,
+  zangzhi}@baidu.com.                                                                      the occurrence of a KPI change and its detection is a real
+ X. Jing and M. Feng are with the PetroChina, Inc., Beijing 100007, China.                challenge for Web-based services for both scalability and
+  E-mail: {jxw, fm}@petrochina.com.cn.                                                     robustness reasons. First, the impact of a software change can
+Manuscript received 3 Nov. 2015; revised 26 Jan. 2016; accepted 3 Mar. 2016.               be observed in any of the huge number of KPIs of the services
+Date of publication 9 Mar. 2016; date of current version 2 Feb. 2018.                      and servers that share the same spatial scope with the soft-
+For information on obtaining reprints of this article, please send e-mail to:
+reprints@ieee.org, and reference the Digital Object Identifier below.                      ware change. In our studied scenarios, there are hundreds,
+Digital Object Identifier no. 10.1109/TSC.2016.2539945                                     even thousands, of KPIs that should be monitored after each
+                                   1939-1374 ß 2016 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission.
+                                       See ht_tp://www.ieee.org/publications_standards/publications/rights/index.html for more information.
+ZHANG ET AL.: FUNNEL: ASSESSING SOFTWARE CHANGES IN WEB-BASED SERVICES                                                         35
+
+
+single software change that has occurred, while there are         to exclude KPI changes caused by other factors. However,
+tens of thousands of software changes occurring every day         neither CUSUM and MRLS, nor the improved SST can
+in our scenario. This forces the operations team to monitor       exclude the KPI changes induced by other factors. FUNNEL
+several million KPIs every day. The large scale of the prob-      uses a classic method, difference in difference (DiD) [15],
+lem calls for an algorithm with low computation overhead.         [16], [17], to solve the problem by comparing the relative
+Second, with the requirement of short detection delay, we do      performance between the treated group and the control
+not have the luxury of using data smoothing and aggregation       group. DiD compares the KPIs of service processes and
+to achieve robustness any more, and the behavior change           servers in which the software changes have been conducted
+detection method should be quite robust [7].                      (hereafter, collectively referred to as tservers/tinstances,
+   To the best of our knowledge, in the literature there exists   where “t” stands for “treated”) with the KPIs of service pro-
+no rapid and robust method for impact assessment of soft-         cesses and servers of the same service (a server is usually
+ware changes in large Web-based services. There exists several    dedicated to a specific service in our context) without the
+studies of impact assessment in the area of network infra-        software change (hereafter, collectively referred to as cser-
+structure [6], [7]. However, the CUmulative SUM (CUSUM)           vers/cinstances, where “c” stands for “control”). If the opera-
+used in [6] suffers from long detection delay [7], because the    tions team conducts the software change without using the
+cumulative sum may take a long time before it exceeds the         Dark Launching method, and there is no server/process in
+threshold. Multiscale Robust Local Subspace (MRLS)                cservers/cinstances, FUNNEL compares the impacted KPIs
+method applied in [7] achieves low detection delay, but the       related to the software change with historical measurements
+iteration of Singular Value Decomposition (SVD) used in           of KPIs to exclude seasonality. FUNNEL adopts a relatively
+subspace computation with l1 -norm exhibits high computa-         long baseline to address baseline contamination (in our pro-
+tional complexity [8]. While it works in [7] for thousands of     totype implementation, KPIs of 30 days before the day of
+time-series metrics in backbone networks, MRLS would              software change are used to construct the baseline) [7].
+spend too much computational resources for millions of            Moreover, the large number of KPIs of cservers/cinstances
+KPIs in Web-based services, and is hence not feasible in our      also alleviates the impact of baseline contamination.
+scenario. The iteration of SVD is essential to MRLS for              Our main contributions can be summarized as follows:
+improving robustness, and it is hardly possible to reduce
+the computation overhead of MRLS.                                   1)   We identify the problem of rapid, robust, and auto-
+   Singular Spectrum Transform (SST) [9] has emerged as a                mated impact assessment of software changes in
+popular performance change detection method recently.                    large Web-based services, and its research challenges in
+SST has been demonstrated to be accurate with short detec-               terms of scalability, robustness, detection delay, and
+tion delay [10], [11]. However, based on SVD, SST still suf-             computation cost.
+fers from high computational cost [12], and its accuracy            2)   We propose FUNNEL, the first approach in the liter-
+degrades fast in the face of noises [13]. KPIs in Web-based              ature that addresses the above challenges. The
+services are quite diverse intrinsically, exhibiting various             core idea of FUNNEL is to use SST, a rapid change
+characteristics including strong seasonality (e.g., Web page             point detection algorithm, as our algorithm basis. To
+view count), high variability (e.g., server CPU context                  reduce SST’s computation overhead, FUNNEL
+switch count), and stationarity (e.g., server memory utiliza-            adopts matrix compression and implicit inner prod-
+tion). In addition, the baseline used to compare the perfor-             uct calculation. To improve the robustness for SST
+mance after software changes may be contaminated by the                  against noises, FUNNEL uses a DiD method to com-
+impact of previous software changes and/or other factors,                pare with various control groups.
+as is the case in large infrastructure networks [7].                3)   Evaluation through historical data shows that FUN-
+   In this paper, we designed and implemented FUNNEL,                    NEL performs significantly better than CUSUM [6]
+an automated tool for assessing the impact of software                   and MRLS [7], and the operational experiences of
+changes rapidly and robustly in large Web-based services.                real deployment show FUNNEL’s good performance
+For a given software change, FUNNEL automatically deter-                 and value. We conducted extensive evaluations
+mines the correct spatial scope of the impact, collects a                using manually labeled KPIs collected from 144 dif-
+broad range of KPIs, detects KPI changes, and determines                 ferent software changes in real-world Web-based
+the KPI changes caused by software changes. FUNNEL                       services. Specifically, FUNNEL achieved an accuracy
+adopts matrix compression and implicit inner product cal-                of more than 99.7 percent, a detection delay that is
+culation to reduce SST’s computation overhead. The short                 58.82 percent of that of MRLS and 33.76 percent of
+detection delay and the low computational cost of the                    that of CUSUM. In addition, FUNNEL is more than
+improved SST make timely mitigation possible when FUN-                   7,000 times faster than MRLS in computational
+NEL is deployed online. Furthermore, FUNNEL improves                     speed, and over four times faster than CUSUM. Fur-
+the robustness for SST, making it work quite well across                 thermore, we have deployed the prototype of FUN-
+diverse types of KPIs, especially variable KPIs.                         NEL to dozens of real-world Web-based services.
+   In addition to software changes, other factors including              FUNNEL achieved a 98.21 percent precision based
+seasonality, network hardware breakdowns, malicious                      on one week’s observation. A few representative
+attacks, etc., can also give rise to KPI changes. The impact of          cases were presented to show FUNNEL’s robust-
+other factors can over-shadow the assessment of software                 ness, detection speed, and capability to detect unex-
+changes [14]. To achieve the accurate inference of the impact            pected KPI changes. In one specific case, FUNNEL
+of software changes, it is non-trivial for the operations team           reduced the detection delay of one important
+36                                               IEEE TRANSACTIONS ON SERVICES COMPUTING,       VOL. 11, NO. 1,   JANUARY/FEBRUARY 2018
+
+
+       incident to less than 10 minutes, far less than the 1.5
+       hour used in manual assessment.
+   The rest of the paper is organized as follows. We provide
+an introduction to software change and KPI in Section 2,
+and describe the design of FUNNEL in Section 3. The evalu-
+ation of FUNNEL is presented in Section 4, followed by a
+description of the deployment of FUNNEL and case studies
+in Section 5. Finally, we review related works in Section 6
+and conclude our paper in Section 7.
+
+2         SOFTWARE CHANGES AND KPIS
+In this section, we provide a brief introduction of software
+                                                                   Fig. 1. The relationship among service, server, instance and KPI.
+changes and KPIs.
+
+2.1 Scope of Studied Software Changes                              More detailed studies along the last three directions are left
+In this paper, we focus on two types of software changes on        as future work.
+servers in large web-based services, software upgrades and
+                                                                   2.2 KPI
+configuration changes, for the following three reasons. (1) The
+operations team typically care about the unexpected conse-         In the studied Web-based services, there are hundreds of
+quences that are potentially due to these planned changes;         thousands of servers providing various types of services.
+(2) These changes are controllable by the operations team via      Each service (e.g., search, web mail, social networking) runs
+command line interfaces and observable in logs; (3) We have        on one or more servers with a specific process on each
+observed that these two types constitute more than 90 per-         server. An instance denotes a process of a specific service on
+cent of the tens of thousands of software changes in our data.     a specific server. A KPI is a performance metric of a given
+   Software upgrades. With the current rapid evolution of the      server/service/process. There are three types of KPIs that need
+Internet, new features are continuously being deployed with        to be monitored for software changes assessment: server
+software upgrades. The operations team also conducts soft-         KPIs, instance KPIs and service KPIs. The operations team
+ware upgrades to fix bugs or improve service performance.          deploys an agent on each server to monitor the status of
+In a large service, it is often the case that one software         each instance and collect the KPIs of all instances continu-
+upgrade implements multiple features or bug fixes, and             ously. For example, immediately after the process serves a
+FUNNEL considers such a software upgrade as a whole.               customer with some web page view, the page view count
+FUNNEL decides whether the whole software upgrade intro-           is incremented and a new page view response delay is
+duces any KPI change but does not attempt to distinguish           recorded. In addition, by analyzing server log files that
+which individual feature or bug fix introduces KPI changes.        record the system status, the agent is able to periodically
+In addition, the web services in our scenario usually trigger a    collect server KPIs, such as CPU utilization, memory utiliza-
+software upgrade when operators try to patch the software,         tion, and NIC throughput. A service KPI is an aggregation
+and thus we classify the patches as software upgrades.             of all instance KPIs in the service. Fig. 1 shows an example
+   Configuration changes. Using command line interfaces, the       of the relationship among service (search engine service),
+operations team can change the configurations by using             server (server 1, server 2, . . . , server n), instance (instance 1,
+specific commands. The configuration change can be in the          instance 2, . . . , instance n) and KPI (page view count, page
+operating system (OS) or infrastructure software (e.g., a con-     view response delay, access failure count, CPU utilization,
+figuration change in Apache), service configuration (e.g., an      memory utilization, and NIC throughput).
+increase in the number of threads in a service process by             After collecting the measurements of KPIs of servers and
+command lines), deployment scale (e.g., an increase in the         instances, the agent on each server delivers the measure-
+number of servers where a service is deployed), or data            ments via datacenter networks to a centralized Hadoop-based
+source (e.g., an update to the strategy that calculates the        database, which also stores the service KPIs aggregated
+valid page view counts).                                           based on the KPIs of the instances. The database also pro-
+   With above focuses, the following perspectives are out of       vides a subscription tool for other systems, such as FUN-
+scope for this paper.                                              NEL, to periodically receive the subscribed measurements
+                                                                   based on the server, instance, and service. The data collec-
+     1)    We do not consider the software changes on the net-     tion interval at the servers is typically 1 minute, and thus
+           work devices such as routers and switches, which        the time granularity of the input KPI measurements of
+           have been already studied in depth in [6], [7], [14];   FUNNEL is 1 minute. If we set the time granularity of the
+     2)    We do not consider software changes that were           KPI measurements larger, the detection delay of FUNNEL
+           external to the company, e.g., a change in a peer       will be larger. Although the accuracy of FUNNEL may be
+           company, since these changes might be invisible to      impacted by the time granularity of the measurements [18],
+           the studied company’s operations team.                  the accuracy of FUNNEL is relatively good (see Section 4.2)
+     3)    We do not explicitly consider the interactions across   with the time granularity of 1 minute, we set the time granu-
+           multiple concurrent or consecutive software changes     larity of the KPI measurements as 1 minute. Within one sec-
+           on a same server, which can be considered as one        ond, the measurements subscribed by FUNNEL are pushed
+           combined change as a straw man approach.                to FUNNEL via datacenter networks.
+ZHANG ET AL.: FUNNEL: ASSESSING SOFTWARE CHANGES IN WEB-BASED SERVICES                                                                    37
+
+
+
+
+Fig. 2. Examples of level shift and ramp up/down.
+
+   In large services, there might exist some KPIs of dubious
+quality. To the best of our knowledge, there is no previous
+work on eliminating low-quality KPIs in web-based serv-
+ices. In this paper, we do not focus on eliminating low-qual-
+ity KPIs either. FUNNEL detects all KPI changes in the
+                                                                             Fig. 3. FUNNEL design.
+impact set regardless of the quality of the KPI, and delivers
+the results to the operations team. The operations team will
+                                                                                Impact set identification. In the studied search engine com-
+then determine whether the performance changes in the
+                                                                             pany, the operations team names the services based on the
+low-quality KPIs are induced by the software change or not.
+                                                                             service hierarchy. We believe this practice is not uncommon
+   As described in [19], even the operations team does not
+                                                                             in other companies. FUNNEL derives the relationship
+know exactly what is a “good” threshold for a specific KPI,
+                                                                             among services using the naming rules. Inspired by [7],
+e.g., due to seasonal variation. Therefore, it is difficult to
+                                                                             FUNNEL automatically identifies the impact set, that is, the
+obtain the expected values from the operations team for
+                                                                             set of servers, instances, and services that may be impacted
+FUNNEL, and we do not give a threshold for any KPI in
+                                                                             (Section 3.1) based on the change deployment logs and the
+this paper.
+                                                                             relationships among services,.
+                                                                                Performance change detection and determination. FUNNEL
+2.3 KPI Changes
+                                                                             uses an SST based performance change detection method.
+A KPI change is defined as a non-transient change (e.g., last-
+                                                                             It improves the robustness of SST (Section 3.2.2) and
+ing more than 7 minutes1) in a KPI that is introduced by
+                                                                             introduces matrix compression and implicit inner product
+a software change. In this paper, we focus on behavior
+                                                                             calculation to solve the high computational cost of SST
+changes evidenced by individual KPI time series. As Fig. 2
+                                                                             (Section 3.2.3). The improved SST can detect KPI changes
+shows, the changes can be either level-shifts immediately
+                                                                             rapidly and robustly (step 2 in Fig. 3). FUNNEL then
+after software changes, or ramp ups or downs that ensue
+                                                                             determines whether the changes are caused by software
+gradually over time after the software changes.
+                                                                             changes. If the KPI is not the KPI of affected services (serv-
+   Behavior changes in KPIs can validate the expected
+                                                                             ices that are related to the service where the software
+impacts, e.g., a decrease in CPU utilization after a configura-
+tion change aimed to increase efficiency, or show the unex-                  change is deployed) (step 5 in Fig. 3) and if the operations
+pected impact occurrences, e.g., a sudden increase in page                   team rolls out the software change using Dark Launching
+view response delay after a software upgrade.                                (step 8 in Fig. 3), FUNNEL excludes the impact of other
+   The assessment of any single software change should be                    factors (step 10 in Fig. 3) by applying a DiD method
+in a low-computational way, for the following two reasons.                   (Section 3.2.4) using KPIs of cservers and cinstances (step 9
+(1) Hundreds to thousands of KPIs should be detected after                   in Fig. 3). Otherwise, based on the DiD method, FUNNEL
+a single software change; (2) The operations team should                     uses historical measurements of KPIs (step 6 in Fig. 3) to
+assess tens of thousands of software changes every day.                      exclude the impact of seasonality (Section 3.2.5), i.e., the
+                                                                             time of day and the day of week effects (step 7 in Fig. 3).
+3    FUNNEL DESIGN
+                                                                             3.1 Impact Set Identification
+Recall that our aim is to provide an automatic tool for rapid                The effect scopes of different types of software changes are
+and robust impact assessment of software changes. To                         different: some are local, e.g., a configuration change aimed
+achieve this goal, we designed FUNNEL, which is com-                         at balancing traffic only influences the performance of the
+posed of two main components, as shown in Fig. 3.                            servers where the change is conducted, while others are
+                                                                             global, e.g., an upgrade in an advertising system can have
+   1. The threshold for transient changes is subjective in reality. It may   an impact on almost all types of web-based services. A
+be related to the tolerance level or the sensitivity of the operations       false impact scope of a software change may give rise to
+team, or the nature of the web-based services. In this paper, choosing 7
+minutes as the threshold for non-transient KPI changes is based on the       delayed detection after a performance degradation or a
+experience of the operations team.                                           large number of false alarms.
+38                                                    IEEE TRANSACTIONS ON SERVICES COMPUTING,         VOL. 11, NO. 1,   JANUARY/FEBRUARY 2018
+
+
+                                                                            dividing the original event series into equal time-bins. One
+                                                                            min is used as the time-bin in FUNNEL since our goal is to
+                                                                            achieve a rapid impact assessment of software changes.
+
+                                                                            3.2 Change Detection and Determination
+                                                                            For a given time series of KPIs, our mission is to determine
+                                                                            whether behavior changes (level shifts, ramp up/downs)
+                                                                            exist and whether they are caused by software changes. Our
+                                                                            objective is to provide a rapid and robust KPI change detec-
+Fig. 4. Example of service relationship.                                    tion and determination tool, which goes beyond traditional
+                                                                            change detection methods that compare means, medians,
+    It is straightforward to identify the impact scope of a soft-           distributions, etc., before and after software changes. For
+ware change on servers because only the performance of the                  example, the CUSUM approach used in [6] suffers from low
+servers where the software change is conducted can be                       accuracy in the face of KPIs with strong seasonality. In addi-
+directly affected. Therefore, the impact set of servers con-                tion, its long detection delay also makes the CUSUM method
+sists of tservers, i.e., the servers on which the software                  unsuitable for our scenario. What’s more, when applying a
+change is deployed. The set of tservers is directly obtained                simple moving average method to detect the KPI changes
+from the software change logs.                                              after a software change, we find that if we set the threshold
+    As Fig. 4 shows, for a software change deployed on Ser-                 to be small, there will be too many false positives, while if
+vice A, suppose that Service A has multiple instances                       we set the threshold to be large, the detection delay will be
+ðA1 ; A2 ; . . . ; An Þ, Service A is related to Service B and Service      too large, and it is hardly possible that we can find a balance.
+D (i.e., Service A send requests and responses to Service B                    SST, which is based on SVD, has been shown to be accu-
+and Service D, and the relationships among services are                     rate and rapid in performance change detection in other
+available to the operations team), and Service B is related to              research fields [10], [11]. SST projects training data into a
+Service C. We refer to service A as the changed service, and                normal subspace and finds the difference between the nor-
+service B, service C and service D as the affected services. For            mal subspace and the data that needs to be tested. However,
+a specific software change deployed on ðA1 ; A2 ; . . . ; Am Þ,             SST suffers from low accuracy in the case of normal sub-
+ðA1 ; A2 ; . . . ; Am Þ are the tinstances, and Amþ1 ; . . . ; An are the   space contamination. Since the training data may contain
+cinstances, which are the service A’s instances running on the              outliers as a result of previous software changes, network
+servers on which the change is not deployed yet. The impact                 device breakdowns, network attacks, etc., baseline contami-
+set consists of the tinstances, the changed service, and the                nation often occurs in practice. In addition, due to the com-
+affected services. We do not include any instances of the                   plexity of SVD, SST suffers from high computational cost.
+affected services in the impact set because it is unlikely that                Our core idea is to improve the robustness and reduce
+any instance KPI of the affected services is individually                   the computational cost of SST, and then combine the
+affected for load balancing reason. Instead, they are more                  improved SST with DiD to determine the impact of software
+likely to be affected by the same impact. Thus, including                   changes. We first provide a brief description of SST’s detec-
+their aggregation, i.e., the affected service KPI in the impact             tion of performance changes.
+set, is sufficient for studying the impact of software changes
+on the affected services.                                                   3.2.1 SST: Singular Spectrum Transform
+    Except for the affected services, the elements in the impact
+                                                                            SST [11] is based on SVD of the Hankel matrix [20], and its
+set all belong to one service. The operations team usually do
+                                                                            main idea is to find the difference before and after a point
+not deploy two software changes in one service at the same
+                                                                            xðiÞ at time t. Specifically, the algorithm compares a repre-
+time based on common practice (to avoid complications).
+                                                                            sentation of the dynamics of a few points before xðiÞ and a
+Therefore, except for the affected services all the elements in
+                                                                            few points after xðiÞ. The difference is normalized by xs ðiÞ.
+the impact set of a specific software change are not likely to
+                                                                               The dynamics of the points before xðiÞ can be denoted by
+be impacted by other software changes. For the affected serv-
+                                                                            a Hankel matrix:
+ices in the impact set, if they are the affected services or the
+changed services of other software changes, the operations                                   BðtÞ ¼ ½qðt  dÞ; . . . ; qðt  1Þ;            (1)
+team can manually determine the cause of the behavior
+changes in the affected services when the results are delivered             where qðtÞ ¼ ½xðt  w þ 1Þ; . . . ; xðtÞT , and v and d are the size
+by FUNNEL to them.                                                          and the number of the overlapping windows respectively .
+    In addition, it is possible that two services share the same              To find the singular values and vectors of the Hankel
+network infrastructure, such as TOR, aggregation switch,                    Matrix, SVD is used:
+access router. However, based on intuition and the opera-
+tions team’ experience, even if some two services share the                                       BðtÞ ¼ UðtÞSðtÞV ðtÞT ;                    (2)
+same network infrastructure, the KPIs of one service is little
+impacted by the other service. Therefore, we do not con-                    where SðtÞ is the singular value matrix and Sði  1;
+sider the interference of services that share the same net-                 i  1Þ  Sði; iÞ  Sði þ 1; i þ 1Þ, and UðtÞ and V ðtÞT are uni-
+work infrastructure.                                                        tary matrixes. The columns of UðtÞ are the eigenvectors of
+    FUNNEL investigates all the KPIs in the impact set                      BðtÞBðtÞT . The first h eigenvectors of UðtÞ (Uh ðtÞ) are used to
+automatically. A time-series is constructed for each KPI by                 denote the past change pattern.
+ZHANG ET AL.: FUNNEL: ASSESSING SOFTWARE CHANGES IN WEB-BASED SERVICES                                                                      39
+
+
+   Then, for the future points of xðiÞ, a similar procedure is        The change score of the point xðiÞ at time t is calculated:
+used to find the largest change in the dynamics by                                           Ph
+                                                                                                    ’i ðtÞ
+concatenating g overlapping windows of size v, starting at                           x^ðtÞ ¼ i¼1Phi           ;                 (9)
+r points after xðiÞ:                                                                               i¼1 i
+                                                                   where
+            AðtÞ ¼ ½rðt þ rÞ; . . . ; rðt þ r þ g  1Þ;     (3)                                       X
+                                                                                                       h
+
+                                                    T
+                                                                                        ’i ðtÞ ¼ 1           ðbi ðtÞuTj Þ2 ;             (10)
+where rðt þ rÞ ¼ xðt þ rÞ; . . . ; xðt þ r þ v  1Þ .                                                   j¼1
+   The eigenvector bðtÞ, which represents the direction of
+the maximum change in the future of the time-series, is:           where uj is the column of Uh . As described in [12], Eq. (10) is
+                                                                   consistent with Eq. (7).
+                      AðtÞAðtÞT ur ¼ mug ;                   (4)      To alleviate the effect of noise like spikes induced by
+                                                                   busty workloads [21] on the final change score, we then fil-
+                            bðtÞ ¼ urg ;                     (5)   ter the sections where the median and the median abso-
+                                                                   lute deviation (MAD) of x^ðtÞ remain nearly constant. The
+where g ¼ arg minðmi Þ.                                            intuition behind the filtering step is that the accuracy of
+                 i
+   Then, the projection of bðtÞ onto Uh is used to quantify        SST is reduced mainly when the noise takes over the
+the discordance between bðtÞ and Uh :                              original signal in the time-series. Since the mean and
+                                                                   standard deviation for Gaussian distribution are not very
+                                Uh ðtÞT bðtÞ                       robust in the presence of large changes or outliers, we
+                      aðtÞ ¼                    :            (6)   use the median and MAD rather than the mean and stan-
+                               kUh ðtÞT bðtÞk
+                                                                   dard deviation [13]. The combination of median and
+   The change score is calculated as the cosine of the angle       MAD has been proved to be a more robust approach
+between aðtÞ and bðtÞ as:                                          even when outliers occur [7]. The change score x~ðtÞ is
+                                                                   then updated:
+                     xs ðtÞ ¼ 1  aðtÞT bðtÞ:                (7)
+                                                                             x~ðtÞ ¼ x^ðtÞ  j mediana ðtÞ  medianb ðtÞ j
+   The intuition behind the algorithm is that bðtÞ is in or                                 pﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃ pﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃ   (11)
+very near to the direction of the maximum change in the                                   j MADa ðtÞ  MADb ðtÞ j ;
+past denoted by Uh when there is no change in the time-
+series.                                                            where mediana ðtÞ and medianb ðtÞ are the medians of xðtÞ in
+   SST suffers from three problems as follows.                     the time-series of length ð2v  1Þ before and after the point
+                                                                   xðiÞ at time t, respectively, and
+  1)   Five different parameters (r, g, h, d, v) must be speci-
+       fied in SST. Domain knowledge can help find proper                    MADa ðtÞ ¼ medianðxia ðtÞ  mediana ðtÞÞ;                    (12)
+       values for d and v, but fails in choosing the other
+       parameters;
+  2)   SST degrades fast in terms of accuracy when the             where xia ðtÞ is the time-series of length ð2v  1Þ before xðiÞ
+       input time-series includes significant noises [13];         at time t. It is similar to MADb ðtÞ.
+  3)   SST is based on SVD which suffers from high
+       computational cost, and thus SST is not computa-            3.2.3 Reducing the Computational Cost of SST
+       tionally efficient and not suitable for KPI change          In addition to the robustness problem, SST also suffers from
+       detection when the number of KPIs is large [12].            high computation cost because of the SVD procedure and
+                                                                   thus its direct deployment in our scenario is not feasible.
+3.2.2 Improving the Robustness of SST                              This section summarizes the work in [12]. First, we applied
+In this section, we describe our approach to addressing the        the Implicit Krylov Approximation (IKA) algorithm to
+first two aforementioned problems. Our approach is moti-           reduce the computation cost for SST. The essence of the IKA
+vated by the study reported in [13].                               algorithm is matrix compression and implicit inner product
+    As suggested in [12], [13], we set r ¼ 0, g ¼ d, and since a   calculation, and the efficiency of the algorithm was demon-
+value of 3 or 4 is suitable for h even when v is on the order      strated in [12].
+of 100 empirically, we set h ¼ 3.                                       First, let C ¼ BðtÞBðtÞT , and h < k < v; k 2 N. Since it
+    To estimate the change score around every point and            is empirically true that the change score is not very sensi-
+alleviate the impact of noises in the time series, we attempt      tive to d [12], we set d ¼ w as the IKA algorithm requires,
+to use more information from the future matrix AðtÞ than           and then, we get g ¼ d ¼ v. In addition, suppose that
+                                                                   Tk is a k-dimensional tridiagonal matrix; a1 ; . . . ; ak and
+SST does by utilizing the h eigenvectors of AðtÞAðtÞT with
+                                                                   b1 ; . . . ; bk1 are the diagonal and subdiagonal elements of
+the smallest corresponding eigenvalues (1:h ), rather than
+                                                                   Tk . At each time t, we first compute bi ðtÞ, and then run
+using only the first one.
+                                                                   Lanczos (C; bi ðtÞ; k) [22] to obtain Tk as Algorithm 1
+    Based on Eq. (4), the eigenvector bi ðtÞ is calculated as:
+                                                                   describes. Using the QL iteration [23], the eigenvectors of
+                           bi ðtÞ ¼ ugi ;                    (8)   the tridiagnal matrix Tk can be calculated extremely fast.
+                                                                   Based on the h top eigenvectors x1 ; . . . ; xl of Tk , we can
+where i  h, and j1  j  jþ1 for 1  j  w.                   obtain ’i ðtÞ as:
+40                                                          IEEE TRANSACTIONS ON SERVICES COMPUTING,   VOL. 11, NO. 1,   JANUARY/FEBRUARY 2018
+
+
+                                             X
+                                             h
+                                                                              consists of the KPIs of tinstances, while the control group of
+                             ’i ðtÞ ’ 1           xj 2 :              (13)   services is constituted of KPIs of cinstances, i.e., instances
+                                             j¼1
+                                                                              that belong to the same service as tinstances but without soft-
+Then the change score can be calculated by Eqs. (9) and (11).                 ware changes. This is based on the four following observa-
+                                                                              tions about web-based services.
+Algorithm 1. Lanczos(C; bi ðtÞ; k)                                              1)    Instances and servers that belong to the same service
+Input:                                                                                exhibit high-level spatial correlation or statistic
+   C 2 Rvv                                                                           dependency because of the similarity in traffic load,
+   bi ðtÞ 2 Rv                                                                        memory usage, etc., thanks to load balancing;
+   h < k < v; k 2 N                                                              2) It is very likely that any non-software change factors
+1: r0 ¼ bi ðtÞ; b0 ¼ 1; q0 ¼ 0; s ¼ 0.                                                will introduce similar performance impact on all
+2: while s < k do                                                                     servers and instances of the same service;
+3: qsþ1 ¼ rs =bs ;                                                               3) A performance change induced by the software
+4: s ! s þ 1;                                                                         change introduces a relative difference in performance
+5: as ¼ qsT Cqs ;                                                                     between the treated group and the control group;
+6: rs ¼ Cqs  as qs  bs1 qs1 ;                                                4) As studied in [26], [27], only a small fraction (less
+7: bs ¼ krs k;                                                                        than 3 percent) of edge links are hotspots in datacen-
+8: end while                                                                          ter networks. In other words, a small fraction of serv-
+9: return fa1 ; . . . ; ak g and fb1 ; . . . ; bk1 g
+                                                                                      ers are hotspots. Even though there are KPIs of
+Output:
+                                                                                      hotspot servers in the control group, most of the
+   Tk
+                                                                                      KPIs in the control group are not of hotspot servers.
+                                                                                      We use the average of all of the KPIs in the control
+   Based on [12], the dimension of the Krylov subspace k
+                                                                                      group to eliminate performance changes caused by
+can be set as:
+                                                                                     other factors, and the large number of KPIs in the
+                          2h; h 2 even                                                control group can alleviate the impact of hotspots.
+                   k¼                               (14)
+                         2h  1; h 2 odd:                                         The operation team’s common practice is not to deploy two
+                                                                              software changes in a specific service at the same time. Fur-
+   For a service that needs quick mitigation on false soft-                   thermore, the KPIs of a specific control group all belong to a
+ware changes, v can be set to a small value such as 5. For a                  specific service. Therefore, KPIs in the control group are very
+service that needs more precise assessment of software                        unlikely to be impacted by some other software changes.
+changes, v can be set to a lager value such as 15.                                For each affected service, if it is influenced by software
+                                                                              changes, all of its instances will be affected. Therefore,
+3.2.4     Excluding Other Reasons for Non-Affected-                           there are no cinstances for affected services. We exclude the
+          Service KPIs in Dark Launching                                      “Full Launchin” and other reasons for affected services in
+                                                                              Section 3.2.5.
+In addition to software changes, the KPI changes can also be
+induced by other factors including seasonality, network                           DiD method. DiD is one of the most popular tools in
+attacks, etc. The impact of these factors can over-shadow                     econometrics [16] and health care [17] for evaluating the
+the impact assessment of software changes.                                    effects of interventions that are instituted at a particular
+    To solve this problem, motivated by [14], [24], [25], we                  point in time. In this study, DiD is used to compare changes
+apply a split testing method to compare the relative perfor-                  over time in the treated group with those over time in the
+mance of the treated group (KPIs of servers/services/                         control group, and to attribute the difference-in-differences
+instances in the impact set) and the control group (KPIs of                   to the effects of software changes. DiD is based on the
+cservers/cinstances). The intuition behind the comparison is                  assumption that, in the absence of software changes, the dif-
+that other factors except software changes influence both                     ference between the average KPIs for the treated group and
+the treated group and the control group.                                      those for the control group remains stable over time.
+    Treated group and control group. In Dark Launching, the                   Although [14] argued that DiD suffered from low accuracy
+operations team first deploys the software change on a sub-                   in impact assessment of changes in cellular networks, it
+set of servers and instances, and then, rolls it out to all serv-             turns out to perform quite well in our scenario because the
+ers and instances that belong to the same service. It is                      treated group and the control group exactly follow the
+straightforward to identify the control group and the                         above assumption.
+treated group of servers based on the software change logs.                       The basic DiD framework can be described as follows.
+The KPIs of tservers constitute the treated group of servers,                 Let Y ði; tÞ be the KPI i at time t. The performance is
+while the KPIs of cservers, i.e., servers that belong to the                  observed in a pre-software-change period t ¼ 0, with length
+same service as tservers but without software changes, con-                   v as described in Section 3.2.1, and in a post-software-
+stitute the control group of servers. Since the KPI of the                    change period t ¼ 1 with length v. Some fraction of KPIs
+changed service is an aggregation of the KPIs of the tinstances,              are exposed to the software change between these two peri-
+determining the relative performance of the tinstances is suf-                ods. If KPI i has been exposed to the software change prior
+ficient: if no performance changes in tinstances are caused                   to period t, then Dði; tÞ ¼ 1, and Dði; tÞ ¼ 0 otherwise. In
+by software changes, it is not necessary to study the impact                  other words, those KPIs with Dði; 1Þ ¼ 1 are in the treated
+on the changed service. Therefore, the treated group of service               group, and those KPIs with Dði; 1Þ ¼ 0 are in the control
+ZHANG ET AL.: FUNNEL: ASSESSING SOFTWARE CHANGES IN WEB-BASED SERVICES                                                           41
+
+
+group. Obviously, Dði; 0Þ ¼ 0 for all i, because the KPIs are          FUNNEL also applies DiD method to compare the relative
+exposed to the software change only after the first period.         performance between the control group and the treated
+   To obtain the standard errors and significance levels for        group. Specifically, t ¼ 0 for a pre-software-change period of
+the DiD estimator, a linear parametric model is used [15]:          length v as described in Section 3.2.1 in the treated group,
+                                                                    and for the same period of day but on historical days in
+           Y ði; tÞ ¼ uðtÞ þ a  Dði; tÞ þ ðiÞ þ yði; tÞ;   (15)   the control group. Similarly, t ¼ 1 denotes a post-software-
+                                                                    change period, of length v, in the treated group, and the same
+where uðtÞ is a time-specific parameter, a denotes the impact       period of day but on historical days in the control group.
+of software changes, and ðiÞ is an KPI-specific parameter.
+yði; tÞ is a transient shock at each period, i.e., t ¼ 0; 1, with   4   FUNNEL EVALUATION
+mean zero. A sufficient condition for determination using
+DiD is P ðDði; 1Þ ¼ 1jyði; tÞÞ ¼ P ðDði; 1Þ ¼ 1Þ.                   In this section, we evaluate FUNNEL’s performance. We
+   Then, the impact estimator of software change, a, is:            compare FUNNEL with other software change assessment
+                                                                    methods including CUSUM [6] and MRLS [7] that have pre-
+                                                                    viously been deployed for upgrade assessment in the net-
+  a ¼ fE½Y ði; 1ÞjDði; 1Þ ¼ 1  E½Y ði; 1ÞjDði; 1Þ ¼ 0g
+                                                          ; (16)    work infrastructure. We implemented FUNNEL, CUSUM,
+    fE½Y ði; 0ÞjDði; 1Þ ¼ 1  E½Y ði; 0ÞjDði; 1Þ ¼ 0g            and MRLS with C++. We use the software change and KPI
+                                                                    data from a few real-world Web-based services offered by a
+where EðÞ denotes the expectation.                                 top global search engine. The evaluation using real-world
+   If the KPI changes are caused by factors excluding soft-         data is challenging because of the lack of a ground truth [14].
+ware changes, then there is no change in the relative perfor-       We used manual assessment results by the operations team
+mance between the treated group and the control group,              as our ground truth for evaluation.
+thus the DiD impact estimator, a, should be near zero.                 The focus of FUNNEL is to detect KPI behavior changes
+Therefore, if a  0, we consider that the performance               in a rapid and robust way, which is achieved by the
+changes are not induced by software changes. If a         0 or      improved SST. The introduction of DiD method helps to
+a     0, then we consider that there is a relative increase or      determine whether the KPI changes are caused by software
+decrease in the treated group as compared to the control            changes, by comparing the performance between the con-
+group, and the likelihood that the performance changes are          trol/treated group. We decided not to compare FUNNEL
+caused by a software change is high.                                with Litmus because the robust regression approach in Lit-
+   Empirically, for a service which is sensitive to KPI             mus [14] is mainly used for inferring the relative perfor-
+change, such as advertisement, online shopping, the thresh-         mance change between the treated and the control group,
+old of a can be set to a small value like 0.5. Otherwise, the       and the comparison adds no additional value.
+threshold can be set larger.                                           Our results in this section show FUNNEL performs sig-
+                                                                    nificantly better than CUSUM and MRLS in accuracy, detec-
+3.2.5     Excluding Other Reasons for Related Services              tion delay, and computational cost.
+          and Full Launching Manner
+For affected services, there are no cservers or cinstances. More-   4.1 Data Sets
+over, if the operations team deploys software changes on all        In cooperation with the operations team, we randomly
+servers at one time (i.e., Full Launching), the control group       picked 19 moderate-sized services (the manual assessment
+is also empty. In addition to software changes, seasonality         efforts for large services would be prohibitive) over a 2-day
+may also give rise to KPI changes [7], [14], [28]. Thus, we         period, then we got 6,277 software changes in total. We ran
+need to exclude KPI changes induced by seasonality. For a           the algorithm in Section 3.1 to identify the impact set, and
+specific KPI of servers/services/instances in the impact set,       collected the KPI measurements of tservers/tinstances/changed
+FUNNEL compares the measurements of KPI around the                  services/affected services and the KPI measurements of cser-
+software change and the KPI measurements in the same                vers/cinstances. Note that running this algorithm is equally
+period of day but on historical days, since seasonality             beneficial to FUNNEL, CUSUM and MRLS, and is not
+impacts the KPI measurements around the software change             biased towards FUNNEL. The details of manual inspection
+and the historical KPI measurements similarly.                      are as follows. For a given software change, first we aggre-
+   Treated group and control group. For a given KPI of a            gated the KPIs of tinstances/tservers by calculating the aver-
+server/service/instance in the impact set, the treated group        age measurements of tinstances/tservers. The operations
+consists of the measurements of KPIs around the software            team then manually inspected whether behavior changes
+change, while the control group consists of the historical          occurred in the KPIs of the changed service, the affected serv-
+measurements of KPIs. Specifically, to exclude the perfor-          ices, and the aggregation KPIs of the tinstances and the tser-
+mance changes due to the time-of-day or day-of-week pat-            vers around the time of the software change. The operations
+tern and exclude the influence of baseline contamination,           team found that in total 83 software changes had behavior
+we use the measurements of KPIs of 30 days before the               changes in the KPIs of changed service/affected service or
+day of the software change to construct the control group.          aggregation KPIs of tservers/tinstances shortly after each of
+This is based on the observation that there is almost no            these software changes. For each behavior change, the oper-
+relative performance change between the control group               ations team then manually inspected the control group and
+and the treated group if the performance change is                  determined whether it is actually caused by software
+induced by seasonality.                                             change. Eventually, the operations team selected 72 out of
+42                                              IEEE TRANSACTIONS ON SERVICES COMPUTING,       VOL. 11, NO. 1,   JANUARY/FEBRUARY 2018
+
+
+6,277 software changes that induced KPI changes. We
+admit that behavior changes could occur in one or more
+individual KPIs of the tservers/tinstances in the 6,194 (6,277
+- 83) software changes. However, manually inspecting all
+the KPIs of the 6,194 software changes, i.e., about 600
+thousands KPIs, is a huge amount of work. Alternatively,
+we randomly selected 72 out of the remaining 6,194 soft-
+ware changes. For all selected 72 software changes, the
+operations team manually carried out the investigation,
+and found that there were no KPI changes induced by the
+software changes. We use the 72 software changes that
+induced changes in KPIs and the 72 selected software                Fig. 5. CDFs of the number of servers/instances and items of each
+changes that did not for the evaluation, and the manual             software change.
+assessment results of the 144 (72 þ 72) software changes
+served as the ground truth.                                            Based on empirical experience, if a software change in
+   The data used in our evaluation exhibited different char-        an web-based service has a negative impact, the KPIs usu-
+acteristics including seasonality, variability, stationarity,       ally change shortly after the software change. The opera-
+and different levels of baseline contaminations, which pro-         tions team think that 1 hour is enough for software change
+vided a relatively exhaustive validation.                           assessment. Among the 144 software changes, 108 were
+   Generally, the CPU context switch count of servers varies        deployed with Dark Launching, while the remaining 26
+frequently, while the memory utilization remains station-           were not. If a software change was conducted with Dark
+ary. In addition, both the CPU context switch count and the         Launching, and the KPIs were not of affected services, we
+memory utilization indicate the health status of servers.           will construct the treated group using the KPIs of tservers/
+Specifically, the CPU context switch count indicates the            tinstances 1 h before and after the software change, and
+computational efficiency and the number of threads after            construct the control group using the KPIs of cservers/cin-
+software changes, while the memory utilization indicates            stances in the same period. Otherwise, the treated group
+whether a software change introduces memory leaking.                will consist of the measurements of KPIs 1 h before and
+Thus we used the CPU context switch count and the mem-              after the software change, and the control group will con-
+ory utilization as the KPIs of all the servers in the evalua-       sist of the measurements of KPIs in the same period but on
+tion. The KPIs of a given service/instance are defined by the       historical days (30 days).
+operations team and they differ from one service/instance to           We constructed a time-series, xð1Þ; xð2Þ; . . . ; xðnÞ, for
+another service/instance.                                           each item by dividing the original measurements of KPIs
+   We collectively refer to the combination ðSi ; ci ; ki Þ as an   into equal time-bins of 1 min. Each method took a time win-
+item, where Si denotes a software change, ci is a server, ser-      dow of xðiÞ; xði þ 1Þ; . . . ; xði þ W Þ as its input to construct a
+vice, or instance in the impact set, and ki is a KPI of ci .        matrix (FUNNEL, MRLS) or calculate a cumulative sum
+   A total of 9,982 items were included in the evaluation, to       (CUSUM). For a fair comparison of the accuracy among
+which 144 software changes (described earlier in this sec-          FUNNEL, CUSUM and MRLS, the length of the sliding
+tion), and 931 servers were related. More specifically, the ki      input time window W for each method was set as the one
+of 931, 931, 8,120 items were CPU context switch count,             that achieved the best accuracy (WFUNNEL ¼ 34 (i.e., v in
+memory utilization, KPIs of services/instances, respectively.       Section 3.2.3 is set 9), WMRLS ¼ 32; WCUSUM ¼ 60 in our
+In addition, based on the operations team’s assessment,             scenario). The time window moves forward every minute.
+there were 968 items that had been labelled as having perfor-       For example, FUNNEL first detects and determines perfor-
+mance changes introduced by software changes in the                 mance changes for xð1Þ; xð2Þ; . . . ; xð34Þ, and then for xð2Þ;
+72 software changes that induced behavior changes.                  xð3Þ; . . . ; xð35Þ, etc. Note that the values of other parameters
+   To show that the software changes we selected were rep-          of CUSUM, MRLS and FUNNEL (a) are also set to the best for
+resentative, we collected all software changes on all services      the corresponding algorithm’s accuracy. We believe the above
+in the studied company in the same two days period, i.e.,           method draws the same conclusion as the method that chang-
+23,873 software changes, and analyzed whether the distri-           ing the value of the parameters, calculating the accuracies and
+bution of the item number of the 23,873 software changes            plotting the receiver operating characteristic (ROC) curves.
+were consistent with that of the item number of the studied            Empirically we set a threshold of 7 minutes in FUNNEL
+144 software changes used in the evaluation. Similarly, we          to declare a change in a time series as a level-shift or ramp-
+apply the CPU context switch count and the memory utili-            up/down rather than a one-off event.
+zation as the KPI of each server, and the KPI of each instance
+is predefined by the operations team. Fig. 5 shows the              4.2 Comparison of Accuracy
+cumulative distribution functions (CDFs) of the number of           We now compare the accuracy of FUNNEL, the improved
+items of each software change in the 23,873 software changes        SST without DiD, CUSUM, and MRLS. For each item, based
+and each of the 144 software changes used in the evaluation.        on the ground truth provided by the operations team, we
+We also present the CDFs of the number of servers/instances         knew the outcome - either having the KPI changes induced
+of the two sets of software changes. We observe that the set        by software changes or not. For each method, we labelled
+of the software changes for the evaluation is consistent with       its outcome as true positive (TP), true negative (TN), false
+the overall data set for the two day period.                        positive (FP), and false negative (FN). True positives were
+ZHANG ET AL.: FUNNEL: ASSESSING SOFTWARE CHANGES IN WEB-BASED SERVICES                                                                    43
+
+
+                                                                             scenario, and variable KPIs occupied a large portion of all
+                                                                             KPIs, MRLS performed poorly in Accuracy.
+                                                                                 Based on the characteristics of KPIs, the 9,982 items were
+                                                                             divided into three types: seasonal, stationary, and vari-
+                                                                             able [7]. It is clear that the items with CPU context switch
+                                                                             count were variable, and the items with memory utilization
+                                                                             were stationary. If the KPI of a given item has strong season-
+                                                                             ality, then the item is seasonal. Similarly, the item with KPI
+                                                                             of strong variability is variable, and the rest are stationary.
+                                                                             For items of service, 705 items were seasonal, 2,702 items
+                                                                             were stationary, and 4,713 items were variable.
+                                                                                 To examine the performance of FUNNEL in handling
+Fig. 6. CDFs of the precision, recall, TNR and accuracy of each software     seasonal and variable KPIs, we reorganized the above KPI
+change.
+                                                                             items based on the KPI types, and then compared different
+items with KPI changes caused by software changes that                       methods. For each method, we multiplied the TPs, TNs,
+were accurately determined as such by the method, and                        FPs, and FNs of the 72 software changes that did not intro-
+true negatives were items that were accurately determined                    duce behavior changes with 86 (6,194/72), and added the
+as having no KPI changes induced by software changes. If                     result to the TPs, TNs, FPs, and FNs of the 72 software
+the method determined a KPI change caused by a software                      changes which induced KPI changes. We believe that this
+change while there was no KPI change or the KPI change                       provides a reasonable approximation of real TPs, TNs, FPs,
+was not induced by a software change, we then labelled the                   and FNs. Eventually, we calculated the accuracy, recall,
+item as a false positive. False negatives were KPI changes                   precision and TNR based on the synthetic true positives,
+induced by a software change that were incorrectly missed                    true negatives, false positives, and false negatives. Table 1
+by the method. We calculated Precision, Recall, true nega-                   shows the aggregated results for each method and each
+tive rate (TNR), and Accuracy as: Precision ¼ TPTP                           KPI type. FUNNEL performed the best across all three
+                                                   þFP , Recall
+                                         TP þTN                              kinds of KPIs. The improved SST, CUSUM and MRLS per-
+¼ TPTP
+     þFN , TNR ¼   TN
+                       , Accuracy ¼  TP þTNþFP þFN [14].
+                 TNþFP                                                       formed well in the face of stationary KPIs. However,
+                                                                             because CUSUM and the improved SST failed to exclude
+4.2.1 Comparison Results                                                     the impact of seasonality, they detected performance
+For each software change and each method, we calculated                      changes induced by software changes with low accuracy
+the Accuracy, and Fig. 6 shows the CDFs of the Accuracy                      when the KPIs had strong seasonality. MRLS was sensitive
+across different software changes of the 72 software changes                 to spikes, and it was hardly feasible to modify MRLS to
+that induced performance changes as well as the 72 ones                      detect level shifts or ramp up/downs only. Thus a large
+that did not. The improved SST only improved robustness                      portion of the items with variable KPIs were incorrectly
+for SST, and even though it had a small number of false                      determined as having KPI changes.
+negatives in the software changes assessment, just like
+CUSUM, it failed to exclude the KPI changes induced by                       4.3 Comparison of Computational Cost
+other reasons, i.e., seasonality, thus the improved SST had                  Since millions of KPIs should be monitored to determine
+relatively low Accuracy. With the introduction of DiD                        whether they are impacted by software changes, it is impor-
+method to eliminate KPI changes caused by other factors,                     tant that the computational cost of the impact assessment
+FUNNEL achieved fewer false positives and higher Accu-                       be relatively low for the sake of scalability and deployabil-
+racy. Because MRLS was designed to detect KPI changes                        ity. In this section, we compare the computational cost of
+that included spikes that we did not care about in our                       FUNNEL, CUSUM, and MRLS.
+
+                                                              TABLE 1
+                             The Precision, Recall, TNR and Accuracy of Seasonal, Stationary and Variable
+                                         Data for FUNNEL, Improved SST, CUSUM and MRLS
+
+           Algorithm                  Type              Total          Precision           Recall         TNR           Accuracy
+                                    Seasonal           28,500               98.28%        100.00%        100.00%        100.00%
+           FUNNEL                  Stationary          129,943             100.00%        100.00%        100.00%        100.00%
+                                    Variable           215,339              68.47%         99.48%         99.88%         99.88%
+                                    Seasonal           28,500               1.10%         100.00%         81.93%         81.96%
+           Improved SST            Stationary          129,943              14.28%        100.00%         98.44%         98.44%
+                                    Variable           215,339              15.04%         99.48%         98.50%         98.50%
+                                    Seasonal           28,500               0.76%          84.21%         77.97%         77.98%
+           CUSUM                   Stationary          129,943              10.34%         98.52%         97.78%         97.78%
+                                    Variable           215,339              17.92%         96.34%         98.82%         98.81%
+                                    Seasonal           28,500              100.00%         87.72%        100.00%         99.98%
+           MRLS                    Stationary          129,943              9.23%          97.33%         97.51%         97.51%
+                                    Variable           215,339              0.61%          97.04%         57.85%         57.95%
+44                                              IEEE TRANSACTIONS ON SERVICES COMPUTING,        VOL. 11, NO. 1,     JANUARY/FEBRUARY 2018
+
+
+                         TABLE 2
+              Comparison of Computational Time
+
+Method                         FUNNEL       CUSUM        MRLS
+Run time per time window        401.8 ms    1.846 ms    2.852 s
+# Cores for one million KPIs       7           31       47,526
+
+
+   Motivated by the evaluation method presented in [29], all
+three methods were deployed on the same server (CPU
+information: 12 Intel(R) Xeon(R) CPU E5645 @ 2.40 GHz)
+                                                                    Fig. 7. CCDFs of detection delay.
+with a single thread. The CPU utilization remained 100 per-
+cent while the process of each method was running so that           FUNNEL reduced 38.02 percent of detection delay com-
+we could use the total time to evaluate complexity [29].            pared with MRLS, and 64.99 percent for CUSUM.
+   Table 2 shows the average computational time taken by               As aforementioned, in FUNNEL we set a threshold of 7
+FUNNEL, CUSUM and MRLS to detect the KPI changes in                 minutes to declare a change in a time series as a level-shift
+a single time window. With the introduction of matrix com-          or ramp-up/down rather than a one-off event. Occasionally,
+pression and implicit inner product calculation, FUNNEL             MRLS can detect a level shift within 7 minutes, at the cost of
+was highly computational efficient. Specifically, compared          much more false positives. In these cases, FUNNEL is
+with MRLS, FUNNEL was more than 7,000 times faster in               slower than MRLS as shown in the top left corner of Fig. 7
+computational speed. Moreover, FUNNEL reduced 77.42                    The distribution of the detection delay for FUNNEL
+percent of computational cost as compared to CUSUM.                 was more concentrated and the longest detection delay of
+Suppose that one million KPIs need to be monitored                  FUNNEL was much shorter than that of CUSUM and
+and determined for the impact assessment of software                MRLS. This gives FUNNEL a very significant advantage,
+changes, the KPIs are collected and detected every min-             because a software change may introduce a great loss
+ute, and the implementation runs on the same types of               due to impairment if an unexpected impact of a software
+CPU. As the last row in Table 2 shows, if we apply MRLS             change causes poor user experience or degraded advertis-
+as the software change assessment method, we need at                ing income and is detected only after a long delay. Thus, in
+least 47,526 cores, i.e., 3,960 servers if each server has 12       terms of detection delay, overall FUNNEL is more suitable
+cores. CUSUM needs 31 cores and 3 servers. However,                 than CUSUM and MRLS for online impact assessment of
+with FUNNEL, one server is fully capable of detecting               software changes in large web-based services.
+and determining all one million KPIs. FUNNEL is thus
+quite competent to assess the impact of software changes            5    OPERATIONAL EXPERIENCE
+online in large web-based services.                                 We deploy the multi-threaded FUNNEL prototype on one
+                                                                    server with a 12-core Intel(R) Xeon(R) CPU E5645 @ 2.40
+4.4 Comparison of Detection Delay                                   GHz. FUNNEL assesses the software changes of a few doz-
+When detecting level shifts, and ramp up/downs, all detec-          ens of services offered by the search engine company.
+tion methods need some data points (thus time) to finish.           Table 3 shows some daily statistics for a specific one-week
+However, rapid detection of performance changes and                 period which we studied in details in this section.
+determination of software change impacts is quite necessary            Ideally, we would like to measure the Accuracy, Preci-
+for timely damage mitigation for web-based services. In this        sion, Recall and TNR as in Section 4.2 for this one-week
+section, we compare the detection delay of different meth-          period. However, it is prohibitive for the operations team to
+ods and show that FUNNEL has a much lower detection                 label more than 2 million KPIs of all services daily. There-
+delay, thanks to the use of SST.                                    fore, we made a compromise, and only asked operations
+    For each item, the operations team labelled the start of        team to verify the KPI changes detected by FUNNEL
+KPI changes (if any, as shown in Fig. 2), which served as the       (10 thousands per day, fourth column in Table 3). This
+ground truth information for comparing different methods.           allows us to calculate Precision ¼ TPTPþFP , which is shown in
+We defined the detection delay as the time between the start        the last column in Table 3.
+of a KPI change and its detection by a method. Suppose that            Based on the operational experience of FUNNEL deploy-
+a method correctly detects and determines a KPI change              ment, we show four representative cases. We applied the
+first when the input time window is xði þ 1Þ; xði þ 2Þ; . . . ;     FUNNEL’s prototype to validate expected performance
+xðcÞ; . . . ; xði þ wÞ, and the KPI change starts at time c, then   changes that were direct outcomes of configuration changes
+the detection delay is ðw  cÞ minute. Note that the detec-         in the first two cases, and to detect unexpected performance
+tion delay defined above does not include the delay due to          changes induced by software upgrades in the last two. The
+the computational cost (previously evaluated separately in
+Section 4.3). During evaluation, each method is given suffi-                                     TABLE 3
+cient CPU power to finish processing one-window’s worth                      Statistics About the Implementation of FUNNEL
+of data within one time window.
+    Fig. 7 shows the Complementary Cumulative Distribu-             #software       # software                        #KPI
+                                                                    changes        changes that          #KPIs       changes    Precision
+tion Functions (CCDFs) for the detection delay of FUNNEL,
+                                                                                   have impact
+CUSUM, and MRLS. The median delays were MMRLS ¼
+                                                                    24,119              268             2,256,390     10,249    98.21%
+21:3 min, MFUNNEL ¼ 13:2 min, and MCUSUM ¼ 37:7 min.
+ZHANG ET AL.: FUNNEL: ASSESSING SOFTWARE CHANGES IN WEB-BASED SERVICES                                                                  45
+
+
+
+
+Fig. 8. KPI changes induced by a configuration change in the Redis
+query service.
+                                                                     Fig. 9. KPI change induced by a configuration change in server/service
+                                                                     status acquisition service.
+cases show that FUNNEL assesses software changes rapidly
+(Sections 5.2 and 5.3) and accurately even in the face of vari-          More specifically, FUNNEL detected KPI changes in the
+able (Sections 5.1) and seasonal (Sections 5.4) KPIs.                CPU context switch count on servers where the configura-
+                                                                     tion change was deployed, as Fig. 9a shows, as well as the
+5.1 Robustness to Variable KPIs                                      KPI changes in the query response delay, as Fig. 9b shows.
+Redis is an advanced data structure store which is used as               We delivered the assessment result to the operations
+database, cache and message broker [30]. After a configura-          team, and they verified that the result was as expected. Spe-
+tion change in the Redis query service, FUNNEL deter-                cifically, the operational metadata acquisition service pro-
+mined that 16 out of 118 KPIs in the impact set had                  vides a query tool that enables the employees in the
+behavior changes which were caused by this configuration             company to query the status of any server or service.
+change. More specifically, FUNNEL found that immediately             The operations team carefully monitors the performance of
+after the configuration change, some Redis servers (class A          the service, and if a performance degradation occurs in the
+Redis servers) witnessed a negative level shift in NIC               service, the operators will mitigate it as soon as possible.
+throughput as Fig. 8a shows, while in the NIC throughput             The query tool used to deliver the parameters to the opera-
+of other Redis servers (class B Redis servers) a positive level      tional metadatan database by using a single thread .But this
+shift occurred, as shown in Fig. 8b.                                 caused frequent timeouts after the deployment of the query
+   The operations team verified that the configuration               tool thus the operations team found that the majority of
+change was aimed at load balancing and achieved the                  delays were induced by this single thread configuration.
+expected result. Specifically, the Redis query tasks were            Therefore, the operations team launched a new configura-
+assigned to class A Redis servers first. Unless the class A          tion change that would make the query tool multi-threaded,
+Redis servers reached the limit of NIC bandwidth capacity,           which naturally caused the symptoms in Fig. 9.
+the query tasks would not be allocated to class B Redis serv-            The KPI changes were detected and determined 7 minutes
+ers. This led to a situation where the NICs of class A Redis         after the configuration change, showing that FUNNEL is
+servers were always busy, while the utilization of the NICs of       capable of online impact assessment of software changes.
+class B servers was low, which degraded the performance of
+the Redis query service and shortened the life of NICs in class      5.3 Rapid Detection of Unexpected KPI Changes
+A Redis servers. The operations team launched a configura-           To see how FUNNEL speeds up the detections of unex-
+tion change to balance the traffic between class A and class B       pected behavior changes, we randomly picked a small frac-
+Redis servers. As Fig. 8 shows, the configuration change suc-        tion of software changes for which FUNNEL does not
+cessfully balanced the traffic and had the expected effect.          directly deliver the detection results to the operations team.
+   This case study shows that, although the NIC throughput           Instead, the operations team independently assess software
+had strong variability by its nature, FUNNEL still success-          changes without the help of FUNNEL. In the below case,
+fully detected and determined the KPI changes induced by             we compare the speed of FUNNEL and manual inspection,
+the configuration change, demonstrating FUNNEL’s capa-               and demonstrate the performance of FUNNEL in detecting
+bility to handle variable KPIs.                                      unexpected performance changes
+                                                                         During the deployment of FUNNEL, the operations teams
+5.2 Rapid Detection of Expected KPI Changes                          made a software upgrade aimed at improving the perfor-
+In the second case, we present the performance of FUNNEL             mance of the advertising system. Advertising system is a
+in assessing a configuration change in the operational               very large and complex system [4], and in fact 36,752 KPIs are
+metadata acquisition service. During the deployment of               included in the impact set in the software upgrade according
+the FUNNEL’s prototype, there occurred a configuration               to FUNNEL. Manually investigating this upgrade’s impact is
+change in the operational meta-data acquisition service,             infeasible. 10 minutes after the software upgrade, FUNNEL
+after which FUNNEL identified that there were 44 KPIs in             detected 1,141 KPI changes induced by the software upgrade.
+the impact set, and determined that the configuration                More specifically, as Fig. 10 shows, the normalized ratio of
+change induced behavior changes in 14 KPIs.                          clicks on advertisements considered as cheats, i.e., clicks on
+46                                                   IEEE TRANSACTIONS ON SERVICES COMPUTING,         VOL. 11, NO. 1,   JANUARY/FEBRUARY 2018
+
+
+
+
+Fig. 10. The normalized ratio of clicks on advertisements considered as
+cheats.
+
+advertisements that are not considered as human behavior by
+the anti-cheating system, increased dramatically immedi-
+ately after the software upgrade was conducted.
+                                                                          Fig. 11. The normalized number of successful orders.
+    Without using FUNNEL, the operations team indepen-
+dently found the performance change after 1.5 h and then                  mget request, which however, degraded the performance
+quickly fixed the issue. The operations team confirmed that               of Redis proxy in handling mget requests. The computa-
+the occurrence of the unexpected behavior changes due to                  tional resources of Redis servers were then exhausted, and
+the software upgrade was a real significant incident. It was              a large number of web page view timeouts and failures
+later carefully investigated. Specifically, the anti-cheating             occurred. As a consequence, the shopping online service
+service injects a check program, which is implemented with                witnessed a degradation in the number of successful
+JSON, into every advertisement to determine whether a                     orders and in the income. The operations team detected
+click on the advertisement is performed by a human or is a                the unexpected performance changes and correlated them
+cheat executed by an automated program. However, the                      to the software upgrade about half an hour after the soft-
+software upgrade failed to load the JSON program on the                   ware upgrade.
+iPhone browsers, i.e., the check program was not effective                   Fig. 11 shows the normalized number of successful
+for iPhone users. Therefore, all clicks on the advertisements             orders of the shopping service, and FUNNEL detected a
+by iPhone users were considered as cheats, which resulted                 negative level shift in the KPI, and determined that the
+in the decline in advertising revenue. The number of cheat-               behavior changes were caused by the software upgrade.
+ing clicks monitored by the anti-cheating service returned                The KPIs had strong seasonality, but FUNNEL still accu-
+to the normal level after the operations team had remedied                rately assessed the impact of the software upgrade, which
+the situation, and thus, a negative level shift occurred 1.5 h            demonstrated that FUNNEL performed extremely well
+after the software upgrade.                                               even in the face of seasonal KPIs.
+    Had the operations team used FUNNEL to assess the
+impact of the erroneous software upgrade, they could have
+much more timely mitigated the loss caused by the software
+                                                                          6    RELATED WORK
+upgrade.                                                                  The impact of software changes has attracted considerable
+                                                                          attention in recent years [6], [7], [14], [31], [32], [33].
+5.4 Robustness to Seasonal KPIs                                           Mahimkar et al. [6] developed MERCURY to detect the per-
+In the last case, we show how FUNNEL performs in the face                 formance impact of upgrades in large operational networks.
+of seasonal KPIs. With rapid development of the Internet,                 MERCURY uses the CUSUM method to detect behavior
+online shopping has witnessed an explosive growth. The                    changes in KPIs, and applies statistical rule mining and net-
+stability of the online shopping service is of vital importance           work configuration to identify commonality across the
+to guarantee user experience and service income. When the                 behavior changes. PRISM [7] is developed to reduce the
+service is upgraded, the operations team carefully inspects               detection delay between the behavior change and the detec-
+the KPIs that maybe indicative of performance impairment                  tion. The MRLS method was developed in PRISM to rapidly
+or software bugs. Such KPIs should be detected rapidly for                and robustly detect maintenance-induced behavior changes.
+timely mitigation. However, given the large number of KPIs                However, the MRLS method suffers from high computa-
+in the online shopping service (tens of thousands of KPIs                 tional cost, and thus is not appropriate in our scenario. Lit-
+should be monitored), it becomes incredibly challenging to                mus was developed to address the assessment of changes in
+identify the impact of software upgrades manually. We                     cellular networks where external factors may over-shadow
+applied FUNNEL to detect and determine KPI changes after                  the assessment [14]. Litmus applies a spatial regression algo-
+a software upgrade in the online shopping service.                        rithm for the comparison of the treated and the control group.
+   As is in Section 5.3, FUNNEL did not deliver the results                  The detection of behavior changes has a very rich litera-
+to the operations team at first, and the operations team                  ture. In [34], Principal Component Analysis (PCA) was
+assessed the software upgrade independently. FUNNEL                       applied for anomaly detection in network. Yamada et al.
+detected several KPI changes and determined that these                    proposed a change point detection method, additive Hil-
+KPI changes were caused by the software upgrade about 8                   bert-Schmidt Independence Criterion (aHSIC), which was
+minutes after the upgrade. Concretely, the software                       based on supervised learning, and used the weighted
+upgrade tried to merge multiple mget requests [30] (a                     sum of the SIC scores for incorporating feature selec-
+command used to query data from Redis server) into one                    tion [29]. To detect changes in seasonal time-series,
+ZHANG ET AL.: FUNNEL: ASSESSING SOFTWARE CHANGES IN WEB-BASED SERVICES                                                                            47
+
+
+Chef et al. applied a time series decomposition based                   [3]    (2008). Facebook chat [Online]. Available: https://www.facebook.
+                                                                               com/note.php?note_id=14218138919
+method, week-over-week [28].                                            [4]    R. Bhagwan, R. Kumar, R. Ramjee, G. Varghese, S. Mohapatra,
+   Split testing, also known as the control/treament test, has                 H. Manoharan, and P. Shah, “Adtributor: Revenue debugging in
+been widely studied in the fields of econometrics [15], [16],                  advertising systems,” in Proc. 11th USENIX Conf. Netw. Syst. Des.
+health care [17], and web domains [24], [25]. Web users                        Implementation, Apr. 2014, pp. 43–55.
+                                                                        [5]    C. Luo, J.-G. Lou, Q. Lin, Q. Fu, R. Ding, D. Zhang, and Z. Wang,
+were exposed to either the treated group or the control                        “Correlating events with time series for incident diagnosis,” in
+group in the study reported in [24], [25]. To analyze the                      Proc. 20th ACM SIGKDD Int. Conf. Knowl. Discovery Data Mining,
+impact of the treatment, the authors recorded the interac-                     New York, NY, USA, Aug. 2014, pp. 1583–1592.
+                                                                        [6]    A. Mahimkar, H. H. Song, Z. Ge, A. Shaikh, J. Wang, J. Yates,
+tions of users and compared the metrics of the treated and                     Y. Zhang, and J. Emmons, “Detecting the performance impact of
+the control group. Stuart et al. [17] applied propensity                       upgrades in large operational networks,” in Proc. SIGCOMM,
+scores to address the disadvantage of the DiD algorithm                        New Delhi, India, Aug. 2010, pp. 303–314.
+when the compositions of the control group and the treated              [7]    A. Mahimkar, Z. Ge, J. Wang, J. Yates, Y. Zhang, J. Emmons,
+                                                                               B. Huntley, and M. Stockert, “Rapid detection of maintenance
+group change over time. However, in our scenario, the com-                     induced changes in service performance,” in Proc. 7th Conf. Emerg-
+positions of the control and the treated group remain                          ing Netw. Exp. Technol., Tokyo, Japan, Dec. 2011, no. 13, pp. 1–12.
+unchanged over time. That is, it is not necessary to intro-             [8]    Z. Lin, M. Chen, and Y. Ma, “The augmented lagrange multiplier
+duce propensity scores in FUNNEL.                                              method for exact recovery of corrupted low-rank matrices,” arXiv
+                                                                               Preprint arXiv:1009.5055, 2010.
+                                                                        [9]    T. Ide and K. Inoue, “Knowledge discovery from heterogeneous
+7     CONCLUSION                                                               dynamic systems using change-point correlations,” in Proc. 5th
+                                                                               SIAM Int. Conf. Data Mining, Newport Beach, CA, USA, Apr.
+We designed and implemented a new tool, FUNNEL, for rap-                       2005, pp. 571–575.
+idly and robustly assessing the impact of software changes in           [10]   H. Hassani, S. Heravi, and A. Zhigljavsky, “Forecasting european
+                                                                               industrial production with singular spectrum analysis,” Int. J.
+large web-based services. For each software change, FUN-                       Forecasting, vol. 25, no. 1, pp. 103–118, 2009.
+NEL analyzes all the services, processes, and servers that              [11]   V. Moskvina and A. Zhigljavsky, “Change-point detection algo-
+may be influenced and automatically constructs the impact                      rithm based on the singular-spectrum analysis,” Commun. Statist.:
+set. FUNNEL then detects performance changes in the                            Simul. Comput., vol. 32, no. 2, pp. 319–352, 2003.
+                                                                        [12]   T. Ide and K. Tsuda, “Change-point detection using Krylov sub-
+impact set rapidly and robustly by improving the robustness                    space learing,” in Proc. 7th SIAM Int. Conf. Data Mining, Apr. 2007,
+and reducing the computational cost of SST, and determines                     pp. 515–520.
+performance changes induced by software changes using a                 [13]   Y. Mohammad and T. Nishida, “Robust singular spectrum trans-
+                                                                               form,” in Proc. 22nd Int. Conf. Indus., Eng. Other Appl. Appl. Intell.
+DiD method. We evaluated FUNNEL by comparing it with
+                                                                               Syst. Next-Gener. Appl. Intell., Jun. 2009, pp. 123–132.
+CUSUM and MRLS using 144 software changes and showed                    [14]   A. Mahimkar, Z. Ge, J. Yates, C. Hristov, V. Cordaro, S. Smith,
+that FUNNEL achieved high accuracy with short detection                        J. Xu, and M. Stockert, “Robust assessment of changes in cellular
+delay and low computational cost. Operational experiences                      networks,” in Proc. 9th ACM Conf. Emerging Netw. Exp. Technol.,
+                                                                               Santa Barbara, California, USA, Dec. 2013, pp. 175–186.
+of FUNNEL deployment show that FUNNEL can assess the                    [15]   O. C. Ashenfelter and D. Card, “Using the longitudinal structure
+impact of software changes rapidly and robustly in the face                    of earnings to estimate the effect of training programs,” Rev. Econ.
+of seasonary and variable data. Compared to manual efforts,                    Statist., vol. 67, no. 4, pp. 648–660, Aug. 1985.
+in one specific case FUNNEL shortens the assessment from                [16]   W. R. Shadish, T. D. Cook, and D. T. Campbell, Experimental and
+                                                                               Quasi-Experimental Designs For Generalized Causal Inference.
+1.5 hours to 10 minutes, saving both time and money.                           Belmont, CA, USA: Wadsworth, 2002.
+                                                                        [17]   E. A. Stuart, H. A. Huskamp, K. Duckworth, J. Simmons, Z. Song,
+ACKNOWLEDGMENTS                                                                M. E. Chernew, and C. L. Barry, “Using propensity scores in
+                                                                               difference-in-differences models to estimate the effects of a policy
+The authors are grateful to Bo Wang, Bolin Yang, Wenhui                        change,” Health Serv. Outcomes Res. Methodol., vol. 14, no. 4,
+Xie, Ming Hua, Wei Huang, Xiaoguang Miao, and Jiantao                          pp. 166–182, Aug. 2014.
+Chi, for their invaluable help at various stages of this proj-          [18]   Q. Wang, Y. Kanemasa, M. Kawaba, and C. Pu, “When average is
+                                                                               not average: Large response time fluctuations in n-tier systems,”
+ect. They strongly appreciate Yosef Azzabi, Dapeng Liu,                        in Proc. 9th Int. Conf. Autonom. Comput., 2012, pp. 33–42.
+Juexing Liao, Beibei Miao, Yongqian Sun, and Xiaohui Nie                [19]   D. Liu, Y. Zhao, H. Xu, Y. Sun, D. Pei, J. Luo, X. Jing, and M. Feng,
+for their helpful suggestions and elaborative proofreading.                    “Opprentice: Towards practical and automatic anomaly detection
+                                                                               through machine learning,” in Proc. ACM Conf. Internet Meas.
+The work was supported by National Natural Science Foun-                       Conf., Oct. 2015, pp. 211–224.
+dation of China (NSFC) under Grant Nos. 61472214 and                    [20]   N. Aoki, State Space Modeling of Time Series. Cambridge, U.K.:
+61402257, the National Key Basic Research Program of                           Cambridge Univ. Press, 1990.
+China (973 program) under Grant No. 2013CB329105, the                   [21]   N. Mi, G. Casale, L. Cherkasova, and E. Smirni, “Burstiness in
+                                                                               multi-tier applications: Symptoms, causes, and new models,”
+Tsinghua University Self-determined Project under Grant                        in Proc. 9th ACM/IFIP/USENIX Int. Conf. Middleware, 2008,
+No. 2014z21051, the State Key Program of National Science                      pp. 265–286.
+of China under Grant No. 61233007, the National Natural                 [22]   G. H. Golub and C. F. Van Loan, Matrix Computaions. Baltimore,
+                                                                               MD, USA: The Johns Hopkins Univ. Press, 2012, vol. 3.
+Science Foundation of China under Grant No. 61472210, the               [23]   W. H. Press, Numerical Recipes 3rd Edition: The Art of Scientific Com-
+National High Technology Development Program of China                          puting. Cambridge, U.K.: Cambridge Univ., 2007.
+(863 program) under Grant No. 2013AA013302.                             [24]   R. Kohavi, A. Deng, B. Frasca, R. Longbotham, T. Walker, and
+                                                                               Y. Xu, “Trustworthy online controlled experiments: Five puzzling
+REFERENCES                                                                     outcomes explained,” in Proc. 18th ACM SIGKDD Int. Conf. Knowl.
+                                                                               Discovery Data Mining, Aug. 2012, pp. 786–794.
+[1]   (2014). Back up and running [Online]. Available: https://blogs.   [25]   R. Kohavi, R. M. Henne, and D. Sommerfield, “Practical guide
+      dropbox.com/dropbox/2014/01/back-up-and-running/                         to controlled experiments on the web: Listen to your custom-
+[2]   (2012). Google apps incident report, gmail partial outage                ers not to the hippo,” in Proc. 13th ACM SIGKDD Int. Conf.
+      [Online]. Available: http://www.google.com/appsstatus/ir/                Knowl. Discovery Data Mining, San Jose, CA, USA, Aug. 2007,
+      plibxfjh8whr44h.pdf                                                      pp. 959–967.
+48                                                         IEEE TRANSACTIONS ON SERVICES COMPUTING,   VOL. 11, NO. 1,   JANUARY/FEBRUARY 2018
+
+[26] T. Benson, A. Akella, and D. A. Maltz, “Network traffic character-                        Xianping Qu received the BS degree in informa-
+     istics of data centers in the wild,” in Proc. 10th ACM SIGCOMM                            tion and computing science from the School of
+     Conf. Internet Meas., Melbourne, Australia, Nov. 2010, pp. 267–280.                       Mathematical Sciences, Fudan University in
+[27] S. Kandula, S. Sengupta, A. Greenberg, P. Patel, and R. Chaiken,                          2009. He is currently a senior engineer in Baidu,
+     “The nature of data center traffic: Measurements & analysis,” in                          Inc. His research interests include monitoring,
+     Proc. 9th ACM SIGCOMM Conf. Internet Meas. Conf., Chicago, Illi-                          anomaly detection, root cause analysis, and
+     nois, USA, Nov. 2009, pp. 202–208.                                                        automatic operations of web-based services.
+[28] Y. Chen, R. Mahajan, B. Sridharan, and Z.-L. Zhang, “A provider-
+     side view of web search response time,” in Proc. SIGCOMM, Aug.
+     2013, pp. 243–254.
+[29] M. Yamada, A. Kimura, F. Naya, and H. Sawada, “Change-point
+     detection with feature selection in high-dimensional time-series
+     data,” in Proc. 23rd Int. Joint Conf. Artif. Intell., Beijing, China, Aug.                Shimin Tao received the BS degree in public
+     2013, pp. 1827–1833.                                                                      adminstration management from the College of
+[30] (2015). Redis [Online]. Available: http://redis.io/                                       Politics & Law and Public Administration, Hubei
+[31] M. Canini, D. Venzano, P. Peresıni, D. Kostic, and J. Rexford, “A                      University in 2003. He is currently a technical
+     nice way to test openflow applications,” in Proc. 9th USENIX Conf.                        manager in Baidu, Inc. His research interests
+     Netw. Syst. Des. Implementation, San Jose, CA, USA, Apr. 2012, p. 10.                     include monitoring, anomaly detection, root
+[32] M. Reitblatt, N. Foster, J. Rexford, C. Schlesinger, and D. Walker,                       cause analysis, and automatic operations of web-
+     “Abstractions for network update,” in Proc. SIGCOMM, Aug.                                 based services.
+     2012, pp. 323–334.
+[33] R. R. Sambasivan, A. X. Zheng, M. De Rosa, E. Krevat, S. Whit-
+     man, M. Stroucken, W. Wang, L. Xu, and G. R. Ganger,
+     “Diagnosing performance changes by comparing request flows,”
+     in Proc. 8th USENIX Conf. Netw. Syst. Des. Implementation, Boston,                        Zhi Zang received the BS degree in computer
+     MA, USA, Apr. 2011, pp. 43–56.                                                            science from the School of Computer Science
+[34] A. Lakhina, M. Crovella, and C. Diot, “Mining anomalies using                             and Technology, Nanjing University in 2005
+     traffic feature distributions,” in Proc. SIGCOMM, Aug. 2005,                              and the ME degree in computer software and
+     pp. 217–228.                                                                              theory from the Institute of Software, Chinese
+                                                                                               Academy of Sciences in 2008. He is currently a
+                        Shenglin Zhang received the BE degree in net-                          senior engineer in Baidu, Inc. His research
+                        work engineering from the School of Computer                           interests include monitoring, anomaly detec-
+                        Science and Technology, Xidian University in                           tion, root cause analysis, and automatic opera-
+                        2012. He is currently working toward the PhD                           tions of web-based services.
+                        degree in the Institute of Network Sciences and
+                        Cyberspace, Tsinghua University. His research
+                        interests include failure detection and prediction                     Xiaowei Jing received the BE degree in com-
+                        in datacenter networks, BGP AS path behavior,                          puter science and application from the Harbin
+                        and P2P optimization.                                                  University of Science and Technology in 1995
+                                                                                               and the MS degree in computer science from the
+                                                                                               Harbin Engineering University in 2002. He is cur-
+                                                                                               rently a senior engineer in the IT Management
+                     Ying Liu received the BS degree in information                            Department, Petrochina, Inc.
+                     engineering, MS degree in computer science,
+                     and PhD degree in applied mathematics from
+                     Xidian University in 1995, 1998, and 2001,
+                     respectively. She made postdoctoral research in
+                     the Department of Computer Science and Tech-
+                     nology, Tsinghua University in 2001 to 2003. She
+                     is currently an associate professor in the Institute                      Mei Feng received the PhD degree from the
+                     for Network Sciences and Cyberspace, Tsinghua                             Chemical Process Engineering Department,
+                     university. Her research interests include multi-                         Newcastle University in 2001. She is currently a
+                     cast routing, network architecture, and router                            professor in the Computer Application Depart-
+design and implementation. She is a member of the IEEE.                                        ment, Research Institute of Petroleum Explore
+                                                                                               and Development (RIPED). Her research inter-
+                        Dan Pei received the BE and MS degree in com-                          ests include computer network construction and
+                        puter science from the Department of Computer                          information security.
+                        Science and Technology, Tsinghua University in
+                        1997 and 2000, respectively, and the PhD degree
+                        in computer science from the Computer Science
+                        Department, University of California, Los Angeles
+                        (UCLA) in 2005. He is currently an associate
+                        professor in the Department of Computer Sci-
+                        ence and Technology, Tsinghua University. His
+                        research interests include network and service
+                        management in general. He is a senior member
+of the IEEE and ACM.
+
+                        Yu Chen received the BS and MS degree in com-
+                        puter science from the Department of Computer
+                        Science and Technology, Peking University in
+                        1998 and 2001, respectively. He used to be a
+                        senior engineer in Baidu, Inc, and he is currently
+                        working in a startup company on education.
+

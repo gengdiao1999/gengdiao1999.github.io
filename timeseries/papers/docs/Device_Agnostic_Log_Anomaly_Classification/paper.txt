@@ -1,0 +1,385 @@
+  Device-Agnostic Log Anomaly Classification with
+                   Partial Labels
+          Weibin Meng†¶ , Ying Liu†¶ , Shenglin Zhang‡∗ , Dan Pei†¶ , Hui Dong§ , Lei Song§ , Xulong Luo§
+                                             † Tsinghua University ‡ Nankai University § Baidu
+                       ¶ Beijing National Research Center for Information Science and Technology(BNRist)
+
+                      Email: mwb16@mails.tsinghua.edu.cn, liuying@cernet.edu.cn, zhangsl@nankai.edu.cn,
+                             peidan@tsinghua.edu.cn, {donghui02, song lei, luoxulong}@baidu.com
+
+
+   Abstract—Anomaly classification, i.e., detecting whether a net-    (anomalous) events, which are quite valuable for root cause
+work device is anomalous and determining its anomaly category         analysis and log classification. For instance, when the switch
+if yes, plays a crucial role in troubleshooting. Compared to KPI      log of “System is rebooting now” is generated, operators
+curves, device logs contain too much more valuable information
+for anomaly classification. However, the regular expression based     can determine that the switch is anomalous, and classify the
+anomaly classification techniques cannot tackle the challenges        anomaly into the category of “SYSTEM REBOOT”. Device
+lying in log anomaly classification.                                  logs have been extensively studied in monitoring network
+   We propose LogClass, a data-driven framework to detect             status [4], understanding network events [5], [6], detecting
+and classify anomalies based on device logs. LogClass combines        anomalies [7], [8], and predicting device failures [9].
+a word representation method and the PU learning model to
+construct device-agnostic vocabulary with partial labels. We             Due to the fundamental role of device logs in anomaly clas-
+evaluate LogClass on tens of millions of switch logs collected        sification, operators usually classify device logs into healthy
+from several real-world datacenters owned by a top global search      logs and (multiple types of) anomalous logs using regu-
+engine. Our results show that LogClass achieves 99.515% F1            lar expression. However, the regular expression based log
+score in anomalous log detection, 95.32% Macro-F1 and 99.74%
+Micro-F1 in anomalous log classification in a computationally         classification suffers from low generality (i.e., it is device
+efficient manner.                                                     manufacturer/model specific), labor intensity (i.e., maintaining
+   Index Terms—Device Logs, Anomaly Classification, TF-IDF            the large number of regular expressions is labor intensive) and
+                                                                      computational inefficiency [10], [11].
+                         I. I NTRODUCTION                                In this paper, we propose LogClass, a data-driven system
+   With the explosion of the traffic in datacenter networks,          to detect and classify anomalies based on device logs. The
+the number of network devices including switches, routers             key intuition is that most device logs are semi-structured
+and middleboxes (say VPNs, IDPS, and firewalls) [1] have              texts “printf”-ed by device operating systems, and traditional
+witnessed a dramatic increase. Since network device anomalies         methods in natural language processing can be applied to
+can significantly impact on the services provided by datacen-         analyze device logs.
+ters [2], operators continuously monitor the status of network           LogClass faces two interesting challenges as follows.
+devices carefully, and intervene immediately after an anomaly            (1) Device-agnostic vocabulary. Since device logs are
+occurs. In the literature, many anomaly detection methods             manufacture/model-specific, their formats vary among dif-
+have been proposed to detect anomalies in network devices             ferent manufacturers and device models. That is, it is very
+by means of analyzing KPI (Key Performance Indicator, e.g.,           difficult, if possible, to train a single classification model for
+CPU utilization, memory utilization) curves [3].                      all device manufacturers/models. None of the existing log
+   In addition to detecting anomalies, operators also have to         processing techniques can learn device-agnostic vocabulary for
+classify anomalies in order to rapidly locate the root cause and      log classification. For example, FT-Tree [9] is only able to
+mitigate the damage imposed by anomalies. For example, if             learn log templates one switch manufacturer/model by one.
+a severe anomaly occurs on a line card of a switch, operators            (2) Partial labels. Due to the huge number of device
+will replace the line card to mitigate the loss. On the other         logs (tens of millions), operators have detected/classified only
+hand, operators will reboot the system when a switch suffers          a small portion of anomalous logs, and thus most of the
+from software crash. Although KPI curves can answer whether           anomalous logs remains undetected and unclassified. This
+a network device is anomalous, anomaly classification barely          poses a great challenge to log detection and classification.
+benefits from KPI curves, for the reason that KPI curves
+                                                                         The challenges mentioned above are tackled by LogClass
+usually contain too little information. Specifically, an anomaly
+                                                                      as follows.
+(say a level sift) in the CPU utilization only indicates that the
+CPU utilization increases sharply, and it cannot tells why it            (1) Our preliminary investigation demonstrates that device
+happens. On the contrary, device logs describe a vast range of        logs of the same anomaly category share some common
+                                                                      patterns in terms of word combination. In natural language
+  ∗ Shenglin Zhang is the corresponding author.                       processing, the bag-of-words model is a popular and effective
+
+
+
+978-1-5386-2542-2/18/$31.00 ©2018 IEEE
+word representation method [12]. In this paper, we use bag-
+of-words to represent the patterns of word combinations.
+   (2) LogClass applies PU Learning [13] to handle the partial
+labels. Specifically, it inputs anomalous (positive) logs and
+unlabeled logs into the PU learning model, which then outputs
+which logs are anomalous and which ones are healthy.
+   The overall design of LogClass is as follows. For all
+the devices of different manufacturers/models, in the offline
+learning procedure, LogClass pre-processes the device logs
+and generates bag-of-words vectors. Then LogClass applies
+PU Learning [13] and SVM to train an anomaly detection and                          Fig. 1: Problem Definition
+classification model. Similarly, in the online detection proce-
+dure, LogClass determines whether a new log is anomalous
+and its anomaly category if yes.
+   We evaluate LogClass on tens of millions of switch logs
+collected from several real-world datacenters owned by a top
+global search engine. Our results show that LogClass achieves
+99.515% F1 score in anomalous log detection, 95.32% Macro-
+F1 and 99.74% Micro-F1 in (anomalous) log classification in
+an computationally efficient manner.
+   The rest of the paper is organized as follows: Section II
+provides the background of our problem, and the design of
+LogClass is elaborated in Section III. The evaluation is shown
+in Section IV. Finally, we introduce the related works in
+Section V and conclude our work in Section VI.
+
+                     II. BACKGROUND
+   At present, datacenter networks compris a variety of net-
+work devices, such as switches, routers [14]. Network opera-                   Fig. 2: The Framework of LogClass
+tors are required to monitor network by monitoring all devices
+and detect even a slight device anomaly.                            •  Unlabeled logs. The logs that network operators do not
+                                                                       know whether they relative to device anomalies.
+A. Device Logs
+                                                                     In parctice, network operators usually use keyworks to
+   Many devices have similar log fields. In this paper, we take   mark anomalous logs, but many words have ambiguities. For
+the switch logs as examples to depict the each field of device    instance, if a network device tries to PING another device, a
+logs. Table I shows several examples of switch logs. As the       loss ratio will be recorded in the syslog message as “packets :
+table shows, a switch log message usually has a primitive         sent = 5, received = 5, lost = 0 (0% loss)”. The popular method
+structure containing several fields. Network operators usually    in most companies is the Regular Expression (RE). However,
+care about the detailed messages. In this paper, we utilize       the Regular Expression approach has several drawbacks for log
+detailed messages to classify device logs.                        classification. First, a RE is rigorous. It cannot match text even
+                                                                  if existing only an additional whitespace or symbol. Besides,
+B. Anomalous Devices Logs Classification                          configuring regular expressions need heavy workload. More
+  We provide the definitions of logs and device anomaly,          especially, when new devices are used, network operators need
+which are similar to the definition of device failure in [15].    to update regular expressions.
+  • Device anomaly. When the service (such as traffic for-           Finally, we define the problem of anomalous log classifi-
+    warding) provided by a device deviates from the correct       cation. There are tens of millions of logs. It is infeasible to
+    service, a device anomaly occurs.                             ask network operators to identify all anomalous logs. Some
+  • Anomaly category. Each device anomaly belongs to a            anomalous logs are labeled by network operators, but a few
+    specific category, which is the cause of this anomaly.        anomalous logs still mingle in rest logs. We aim to find
+    Typical categories include reboot, packet loss etc.           the pattern of anomalous logs based on existing device logs
+  • Anomalous logs.The anomalous logs are associated with         and classify anomalous logs during runtime. Fig 1 shows the
+    device anomalies. Each anomalous log belongs to a             problem definition of anomalous log classification.
+    specific category (e.g., packet loss).
+                                                                                   III. D ESIGN OF L OG C LASS
+  • Healthy logs. The logs are not associated with device
+    anomalies. They usually describe the routine status.            In this section, we present the LogClass system.
+                                               TABLE I: Examples of Switch Logs
+
+    Log No.      Vendor ID        Timestamp          Message Type    Detailed Message
+       L1           V1       Jun 12 19:03:27 2017           SIF      Interface te-1/1/59, changed state to down
+       L2           V2       Jun 13 20:22:03 2017            -       VlanInterface vlan22, changed state to down
+       L3           V1       Jun 13 20:22:03 2017           SIF      Interface te-1/1/17, changed state to up
+       L4           V3       Jun 15 13:46:43 2017          OSPF      Neighbour vlan23, changed state from Exchange to Loading
+
+    TABLE II: Text Words and Parameter Words in Logs                filtering parameter words can reduce vocabulary. After log
+      Category     Format                 Example
+                                                                    preprocessing, we get device-agnostic words from logs.
+                   Letters                change                    C. Feature Vectors
+      Text
+                   Symbols and Letters    Vlan-interface               After log preprocessing, LogClass attempts to construct a
+                   Symbols                (@&                       feature vector for each log. The universal method to construct
+                   Numbers                1512028952                a text feature vector is the bag-of-words expression, which is
+      Parameter
+                   Numbers and Symbol     192.168.64.107            used in the natural language processing area [19]. Generally,
+                   Numbers and Letters    vlan23
+                                                                    each vector component is assigned a value related to estimated
+                                                                    importance (also known as weight) of words in logs [20].
+A. System Overview
+                                                                       TF-IDF is the most popular weighting method used to
+   We have three observations for the device logs. First, there     describe documents [20]. Regarding bag-of-words representa-
+are many parameters in logs, such as IP, interface etc. In          tion, each feature vector component of each document relates
+additon, most device logs are semi-structured natural lan-          to a word of the vocabulary. The TF-IDF method weights each
+guages provided by device developers and produced by “print”        vector component on the following basis. First, it involves the
+program. Finally, network operators cannot label all anomalous      word frequency in the document, which is represented by TF
+logs. According to above observations, we proposed LogClass,        (the term frequency). The more a word appears in a document,
+a data-driven system to detect and classify anomalies based on      the more it is estimated to be significant in this document.
+device logs. Fig. 2 gives an overview of LogClass. To achieve       Simultaneously, IDF measures how infrequent a word is in the
+our goal, the system first preprocesses logs (Section III-B). It    total collected documents. This IDF value is estimated using
+then calculates log feature vectors (Section III-C). Because of     the whole training text collection at hand. If a word appears in
+partial labels, we utlize PU Learning to detect anomalous logs      the total collected documents frequently, it is not regarded to
+(Section III-D). Finally, LogClass train a multiclass classifier    be especially representative of these documents. For instance,
+(Section III-D). We now give a detailed description for each        stop words (e.g., a, and, or) nearly appear in all documents,
+component.                                                          but they are of little help to classification. In other words, if a
+                                                                    word is infrequent in the total documents, it is believed to be
+B. Log Preprocessing                                                very relevant for a particular category of documents. In this
+   From Table I, we can see that there are many parameters in       scenario, documents are logs.
+logs, such as IP, interface etc.. Different device manufacturers    D. Machine Learning based Training and Classifying
+and device types have no unified format for log messages.
+                                                                       After generating feature vectors, we adopt PU Learning [13]
+[9], [16] proposed methods to extract per-device type log
+                                                                    to handle the partial labels and detect the anomalous logs
+templates. However, their methods need to learn templates for
+                                                                    from all unlabeled logs. Then, LogClass utilizes a multiclass
+each device type. It results in that we cannot filter parameters
+                                                                    classifier to classify the anomalous logs into each specific
+by templates. Therefore, preprocessing logs’ is necessary.
+                                                                    category they belong to. We introduce PU Learning method
+   Intuitively, the text features in the log are mainly nouns,
+                                                                    and classifiers we adopt as follows.
+verbs etc. The parameters with numerical words or specific             1) PU Learning: Let x be an example and let y ∈ {0, 1}
+symbols, such as IPs, have little effect on log classification.     be a binary label. Let s = 1 if the example x is labeled, and
+Although several prior works [9], [16]–[18] have been pro-          let s = 0 if x is unlabeled. Only positive examples are labeled.
+posed to extract log template (also known as “log key”), they       So y = 1 is certain when s = 1, but when s = 0, then either
+all have some drawbacks. For example, [18] utilizes source          y = 1 or y = 0 may be true, which can be stated formally by
+code of gengrating logs to extract log templates, but not all       the equation
+source codes can be acquired.                                                             p(s = 1|x, y = 0) = 0                  (1)
+   In this paper, we classify the words into two categories, text
+words and parameter words. The text words are similar to the        Device anomalies occur randomly and anomalous logs are
+template words, which are mentioned in [9], [16]. The detailed      randomly labeled. Stated formally, the assumption is that
+definition of classification of words is described in Table II.
+                                                                                 p(s = 1|x, y = 1) = p(s = 1|y = 1)                (2)
+Parameter words are usually related to specific devices (e.g.,
+an IP belongs to a specific device). We filter parameter words        The goal is to learn a function f (x) such that f (x) = p(y =
+because of their low utility for log classification. What’s more,   1|x) as closely as possible, which is a traditional probabilistic
+classifier. PU Learning also yields a function g(x) such that        A. Data sets
+g(x) = p(s = 1|x) approximately, which a nontraditional                In cooperation with network operators, we collected switch
+classifier. Their core result is the following equation that shows   logs over 2 weeks period from 58 types of switches across
+how to obtain a traditional classifier f (x) from g(x).              more than 10 datacenters owned by a top global search engine.
+                                  g(x)                               This data set consists of logs and anomaly labels. These
+                         f (x) =                              (3)    datacenters use the RE to classify anomalous switch logs.
+                                    c
+Where c = p(s = 1|y = 1) is the constant probability that             TABLE III: Detailed information for the switch log dataset
+a positive example is labeled. Let V be such a validation set
+that is drawn from the overall distribution p(x, y, s) in the                       # switch     # anomalous       # unlabeled      # anomaly
+                                                                      Duration
+same manner as the nontraditional training set. Let P be the                         types        device logs      device logs      categories
+subset of examples in V that are labeled. [13] has mentioned          2 weeks          58          1,758,458        16,702,547           12
+many estimators for the constant c, one estimator of them is
+as follows                                                                     TABLE IV: Names for Anomaly Categories
+                            1X
+                       c=             g(x)                    (4)
+                            n    x∈P                                   FAN RECOVERED           OSPF NEIGHBOR CHANGED           FAN FAILED
+   So far, we can transform a traditional binary classifier to         BOARD DISABLE           BGP NEIGHBOR CHANGED            POWER DOWN
+                                                                       SYSTEM REBOOT           INTERFACE DOWN                  PORT DOWN
+a PU Learning classifier, which is trained by anomalous logs
+                                                                       PROTOCOL DOWN           OSPF DOWN                       MODEL OUT
+and unlabeled logs.
+   2) Binary and Multiclass classifiers: Firstly, we try to            Table III shows the detailed information of this data set.
+choose algorithm for binary classification. In general, the          Table IV shows the names of 12 anomaly categories.
+number of anomalous logs is smaller than that of unlabeled
+logs. We need to choose a binary classification algorithm for        B. Evaluation on Anomalous Log Detection
+the imbalanced problem. RandomForest (RF) is a well-known               The fisrt step of LogClass is anomaly detection. According
+powerful ensemble learning algorithm. The RF constructs a            to [13], we define four sets. The anomalous logs labeled by
+multitude of decision trees, and learns patterns and makes           operators belong to the set of anomalous examples P . The set
+decisions based on voting, and thus the imbalance problem            of unlabeled examples is U . The actual anomalous examples
+of samples impacts little on RF [2]. Then, the anomalous logs        inside U are called subset Q. Finally, let N = U − Q.
+which are detected by binary classifier need be classified into      A classification method’s capability is usually assessed by
+their categories. We choose SVM as our multi-classification          three metrics that have intuitive interpretations, i.e., Precision,
+algorithm. When the SVM model has been trained, we can               Recall, F1 score. For each method, we label its outcome as a
+get the coefficients assigned to the features (also known as         true positive (T P ), true negative (T N ), false positive (F P ),
+weights in the primal problem). The coef , for instance, an          and false negative (F N ). True positives are the logs belonging
+attribute of the scikit-learn package [21] is the coefficient for    to P that are accurately determined as such by the method.
+trained model. Moreover, the top n important words can be            The true negatives are logs belonging to N that are accurately
+extracted by sorting these coefficients. Network operators may       determined. If the method determines a log as an anomalous
+comprehend each category by its top n important words.               log, but in fact it belongs to N , we then labeled the outcome as
+   As shown in Fig.2, in the offline training component, we          a false positive. The rest are false negatives. We calculated Pre-
+train the PU binary classifier and multiclass classifier. In the     cision, Recall, and F1 score as follows: P recision = T PT+F  P
+                                                                                                                                      P,
+online component, when a new device log comes, LogClass                             TP                    2∗P recision∗Recall
+                                                                     Recall = T P +F N , F 1 score = P recision+Recall .
+will generate feature vectors for PU classifier. If this log is         First, we use LogClass to do anomaly detection based on
+considered as anomalous, the multiclass classifier will find the     the switch logs. We used a 10-fold cross-validation model to
+category it belongs to.                                              evaluate these methods [24]. The first experiment in Tabel
+                                                                     V shows 10-fold cross-validation results of anomalous log
+                       IV. E VALUATION                               detection for whole dataset, from which we can see that the
+                                                                     LogClass can detect the anomalous logs accurately.
+   In this section, we conduct experiments on a real-world              To demonstrate LogClass can handle device-agnostic logs,
+switch logs to demonstrate the effectiveness of LogClass.            we assume that 5 types of switches1 are newly added switches.
+Switches forward traffic from servers to higher level routers,       Then, we use LogClass to detect anomlous logs from these
+and play a fundamental role in the datacenter networks [9]. All      switches. The second experiment in Tabel V shows the results
+the experiments were conducted on a Linux server with Intel          anomalous log detection for newly added switches. We observe
+Xeon 2.40 GHz CPU and 64G memory. We implemented Log-                that even logs of new-type switches do not appear before,
+Class with Python 2.7. We take traditonal RandomForest and           LogClass can still get great anomaly detection performance.
+Labeled-LDA (L-LDA) [22] as our baseline methods. L-LDA              Table VI shows an actual detection case of LogClass. L2 is
+is a typical text classification technique. For Labeled LDA, we
+used the open-source implementation MALLET [23].                       1 Ten percent of all logs are generated by these types of switches.
+                               TABLE V: The results of switch logs for anomalous log detection
+
+                   Experiment No.          Training Set           Tesing Set          Precision      Recall      F1 score
+                          1               10-fold cross validation for all logs       99.048%      99.988%       99.515%
+                                      53 types of switches 5 types of switches
+                          2                                                           99.081%      99.132%       99.106%
+                                       (90% of all logs)        (10% of all logs)
+
+                              TABLE VI: An actual anomalous log detection case of the LogClass
+
+                Log No.                         Switch Log                            Historical Label     LogClass Result
+                   L1      Interface TenGigabitEthernet 1/0/30 is protocol down.        anomalous             anomalous
+                   L2        Interface TenGigabitEthernet 1/0/12 is link down.           unlabeled            anomalous
+
+                                                                        A multiclass classification method’s capability is usually as-
+                                                                     sessed by Micro-F1 and Macro-F1 [25]. The Micro-F1 allows
+                                                                     larger classes to dominate its results, the Macro-F1 assigns
+                                                                     an equal weight to all classes, providing us complementary
+                                                                     information. We also score each method based on training
+                                                                     time and classifying time. While training time and classifying
+                                                                     time are important for the model update and operation.
+                                                                        Table VII shows the comparsion between LogClass, L-LDA
+                                                                     and RE. We observe that the Macro-F1 and Micro-F1 of
+                                                                     LogClass are larger than L-LDA’s, especially for Macro-F1.
+                                                                     The low Macro-F1 means that L-LDA cannot classify logs
+                                                                     accurately for several categories. We also observe that the
+                                                                     training time and classifying time of L-LDA are 17.91 and
+                                                                     5.91 times longer than LogClass obtained respectively. We
+Fig. 3: Comparison among PU Learning classifier and tradi-           used the 150 real-world regular expressions2 to classify logs in
+tional classifier for switch logs                                    419.47 seconds, which is 86.74 times longer than LogClass’s
+                                                                     classifying time. Therefore, the overheads of L-LDA and RE
+an unlabeled log in the historical dataset, and it is detected as
+                                                                     are much larger than LogClass.
+anomalous. We can see that L2 is similar with L1, which is
+labeled as anomalous in the historical dataset.                      TABLE VII: The Macro-F1, Micro-F1, Training Time and
+   In the real-world datacenter, it is infeasible to ask network     Classifying Time for LogClass, L-LDA and RE
+operators to identify all anomalous logs. To illustrate that
+LogClass can train a classifier based on logs with partial labels,                                                   Training    Classifying
+                                                                         Methods       Macro-F1       Micro-F1
+we sampled some anomalous logs randomly (cross all switch                                                            Time(s)      Time(s)
+types) and assumed they have no labels. Then, we compared                LogClass       95.32%         99.74%        247.73         4.836
+the performance of a PU Learning classifier and a traditional             L-LDA         89.68%         93.53%        4436.4         28.59
+RF classifier based on this new constructed dataset.                        RE             -              -            -           419.47
+   Fig 3 shows the comparison results for the PU Learning
+classifier and the traditional RF classifier. We can see that, as      Finally, as described in Section III-D2, LogClass can extract
+the ratio of anomalous logs mingling in the unlabeled logs           top-n important words for each anomaly category. In Ta-
+grows, the F1 score of the traditional RF classifier is getting      ble VIII, we shows top 5 important words of several anomaly
+worse. When 9% of the unlabeled logs are actual anomalous            categories to dispaly the interpretability of LogClass. These
+logs, the traditional RF classifier cannot work entirely. But the    words were manually confirmed by network operators, and
+performance of the PU classifier remains stable. The result          considered as accurate words.
+shows that PU Learning is necessary for anomalous logs
+detection.                                                           TABLE VIII: Top 5                   important     words     for   INTER-
+                                                                     FACE DOWN category
+C. Evaluation on Anomalous Log Classification
+                                                                                            Interface TenGigabitEthernet 1/0/30 is down.
+   To compare the performance of anomaly classification, we                    Logs         Interface te-1/1/56, changed state to down
+take Labeled-LDA(L-LDA) [22] and Regular Expression(RE)                                     GigabitEthernet 1/0/22: changed status to down
+as our baseline methods. The Topic Model is a popular                     Top-5 words       interface,down,state,GigabitEthernet,link
+method for text classification, social network etc. L-LDA is a
+supervised method of Topic Model and it also uses the “bag-            2 In our dataset, there are 150 regular expressions for each type of switch
+of-words” approach.                                                  on average.
+                         V. R ELATED W ORK                                       [3] Dapeng Liu, Youjian Zhao, Haowen Xu, Yongqian Sun, Dan Pei, Jiao
+                                                                                     Luo, Xiaowei Jing, and Mei Feng. Opprentice:towards practical and
+   Log parsing techniques for network devices including                              automatic anomaly detection through machine learning. In Internet
+routers and switched have been well studied in [5], [9], [16],                       Measurement Conference, pages 211–224, 2015.
+[26]. Specifically, Qiu et al. proposed a log template extraction                [4] Min Du, Feifei Li, Guineng Zheng, and Vivek Srikumar. Deeplog:
+                                                                                     Anomaly detection and diagnosis from system logs through deep learn-
+technique [16]. For log messages that belong to a given                              ing. In ACM Sigsac Conference, pages 1285–1298, 2017.
+message type, the technique constructs a signature tree. How-                    [5] Tatsuaki Kimura et al. Spatio-temporal factorization of log data for
+ever, the Signature Tree is not incrementally retrainable. More                      understanding network events. In INFOCOM, 2014 Proceedings IEEE,
+                                                                                     pages 610–618. IEEE, 2014.
+recently,Zhang et al. proposed FT-Tree technique [9]. The FT-                    [6] Shenglin Zhang, Ying Liu, and Dan Pei. A measurement study on bgp
+Tree is more incrementally retrainable for extracting log tem-                       as path looping (bapl) behavior. In ICCCN 2014. IEEE, 2014.
+plate. Kimura et al. presented an STE approach that extracts                     [7] Shenglin Zhang, Ying Liu, Dan Pei, Yu Chen, Xianping Qu, Shimin Tao,
+                                                                                     and Zhi Zang. Rapid and robust impact assessment of software changes
+log templates using a statistical clustering algorithm [5]. The                      in large internet-based services. In CONEXT, Heidelberg, Germany,
+high-level idea is that template words appear more frequently                        December 2015.
+than parameter words. In NLP scenario, the Topic Model is                        [8] Shenglin Zhang, Ying Liu, Dan Pei, Yu Chen, Xianping Qu, Shimin
+                                                                                     Tao, Zhi Zang, Xiaowei Jing, and Mei Feng. Funnel: Assessing
+a popular method for text classification. LDA is a technique                         software changes in web-based services. IEEE Transactions on Services
+of Topic Model which identifies latent topic information in                          Computing, 2016.
+document collections [27]. Then, Ramage et al. proposed                          [9] Shenglin Zhang, Weibin Meng, et al. Syslog processing for switch
+                                                                                     failure diagnosis and prediction in datacenter networks. In Quality of
+Labeled LDA (L-LDA), a supervised version of LDA [22].                               Service (IWQoS), 2017 IEEE/ACM 25th International Symposium on,
+Credit attribution is an inherent problem corporate because                          pages 1–10. IEEE, 2017.
+most documents have labels, but the tags do not always apply                    [10] Zhe Fu, Shijie Zhou, and Jun Li. bitfa: A novel data structure for fast and
+                                                                                     update-friendly regular expression matching. In the SIGCOMM Posters
+with equal specificity across the whole document.                                    and Demos, pages 130–132, 2017.
+                                                                                [11] Domenico Ficara et al. An improved dfa for fast regular expres-
+                          VI. C ONCLUSION                                            sion matching. ACM SIGCOMM Computer Communication Review,
+   Devices logs describe a vast range of events, which are ex-                       38(5):29–40, 2008.
+                                                                                [12] Zellig S Harris. Distributional structure. Word, 10(2-3):146–162, 1954.
+tremely valuable in network device management (say anomaly                      [13] Charles Elkan and Keith Noto. Learning classifiers from only positive
+detection and troubleshooting). However, it is quite difficult                       and unlabeled data. In ACM SIGKDD. ACM, 2008.
+to apply device logs in anomaly detection and classification                    [14] Chuanxiong Guo, Lihua Yuan, et al. Pingmesh: A large-scale system
+                                                                                     for data center network latency measurement and analysis. In ACM
+because of the huge amount of logs, diverse manufactur-                              SIGCOMM CCR. ACM, 2015.
+ers/models of devices, and partial labels. We propose Log-                      [15] Phillipa Gill et al. Understanding network failures in data centers:
+Class, a data-driven framework to classify anomalies based                           measurement, analysis, and implications. In ACM SIGCOMM Computer
+                                                                                     Communication Review, volume 41, pages 350–361. ACM, 2011.
+on device logs. LogClass applies the bag-of-word model to                       [16] Tongqing Qiu, Zihui Ge, Dan Pei, et al. What happened in my network:
+represent the word combinations of device logs. To address                           mining network events from router syslogs. pages 472–484, 2010.
+the challenge posed by partial labels, LogClass introduces                      [17] Min Du and Feifei Li. Spell: Streaming parsing of system event logs.
+                                                                                     In Data Mining (ICDM), 2016 IEEE 16th International Conference on,
+PU learning to detect anomalous logs. Extensive experiments                          pages 859–864. IEEE, 2016.
+using real-world data has demonstrated that LogClass achieves                   [18] Wei Xu, Ling Huang, Armando Fox, and Patterson. Detecting large-
+excellent performance.                                                               scale system problems by mining console logs. In SOSP, 2009.
+                                                                                [19] Ho Chung Wu, Robert Wing Pong Luk, Kam Fai Wong, and Kui Lam
+                     VII. ACKNOWLEDGMENT                                             Kwok. Interpreting tf-idf term weights as making relevance decisions.
+                                                                                     ACM Transactions on Information Systems (TOIS), 26(3):13, 2008.
+   We thank the anonymous reviewers for their valuable                          [20] Pascal Soucy and Guy W Mineau. Beyond tfidf weighting for text cate-
+feedback. We also thank Ya Su, Daqing Wu and Yuanye                                  gorization in the vector space model. In International Joint Conference
+                                                                                     on Artificial Intelligence, pages 1130–1135, 2005.
+Zhu for their helpful suggestions. The work was supported                       [21] Scikit-learn package. http://scikit-learn.org/stable/modules/generated/sk
+by National Natural Science Foundation of China (NSFC)                               learn.svm.LinearSVC.html\#sklearn.svm.LinearSVC.
+under grant No.61402257, No. 61472214 and No. 61472210,                         [22] Daniel Ramage, David Hall, Ramesh Nallapati, and Christopher D
+                                                                                     Manning. Labeled lda: A supervised topic model for credit attribution
+the National Key Basic Research Program of China (973                                in multi-labeled corpora. In EMNLP 2009.
+program) under grant No. 2013CB329105, the Global Tal-                          [23] Mallet. https://github.com/mimno/Mallet.
+ent Recruitment (Youth) Program, and the Cross-disciplinary                     [24] Ron Kohavi et al. A study of cross-validation and bootstrap for accuracy
+                                                                                     estimation and model selection. In Ijcai, volume 14, pages 1137–1145.
+Collaborative Teams Program for Science, Technology and                              Montreal, Canada, 1995.
+Innovation, of Chinese Academy of Sciences Network and                          [25] David D. Lewis, Yiming Yang, Tony G. Rose, and Fan Li. Rcv1: A
+system technologies for security monitoring and information                          new benchmark collection for text categorization research. Journal of
+                                                                                     Machine Learning Research, 5(2):361–397, 2004.
+interaction in smart grid.                                                      [26] T Kimura, A Watanabe, T Toyono, and K Ishibashi. Proactive failure
+                                                                                     detection learning generation patterns of large-scale network logs. In
+                             R EFERENCES                                             CNSM, pages 8–14, 2015.
+ [1] Rahul Potharaju and Navendu Jain. Demystifying the dark side of the        [27] Liangjie Hong and Brian D. Davison. Empirical study of topic modeling
+     middle:a field study of middlebox failures in datacenters. In Conference        in twitter. In Proceedings of the First Workshop on Social Media
+     on Internet Measurement Conference, pages 9–22, 2013.                           Analytics, SOMA ’10, pages 80–88, New York, NY, USA, 2010. ACM.
+ [2] Shenglin Zhang, Ying Liu, Weibin Meng, Zhiling Luo, Jiahao Bu, Sen
+     Yang, Peixian Liang, Dan Pei, Jun Xu, Yuzhi Zhang, et al. Prefix: Switch
+     failure prediction in datacenter networks. Proceedings of the ACM on
+     Measurement and Analysis of Computing Systems, 2(1):2, 2018.
+

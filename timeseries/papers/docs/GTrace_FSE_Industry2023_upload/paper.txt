@@ -1,0 +1,926 @@
+                 From Point-wise to Group-wise: A Fast and Accurate
+                  Microservice Trace Anomaly Detection Approach
+                  Zhe Xie                                Changhua Pei∗                             Wanxue Li                             Huai Jiang
+         Tsinghua University                                  CNIC, CAS                               eBay Inc.                             eBay Inc.
+               China                                            China                                  China                                 China
+
+              Liangfei Su                                    Jianhui Li                          Gaogang Xie                               Dan Pei
+                  eBay Inc.                                  CNIC, CAS                              CNIC, CAS                       Tsinghua University
+                   China                                       China                                  China                               China
+ABSTRACT                                                                                    KEYWORDS
+As Internet applications continue to scale up, microservice archi-                          microservice trace, anomaly detection, variational autoencoder
+tecture has become increasingly popular due to its flexibility and
+                                                                                            ACM Reference Format:
+logical structure. Anomaly detection in traces that record inter-                           Zhe Xie, Changhua Pei, Wanxue Li, Huai Jiang, Liangfei Su, Jianhui Li, Gao-
+microservice invocations is essential for diagnosing system fail-                           gang Xie, and Dan Pei. 2023. From Point-wise to Group-wise: A Fast and
+ures. Deep learning-based approaches allow for accurate modeling                            Accurate Microservice Trace Anomaly Detection Approach. In Proceedings
+of structural features (i.e., call paths) and latency features (i.e., call                  of the 31st ACM Joint European Software Engineering Conference and Sympo-
+response time), which can determine the anomaly of a particular                             sium on the Foundations of Software Engineering (ESEC/FSE ’23), December
+trace sample. However, the point-wise manner employed by these                              3–9, 2023, San Francisco, CA, USA. ACM, New York, NY, USA, 11 pages.
+methods results in substantial system detection overhead and im-                            https://doi.org/10.1145/3611643.3613861
+practicality, given the massive volume of traces (billion-level). Fur-
+thermore, the point-wise approach lacks high-level information,                             1 INTRODUCTION
+as identical sub-structures across multiple traces may be encoded                           Nowadays, with the expansion of Internet applications and the
+differently. In this paper, we introduce the first Group-wise Trace                         number of users, there is an urgent need for software services to be
+anomaly detection algorithm, named GTrace. This method cate-                                developed rapidly and scaled dynamically. Microservice architec-
+gorizes the traces into distinct groups based on their shared sub-                          ture, with the advantages of fast development, easy deployment,
+structure, such as the entire tree or sub-tree structure. A group-                          and scalability, has been widely used in the development of In-
+wise Variational AutoEncoder (VAE) is then employed to obtain                               ternet systems [7, 12, 15, 17]. In spite of this, the microservice ar-
+structural representations. Moreover, the innovative “predicting la-                        chitecture also poses great challenges for failure diagnosis due to
+tency with structure” learning paradigm facilitates the association                         the huge number of candidates and complicated dependencies be-
+between the grouped structure and the latency distribution within                           tween them. The first step for failure diagnosis is to accurately and
+each group. With the group-wise design, representation caching,                             efficiently detect the anomalies. A common way to detect anom-
+and batched inference strategies can be implemented, which signif-                          alies in large microservices systems is to detect anomalous traces.
+icantly reduces the burden of detection on the system. Our compre-                          A microservice trace is a tree structure that consists of a number of
+hensive evaluation reveals that GTrace outperforms state-of-the-                            spans representing the invocation relationships between the APIs
+art methods in both performances (2.64% to 195.45% improvement                              of the microservices, which records the execution process of an ex-
+in AUC metrics and 2.31% to 40.92% improvement in best F-Score)                             ternal request [12]. Since the traces contain detailed information
+and efficiency (21.9x to 28.2x speedup). We have deployed and as-                           about the requests such as the invocation paths and the internal la-
+sessed the proposed algorithm on eBay’s microservices cluster, and                          tency of the spans, anomaly detection on microservice traces has
+our code is available at https://github.com/NetManAIOps/GTrace.git.                         become a hot topic in industrial companies [19, 29, 30], which is
+                                                                                            also the focus of this paper.
+CCS CONCEPTS                                                                                   However, there are a number of challenges in trace anomaly
+• Networks → Network services; • Computing methodolo-                                       detection in microservices systems:
+gies → Artificial intelligence.                                                                • Large number of services and complex trace structures. Large
+                                                                                                 microservice systems usually consist of many services, and
+∗ Corresponding author.
+                                                                                                 the number of trace structures may even be much larger [29].
+                                                                                                 This poses a great challenge for structural modeling.
+Permission to make digital or hard copies of part or all of this work for personal or          • Large variation in latency distributions. Due to the flexibility
+classroom use is granted without fee provided that copies are not made or distributed            of the microservice system, the same service may have a large
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for third-party components of this work must be honored.           difference in their downstream tree structures, resulting in
+For all other uses, contact the owner/author(s).                                                 different latency distributions [19].
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                                       • In eBay, millions of traces are produced every minute. In order
+© 2023 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-0327-0/23/12.                                                                to detect anomalies in this volume of traces, the trace anomaly
+https://doi.org/10.1145/3611643.3613861                                                          detection algorithm must be efficient.
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                                         Zhe Xie, Changhua Pei, Wanxue Li, Huai Jiang, Liangfei Su, Jianhui Li, Gaogang Xie, and Dan Pei
+
+
+                     Trace 1                   Trace 2                         Trace 3
+                                                                                                             (Sec. 3.3). Combined with the dynamic programming strategy and
+                 31ms 1                      25ms   1                      19ms    1
+                                                                                                             graph merging in batched trace inference (Sec. 3.4), the computa-
+               8ms   2       3 20ms      8ms 2          3 14ms           15ms 3          6 1ms               tional overhead is further reduced. On the other hand, detection
+                 2ms     4       5 9ms        3ms 4       5 5ms      2ms   4       5 10ms                    accuracy can be enhanced with group-wise VAE, which models
+                                 1
+                                                                                                             trace latency at a higher level by learning the relationship between
+                Group                                            3               Group                       underlying structure and latency distribution across traces within
+               by Tree       2       3                                         by Sub-tree
+              Structure                                     4        5          Structure                    the group, effectively mitigating the issue of overfitting latency for
+                                 4       5                                                                   specific traces commonly found in point-wise models.
+Figure 1: A motivation example of the group-wise model.                                                         However, an important fact is ignored in the above process. Ex-
+Traces with the same tree structure can be grouped together.                                                 cept for structure features, there are also latency features, which
+The sub-tree of traces with the same structure can also be                                                   can not be decoupled and reassembled for the existing model-based
+grouped together. Grouped items share the same structure                                                     methods. To address this problem, we exploit the relationship be-
+but with different latency values.                                                                           tween structural and latency features in traces and propose a novel
+                                                                                                             group-wise VAE model which “predicts latency with structure”.
+                                                                                                             At last, to make our model more actionable for failure diagnosis,
+   • A failure tends to result in a large number of anomalous traces                                         we develop a novel visualization tool to present the anomalies in
+     with different structures. Trace-level anomaly outputs may                                              visualized graphs. Both the visualization tool and detection algo-
+     not conducive to efficiently helping the operators deal with                                            rithm of GTrace have been deployed on eBay’s real-world system.
+     the failures [14].                                                                                      Our evaluation of the real-world dataset reveals that GTrace out-
+    Limited by the huge cost of manual labeling, existing trace anom-                                        performs state-of-the-art methods in both performances (2.64% to
+aly detection approaches are mostly unsupervised. Existing trace                                             195.45% improvement in AUC metrics and 2.31% to 40.92% improve-
+anomaly detection approaches can be divided into two categories:                                             ment in best F-Score) and efficiency (21.9x to 28.2x speedup). The
+statistic-based and model-based. Statistic-based approaches [9,                                              main contributions of this paper are as follows:
+12, 17, 21] group a set of trace nodes with the same structural fea-                                             • We propose GTrace, the first Group-wise Trace anomaly de-
+tures and model their distributions of latency features using statis-                                              tection approach. The novel “predicting latency with struc-
+tical methods. These statistics-based methods run efficiently, but                                                 ture” learning paradigm facilitates trace grouping, group-wise
+they have difficulties detecting new trace structures. Some coarse-                                                VAE modeling, and ultimately, inference acceleration. This ap-
+grained grouping strategies will make them less accurate in mod-                                                   proach results in a method that is both fast and accurate.
+eling latency [5, 19]. Model-based approaches [19, 25, 27, 29, 30]                                               • A batch of caching and reusing techniques (refer to Sec. 3.4),
+employ deep learning to model the trace features. The use of deep                                                  including a dynamic programming strategy, a node&graph
+learning enables accurate modeling of complex trace features. But                                                  caching algorithm, and a merged graph, are proposed to re-
+it significantly increases the detection overhead since a model in-                                                duce the computational overhead of anomaly detection sig-
+ference is required for each trace.                                                                                nificantly.
+    Therefore, neither statistic-based approaches nor model-based                                                • To provide understandable feedback on detection results, we
+approaches can satisfy the above-mentioned four challenges (re-                                                    develop a novel visualization tool for the trace anomalies based
+fer to Sec. 2.2). We point out the main culprit of the high detec-                                                 on the detection results and graph encodings. GTrace is de-
+tion burden is the point-wise detection manner. Though there are                                                   ployed on eBay’s cluster and visualizations are demonstrated
+shared structures between different traces, as illustrated in Fig. 1,                                              through case studies.
+the point-wise trace detection model has to conduct the complete
+forwarding process trace-by-trace without reusing. Moreover, the                                             2 PRELIMINARY AND MOTIVATION
+point-wise manner may encode the same structure shard by traces
+into different representations. This unstable encoding mechanism                                             2.1 Traces and Anomalies
+of trace structure makes it hard to learn high-level structural in-
+formation and the intrinsic latency correlation, which has been                                                                    26ms    External Request
+confirmed through statistics: the latency of traces from the same                                                                  Checkout                       26ms
+                                                                                                                                                                         1
+structure or sub-tree can be similar.                                                                                       13ms           2ms
+
+    In this paper, we propose GTrace, a Group-wise Trace anom-                                                              Payment          DB            13ms
+                                                                                                                                                                   2 2ms 4     13ms
+                                                                                                                                                                                      2
+                                                                                                                      5ms          1ms
+aly detection algorithm. As illustrated in Fig. 1, the main idea be-
+hind GTrace is as follows: For a batch of traces, we first catego-                                                      Log          DB              5ms
+                                                                                                                                                            3 1ms 4          5ms   3 1ms 4
+rize the traces into distinct groups based on their shared struc-                                                                  Trace                            Tree       Sub-tree
+ture, such as the entire tree or sub-tree structure. By carefully de-                                        Figure 2: Example of a trace, its tree, and a sub-tree. APIs are
+signed grouping strategy (Sec. 3.1), we obtain the underlying struc-                                         mapped to their IDs in tree nodes.
+ture of these traces. For each group, we use a group-wise VAE
+(Sec. 3.2) to reassemble the sub-structures together to get the node-
+wise and graph-wise representations, which are used in the fol-                                              2.1.1 Microservice and API. A microservice system consists of sev-
+lowing detection and visualization. On the one hand, the computa-                                            eral microservices that communicate with each other by calling the
+tional overhead can be significantly reduced by encoding sharing                                             microservice’s API. A microservice usually contains multiple APIs
+From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach                         ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+(operations). In this paper, we use a unique numeric ID (API ID) to                                                                                        Anomaly
+represent each API in the system.                                                                  Trace 3 4 15ms Structure
+                                                                                                    Trace 2 7 8ms
+2.1.2 Trace and Span. A trace records a set of spans representing                                     Trace 1 1 26ms
+the invocation relationships between the APIs of the microservices,
+                                                                                                  3ms
+                                                                                                             3
+                                                                                                           8ms
+                                                                                                                             3                             Model
+                                                                                                    3ms      2ms
+                                                                                                                 4               3
+which are produced by a single external request of a microservices                                    13ms      2ms
+                                                                                                                     2               5
+                                                                                               1ms
+                                                                                                     2         1ms   1
+system (see Fig. 2). A span refers to an API (A) invoking another
+                                                                                                 1ms
+                                                                                                         2       1ms     1               Latency
+                                                                                                   5ms
+                                                                                                             3      1ms      4
+API (B) under this external request, with corresponding API ID,                                                                                    Input             Reconstruct
+status code, and performance metric such as call latency.
+2.1.3 Tree and Sub-tree. Traces can be modeled as trees (see Fig.                      Figure 4: General process of model-based approaches. The
+2), where each node represents a span (labeled with its API ID),                       anomaly detection is usually point-wise.
+and each edge represents a call between spans. A tree contains
+structural features and latency features. Structural features include
+the structural information in a trace, such as call relationships and                  graphs, trace vectors, etc, which are then input to a certain model.
+status codes. Latency features include the call latency of each span.                  By comparing the model reconstructions with the inputs, it is pos-
+The tree structure is an abstraction of traces. A tree structure can                   sible to determine whether a trace is abnormal or not. However,
+be shared by multiple traces. For each node (span), itself and its                     existing model-based approaches have the following limitations:
+downstream calls form a sub-tree (see Fig. 1).                                           • Limitation 1: Low Scalability: Existing approaches encode
+2.1.4 Node Sequence. By sorting the tree according to certain rules,                       each trace individually, leading to a substantial computational
+we can get the node sequence corresponding to the tree [19, 22].                           cost. Group strategies may not be applicable in this context be-
+We use DFS (depth-first-search) to obtain the node sequence and                            cause each trace’s structural and latency information is com-
+sort the child nodes using the call timestamp in DFS.                                      bined into a single encoding. As demonstrated in Figure 1, al-
+                                                                                           though structures can be shared across different traces, the
+                                                                                           latency information remains unique and cannot be grouped.
+                                                                       10ms
+                                                                    10ms10ms
+          1 1 150ms
+              1150ms
+                  150ms          1 1 9ms
+                                     1 9ms9ms       5ms5ms5ms
+                                                               1   1(200)
+                                                                    1 (200)
+                                                                         (200)           • Limitation 2: Ignoring High-Level Information: Current
+    5ms5ms
+   5ms                       5ms
+                           5ms 5ms                     (200)
+                                                    (200)(200)                             approaches do not take into account the shared high-level
+                                                                          3ms3ms
+                                                                               3ms
+      22 2     3 3 143ms
+                       143ms 2 2 2
+                    3143ms            3 3 2ms
+                                          3 2ms
+                                              2ms       2 22         3 33(200)(200)
+                                                                               (200)       information between different traces. Although some traces
+         1ms1ms
+        1ms     140ms
+             140ms 140ms         1ms
+                               1ms      Lost
+                                   1msLost Lost
+                                                       1ms1ms1ms 1ms1ms 1ms
+                                                                                           possess identical sub-trees, their shared sub-trees are encoded
+           44 4     55 5          444      5 55           (200)
+                                                       (200)   4 4(500)
+                                                            (200)        5 55
+                                                                   4 (500)
+                                                                       (500)               differently. This prevents the model from fully leveraging the
+                                                                                           commonalities between various traces.
+      (a) Latency          (b) Structure (Drop) (c) Structure (Status)
+
+                       Figure 3: Anomaly Types
+                                                                                       2.3    Key Designs of GTrace
+                                                                                       To address the limitations in model-based approaches, we propose
+2.1.5 Anomaly Types. As previously defined, trace features can                         GTrace featuring three key designs:
+be categorized into structural features and latency features. Ac-                        • Design 1: We propose the “predict latency with structure” strat-
+cordingly, trace anomalies can be classified into structural anom-                         egy to predict latency distribution using structural features as
+alies and latency anomalies, following existing work [5, 19]. La-                          input. Decoupling latency features from structural features al-
+tency anomalies are the anomalies of latency features that are usu-                        lows for the implementation of a grouping strategy and fur-
+ally caused by network latency or service saturation, etc. Latency                         ther supports the design of group-wise models (refer to Group-
+anomalies can be defined at node level or trace level, referring to                        wise VAE in Section 3.2).
+latency anomalies that occur on a span or in an entire trace, respec-                    • Design 2: We select the most suitable grouping strategy to
+tively. Structural anomalies are trace-level anomalies of structural                       obtain grouped structures as input, enabling shared encoding
+features, such as missing spans in a trace or an abnormal return                           between traces. The grouped structure retains high-level in-
+status code, which may be caused by network packet loss, bad soft-                         formation among traces that exhibit similar behaviors, such
+ware updates, etc.                                                                         as trace latency (refer to Grouping Strategy in Section 3.1).
+                                                                                         • Design 3: Utilizing the group-wise model and an appropri-
+2.2     Limitation of Existing Trace Anomaly                                               ate grouping strategy, we also incorporate dynamic program-
+        Detection                                                                          ming with cache and merged graph inference techniques to
+As previous mentions, existing trace anomaly detection can be clas-                        further enhance the inference efficiency of our proposed model,
+sified into statistic-based and model-based. Statistics-based approaches                   GTrace (refer to Inference Acceleration in Section 3.4).
+have been reported in the literature to have limitations in detection
+accuracy and scalability for dynamic systems [5, 19, 25].                              3 METHODOLOGY
+    Therefore, quite a number of recent studies employ model-based                     Figure 5 illustrates the training process of GTrace. Firstly, it re-
+approaches. Fig. 4 illustrates the general process in model-based                      ceives the grouped structure as input through the grouping strat-
+trace anomaly detection. Model-based approaches first encode both                      egy. Following this step, a Group-wise VAE (Variational Autoen-
+structural and latency features from traces into node sequences,                       coder) is used for trace modeling. The Group-wise VAE is divided
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA              Zhe Xie, Changhua Pei, Wanxue Li, Huai Jiang, Liangfei Su, Jianhui Li, Gaogang Xie, and Dan Pei
+
+                                                                                                    …
+into two parts: Graph-wise and Node-wise, where each part con-                                      Node Sequence           1 2 3 4 5               Structural Loss
+tains an encoder and a decoder. In the sections below, we will                                      Node Sequence           1 2 3 4 5               Structural Loss
+provide a detailed breakdown of each component, including the                                                                              Structure Z
+grouping strategy, group-wise VAE, encoder & decoder, as well as                                                             Graph
+                                                                                                                            Encoder
+                                                                                                                                                         Graph
+                                                                                                                                                         Decoder    1 2 3 4 6
+the inference acceleration.                                                                             1       Grouped
+                                                                                                                                                                      Reconstructed
+                                                                                                                                                                      Node Sequence
+                                                                                      Trace 1                   Structure             Graph-wise Model
+                                                                                          Trace 2   2       3                                                           Predicted
+3.1     Grouping Strategy                                                                 …             4       5
+                                                                                                                                      Node-wise Model
+                                                                                                                                                                         Latency
+                                                                                                                                            Latency Z                  Distribution
+The purpose of the grouping strategy is to obtain a grouped struc-                                                                     1                               1 26ms
+ture from a set of traces to be used as input to the group-wise model.                                                       Node
+                                                                                                                                       2
+                                                                                                                                                           Node
+                                                                                                                                                                       2 13ms
+                                                                                                                                       3                               3 5ms
+As previously mentioned, the grouping strategy plays a vital role in                                                        Encoder
+                                                                                                                                       4
+                                                                                                                                                          Decoder
+                                                                                                                                                                       4 1ms
+both detection accuracy and resource overhead reduction, which                                      （Predict Latency with Structure）
+                                                                                                                                       5                               5 2ms
+is crucial for addressing the aforementioned limitations. A more                                    Trace Latency 99ms 12ms 4ms 1ms 2ms              Latency Loss
+effective group strategy should fulfill the following requirements:
+                                                                                                    Trace Latency 92ms 65ms 6ms 1ms 3ms              Latency Loss
+   • It should aim to minimize the training and inference cost as
+                                                                                                    …
+     much as possible.
+   • It should identify the most appropriate granularity, allowing                Figure 5: Training process of GTrace. Latency 𝑍 s are in-
+     traces within a group to exhibit similar behavior. In our sce-               ferred through the “predict latency with structure” para-
+     nario, this means that grouped sub-structures should ideally                 digm. Structural anomalies are detected through input node
+     share the same key performance, i.e., latency distribution.                  sequence and reconstructed sequence. Latency anomalies
+   • The grouping strategy should also take into account the avail-               are detected through input latency and predicted latency.
+     able data for training purposes.
+   Clearly, if the grouping strategy is too coarse-grained, it may                3.2      Group-wise VAE
+satisfy efficiency requirements but compromise performance. This
+issue arises because traces classified into the same group do not                 3.2.1 Overview. As depicted in Fig. 5, the proposed group-wise
+share the same performance (latency) distribution, making learn-                  approach employs a Variational Autoencoder (VAE)-based model.
+ing patterns within the group difficult. Additionally, an overly coarse-          VAE is widely used in modeling feature distributions, which infers
+grained approach results in insufficient training samples for the                 a latent variable 𝑧 by the inference model (the encoder) with the
+model, hindering convergence. On the other hand, a too-fine-grained               input features. The latent variable 𝑧 is then decoded by the genera-
+strategy cannot achieve a reduction in training and inference com-                tive model (the decoder) to reconstruct the normal patterns of the
+putational costs.                                                                 features. To realize group-wise trace modeling, the grouped struc-
+                                                                                  tures are used as model input. Structural features are reconstructed
+                                                                                  in the form of node sequence (Sec. 2.1.4) through the graph-wise
+       Table 1: Empirical Study on Grouping Strategies                            model. Latency features are output by the node-wise model in a
+                                                                                  novel “predict latency with structure” manner.
+   Group Strategy            Description          Count    𝜎 (log(𝑙𝑎𝑡))           3.2.2 Model Details. Considering the different nature of structural
+        None                 No group                1        1.96                and latency features, the model is divided into two parts, graph-
+         API              Group by API ID           413       0.48                wise and node-wise, respectively modeling the structural features
+         STV             Group by stv [19]         51373      0.20                of the full graph (a trace tree) and the latency features of a node
+         Tree            Group by tree [12]        40370      0.24                (root node of a sub-tree).
+       Sub-tree          Group by sub-tree         3311       0.18                    (1) The node-wise model encodes a grouped structure into node-
+                                                                                  level latency 𝒁 s through a node encoder and then decodes them
+                                                                                  into node-level latency distribution through a decoder. To realize
+   To this end, we empirically study different group strategies with              “predict latency with structure”, we employ Tree-LSTM (TL) [1] in
+traces collected from an online large-scale microservices system.                 node encoder and decoder, which is suitable for sub-tree modeling
+Following [6], we assume that the latency in traces follows a mixed               in traces and encoding sharing between sub-trees (see Sec. 3.3).
+Log-Normal distribution. In Tab. 1, we demonstrate several candi-                     (2) The graph-wise model encodes a grouped structure into a
+dates of group strategies along with their count and 𝜎 (log(𝑙𝑎𝑡)),                graph-level structure 𝒁 through the graph encoder and decodes
+where 𝜎 denotes the standard deviation. The smaller 𝜎 implies that                it into a node sequence. Since the node sequence has a fixed order
+there is less deviation in modeling latency with a shared structure.              (Sec. 2.1.4), reconstructing the node sequence avoids complicated
+Thus, the group-wise model will be more accurate. The count is                    graph matching in [20]. Structural anomalies can be found by com-
+used to denote the number of groups under different strategies. A                 paring the input node sequences with the decoded sequence. We
+large number of groups will result in an augmented training and                   use another TL to encode the grouped structure and a graph pool-
+inference overhead of the model. In Tab. 1, grouping by sub-tree                  ing layer as the graph encoder. To decode a node sequence from
+has the smallest average 𝜎 value with a reasonable count, which                   the graph-level 𝒁 , we employ a Multi-Layer Perceptron (MLP) as
+shows its feasibility in our grouped inference task. Therefore, we                the decoder. Tree-LSTM is not used here because the input to the
+design the group-wise VAE model based on sub-tree grouping.                       decoder is not node-level.
+From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach           ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+   Before the VAE model, we encode the trace features into vectors.                    3.4    Inference Acceleration with Cache
+Tree edges are encoded as adjacency matrices. Other structural fea-                    In GTrace, we propose two techniques, dynamic programming in-
+tures (including API IDs and status codes) are encoded into a fea-                     ference and merged graph, to further reduce the overhead in model
+ture matrix and then embedded with an embedding layer. For the                         inference. The overall process of inference acceleration is depicted
+latency features, we use the z-score standardization to normalize                      in Fig. 7.
+the latency values according to the API IDs of nodes.
+                                                                                       3.4.1 Dynamic Programming Inference with Cache. With group-
+3.3     Tree-LSTM Based Encoder and Decoder                                            wise modeling, many repeated model inferences have already been
+                                                                                       avoided. However, the problem of group number inflation and time-
+                                                                                       consuming model inference still exists. Based on the previously
+                          1                   Tree-LSTM
+                                                                6                      mentioned message-passing strategy in Tree-LSTM, we design dy-
+                                             Message Passing                           namic programming (DP)-based inference for the node-wise model.
+                     2         3    Identical Sub-trees
+                                                          3         7                  The DP inference works with a node cache and a graph cache.
+                                      Share the Same
+                                        Encoding
+                                                                                          The node cache stores the node-wise encodings in group-wise
+                          4          5              4           5                      VAE. The messages are passed in topological order from the leaves
+                          Trace 1                         Trace 2                      to the root in the TL model. This means we can reuse the node rep-
+Figure 6: Message passing in Tree-LSTM used in graph en-                               resentations with the same sub-tree structure with the DP strat-
+coder, node encoder, and node decoder. The sub-trees with                              egy, i.e. use the sub-tree information in the cache to reduce dupli-
+identical structures share the same encoding.                                          cate computations further. To store the enormous amount of node
+                                                                                       data and the associations between these nodes (to implement DP),
+                                                                                       we propose a cache named Trace Cache Tree (TCT) to dynami-
+   In group-wise VAE, we build the graph encoder, node encoder,                        cally and flexibly store the node representations with reasonable
+and node decoder upon the foundation on Tree-LSTM (TL) [1],                            resources. TCT is a tree with nodes managed by an LRU cache,
+which is a special variant of LSTM that can be applied on trees                        which stores node representations belonging to several traces. Like
+or DAGs. We choose to utilize TL for several reasons:                                  the general cache, TCT supports insert and query operations. An
+   • TL supports the sharing of encodings for identical sub-tree                       example of TCT is depicted in Fig. 8.
+     structures, enabling grouping at the sub-tree level. Since mes-                      Insert operation:
+     sages pass from the leaf nodes (Fig. 6), the encoding of two                         • For each node in a trace, encode its sub-tree and create a new
+     sub-trees will be the same if they have the same structure.                            TCT node with this encoding 𝑛𝑜𝑑𝑒_𝑘𝑒𝑦.
+   • Tree-LSTM is highly suitable for sub-tree representation and                         • Insert the created TCT nodes that are not in the cache to TCT
+     modeling. This allows efficient and effective capturing of the                         in an LRU manner.
+     hierarchical structure within grouped structures. In TL, mes-                        • Add edges between the created TCT nodes according to their
+     sages are passed from leaf nodes level-by-level and aggregated                         relationship in the original traces.
+     to the root node. In this way, node-level latency distributions                      Query operation returns a subgraph 𝑮 𝑖′ for a trace 𝑮 𝑖 , which
+     are predicted through the information passed from the sub-                        includes the missed nodes 𝑉𝑚𝑖𝑠𝑠 and data nodes 𝑉𝑑𝑎𝑡𝑎 :
+     tree nodes.                                                                          • Encode sub-trees for each node in 𝑮 𝑖 and their 𝑛𝑜𝑑𝑒_𝑘𝑒𝑦. Add
+   • The unique message-passing mechanism enables the encod-                                the missed nodes to 𝑉 (𝑮 𝑖′ ).
+     ing of different sub-trees to be reused through dynamic pro-                         • Add the children of missed nodes to 𝑉 (𝑮 𝑖′ ) as data nodes 𝑉𝑑𝑎𝑡𝑎 ,
+     gramming (Sec. 3.4.1), significantly reducing the computational                        whose encodings are needed to be loaded from the cache to
+     overhead while maintaining the model’s accuracy.                                       the subgraph 𝑮 𝑖′ before dynamic programming inference.
+   Thus, thanks to TL, sub-trees in the same group can share their                        • Add edges between the nodes in 𝑮 𝑖′ according to their edges
+encoding. Furthermore, the encodings between different groups can                           in TCT.
+also be shared during model inference with this unique message-                           We use graph cache to store the graph-level structural encod-
+passing mechanism. We will detail this process in Sec. 3.4.                            ings (e.g., structure 𝒁 ). The graph cache is a standard LRU cache,
+                                                                                       which uses the tree structure of a whole trace as the key (𝑔𝑟𝑎𝑝ℎ_𝑘𝑒𝑦).
+                                          Merged Graph         DP-Enhanced
+                                Node
+                                                                Node-wise              3.4.2 Batched Inference with Merged Graph. DP achieves acceler-
+                                Cache        Miss
+                                                                  Model
+                                    Cached
+                                                                                       ation for a single group through encoding sharing. In fact, we can
+                              Hit
+                                                                                       merge a batch of groups together as a merged graph for batched in-
+        Input     Grouped                                                    Anomaly
+        Traces    Structure                                                   Score    ference, which can take full advantage of the parallel performance
+                              Hit   Cached
+                                                                                       of hardware. In the group-wise model, we propose the merged
+                                Graph        Miss              Graph-wise
+                                                                                       graph further to accelerate the node-wise model inference for batch
+                                Cache     Missed Graphs          Model                 traces. A merged graph 𝑮𝑚𝑒𝑟𝑔𝑒 is essentially a graph containing all
+Figure 7: Process of inference acceleration, where DP means                            the missed nodes and data nodes in a batch of traces (see Fig. 8),
+dynamic programming.                                                                   which is also a subgraph of TCT. The results of performing node-
+                                                                                       wise model inference on the merged graph are equivalent to the
+                                                                                       results on the original traces. Therefore, we only need to perform
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                                   Zhe Xie, Changhua Pei, Wanxue Li, Huai Jiang, Liangfei Su, Jianhui Li, Gaogang Xie, and Dan Pei
+
+
+  1       Cached Node        1       Missed Node     1 Data Node          Merged Graph                    In general, latency anomalies occur only in some of the trace
+                                                                                                       nodes. In order to provide more accurate detection results, we de-
+ TCT (Before)             Query Result 1           Query Result 2         Merged Graph
+                                                        1
+                                                                                                       tect node-level latency anomalies. We calculate the likelihood 𝐿𝑇 ,𝑘,𝜃
+                              1                                                1       1
+          3                                                                                            for the latency𝑇𝑘 of node 𝑘 and the trace-level structural likelihood
+                             2       3                6       3            2       3       6
+      4       5                                                                                        𝐿𝑆,𝜃 separately as follows:
+                                 4       5                4       5
+                                                                                                                                                  (𝑖 )
+                                                                                                                                  𝑛𝑍 𝑝 (𝑿 |𝒁 )𝑝 (𝒁 )         (𝑖 )
+ TCT (After)                                                                                                                    1 ∑   𝜃     𝑆     𝜃 𝑆 def
+                                                                            Node-wise                              𝑝𝜃 (𝑿 ) ≈                           = 𝐿𝑆,𝜃                         (3)
+      1       1                  1                        1                  Model                                             𝑛𝑍 𝑖=1        (𝑖 )
+                                                                                                                                        𝑞 (𝒁 |𝑿, 𝑬)
+                                                                                                                                           𝑆  𝜙
+  2       3       6          2       3               6        3
+                                                                                                                                𝑛𝑍 𝑝 (𝑇 |𝒁 (𝑖 ) )𝑝 (𝒁 (𝑖 ) )
+                                                                                                                                ∑
+                               4    5                                 1        2   6 Inferred                                 1     𝜃 𝑘 𝑇         𝜃 𝑇        def
+      4       5                                        4    5                                                     𝑝𝜃 (𝑇𝑘 ) ≈                                  = 𝐿𝑇 ,𝑘,𝜃               (4)
+                            Query Trace 1          Query Trace 2           DP Inference                                      𝑛𝑍 𝑖=1         (𝑖 )
+                                                                                                                                      𝑞𝜙 (𝒁 𝑇 |𝑿, 𝑬)
+Figure 8: Example of Trace Cache Tree (TCT) and merged                                                 where 𝒁 𝑆 and 𝒁 𝑇 denotes the structure 𝒁 and latency 𝒁 respec-
+graph. Data nodes are cached nodes, but they contain encod-                                            tively. 𝑿 denotes the node sequence and 𝑬 denotes the adjacency
+ings that are used in dynamic programming.                                                             matrix of the tree.
+
+                                                                                                       4 EVALUATION
+model inference on this merged graph with much less computa-                                           In this section, we focus on the evaluation to answer the following
+tional effort, which enables further speed improvement in model                                        research questions:
+inference. With these two LRU caches and the merged graph, the                                         RQ1: How does GTrace perform on accurately detect anomalies?
+group-wise representations can be effectively inferred with reason-                                    RQ2: Do “predicting latency with structure” and “splitting node-
+able memory usage without any changes to the model in Fig. 5.                                          wise and graph-wise models” prove to be effective in accurately
+                                                                                                       detecting trace anomalies?
+3.5       Loss Function and Anomaly Score                                                              RQ3: How does the group-wise model work in modeling the la-
+3.5.1 Loss Function. The Evidence Lower-Bound (ELBO) L𝜙,𝜃 (𝐺)                                          tency?
+is a widely used optimization objective in the VAE model [16]. It                                      RQ4: Does GTrace really time efficient? How much do the cache
+is also used as the optimization objective in GTrace. Its ELBO is                                      and merged graph accelerate anomaly detection?
+derived as follows:
+                                                                                                       4.1      Datasets
+  log 𝑝𝜃 (𝐺) ≥ L𝜙,𝜃 (𝐺)
+                                                                                                       To comprehensively evaluate the performance of the proposed al-
+                      = E𝒁 ∼𝑞𝜙 (𝒁 |𝐺 ) [log 𝑝𝜃 (𝐺 |𝒁 )] − KL(𝑞𝜙 (𝒁 |𝐺)||𝑝 (𝒁 ))                        gorithm, 2 datasets are collected and produced, including one read-
+                                                                               (1)                     world dataset collected from eBay’s microservices system and one
+                                                                                                       dataset collected from a testbed with fault injection. Basic infor-
+where 𝑝𝜃 (𝒁 ) = N (0, 𝑰 ) is the prior distributions of the latent vari-
+                                                                                                       mation about these 2 datasets is shown in Tab. 2.
+ables 𝒁 . During training, sampling and backpropagation of the la-
+tent variables are performed using the reparameterization trick.                                                    Table 2: Basic Information about Datasets
+The parameters 𝜃 and 𝜙 are optimized by maximizing the optimiza-
+tion objective L𝜙,𝜃 (𝐺) defined in Eq. (1). The first term of L𝜙,𝜃 (𝐺)
+                                                                                                           Dataset      #Traces      P99 Latency         P99 #Spans      P99 Depth
+contains the structural and latency loss in Fig. 5, and the second
+term is the KL divergence term of the latent variables in VAE.                                                A           125k          7580ms               90               10
+                                                                                                              B           140k           263ms               96                4
+3.5.2 Anomaly Score. The group-wise VAE models the normal pat-
+terns of trace structure and latency features, with the input struc-
+tural features. The anomaly score reflects the degree of the anom-                                     4.1.1 Real-world Dataset from eBay. To evaluate the performance
+aly of the test sample [4]. It can be obtained by calculating the                                      of the proposed GTrace algorithm for detecting real anomalies in a
+probability of a trace 𝑮 with the features under the distribution in                                   real microservice system, the dataset A, which contains real anom-
+its normal pattern (with group-wise VAE). A common practice of                                         alies, is collected from eBay’s microservices system. The system
+calculating 𝑝 (𝑮) is Monte Carlo importance sampling [23]. An ap-                                      contains a total of 314 microservices and 1487 APIs. The dataset
+proximate estimate of the likelihood value can be computed with:                                       contains 5 hours of trace data at the normal time and 2 hours of
+                                             𝑛                                                         test data at the time of failure. We manually label the traces during
+                                      1 ∑𝑍
+                                            𝑝𝜃 (𝐺 |𝒁 (𝑖 ) )𝑝𝜃 (𝒁 (𝑖 ) )                                the failure, which include 253 traces with structure anomalies and
+                       𝑝𝜃 (𝐺) ≈                                                                (2)
+                                     𝑛𝑍 𝑖=1      𝑞𝜙 (𝒁 (𝑖 ) |𝐺)                                        1417 traces with latency anomalies.
+
+where 𝑛𝑧 is the number of sampled latent variables, and 𝒁 (𝑖 ) de-                                     4.1.2 Dataset from Testbed with Fault Injection. Dataset B is col-
+note the 𝑖-th sample of 𝒁 . In GTrace, we use the negative log-                                        lected from a testbed built based on the open-source microservices
+likelihood (NLL) − log 𝑝𝜃 (𝐺) as the anomaly score. The test sam-                                      system microservice-demo1 . We use Kubernetes to manage the mi-
+ple is considered anomalous when the NLL value is significantly                                        croservices system, which contains 11 microservices and 65 APIs.
+higher than the normal NLL value.                                                                      1 https://github.com/GoogleCloudPlatform/microservices-demo.git
+From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach            ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+In order to obtain anomalous trace data, several services are ran-                      for data loading and evaluation. For CFG, FSA, LSTM, and Trace-
+domly selected and injected into different types of faults. The types                   CRL, we implement the algorithms based on the algorithm descrip-
+of injected faults include network latency, network packet loss,                        tions and model settings in the original paper with Python. Some of
+and CPU stress of pods.                                                                 the baselines are modified to detect node-level latency anomalies,
+                                                                                        in which we use the latency reconstruction results of each node are
+4.2     Baselines                                                                       used for the anomaly scores. We add classifiers after the node em-
+                                                                                        beddings to detect node-level anomalies in TraceCRL. In order to
+In order to comprehensively evaluate the anomaly detection per-
+                                                                                        perform detection for trace-level latency anomalies in GTrace, we
+formance of the model, the proposed model is compared with var-
+                                                                                        take the maximal value of node latency anomaly scores. We use
+ious existing baseline models that can be used for trace anomaly
+                                                                                        RTX 3060 GPU in model inference for all deep learning models,
+detection.2
+                                                                                        which are accelerated by CUDA.
+(1) CFG [21]. CFG models the latency distribution of each node
+and its children in the program control flow and uses it to deter-
+mine anomalies in program execution.                                                    4.4    RQ1: Baseline Comparison
+(2) FSA [9]. Use FSA (finite-state automaton) to model for method                       The comparison of the model GTrace proposed in this paper with
+invocation in the program execution flow. When the automaton                            the baseline model is shown in Tab. 3. Our proposed GTrace model
+cannot accept a program execution flow or its latency exceeds the                       outperforms the other models in all evaluation indexes of the four
+threshold, this execution flow is considered to be anomalous.                           datasets. Among all the evaluation metrics, GTrace leads the most
+(3) TraceAnomaly (TA) [19]. TA takes the preceding call path of                         in the structure-related metrics. Compared to the baseline models,
+each span as one dimension of its input service trace vector (stv)                      GTrace models the overall structure of the traces by separating la-
+and encodes the span latency as its feature. TraceAnomaly models                        tency and structural features in a graph-based approach. This mod-
+the service trace vector with VAE.                                                      eling approach helps fully learn the structural features of the traces,
+(4) LSTM [22]. The multimodal LSTM model encodes the traces                             which results in more accurate structural anomaly detection.
+into sequences of vectors according to the order of spans in the                           GTrace also shows advantages in latency anomaly detection, es-
+traces and reconstructs them with an LSTM model.                                        pecially in node-level metrics. Compared with the statistic-based
+(5) CRISP [30]. CRISP computes the critical paths for traces and                        methods like CFG and FSA, GTrace utilizes group-wise VAE to
+presents them in the form of critical calling context trees (CCCT).                     model node latency distribution, which enables more accurate la-
+Anomalies are detected based on TraceAnomaly [19] with the ser-                         tency anomaly modeling for different trace structures. Compared
+vice critical path vectors (SCPV), which are obtained with the CCCT.                    with model-based methods like TraceAnomaly, LSTM, CRISP, and
+(6) TraceCRL [29]. TraceCRL employs graph contrastive learning                          TraceCRL, we innovatively propose the latency modeling method
+in modeling trace graphs and detects anomalies with classifiers (e.g.                   of “predicting latency with structure”. This essentially avoids the
+OC-SVM).                                                                                dependence of the model on the input of latency features, which
+                                                                                        further helps mitigate the overfitting of latency features. It is worth
+4.3     Experiment Settings                                                             noting that TraceCRL also uses a GNN-based model to obtain graph-
+                                                                                        level representations. However, TraceCRL can hardly be used for
+4.3.1 Evaluation Metrics. To evaluate the accuracy of anomaly de-
+                                                                                        node-level anomaly detection due to its lack of targeted design for
+tection, following the common practice in anomaly detection [11,
+                                                                                        node-level representation learning.
+18], we choose the best F-Score and AUC as the accuracy evalu-
+ation metrics. These metrics are both widely used threshold-free
+metrics, which do not require threshold selection.                                      4.5    RQ2: Effectiveness of Group-wise VAE
+                                                                                        In this paper, we propose to use the “predicting latency with struc-
+4.3.2 Experimental Details. We use PyTorch and the DGL to im-                           ture” approach with group-wise VAE to model the latency in traces.
+plement the GTrace model. The training batch size is set to 128,                        To investigate the effectiveness of the group-wise modeling ap-
+the learning rate is set to 0.001, the weight decay rate is set to 0.01,                proach proposed in this paper, we perform ablation studies on the
+and the AdamW optimizer is used. The cache size is set to 218 for                       VAE model in GTrace. The results are shown in Tab. 4. The first ab-
+both caches, to ensure that the cached content does not cause over-                     lation study (+ input 𝑻 ) add latency features 𝑻 to the model input.
+flows of the GPU memory. During model training, we do not use                           It can be found that GTrace performs better in most of the evalu-
+inference acceleration techniques in order to ensure the number                         ation metrics even without the latency input. This shows that the
+of training samples and the distribution of samples with different                      proposed group-wise VAE model can infer the latency information
+structures during training. In terms of baseline model implementa-                      with the structural input and “predicting latency with structure”
+tion, for TraceAnomaly and CRISP, we use the open-source code                           effectively mitigate the overfitting of latency features. The second
+repository34 of the original papers and modify some parts of them                       one (- split 𝒁 ) studies the effectiveness of the “splitting node-wise
+                                                                                        and graph-wise model” design in the group-wise VAE. In this ab-
+                                                                                        lation study, we remove the node-wise model and only employ a
+2 DeepTraLog [28] and TraceLingo [27] are not compared since they require extra data
+                                                                                        graph-wise model with a single 𝒁 as the VAE structure. The results
+or labels. TraceVAE [25] is not compared since it does not support node-level latency   suggest that the splitting of node-wise and graph-wise models ef-
+detection.
+3 https://github.com/NetManAIOps/TraceAnomaly.git                                       fectively enhances the learning ability of the VAE model for trace
+4 https://github.com/uber-research/CRISP                                                features.
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                                                                         Zhe Xie, Changhua Pei, Wanxue Li, Huai Jiang, Liangfei Su, Jianhui Li, Gaogang Xie, and Dan Pei
+
+
+Table 3: Evaluation of accuracy, where “A” denotes AUC and “F” denotes F-Score. The best results are marked in bold and the
+second best results are underlined.
+
+                                                                           Node Latency                                                                           Trace Latency                                                                                        Trace Structure
+     Dataset                 Model                        A                ⇑A                     F                   ⇑F                     A                     ⇑A                         F                        ⇑F                   A                               ⇑A                     F                     ⇑F
+                             CFG                    0.795                 9.1%               0.757              14.8%                  0.880      6.3%                                0.803                       11.6%                0.192                        340.1%                      0.314              174.2%
+                             FSA                    0.277               213.0%               0.446              94.8%                  0.303     208.6%                               0.472                       89.8%                0.050                        1590.0%                     0.105              720.0%
+                             TA                     0.250               246.8%               0.305             184.9%                  0.337     177.5%                               0.504                       77.7%                0.286                         195.5%                     0.611               40.9%
+            A
+                             LSTM                   0.052               1567.3%              0.121             618.2%                  0.398     134.9%                               0.394                      127.4%                0.163                        418.4%                      0.254              239.0%
+                             CRISP                  0.183               373.8%               0.278             212.6%                  0.294     218.0%                               0.318                      181.8%                0.011                        7581.8%                     0.054              1494.4%
+                             TraceCRL               0.022               3840.9%              0.077             1028.6%                 0.089     950.6%                               0.277                      237.6%                0.065                        1200.0%                     0.221              289.6%
+                             GTrace                 0.867                   -                0.869                -                    0.935        -                                 0.896                         -                  0.845                            -                       0.861                 -
+                             CFG                    0.698                12.2%               0.663               10.4%                 0.671     16.1%                                0.717                          5.0%              0.206                        306.3%                      0.501                 60.7%
+                             FSA                    0.392                99.7%               0.616               18.8%                 0.384     102.9%                               0.569                          32.3%             0.124                        575.0%                      0.221                264.3%
+                             TA                     0.275               184.7%               0.446               64.1%                 0.337     131.2%                               0.504                          49.4%             0.286                        192.7%                      0.611                 31.8%
+             B
+                             LSTM                   0.147               432.7%               0.244              200.0%                 0.759       2.6%                               0.736                           2.3%             0.123                        580.5%                      0.342                135.4%
+                             CRISP                  0.143               447.6%               0.261              180.5%                 0.336     131.9%                               0.482                          56.2%             0.295                         183.7%                     0.611                 31.8%
+                             TraceCRL               0.023               3304.4%              0.072              916.7%                 0.437      78.3%                               0.552                          36.4%             0.072                        1062.5%                     0.227                254.6%
+                             GTrace                 0.783                  -                 0.732                 -                   0.779         -                                0.753                             -              0.837                            -                       0.805                   -
+
+
+                             Table 4: Ablation Study of GTrace                                                                                   distributions for a certain API in different sub-trees. It can be found
+                                                                                                                                                 that the predicted latency of GTrace is different for different sub-
+                                                Node Lat.                         Trace Lat.                      Trace Struct.                  trees, which also fits the real distribution well. This suggests that
+                                                                                                                                                 the group-wise VAE effectively models the latency propagation
+    Data          Model                         A               F                 A                F                  A                 F
+                                                                                                                                                 from the sub-tree structures.
+                  + input 𝑻                 0.439           0.407              0.498             0.453           0.795                0.850
+     A            - split 𝒁                 0.208           0.290              0.297             0.359           0.277                0.424                                                                     CRISP                GTrace (w/o Cache)                                TraceAnomaly
+
+                  GTrace                    0.867           0.869              0.935             0.896           0.845                0.861                                                                     GTrace               LSTM                                              TraceCRL
+
+
+
+                  + input 𝑻                 0.668           0.659              0.746             0.750           0.559                0.830
+     B            - split 𝒁                 0.551           0.601              0.644             0.684           0.219                0.385                                                             A
+
+
+                  GTrace                    0.783           0.732              0.779             0.753           0.837                0.805
+                                                                                                                                                                                              Dataset
+
+
+
+
+           Overall Distribution                           Overall Distribution                          Overall Distribution
+                                                                                                                                                                                                        B
+4.6           RQ3: Effectiveness of Latency Modeling in
+              GTrace                                                                                                                                                                                        0        2000     4000   6000     8000 10000 12000 14000 16000
+                                                                                                                                                                                                                                        Speed (#Traces / s)
+                  Real                                           Real                                          Real
+                                                                                                                                                                                      Figure 10: Speed Comparison on A and B
+
+
+
+                Prediction                                    Prediction                                     Prediction                          4.7                           RQ4: Evaluation of Time Efficiency
+
+                                                                                                                                                                                Graph Cache                                                                                       Graph Cache
+                                                                                                                                                                  1.00          Node Cache                                                                          1.00          Node Cache
+0    200     400   600    800     1000   1200   0   200     400   600    800     1000   1200 0    200     400   600    800     1000   1200
+               Latency (ms)                                   Latency (ms)                                  Latency (ms)
+                                                                                                                                                 Cache Hit Rate
+
+
+
+
+                                                                                                                                                                                                                                                   Cache Hit Rate
+
+
+
+
+                                                                                                                                                                  0.95                                                                                              0.95
+      (a) Structure 1                                (b) Structure 2                               (c) Structure 3
+Figure 9: Real and reconstructed latency distributions for                                                                                                        0.90                                                                                              0.90
+
+
+the same API in different sub-trees. “Real” shows the real
+latency distribution for the API in the current tree structure.                                                                                                   0.85
+                                                                                                                                                                         0.0   2.5    5.0         7.5         10.0     12.5   15.0   17.5   20.0
+                                                                                                                                                                                                                                                                    0.85
+                                                                                                                                                                                                                                                                           0.0   2.5    5.0      7.5     10.0     12.5   15.0   17.5   20.0
+
+“Prediction” shows the predicted latency distribution for the
+                                                                                                                                                                                                            Time (s)                                                                                   Time (s)
+
+
+
+API in the current tree structure.                                                                                                                                                   (a) Dataset A                                                                                     (b) Dataset B
+                                                                                                                                                                                              Figure 11: Cache Hit Rate on A and B
+   To further investigate the accuracy of the node-wise model in
+“prediction latency with structure”, we visualize the prediction re-                                                                               To evaluate the time efficiency of GTrace, we implement and
+sults of VAE in GTrace. Fig. 9 shows the real and predicted latency                                                                              deploy the detection pipeline in Fig. 7. We also implement other
+From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach                                   ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+Table 5: Time consumption breakdown for 30,000 traces in                                 In large microservices systems, each failure can generate nu-
+A. Note that graph building and anomaly detection are exe-                            merous anomalous traces with varying structures. Current anom-
+cuted in parallel in different threads. “Other” period denotes                        aly detection algorithms typically present these traces individually,
+other necessary codes in the program (e.g. logger, garbage                            complicating operators’ ability to quickly understand the anom-
+collection. data format conversion, and some other func-                              alies. As a result, we believe it’s crucial to provide operators with
+tional logic codes).                                                                  a summary of detected anomalies. To achieve this, we develop
+                                                                                      a visualization tool and deploy it on eBay’s microservices cluster.
+                                    GTrace                      w/o Cache             The main features of the visualization tool are:
+         Period            Time (s)        Percent      Time (s)        Percent          • Automatically reconstructs missing nodes and provides visu-
+                                                                                            alization for both latency and structural anomalies.
+   Graph Build (P.)*         0.144           4.7%           0.140        0.4%            • Displays upstream and downstream APIs of the selected API,
+     Cache R & W             0.419           13.7%           0.000       0.0%               facilitating an easy understanding of fault propagation paths.
+    Model Inference          0.937           30.6%          20.110      56.2%            The overall process of the visualization tool is illustrated in Fig.
+        Other*               1.704           55.7%          15.713      43.8%         12. Displaying structural anomalies is challenging due to missing
+          Total              3.060           100%           35.823       100%         nodes in anomalous traces. We employ a KD-Tree constructed from
+                                                                                      structure 𝒁 of normal traces and queried by anomalous trace vec-
+                                                                                      tors to restore normal patterns. APIs from all restored anomalous
+DL-based algorithms in this pipeline for evaluation. To ensure fair-                  traces within a specific time range are then ranked using the JI-
+ness, the same graph building code is used for all methods. We set                    score (following [17]) and displayed as a list for operators. Opera-
+a cold start time of 10s for all methods and calculated the mean                      tors can select an API from the list, and a subgraph containing all
+value of their detection speed, as shown in Fig. 10. It can be found                  APIs within a distance of 𝑘 from the chosen API will be shown, pre-
+that GTrace runs significantly faster than the other model-based                      senting a failure summary instead of a single trace. More informa-
+baselines, achieving a 28.2x speedup in A and a 21.9x speedup in                      tion about this visualization tool can be found in the source code.
+B. This suggests that the group-wise model effectively improves                       To illustrate the efficacy of the visualization tool on failure cases,
+time efficiency compared to other deep learning models.                               we deploy GTrace on eBay’s microservices cluster and present two
+   To further investigate the effectiveness of cache and merged                       case studies to demonstrate the visualization results.
+graph, we remove the cache and merged graph modules and com-
+pare its speed with the original GTrace model, shown as GTrace                        5.2      Case 1: Structural Anomalies
+(w/o Cache) in Fig. 10 and Tab. 5. It can be found that the cache and
+                                                                                                                                108ms 105ms 32ms      94ms      89ms      16ms 13ms
+merged graphs utilize very little time (Cache R & W) in exchange
+for a significant reduction in inference time. Fig. 11 also shows the                          Abnormal 0     26 32                                      0       26        32       2 Normal
+                                                                                                Traces 102ms 99ms 28ms                                95ms      91ms      19ms 16ms Traces
+cache hit rate in GTrace with the detected traces. It demonstrates                                       0    30 32                                      0       30        32       2
+that the hit rates of both the node cache and the graph cache get
+                                                                                      (a) Example traces. Some nodes are lost in abnormal traces due to
+higher and eventually stabilize at over 95%, as the number of de-
+                                                                                      the failure.
+tected traces increases. This suggests that GTrace effectively takes
+advantage of the cache and merged graph and significantly reduces                                                                26         30                    Structural
+                                                                                             32                                                                   Anomalies
+the running overhead in trace anomaly detection.                                              Abnormal 224ms 128ms 75ms                             69ms 189ms 89ms
+                                                                                                                                                                                               Structural
+                                                                                                                                                                                  38ms 27ms Normal
+                                                                                                                                                                                             Anomalies
+                                                                                                                                                              Latency
+                                                                                                           Anomalous API Rank
+
+
+
+
+                                                                                               Traces   29 40 61                                      60        29 Anomalies
+                                                                                                                                                                      40 61             60 Traces
+                                                                                                                                                                                             Latency
+                                                                                                                                       32
+5 VISUALIZATION TOOL                                                                                                                                                  Normal
+                                                                                                                                                                                            Anomalies
+
+                                                                                              2                                                  Selected API
+                                                                                                                                                                                                Normal
+5.1 Motivation and Design                                                                   Network                                    2                              Selection           *    Selection
+                                                                                             Loss
+
+
+                  Input                                                                (b) Failure                                      (c) Output of Visualization Tool
+                                                                                                        Figure 13: Visualization on Case 1
+                                                            Build
+                  Normal
+
+                                                              KD                         Fig. 13 shows the output of the visualization in a failure which is
+                                                    Query     Tree                    caused by network packet loss between “API 32” and “API 2” (Fig.
+               Anomalous
+                                    Latent Graph        Result                        13c). In this case, “API 2” are lost in abnormal traces dueStructural  to the
+                                      Vectors                                         failure5 . Therefore, if the anomalous traces are output oneAnomaliesby one,
+                                                                                                        Anomalous API Rank
+
+
+
+
+                                                                                                                                                           Latency
+                Anomaly                Score &                                        operators may not be able to notice the anomalies in API 2.         Anomalies
+                 Scores                Ranking               Restored                    However, as depicted in Fig.Selected 13c,
+                                                                                                                              API  the visualization tool success-
+                                                                                                                                                           Normal
+
+                                                                                      fully reconstructs API 2. The operators can obtain this*as Selectionfollows:
+                              Scores
+                                                                                      First, select an API from the abnormal ranking in Fig. 13c. In this
+                            Sub-         Node
+                  Output    graph      Selection             Operator                 5 Some tracing tools are able to record the “caller” span, with which there will be an
+                                                                                      error span of API 2 from the server side. But in this paper, we consider all spans as
+       Figure 12: Overall Process of Visualization Tool                               the “callee” span. In this case, all of the spans in the sub-tree of API 2 are lost.
+ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA                                                Zhe Xie, Changhua Pei, Wanxue Li, Huai Jiang, Liangfei Su, Jianhui Li, Gaogang Xie, and Dan Pei
+
+
+case, “API 32” is selected and the visualization tool shows Fig. 13c,                                               In recent years, many studies have leveraged model-based frame-
+where the red border of API 2 indicates the structural anomalies in                                                 works in conjunction with deep learning to achieve more accurate
+this failure. Moreover,
+                 105ms   we
+                         32ms can find  89msthat 16ms
+                                                 the loss13ms
+                                                          of API 2 causes                                           trace modeling. TraceAnomaly [19] encodes latency features into
+                                                                   Structural
+latency  anomalies
+      Abnormal    26 in API
+                          32 32. Therefore,
+                                         26       even
+                                                  32   if ”API
+                                                           2    2” Anomalies
+                                                                   is miss-
+                                                               Normal                                               a dimension of the stv (Service Trace Vector) and employs a VAE
+                    Anomalous API Rank
+
+
+
+
+        Traces   99ms    28ms           91ms     19ms    16ms
+ing from the traces, operators can still find the anomaly          in    “API
+                                                                    Latency
+                                                               Traces                                               model to reconstruct it. In CRISP [30], the critical path of a trace is
+                  30      32             30       32       2       Anomalies
+2” and understand the anomaly propagation through the visualiza-    Normal
+                                                                                                                    computed and presented in the form of critical calling context trees
+                                Selected API
+tion tool.                                                                                                          (CCCT). CRISP detects the anomalies based on TraceAnomaly [19]
+                                                               * Selection
+                                                                                                                    with the stv of CCCT. The multimodal LSTM [22] and MSP [3] con-
+5.3      Case 2: Latency Anomalies                                                                                  vert the trace to a sequence and use the LSTM and the attention
+                                                                                                                    model, respectively, to capture the sequential pattern. Recently,
+       Abnormal 224ms 128ms 75ms                        69ms 189ms 89ms             38ms 27ms Normal
+                                                                                                                    GNN-based methods have been used. TraceLingo [27] employs the
+        Traces   29 40 61                                60       29    40          61   60 Traces
+                                                                                                                    Tree-LSTM model to capture the dependencies, but it is still a point-
+                                              (a) Example Traces                                                    wise model, which is very different from the proposed GTrace.
+       40                                29   28      30                                                            DeepTraLog [28] proposed to combine traces and logs for anomaly
+                                                                       Structural
+                                                                       Anomalies                 Structural
+                                                                                                 Anomalies
+                                                                                                                    detection with GNN. TraceCRL [29] introduces graph contrastive
+       61                                     40
+                                                                        Latency
+                                                                       Anomalies                  Latency           learning to trace anomaly detection and sampling. TraceVAE [25]
+                 Anomalous API Rank
+
+
+
+
+                                                                                                 Anomalies
+                                                                        Normal
+                                                                                                                    further introduces graph VAE in trace modeling. These model-based
+       60                                     61   Selected API
+                                                                                                  Normal
+                                                                                                                    approaches have better learning ability for trace structures but
+      Network
+       Delay                                  60
+                                                                       Selection             *   Selection
+                                                                                                                    tend to have a larger runtime overhead. Therefore, we present the
+                                                                                                                    first group-wise trace anomaly detection algorithm GTrace, which
+ (b) Failure                                  (c) Output of Visualization Tool                                      leverages group-wise modeling and inference acceleration to sig-
+                Figure 14: Visualization on Case 2                                                                  nificantly improve time efficiency while attaining accurate detec-
+                                                                                                                    tion through deep learning.
+   In Fig. 14, we demonstrate a failure case with latency anomalies,
+where the API 60 and API 61 are both experiencing network delay.
+Similarly, both API 60 and API 61 are filled with red in the visual-
+ization tool (Fig. 14c), which indicates that the proposed visualiza-
+                                                                                                                    8 CONCLUSION
+tion tool successfully shows the anomalies in this case. API 40 is                                                  In failure diagnosis of large microservices systems, the anomaly de-
+also filled with light red color, which indicates that its downstream                                               tection algorithm needs not only accuracy but also time efficiency.
+anomalies cause its own latency anomalies with a weaker degree.                                                     This paper presents GTrace, the first group-wise trace anomaly de-
+In this case, the visualization tool avoids the need for operators to                                               tection method. We first conduct an empirical study to select the
+manually examine each trace and instead displays the anomalous                                                      sub-tree as the grouping strategy. Based on this grouping strategy,
+API along with the fault propagation.                                                                               we propose a novel group-wise VAE model, which takes group-
+                                                                                                                    wise structural features as input, and models latency in a novel
+6     THREATS TO VALIDITY                                                                                           “predicting latency with structure” way. We also propose a tree-
+The threat to the internal validity mainly lying in this paper is                                                   structured node-level cache and a graph cache, combined with dy-
+the implementation of the anomaly detection systems. We imple-                                                      namic programming and merged graph strategy, to enable accu-
+mented LSTM, CFG, FSA, and TraceCRL by ourselves as there are                                                       rate and efficient anomaly detection with a reasonable resource.
+no publicly available implementations. We implement these algo-                                                     We evaluate GTrace on two datasets, including a real-world dataset,
+rithms following their papers.                                                                                      and the results show that the proposed group-wise anomaly detec-
+   The threat to external validity mainly lies in this paper in the                                                 tion approach is effective in both accuracy (2.64%-195.45% AUC im-
+evaluation datasets. Our experimental study is based on two datasets,                                               provement) and time efficiency (21.9x to 28.2x speedup). Besides,
+but the results might not represent the performance in other sys-                                                   we present a visualization tool to show a summary of detected
+tems. To reduce this threat, we collect these datasets from several                                                 trace anomalies in the form of a graph. We deployed GTrace on
+different microservices systems or different business components.                                                   eBay’s microservices system and analyzed the effectiveness of the
+In addition, the time efficiency of the algorithm is also highly de-                                                visualization tool.
+pendent on the CPU model and architecture on which the detec-
+tion pods run. In the future, we will evaluate the performance of
+GTrace on more microservices systems.                                                                               ACKNOWLEDGMENTS
+                                                                                                                    We thank Haowen Xu and Zeyan Li for their helpful suggestions.
+7     RELATED WORKS                                                                                                 This work is supported by the National Key Research and Develop-
+In microservice systems, the objects of anomaly detection mainly                                                    ment Program of China (No.2019YFE0105500), the Research Coun-
+include time series [24, 26], logs [8, 13] and traces [2, 19]. Com-                                                 cil of Norway (No.309494), the State Key Program of National Nat-
+pared with them, traces have flexible graph structures, thus bring-                                                 ural Science of China (No.62072264), the National Natural Science
+ing more challenges to anomaly detection. Numerous statistics-                                                      Foundation of China (No.62202445), and the Beijing National Re-
+based approaches [2, 9, 10, 17, 21] derive associations between la-                                                 search Center for Information Science and Technology (BNRist)
+tencies and structures by employing grouping statistical methods.                                                   key projects.
+From Point-wise to Group-wise: A Fast and Accurate Microservice Trace Anomaly Detection Approach                 ESEC/FSE ’23, December 3–9, 2023, San Francisco, CA, USA
+
+
+REFERENCES                                                                                    Microservice Systems via Trace Analysis. In 2021 IEEE/ACM 29th International
+ [1] Mahtab Ahmed, Muhammad Rifayat Samee, and Robert E. Mercer. 2019. Im-                    Symposium on Quality of Service (IWQOS). IEEE, Tokyo, Japan, 1–10.
+     proving Tree-LSTM with Tree Attention. In 13th IEEE International Conference        [18] Fei Tony Liu, Kai Ming Ting, and Zhi-Hua Zhou. 2012. Isolation-Based Anomaly
+     on Semantic Computing, ICSC 2019, Newport Beach, CA, USA, January 30 - Febru-            Detection. ACM Transactions on Knowledge Discovery from Data 6, 1 (March
+     ary 1, 2019. IEEE, 247–254.                                                              2012), 1–39.
+ [2] Liang Bao, Qian Li, Peiyao Lu, Jie Lu, Tongxiao Ruan, and Ke Zhang. 2018. Execu-    [19] Ping Liu, Haowen Xu, Qianyu Ouyang, Rui Jiao, Zhekang Chen, Shenglin Zhang,
+     tion Anomaly Detection in Large-Scale Systems through Console Log Analysis.              Jiahai Yang, Linlin Mo, Jice Zeng, Wenman Xue, and Dan Pei. 2020. Unsuper-
+     Journal of Systems and Software 143 (Sept. 2018), 172–186.                               vised Detection of Microservice Trace Anomalies through Service-Level Deep
+ [3] Jasmin Bogatinovski, Sasho Nedelkoski, Jorge Cardoso, and Odej Kao. 2020. Self-          Bayesian Networks. In 2020 IEEE 31st International Symposium on Software Reli-
+     Supervised Anomaly Detection from Distributed Traces. In 2020 IEEE/ACM 13th              ability Engineering (ISSRE). IEEE, Coimbra, Portugal, 48–58.
+     International Conference on Utility and Cloud Computing (UCC). IEEE, Leicester,     [20] Joshua Mitton, Hans M. Senn, Klaas Wynne, and Roderick Murray-Smith. 2021.
+     UK, 342–347.                                                                             A Graph VAE and Graph Transformer Approach to Generating Molecular
+ [4] Varun Chandola, Arindam Banerjee, and Vipin Kumar. 2009. Anomaly Detec-                  Graphs. arXiv:2104.04345 [cs] (April 2021). arXiv:2104.04345 [cs]
+     tion: A Survey. Comput. Surveys 41, 3 (July 2009), 1–58.                            [21] Animesh Nandi, Atri Mandal, Shubham Atreja, Gargi B. Dasgupta, and Subhra-
+ [5] Jian Chen, Fagui Liu, Jun Jiang, Guoxiang Zhong, Dishi Xu, Zhuanglun Tan, and            jit Bhattacharya. 2016. Anomaly Detection Using Program Control Flow Graph
+     Shangsong Shi. 2023. TraceGra: A trace-based anomaly detection for microser-             Mining From Execution Logs. In Proceedings of the 22nd ACM SIGKDD Interna-
+     vice using graph deep learning. Computer Communications 204 (2023), 109–117.             tional Conference on Knowledge Discovery and Data Mining. ACM, San Francisco
+                                                                                              California USA, 215–224.
+ [6] David M Ciemiewicz. 2001. What Do You mean?-Revisiting Statistics for Web
+                                                                                         [22] Sasho Nedelkoski, Jorge Cardoso, and Odej Kao. 2019. Anomaly Detection from
+     Response Time Measurements. In Int. CMG Conference. 385–396.
+                                                                                              System Tracing Data Using Multimodal Deep Learning. In 12th IEEE Interna-
+ [7] Nicola Dragoni, Saverio Giallorenzo, Alberto Lluch Lafuente, Manuel Mazzara,
+                                                                                              tional Conference on Cloud Computing, CLOUD 2019, Milan, Italy, July 8-13, 2019,
+     Fabrizio Montesi, Ruslan Mustafin, and Larisa Safina. 2017. Microservices: Yes-
+                                                                                              Elisa Bertino, Carl K. Chang, Peter Chen, Ernesto Damiani, Michael Goul, and
+     terday, Today, and Tomorrow. In Present and Ulterior Software Engineering,
+                                                                                              Katsunori Oyama (Eds.). IEEE, 179–186.
+     Manuel Mazzara and Bertrand Meyer (Eds.). Springer International Publishing,
+                                                                                         [23] Christian P Robert, George Casella, and George Casella. 1999. Monte Carlo sta-
+     Cham, 195–216.
+                                                                                              tistical methods. Vol. 2. Springer.
+ [8] Min Du, Feifei Li, Guineng Zheng, and Vivek Srikumar. 2017. DeepLog: Anom-
+                                                                                         [24] Ya Su, Youjian Zhao, Chenhao Niu, Rong Liu, Wei Sun, and Dan Pei. 2019. Robust
+     aly Detection and Diagnosis from System Logs through Deep Learning. In Pro-
+                                                                                              Anomaly Detection for Multivariate Time Series through Stochastic Recurrent
+     ceedings of the 2017 ACM SIGSAC Conference on Computer and Communications
+                                                                                              Neural Network. In Proceedings of the 25th ACM SIGKDD International Confer-
+     Security. ACM, Dallas Texas USA, 1285–1298.
+                                                                                              ence on Knowledge Discovery & Data Mining. ACM, Anchorage AK USA, 2828–
+ [9] Qiang Fu, Jian-Guang Lou, Yi Wang, and Jiang Li. 2009. Execution Anomaly
+                                                                                              2837.
+     Detection in Distributed Systems through Unstructured Log Analysis. In 2009
+                                                                                         [25] Zhe Xie, Haowen Xu, Wenxiao Chen, Wanxue Li, Huai Jiang, Liangfei Su,
+     Ninth IEEE International Conference on Data Mining. IEEE, Miami Beach, FL, USA,
+                                                                                              Hanzhang Wang, and Dan Pei. 2023. Unsupervised Anomaly Detection on Mi-
+     149–158.
+                                                                                              croservice Traces through Graph VAE. In Proceedings of the ACM Web Conference
+[10] Debin Gao, Michael K. Reiter, and Dawn Song. 2004. Gray-Box Extraction of Exe-
+                                                                                              2023. 2874–2884.
+     cution Graphs for Anomaly Detection. In Proceedings of the 11th ACM Conference
+                                                                                         [26] Haowen Xu, Yang Feng, Jie Chen, Zhaogang Wang, Honglin Qiao, Wenxiao
+     on Computer and Communications Security - CCS ’04. ACM Press, Washington
+                                                                                              Chen, Nengwen Zhao, Zeyan Li, Jiahao Bu, Zhihan Li, Ying Liu, Youjian Zhao,
+     DC, USA, 318.
+                                                                                              and Dan Pei. 2018. Unsupervised Anomaly Detection via Variational Auto-
+[11] Astha Garg, Wenyu Zhang, Jules Samaran, Ramasamy Savitha, and Chuan-
+                                                                                              Encoder for Seasonal KPIs in Web Applications. In Proceedings of the 2018 World
+     Sheng Foo. 2021. An Evaluation of Anomaly Detection and Diagnosis in Multi-
+                                                                                              Wide Web Conference on World Wide Web - WWW ’18. ACM Press, Lyon, France,
+     variate Time Series. IEEE Transactions on Neural Networks and Learning Systems
+                                                                                              187–196.
+     (2021), 1–10.
+                                                                                         [27] Yong Xu, Yaokang Zhu, Bo Qiao, Hongshu Che, Pu Zhao, Xu Zhang, Ze Li,
+[12] Xiaofeng Guo, Xin Peng, Hanzhang Wang, Wanxue Li, Huai Jiang, Dan Ding,
+                                                                                              Yingnong Dang, and Qingwei Lin. 2021. TraceLingo: Trace representation and
+     Tao Xie, and Liangfei Su. 2020. Graph-Based Trace Analysis for Microservice
+                                                                                              learning for performance issue diagnosis in cloud services. In 2021 IEEE/ACM
+     Architecture Understanding and Problem Diagnosis. In Proceedings of the 28th
+                                                                                              International Workshop on Cloud Intelligence (CloudIntelligence). IEEE, 37–40.
+     ACM Joint Meeting on European Software Engineering Conference and Symposium
+                                                                                         [28] Chenxi Zhang, Xin Peng, Chaofeng Sha, Ke Zhang, Zhenqing Fu, Xiya Wu, Qing-
+     on the Foundations of Software Engineering. ACM, Virtual Event USA, 1387–1397.
+                                                                                              wei Lin, and Dongmei Zhang. 2022. DeepTraLog: Trace-Log Combined Microser-
+[13] Shilin He, Jieming Zhu, Pinjia He, and Michael R. Lyu. 2016. Experience Re-
+                                                                                              vice Anomaly Detection through Graph-based Deep Learning. In 44th IEEE/ACM
+     port: System Log Analysis for Anomaly Detection. In 2016 IEEE 27th Interna-
+                                                                                              44th International Conference on Software Engineering, ICSE 2022, Pittsburgh, PA,
+     tional Symposium on Software Reliability Engineering (ISSRE). IEEE, Ottawa, ON,
+                                                                                              USA, May 25-27, 2022. IEEE, 623–634.
+     Canada, 207–218.
+                                                                                         [29] Chenxi Zhang, Xin Peng, Tong Zhou, Chaofeng Sha, Zhenghui Yan, Yiru Chen,
+[14] Lexiang Huang and Timothy Zhu. 2021. tprof: Performance profiling via struc-
+                                                                                              and Hong Yang. 2022. TraceCRL: contrastive representation learning for mi-
+     tural aggregation and automated analysis of distributed systems traces. In Pro-
+                                                                                              croservice trace analysis. In Proceedings of the 30th ACM Joint European Software
+     ceedings of the ACM Symposium on Cloud Computing. 76–91.
+                                                                                              Engineering Conference and Symposium on the Foundations of Software Engineer-
+[15] Pooyan Jamshidi, Claus Pahl, Nabor C. Mendonca, James Lewis, and Stefan
+                                                                                              ing. 1221–1232.
+     Tilkov. 2018. Microservices: The Journey So Far and Challenges Ahead. IEEE
+                                                                                         [30] Zhizhou Zhang, Murali Krishna Ramanathan, Prithvi Raj, Abhishek Parwal, Tim-
+     Software 35, 3 (May 2018), 24–35.
+                                                                                              othy Sherwood, and Milind Chabbi. 2022. CRISP: Critical Path Analysis of Large-
+[16] Diederik P Kingma and Max Welling. 2013. Auto-encoding variational bayes.
+                                                                                              Scale Microservice Architectures. In 2022 USENIX Annual Technical Conference
+     arXiv preprint arXiv:1312.6114 (2013).
+                                                                                              (USENIX ATC 22). 655–672.
+[17] Zeyan Li, Junjie Chen, Rui Jiao, Nengwen Zhao, Zhijun Wang, Shuwei Zhang,
+     Yanjun Wu, Long Jiang, Leiqin Yan, Zikai Wang, Zhekang Chen, Wenchi Zhang,
+     Xiaohui Nie, Kaixin Sui, and Dan Pei. 2021. Practical Root Cause Localization for   Received 2023-05-18; accepted 2023-07-31
+

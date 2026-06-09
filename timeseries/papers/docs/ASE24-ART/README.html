@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ART: A Unified Unsupervised Framework for Incident Management in Microservice Systems</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>ART: A Unified Unsupervised Framework for Incident Management in Microservice Systems（ASE 2024）</h1>
+
+<blockquote>
+作者：Yongqian Sun, Binpeng Shi, Mingyu Mao, Minghua Ma, Sibo Xia, Shenglin Zhang, Dan Pei<br>
+机构：南开大学（TKL-SEHCI、HL-IT）、Microsoft Redmond、清华大学（BNRist）<br>
+发表年份：2024<br>
+会议/期刊：ASE 2024<br>
+关联 PDF：同目录下 <code>ASE24-ART.pdf</code><br>
+代码：<a href="https://github.com/bbyldebb/ART">https://github.com/bbyldebb/ART</a>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>ART: A Unified Unsupervised Framework for Incident Management in Microservice Systems</td></tr>
+<tr><td>作者</td><td>Yongqian Sun, Binpeng Shi, Mingyu Mao, Minghua Ma, Sibo Xia, Shenglin Zhang, Dan Pei</td></tr>
+<tr><td>机构</td><td>南开大学、Microsoft Redmond、清华大学</td></tr>
+<tr><td>发表年份</td><td>2024</td></tr>
+<tr><td>会议/期刊</td><td>ASE 2024</td></tr>
+<tr><td>分类</td><td>微服务 / 事故管理 / 多任务 / 自监督学习 / 异常检测 + 故障分诊 + 根因定位</td></tr>
+<tr><td>核心问题</td><td>现有事故管理方法为 AD/FT/RCL 三个子任务单独建模，重复工作多、TTM 长；监督方法依赖大量标注；缺乏端到端统一无监督框架。</td></tr>
+<tr><td>主要贡献</td><td>1) 第一个端到端无监督事故管理框架 ART，集成 AD + FT + RCL；2) 第一次 empirical study 证明"异常偏差"是三任务共享知识；3) Dependency-Aware Status Learning：用 Transformer Encoder + GRU + GraphSAGE 依次建模 channel / temporal / call 三种依赖；4) Unified Failure Representation：把抽象特征绑定到具体数据 channel，提供可解释性；5) 在 2 个微服务系统上 AD 提升 5.65%–60.8%、FT 提升 13.2%–95.7%、RCL 提升 13.3%–205%。</td></tr>
+</tbody>
+</table>
+
+<h2>二、背景（Background）</h2>
+<p>微服务系统已成为现代互联网服务的核心架构，但其动态复杂性让事故（incidents，如计划外故障、中断）不可避免。2023 年一年里，Microsoft、Google、Alibaba Cloud 等大型互联网公司的微服务系统都经历过大事故。AWS 一项 24 小时的 mission-critical 微服务事故可能造成 34 亿美元直接收入损失。</p>
+<p>一个典型的事故生命周期（Fig.1）包含四阶段：</p>
+<ol>
+<li><strong>Detection（检测）</strong>：异常系统行为触发告警。</li>
+<li><strong>Triage（分诊）</strong>：把事故派给对应工程团队。</li>
+<li><strong>Diagnosis（诊断）</strong>：on-call 工程师多轮调查定位 root cause。</li>
+<li><strong>Mitigation（缓解）</strong>：采取措施恢复系统健康。</li>
+</ol>
+<p>每个阶段都耗时耗力。学术界和工业界对前三阶段（AD、FT、RCL）做了大量自动化研究，但现有方法分两类问题：</p>
+<ul>
+<li><strong>单任务方法</strong>：每个任务单独建模 → 重复的特征提取、模型训练、数据组织 → TTM 长、效率低。</li>
+<li><strong>多任务方法</strong>：少数尝试但仍需要大量标注（监督）或手工规则（如因果图），工程负担重。</li>
+</ul>
+<p>自监督学习（SSL）从无标注数据提取通用表示，是理想的解决方向。但直接套用 SSL 到事故管理面临三大挑战：</p>
+<ol>
+<li><strong>多模态异构 + 复杂依赖</strong>：metrics / logs / traces 三模态有 channel（数据通道）依赖、temporal（时序）依赖、call（实例间调用）依赖，需要模型全面捕捉。</li>
+<li><strong>SSL 表示可解释性差</strong>：深度学习抽象特征无法直接映射回原始数据 channel，运维人员难理解。</li>
+<li><strong>下游任务标注稀缺</strong>：SSL 预训练后通常需要监督微调，但 AD/FT/RCL 标注成本高。</li>
+</ol>
+<p>ART 通过"异常偏差（Anomalous Deviation）"作为三任务共享知识，再用统一 failure representation 把抽象特征绑定到具体 channel，最后用 EVT 阈值 / 切树聚类 / 相关性分析做无监督多任务解决。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<p>论文显式给出三大挑战对应方案：</p>
+<ul>
+<li><strong>挑战 1：微服务系统状态表示学习复杂。</strong>痛点：channel/temporal/call 三种依赖难全面建模。解决方案：<strong>Dependency-Aware Status Learning</strong>——依次用 Transformer Encoder（channel）、GRU（temporal）、GraphSAGE（call）建模，并强调建模顺序的重要性（论文 §5.3 验证）。</li>
+<li><strong>挑战 2：SSL 表示缺乏可解释性。</strong>痛点：抽象特征难映射回原始 channel。解决方案：<strong>Unified Failure Representation</strong>——instance-level / system-level deviations 向量每一维对应一个 channel，提供显式语义信息。</li>
+<li><strong>挑战 3：下游任务标注稀缺。</strong>痛点：AD/FT/RCL 标注成本高。解决方案：<strong>无监督解决方案</strong>——AD 用 EVT（极值理论）阈值；FT 用切树聚类（cut-tree based clustering）；RCL 用 SLD-ILD cosine 相关性分析。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<p>ART 框架（Fig.3）三大模块：</p>
+
+<h3>1) Dependency-Aware Status Learning（4.2）</h3>
+<p>按"浅层到抽象"顺序建模三种依赖：</p>
+<ul>
+<li><strong>Channel 依赖（CHA）</strong>：用 <strong>Transformer Encoder</strong> 捕捉多模态数据通道之间的关联（如 disk IO 减少 ↔ disk IO time 上升 ↔ trace 响应时间延长）。</li>
+<li><strong>Temporal 依赖（TEM）</strong>：用 <strong>GRU</strong> 捕捉时序动态（如 cpu_usage_rate 波动、disk_usage_rate 平滑）。</li>
+<li><strong>Call 依赖（CAL）</strong>：用 <strong>GraphSAGE</strong> 建模实例间调用关系。</li>
+</ul>
+<p>模型学"系统下一时刻的正常状态"，作为偏差计算的基础。</p>
+
+<h3>2) Unified Failure Representation Acquisition（4.3）</h3>
+<ul>
+<li><strong>Instance-Level Deviation (ILD)</strong>：每个实例 <code>i</code> 的 <code>k</code> 维偏差向量，<code>d<sub>j</sub><sup>(i)</sup></code> = 实例 <code>i</code> 在第 <code>j</code> 个 channel 的偏差。</li>
+<li><strong>System-Level Deviation (SLD)</strong>：系统级 <code>k</code> 维偏差向量，聚合所有实例。</li>
+<li>每一维对应一个具体 data channel，<strong>显式语义</strong>绑定。</li>
+</ul>
+<p>empirical study 揭示：</p>
+<ul>
+<li>AD：<code>‖SLD‖<sub>1</sub></code> 在 failure hour 比 normal hour 平均高 22%、中位高 17%，85% 的 failure hour <code>≥</code> normal hour。</li>
+<li>FT：不同 failure type 对应不同 top-5 channels（如 Container Network → duration、connection_error）。</li>
+<li>RCL：root cause 实例的 ILD 与 SLD cosine 相似度 0.71+，远高于 non-root cause 的 0.49。</li>
+</ul>
+
+<h3>3) Unsupervised Solutions for Diagnostic Tasks（4.4）</h3>
+<ul>
+<li><strong>AD</strong>：基于 SLD 用 EVT（极值理论）设阈值，超过即报异常。</li>
+<li><strong>FT</strong>：基于标准化 channel 偏差做切树聚类（cut-tree based），自动归类。</li>
+<li><strong>RCL</strong>：基于 ILD-SLD cosine 相似度排序，相似度最高的实例为 root cause。</li>
+</ul>
+
+<p><strong>与现有方法差异</strong>：</p>
+<ul>
+<li>vs <strong>单任务方法</strong>：ART 一站式解决 AD + FT + RCL，避免重复工作。</li>
+<li>vs <strong>多任务监督方法</strong>：ART 完全无监督，破解标注成本难题。</li>
+<li>vs <strong>Eadro / DiagFusion / CloudRCA / Déjàvu</strong>：ART 系统性建模三种依赖 + 显式 channel 语义，可解释性更强。</li>
+<li>vs <strong>基于因果图的方法</strong>：ART 不需要手工构造因果图。</li>
+</ul>
+<p>数学核心：</p>
+<p>偏差计算（用前一时序作为"正常期望"的近似）：</p>
+<p>$$\text{ILD}^{(i)}_t = X^{(i)}_t - \hat{X}^{(i)}_t$$</p>
+<p>其中 <code>X̂<sup>(i)</sup><sub>t</sub></code> 是模型预测的"正常"下一时刻值。</p>
+<p>RCL 排序：</p>
+<p>$$\text{score}^{(i)} = \cos(\text{ILD}^{(i)}, \text{SLD})$$</p>
+<p><code>score<sup>(i)</sup></code> 越大越可能是 root cause。</p>
+<p>AD 阈值（EVT）：</p>
+<p>$$\tau = \mathrm{EVT}(\|SLD_t\|_1)$$</p>
+<p>FT 聚类（cut-tree based on standardized channel deviation）：</p>
+<p>$$\mathrm{cluster}(X) = \mathrm{CutTree}(\text{standardize}(SLD_t))$$</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li><strong>输入</strong>：微服务系统的 metrics、logs、traces 三模态数据。</li>
+<li><strong>输出</strong>：
+<ul>
+<li>AD：异常/正常判定。</li>
+<li>FT：故障类型分类。</li>
+<li>RCL：root cause 实例 top-K 排序。</li>
+</ul>
+</li>
+</ul>
+
+<h3>2. 核心模块</h3>
+<ul>
+<li><strong>Multimodal Data Serialization</strong>：把三模态数据按 channel 序列化为统一时序。</li>
+<li><strong>Dependency-Aware Status Learning</strong>：Transformer (channel) + GRU (temporal) + GraphSAGE (call)。</li>
+<li><strong>ILD/SLD Computation</strong>：instance-level / system-level 偏差向量。</li>
+<li><strong>Unsupervised Solutions</strong>：EVT 阈值（AD）、切树聚类（FT）、cosine 排序（RCL）。</li>
+</ul>
+
+<h3>3. 伪代码</h3>
+<pre><code># === 1) Multimodal Data Serialization ===
+def serialize_multimodal(metrics, logs, traces):
+    channels = []
+    for m in metrics:
+        channels.append(('metric', m.name, m.values))
+    for l in logs:
+        # Drain parse → template frequency per window
+        channels.append(('log', template_name, freq_seq))
+    for t in traces:
+        # span duration per window
+        channels.append(('trace', 'duration', duration_seq))
+    return channels  # List of (modality, channel_name, time_series)
+
+# === 2) Dependency-Aware Status Learning ===
+def learn_status(channels, call_graph):
+    # Channel dependency
+    channel_attn = TransformerEncoder(channels)  # CHA
+    # Temporal dependency
+    temporal_emb = GRU(channel_attn)  # TEM
+    # Call dependency
+    graph_emb = GraphSAGE(temporal_emb, call_graph)  # CAL
+    return graph_emb  # 每个实例的预测下一时刻状态
+
+# === 3) ILD & SLD ===
+def compute_deviations(predicted, actual):
+    ILD = actual - predicted  # 每实例偏差
+    SLD = ILD.mean(dim=0)    # 系统级偏差 (聚合所有实例)
+    return ILD, SLD
+
+# === 4) Unsupervised Solutions ===
+def anomaly_detection(sld_seq, threshold_quantile=0.99):
+    norms = [||sld||_1 for sld in sld_seq]
+    threshold = EVT(norms)  # 极值理论
+    return [norm &gt; threshold for norm in norms]
+
+def failure_triage(ild_seq, std_baseline):
+    # 标准化 channel 偏差
+    std_ild = (ild_seq - std_baseline.mean) / std_baseline.std
+    # 切树聚类
+    clusters = CutTreeClustering().fit(std_ild)
+    return clusters
+
+def root_cause_localization(ild, sld):
+    scores = [cosine(ild_i, sld) for ild_i in ild]
+    return argsort(scores)[::-1]  # top-K 候选
+</code></pre>
+
+<h3>4. 关键数学</h3>
+<p>偏差定义：</p>
+<p>$$\text{ILD}^{(i)}_t = X^{(i)}_t - \hat{X}^{(i)}_t$$</p>
+<p>L1 范数：</p>
+<p>$$\|SLD_t\|_1 = \sum_{j=1}^{k} |d_j|$$</p>
+<p>RCL cosine 相似度：</p>
+<p>$$\text{score}^{(i)} = \frac{\text{ILD}^{(i)} \cdot SLD}{\|\text{ILD}^{(i)}\| \cdot \|SLD\|}$$</p>
+<p>标准化（用于 FT）：</p>
+<p>$$z_j = \frac{d_j - \mu_j^{\text{normal}}}{\sigma_j^{\text{normal}}}$$</p>
+
+<h3>5. 复杂度分析</h3>
+<p>论文未给严格复杂度公式，强调：</p>
+<ul>
+<li><strong>Transformer Encoder</strong>：<code>O(k<sup>2</sup>·d)</code>，<code>k</code> channels、<code>d</code> 嵌入维度。</li>
+<li><strong>GRU</strong>：<code>O(L·d<sup>2</sup>)</code>，<code>L</code> 时序长度。</li>
+<li><strong>GraphSAGE</strong>：<code>O(|E|·d)</code>，<code>E</code> 调用图边数。</li>
+<li>整体：<code>O((k<sup>2</sup> + L + |E|)·d)</code>，与系统规模线性相关。</li>
+</ul>
+
+<h3>6. 训练与推理</h3>
+<ul>
+<li><strong>训练</strong>：自监督，下一时刻预测为 pretext task；无任何标签。</li>
+<li><strong>推理</strong>：计算 ILD/SLD → EVT 阈值 / 切树聚类 / cosine 排序。</li>
+<li><strong>超参</strong>：Transformer 层数、GRU 隐藏层、GraphSAGE 维度、EVT 阈值分位数。</li>
+</ul>
+
+<h3>7. 示例</h3>
+<p>论文 Fig.2 展示一个 incident case：根因实例的 metric（cpu_usage_rate 等异常）、log（"request error"）、trace（span duration 异常）的多模态表现。ART 通过 channel-aware 序列化让"异常 channel"明确可识别，通过 ILD/SLD 区分 root cause vs non-root cause（root cause cosine 0.71+ vs non-root cause 0.49）。</p>
+<p>Table 1 给出 normal hour vs failure hour 的 SLD L1-范数对比（22% / 17% 提升）。Table 2 列出 5 种 failure type 的 top-5 channels（如 Container Network → duration、connection_error、system.net.udp.in_errors）。Table 3 给出 root cause vs non-root cause 与 SLD 的 cosine 相似度（0.71 vs 0.49）。</p>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    subgraph Inputs["多模态输入"]
+        A1[Metric 指标]
+        A2[Log 日志]
+        A3[Trace span 树]
+    end
+    subgraph Serialization["Multimodal Data Serialization"]
+        B1[按 channel 序列化为统一时序]
+    end
+    subgraph DepLearn["Dependency-Aware Status Learning"]
+        C1[Transformer Encoder: Channel 依赖]
+        C2[GRU: Temporal 依赖]
+        C3[GraphSAGE: Call 依赖]
+    end
+    subgraph RepAcq["Unified Failure Representation"]
+        D1[Instance-Level Deviation ILD]
+        D2[System-Level Deviation SLD]
+        D3[每维对应一个 data channel: 显式语义]
+    end
+    subgraph ADTask["Anomaly Detection (AD)"]
+        E1[EVT 阈值]
+        E2[异常/正常判定]
+    end
+    subgraph FTTask["Failure Triage (FT)"]
+        F1[标准化 channel 偏差]
+        F2[切树聚类 Cut-Tree]
+        F3[故障类型分类]
+    end
+    subgraph RCLTask["Root Cause Localization (RCL)"]
+        G1[ILD-SLD cosine 相似度]
+        G2[Top-K 排序]
+    end
+    A1 & A2 & A3 --> B1 --> C1 --> C2 --> C3
+    C3 --> D1 & D2
+    D1 & D2 --> E1 --> E2
+    D1 & D2 --> F1 --> F2 --> F3
+    D1 & D2 --> G1 --> G2
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[采集多模态数据: metric+log+trace] --> S2[按 channel 序列化为统一时序]
+    S2 --> S3[Transformer Encoder 建模 Channel 依赖]
+    S3 --> S4[GRU 建模 Temporal 依赖]
+    S4 --> S5[GraphSAGE 建模 Call 依赖]
+    S5 --> S6[自监督预训练: 预测下一时刻正常状态]
+    S6 --> S7[计算 ILD: 每实例偏差向量]
+    S6 --> S8[计算 SLD: 系统级偏差向量]
+    S7 --> S9[ILD-SLD cosine 排序 → Top-K root cause]
+    S8 --> S10[EVT 阈值 → 异常检测]
+    S8 --> S11[标准化 + 切树聚类 → 故障分诊]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 第一个端到端无监督事故管理框架 ART</strong>：AD + FT + RCL 一站式，重复工作降到最低。</li>
+<li><strong>+ Empirical 证明"异常偏差"是三任务共享知识</strong>：通过统计分析（normal vs failure hour、root cause vs non-root cause cosine）给出可量化证据。</li>
+<li><strong>+ 顺序建模三种依赖（CHA → TEM → CAL）</strong>：从浅层到抽象，论文 §5.3 验证顺序对性能有显著影响。</li>
+<li><strong>+ Unified Failure Representation = 显式 channel 语义绑定</strong>：每一维对应一个 data channel，运维人员能直接理解"哪个 channel 异常"。</li>
+<li><strong>+ 无监督多任务解决方案</strong>：EVT 阈值、切树聚类、cosine 排序三个朴素但有效的算法，避免标注依赖。</li>
+<li><strong>+ 三任务均大幅超越 SOTA</strong>：AD 提升 5.65%–60.8%、FT 提升 13.2%–95.7%、RCL 提升 13.3%–205%。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>数据集</strong>：2 个微服务 benchmark——D1（46 实例）、D2（18 实例）。</li>
+<li><strong>Baseline</strong>：
+<ul>
+<li>AD：异常检测 baseline。</li>
+<li>FT：故障分诊 baseline。</li>
+<li>RCL：根因定位 baseline。</li>
+</ul>
+</li>
+<li><strong>评估指标</strong>：F1、Precision、Recall、A@K。</li>
+<li><strong>关键结果数字</strong>：
+<ul>
+<li><strong>AD</strong>：F1 提升 5.65%–60.8%。</li>
+<li><strong>FT</strong>：F1 提升 13.2%–95.7%。</li>
+<li><strong>RCL</strong>：F1 提升 13.3%–205%。</li>
+</ul>
+</li>
+<li><strong>消融实验</strong>：六种依赖建模组合对比，验证"顺序建模"的重要性。</li>
+<li><strong>效率分析</strong>：训练和推理时间、参数量。</li>
+<li><strong>超参分析</strong>：Transformer 层数、GRU 隐藏层、GraphSAGE 维度等。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>微服务事故全流程管理</strong>：从检测到分诊到根因定位一站式。</li>
+<li><strong>AIOps 平台核心引擎</strong>：把 AD/FT/RCL 三件套统一为一个 ART 服务。</li>
+<li><strong>无标注场景</strong>：冷启动系统、刚上线服务，没有历史故障标签。</li>
+<li><strong>运维培训</strong>：ILDs/SLDs 的 channel 解释能直接用于培训新工程师。</li>
+<li><strong>跨服务迁移</strong>：SSL 学到的状态表示可迁移到相似系统。</li>
+<li><strong>多云/混合云运维</strong>：模型对底层平台无要求，可在多云环境部署。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>Mengyao__SiameseLSTM</code>：KPI 时序异常检测（单任务），与本篇 AD 对照。</li>
+<li><code>TSC-TADBench</code>：trace 异常检测评测，与本篇 trace 维度互补。</li>
+<li><code>Shiyu__Accurate_and_Interpretable_Log_Fault_Diagnosis_using_Large_Language_Models-2</code>：日志故障诊断（仅 log），与本篇多模态对照。</li>
+<li><code>InformationSciences-OmniFed</code>：联邦 MTS 异常检测，与本篇"无监督"思路可结合。</li>
+<li><code>3691620.3695489</code>（Medicine）：多模态故障诊断（侧重 FT），与本篇 ART 三任务对照。</li>
+<li><code>24_TOSEM_DeepHunt</code>：GAE 多模态根因定位（侧重 RCL），与本篇 ART 三任务对照。</li>
+<li><code>ASE24-ART</code>（本篇，ART）：端到端无监督事故管理（AD+FT+RCL），ASE 2024。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>ART</strong>：本论文的端到端事故管理框架。</li>
+<li><strong>AD（Anomaly Detection）</strong>：异常检测。</li>
+<li><strong>FT（Failure Triage）</strong>：故障分诊。</li>
+<li><strong>RCL（Root Cause Localization）</strong>：根因定位。</li>
+<li><strong>TTM（Time-to-Mitigate）</strong>：缓解时间。</li>
+<li><strong>OCE（On-Call Engineer）</strong>：on-call 工程师。</li>
+<li><strong>CHA / TEM / CAL</strong>：Channel / Temporal / Call 三种依赖。</li>
+<li><strong>ILD（Instance-Level Deviation）</strong>：实例级偏差向量。</li>
+<li><strong>SLD（System-Level Deviation）</strong>：系统级偏差向量。</li>
+<li><strong>EVT（Extreme Value Theory）</strong>：极值理论，用于设置异常阈值。</li>
+<li><strong>Cut-Tree Clustering</strong>：切树聚类算法。</li>
+<li><strong>SSL（Self-Supervised Learning）</strong>：自监督学习。</li>
+<li><strong>Transformer Encoder</strong>：Transformer 编码器，捕捉 channel 依赖。</li>
+<li><strong>GRU</strong>：门控循环单元，捕捉 temporal 依赖。</li>
+<li><strong>GraphSAGE</strong>：图采样聚合网络，捕捉 call 依赖。</li>
+<li><strong>Cosine Similarity</strong>：余弦相似度，用于 RCL 排序。</li>
+<li><strong>Multimodal Data Serialization</strong>：多模态数据序列化。</li>
+<li><strong>AWS 24h $3.4B Loss</strong>：论文引用的真实案例。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li><strong>Transformer</strong>（论文 [29]）：Vaswani 等的注意力机制，ART 基础。</li>
+<li><strong>GRU</strong>（论文 [28]）：Cho 等的循环单元。</li>
+<li><strong>GraphSAGE</strong>（Hamilton et al.）：图采样聚合网络。</li>
+<li><strong>EVT</strong>（极值理论）：异常检测经典方法。</li>
+<li><strong>Cut-Tree Clustering</strong>：层次聚类的变种。</li>
+<li><strong>Eadro / CloudRCA / DiagFusion / Déjàvu</strong>（论文 [27, 60-62]）：多模态事故管理 baseline，ART 的对照。</li>
+<li><strong>AnoFusion</strong>（论文 [62]）：跨模态融合方法。</li>
+<li><strong>Self-Supervised Learning</strong>（论文 [11, 17, 44, 45]）：SSL 综述类工作。</li>
+<li><strong>ART 代码</strong>：<a href="https://github.com/bbyldebb/ART">https://github.com/bbyldebb/ART</a></li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

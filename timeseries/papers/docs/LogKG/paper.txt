@@ -1,0 +1,1361 @@
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                                       1
+
+
+
+
+                LogKG: Log Failure Diagnosis through
+                        Knowledge Graph
+                 Yicheng Sui, Yuzhe Zhang, Jianjun Sun, Ting Xu, Shenglin Zhang, Member, IEEE
+                Zhengdan Li, Yongqian Sun, Member, IEEE, Fangrui Guo, Junyu Shen, Yuzhi Zhang
+                                 Dan Pei, Senior Member, IEEE, Xiao Yang, Li Yu
+
+      Abstract—Logs are one of the most valuable data to describe the running state of services. Failure diagnosis through logs is crucial
+      for service reliability and security. The current automatic log failure diagnosis methods cannot fully use the multiple fields of logs, which
+      fail to capture the relation between them. In this paper, we propose LogKG, a new framework for diagnosing failures based on
+      knowledge graphs (KG) of logs. LogKG fully extracts entities and relations from logs to mine multi-field information and their relations
+      through the KG. To fully use the information represented by KG, we propose a failure-oriented log representation (FOLR) method to
+      extract the failure-related patterns. Utilizing the OPTICS clustering method, LogKG aggregates historical failure cases, labels typical
+      failure cases, and trains a failure diagnosis model to identify the root cause. We evaluate the effectiveness of LogKG on a real-world
+      log dataset and a public log dataset, respectively, showing that it outperforms existing methods. With the deployment in a top-tier global
+      Internet Service Provider (ISP), we demonstrate the performance and practicability of LogKG.
+
+      Index Terms—LogKG, cluster, embedding, diagnosis.
+
+                                                                              ✦
+
+
+1    I NTRODUCTION                                                                 Component Task ID               Content
+                                                                                   mobservice2 1ce0358e241dc150 now call service:redisservice2
+
+L    ARGE - SCALE services are being developed and imple-
+     mented at an increasing rate, resulting in increased
+complexity and interdependence. As a result, when one
+                                                                                   mobservice1 5c85bd2cf59342ec now call service:redisservice2
+                                                                                   redisservice2 1ce0358e241dc150 QR code has expired
+                                                                                   redisservice1 5c85bd2cf59342ec redis write success
+                                                                                   redisservice1 5c85bd2cf59342ec redis read information successfully
+service fails, several other services may also suffer, affecting                   redisservice1 5c85bd2cf59342ec service accept
+the experiences of millions of users [1] [2]. An accurate                          mobservice2 1ce0358e241dc150 information has expired
+and practical failure diagnosis approach can considerably                          mobservice1 5c85bd2cf59342ec info write cussess
+                                                                                   webservice2 1ce0358e241dc150 an error occurred in the downstream service
+improve service security and reliability. Log-based failure                        webservice1 5c85bd2cf59342ec write redis successfully
+diagnostic approaches rely on logs to establish the root
+cause of a failure [3], e.g., network link down, software                          Component Task ID              Content
+                                                                                   dbservice2 efccf0c61a3fd9ce now call service:redisservice1
+bug, hardware crash, or misconfiguration. Since logs are                           dbservice1 d04ac67cf6c285cd now call service:redisservice1
+often the only accessible data for capturing service runtime                       redisservice1 d04ac67cf6c285cd service refuse
+information, log-based failure diagnostic approaches have                          redisservice1 efccf0c61a3fd9ce redis write success
+attracted much attention recently [4].                                             dbservice1 d04ac67cf6c285cd dbservice1 access redis service denied
+                                                                                   dbservice2 efccf0c61a3fd9ce token generate success
+    Logs contain rich semantic information about service                           webservice2 d04ac67cf6c285cd an error occurred in the downstream service
+systems, which is vitally essential for the system’s security                      webservice1 efccf0c61a3fd9ce write redis successfully
+
+
+•   S. Zhang is the corresponding author.                                                          Fig. 1: Logs of two failure cases.
+
+•   Y. Sui, Y. Zhang, T. Xu, Z. Li, Y. Sun, and J. Shen are with Nankai           and reliability. They are semi-structured text generated by
+    University, Tianjin, China. Email: {lzd, sunyongqian}@nankai.edu.cn,
+    {suiyicheng, zyzcs, xuting, 2120220688 }@mail.nankai.edu.cn.
+                                                                                  logging statements in source code. A log has multiple fields,
+•   J. Sun, X. Yang, and L. Yu are with China Mobile Communica-                   including timestamp, level, content, IP, component, task
+    tions Corporation. Email:sunjianjun@gd.chinamobile.com, {yangxiaoyjy,         ID, and content, representing when it is generated, the
+    yuliyf}@chinamobile.com                                                       severity of the event, the detailed event information, and the
+•   S. Zhang and Y. Zhang are with the College of Software, Nankai Uni-
+    versity, Tianjin, China, Key Laboratory of Data and Intelligent System        device, software component, and process that generate it,
+    Security, Ministry of Education, China, and also with the Haihe Labora-       respectively. The unstructured content field usually consists
+    tory of Information Technology Application Innovation (HL-IT), Tianjin,       of sentences predefined by developers in the source code
+    China. Email: {zhangsl, zyz}@nankai.edu.cn
+•   F. Guo is with Accumulus Technology (China) Co., Ltd. Email: fan-
+                                                                                  to represent a specific event or state information during
+    grui.guo@yunzhanghu.com                                                       the program’s execution. The other fields are structured.
+•   D. Pei is with Department of Computer Science, Tsinghua University,           Table 1 lists several examples of logs in the Generic AIOps
+    Beijing, China, and also with Beijing National Research Center for            Atlas (GAIA) dataset [5]. According to the experience of
+    Information Science and Technology. Email: peidan@tsinghua.edu.cn.
+•   This work was supported in part by the Advanced Research Project of           operators, it is necessary to consider the information from
+    China (No. 31511010501), National Natural Science Foundation of China         multiple fields in manual failure diagnosis (see §2.2.3 for
+    (Grant No. 62272249, 62072264), and Natural Science Foundation of             more details). Such as Figure 1 shows the logs during two
+    Tianjin (Grant No. 21JCQNJC00180).
+                                                                                  failures. The logs highlighted in red indicate the root causes
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                            2
+
+                                                    TABLE 1: Emamples Of Logs
+
+       Timestamp              Level       IP       Component         Task ID                          Content
+                                                                             the list of all available services are
+ 2021-07-04 00:38:16,368   INFO  0.0.0.2 logservice2 6318eaeaabe5ee2b          dbservice1: http://0.0.0.4:9388,
+                                                                               dbservice2: http://0.0.0.2:9389
+                                                                             now call service:redisservice2, inst:
+ 2021-07-04 00:42:20,756   INFO  0.0.0.2 dbservice2 a80b24eb9b65be4c
+                                                                        http://0.0.0.2:9387 as a downstream service
+                                                                               User not scanned, please wait.
+ 2021-07-04 00:42:45,260 WARNING 0.0.0.1 redisservice1 a39e68cffda53b88
+                                                                                       Status code: 300
+                                                                        info 487a2bca-dc1e-11eb-b1b8-0242ac110004:
+ 2021-07-04 00:46:59,157   INFO  0.0.0.1 mobservice1 dd29a2b8bd9d9766
+                                                                                 XWkAGNLi write success
+
+     TABLE 2: Entities And Relations In GAIA Dataset                relation is “hasTemplate” between a log and a template.
+                                                                    Table 2 lists the types of entities and relations in the KG
+              Subject     Predicate       Object
+                                                                    built based on the GAIA dataset and the triple prototypes
+               Log       hasTemplate     Template                   of them. To sum up, the KG constructed based on logs only
+               Log      hasComponent    Component
+               Log          hasPID          PID
+                                                                    has several pre-defined types of relations that can be easily
+               Log         hasLevel        Level                    obtained. Thus, the primary task of multi-field information
+               Log      hasRequestID    RequestID                   fusion for logs is to extract entities from various fields and
+             Template      hasEvent       Event                     align them based on semantics. In this way, the entities
+             Template       hasCEE         CEE
+                                                                    and relations included in logs can be retrieved, and we can
+of these failures, which we call failure-related logs. It is        construct a KG to fuse the multi-field information.
+challenging to find them from the raw logs by simply using              To overcome the challenges lying in entity extraction,
+the content field. When information from other fields is con-       entity alignment, and failure representation (more details
+sidered holistically, things get easier. The failure-related logs   in section §2.3), we propose LogKG, a novel framework for
+for the first case in Figure 1 can be captured using the task       failure diagnosis based on KG-based multi-field informa-
+ID “1ce0358e241dc150” and the components “redisservice2”            tion fusion. LogKG extracts different types of entities and
+and “mobservice2”, combined with the semantic informa-              relations from the multiple fields of logs and aligns the
+tion in the content field. For the second case, integrating         entities based on semantics. It represents logs utilizing KG
+the task ID “d04ac67cf6c285cd”, the components “redisser-           embedding (KGE) and obtains failure-oriented log represen-
+vice1” and “dbservice1”, and the content field makes it             tation vectors (FOLR) for failure cases. Then it aggregates
+to discover the failure-related logs. They can be used to           historical failure cases and labels the root causes of the
+determine the failures’ root causes.                                typical failure cases for each cluster. Above all, the following
+    Some log-based failure diagnosis methods [3], [6]–[10]          are the primary contributions of this paper:
+mine the information contained in logs. However, they               Log Event Extraction. To extract entities from the multiple
+only focus on the unstructured content field, neglecting the        fields of logs, we propose a log event extraction method
+information of the structured fields, making them unable            through open information extraction. It extracts triples from
+to fully mine the failures’ features. Existing studies [6], [7]     log templates and treats them as independent events. These
+have shown the knowledge graph (KG) technique can ef-               events provide a more comprehensive representation of logs
+fectively fuse unstructured texts and structured data. There-       and can be used in KG construction.
+fore, we fuse the unstructured content field and structured         Alignment for Triples. An entity alignment method can
+fields (e.g., timestamp, level, IP, component, and task ID) of      aggregate entities related to the same object and establish
+logs using and utilizing a KG for failure diagnosis.                indirect associations between them from multiple fields of
+    A KG uses entities and relations to mine information            logs. A semantics-based clustering method generates BERT
+in multiple fields. Existing KG-based text fusion methods           [13] variables to obtain the vectors of log triples and merges
+[7] usually consists of three steps: entity extraction, entity      triples with the same semantics into one entity to align them.
+alignment, and relation extraction. The information in the          Failure-Oriented Log Representations. To mine failure fea-
+structured fields, as listed in Table 1, is relatively fixed        tures, we propose FOLR to extract failure representation
+and straightforward. We can easily extract the entities from        vectors from logs. It finds failure-related logs after a failure
+them. For the unstructured texts, the existing log parsing          occurs and calculates the failure’s representation vector.
+methods [11], [12] can effectively resolve the texts into tem-
+                                                                    Published Dataset. We publish the failure case dataset1 that
+plates and parameters. Log templates can be used to extract
+                                                                    we use, which is collected from China Mobile Communi-
+and align the entities. Then, entities with different represen-
+                                                                    cations Corporation (CMCC) , a top-tier global Internet Ser-
+tations referring to the same object can be aggregated into
+                                                                    vice Provider (ISP). These logs come from different types of
+the same entity in the KG. As for relation extraction, there
+                                                                    faults in real scenarios and support the subsequent research
+are only several relations between logs and entities extracted
+                                                                    on log-based failure diagnosis. We also publish our source
+from structured fields, such as ‘hasComponent”, “hasPID”,
+                                                                    code in the same repository.
+“hasLevel”, and “hasRequestID”. The relations between
+templates and the entities extracted from templates are
+“hasCEE” and “hasEvent”, etc. Moreover, another primary               1. https://anonymous.4open.science/r/LogKG-A6BD
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                3
+
+                                                      TABLE 3: Related Work
+
+          Proposal              Objective           Data         Baselines                         Reason
+
+       Yuan et al. [3]
+                            Failure Diagnosis   Execution logs     Yes       The scenario of these works is the same as ours.
+      LogCluster [14]
+                                                                             Their outputs are the anomalous logs that deviate
+        LogFlash [15]
+                            Anomaly detection Execution logs       No               from the position of the usual path,
+        DeepLog [16]
+                                                                                 which is inconsistent with our objective.
+        LOGAN [10]                                                                  Their outputs are the log entries that
+         Onion [8]          Failure Diagnosis   Execution logs     No                 potentially lead to the problem,
+        FDiagV3 [9]                                                             which are inconsistent with our objective.
+                                                                              This work supports only four types of failures,
+        LADRA [17]          Failure Diagnosis   Execution logs     No
+                                                                                  which is inconsistent with our scenario.
+                                                                               This work heavily relies on prior knowledge
+                                                Execution logs
+         LogM [18]          Failure Diagnosis                      No            about failure root causes and log events,
+                                                  Prior KG
+                                                                                which cannot be obtained in our scenario.
+                                                                                    This work relies on the classification
+                                                 Event logs
+     Nagaraj et al. [19]    Failure Diagnosis                      No                   of event logs and state logs,
+                                                 State logs
+                                                                                  which cannot be obtained in our work.
+                                                Execution logs                        This work relies on user actions,
+      Ikeuchi et al. [20]   Failure Diagnosis                      No
+                                                 User actions                   which cannot be obtained in our scenario.
+       Log3C [21]                               Execution logs                           These works rely on KPIs,
+                            Failure Diagnosis                      No
+      Wang et al. [22]                              KPIs                        which cannot be obtained in our scenario.
+
+
+    To measure the effectiveness of LogKG, we evaluate               transaction-level topic model for learning the embedding of
+it on a real-world dataset collected from CMCC and a                 logs.Log2vec [25] uses the semantic association to represent
+popular open-source GAIA dataset. LogKG improves the                 the relations by a graph embedding-based method.
+accuracy and Macro-F1 scores by 4% and 1.5% over the two                 In contrast to the methods described above for extracting
+baselines on the CMCC dataset, respectively. At the same             semantic information from log entries, SLOGERT [27] and
+time, the improvements on the GAIA dataset are 26% and               LEKG [26] model semantic information in logs using a
+15%, respectively. We also demonstrate the effectiveness of          KG. CoreNLP [28] is used by SLOGERT [27] to obtain the
+FOLR and KG through ablation studies.                                keywords information contained in log templates. It also
+    Based on a 5-month deployment of LogKG in CMCC,                  employs regular expressions to determine the parameter
+we evaluate the workloads of manual verification and                 type. LEKG [26] constructs triples from extracted semantic
+automatic failure diagnosis based on LogKG, respectively.            information using NER (Named Entity Recognition) [29]
+LogKG handles an average of 47 service failures per day,             and background knowledge, and generates new triples us-
+which can be diagnosed within five minutes, reducing the             ing rule inference. When the log-based KG is combined
+average failure mitigation time by 20+ minutes. LogKG                with the background KG, the vast amount of information
+significantly reduces the amount of manual work required.            contained in background knowledge is utilized. None of
+    The remainder of this paper is organized as follows:             these methods mine the semantics of logs’ structured fields.
+In §2, we introduce the related works, NLP concepts, and             2.1.2 Log-based Failure Diagnosis
+challenges. In §2.3, we elaborate on LogKG’s framework.                  Manual failure diagnosis is often error-prone and labor-
+Later in §4, we depict our experimental setup and results.           intensive [4]. Therefore, some methods have been proposed
+Afterward, we describe the details of LogKG’s deployment             for automatic failure diagnosis based on logs in recent years
+in §5 and conclude our paper in §6.                                  [16] [3] [15] [18] [30] [10] [20] [31] [22] [21]. Table 3 lists some
+                                                                     related works of failure diagnosis and why they are chosen
+2   R ELATED W ORK AND P RELIMINARIES                                or not as baselines in our work. We analyze the data types in
+    We first present representative approaches related to            the logs to classify them into the following five categories.
+semantic information extraction and failure diagnosis of             a) Execution Path Analysis. DeepLog [16] and LogFlash
+logs. Next, we give the natural language processing (NLP)            [15] use logs to construct log execution path and diagnose
+concepts and KG concepts used in this paper. Then, we                the root cause of failures. Since the above two methods
+briefly describe the process of the manual failure diagnosis.        do not explicitly give the root cause of a failure,they are
+Finally, we present three challenges we face.                        inapplicable to our circumstances.
+                                                                     b) Failure-related Log Extraction. All three methods ex-
+2.1 Related Work                                                     tract components from logs, compare normal and abnormal
+2.1.1 Log-based Semantic Information Extraction                      logs, and select failure-indicating logs to help diagnose
+    Some existing log anomaly detection works [1], [23]–             failures. LOGAN [10] groups, parses, and aligns logs to
+[26] have been proposed to extract the semantic information          detect normal patterns. After a failure, it calculates the log
+of logs. LogAnomaly [1] obtains the semantic vector of a             sequence divergence from a reference model and suggests a
+template by determining synonyms and antonyms. LogRo-                cause. Onion [8] extracts semantic information from the log,
+bust [23] uses TF-IDF to give different word vectors differ-         compares normal and anomalous logs, and selects the log
+ent weights to obtain template vectors. [24] combines the            that indicates the failure root cause to aid failure diagnosis.
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                    4
+
+FDiagV3 [9] uses computer cluster logs to diagnose failures.           TABLE 4: A Template Can Represent Multiple Events
+The three methods are inapplicable to our scenario because
+                                                                        Template                                Event
+they aim to find logs that may indicate the root cause of
+                                                                        instance: VAR1 Starting instance        instance is VAR1
+failure.                                                                do build and run instance VAR2          instance is Starting
+c) Specific Type Root Cause Analysis. LADRA [17]can                     VAR1 is a valid instance name
+                                                                                                                VAR1 is instance name
+judge the time and location of faults. It uses training and                                                     VAR1 is valid
+                                                                         list backing images VAR2
+                                                                                                                instance name is valid
+detection in the form of real-time stream processing to                                                         image is VAR1
+determine the time of failure. A graph-based model is built             image VAR1 at VAR2 in use
+                                                                                                                image VAR1 is at VAR2
+to track the fine-grained request execution paths based on
+the migration probability to identify fault anomalies. It sup-
+ports only four types of root causes, namely CPU, memory,              Alert                      Diagnosis                    Recovery
+network, and disk, which are inconsistent with our scenario.
+d) Auxiliary Data Based Diagnosis. LogM [18] proposes a
+analysis and anomaly KG framework for real-world failure
+                                                                      Anomaly                                                    Failure
+diagnosis. User actions help Ikeuchi et al. [20] find the cause.       Alert                                                     Cause
+Nagara et al. [19] propose comparing system behavior logs
+in good and bad performance to diagnose performance                                 Failure Log    Component          Log
+failures. Log3C [21]uses cascading clustering to quickly                            Collection      Selection      Selection
+                                                                                                                                 Failure
+                                                                        Raw
+group log sequences. Then, it finds significant issues that                                                                     Recovery
+                                                                        Logs
+degrade KPIs. Wang et al. [22] suggest correlating log and
+KPI anomalies. These five works require a prior KG, user               Fig. 2: The workflow of the manual failure diagnosis.
+action data, or KPI data, which we can not obtain in a
+scenario.
+                                                                    categorized into two groups: translational distance models
+e) Failure Type Determination. LogCluster [14] calculates
+                                                                    and semantic matching models.
+log sequence vectors to represent log sequences and deter-
+mines failure types by clustering. Yuan et al. [3] try to extract   Translational Distance Models exploit distance-based scor-
+representation vectors from anomalous logs and use repre-           ing functions. They measure the plausibility of a fact as
+sentation vectors to build a classifier to determine the failure    the distance between two entities, after a translation by the
+type. But the clustering method provided by LogCluster              relation [37]. Relations are modeled in TransE [38] as transla-
+doesn’t use semantic information about the log itself. Yuan         tions acting on low-dimensional embeddings of entities, and
+et al. [3] adopt supervised learning, which requires manual         both entities and relations are represented as vectors in the
+labels to train a classifier.                                       same space. KG2E [39] uses multivariate Gaussian random
+                                                                    vectors to depict entities and relations. All connections are
+2.2   Preliminary                                                   interpreted as complex vector rotations from one entity to
+2.2.1 KG Construction and Embedding                                 another by RotatE [40].
+    LogKG utilizes the KG to fuse multi-field information.          Semantic Matching Models uses similarity-based scoring
+KG construction is the process of extracting structured infor-      functions. Matching latent semantics of entities and relations
+mation, and it includes three steps: entity extraction, relation    in vector space representations [37] determines fact plausi-
+extraction, attribute extraction, and entity alignment.             bility. RESCAL [41] assigns latent semantics to each entity.
+Entity Extraction is the process of finding named entities in       Each matrix represents latent factor pairwise interactions.
+text. This is usually done with algorithms like Yan et al. [32]     DistMult [42] uses neural-embedding to learn entity-relation
+and Strakova et al. [33] for named entity recognition (NER).        representations. Calculation and cost are simple.
+Relation Extraction aims to identify the relation of the given
+entity pair. Zeng et al. [34] propose an end-to-end model           2.2.2      NLP Concepts
+that can jointly extract relations from sentences. Entities
+are linked through relations to form a web-like knowledge               Developers usually define logging statements in a natu-
+structure.                                                          ral language-like manner. LogKG utilizes some NLP tools to
+Attribute Extraction aims to capture the attribute informa-         extract entities from the content field.
+tion of a specific entity from different information sources.       Open Information Extraction (OpenIE) [43] extracts se-
+Jiang et al. [35] can mine meta patterns in a massive corpus        mantic triples to represent the information in raw text, based
+and can find high-quality attribute description statements          on different NLP toolkits. LogKG uses it to extract semantic
+as attribute values in the scenario of attribute extraction. we     triples from log templates to represent events in logs.
+can treat entities with different label information as different    Stanford CoreNLP is an extensible pipeline provides core
+entities, so the LogKG doesn’t contain attribute extraction.        natural language analysis [28]. It integrates various func-
+Entity Alignment aims at linking different entities with the        tions like NER, POS (part-of-speech), and OpenIE. LogKG
+same meaning. Some of the extracted entity names may                performs triple extraction and keyword tagging based on
+differ, but they refer to the same entity, in which case they       CoreNLP to extract the information in the content field fully.
+should be aligned. Zhu et al. [36] propose a novel Relation-        Common Event Expression (CEE) is a toolkit that offers a
+aware Neighborhood Matching model named RNM for it.                 detailed taxonomy of general events. It improves the ability
+    KGE embeds the components of a KG, including entities           of users to interpret and analyze events [44] effectively.
+and relations, into continuous vector spaces [37]. It can be        LogKG annotates the keywords in logs using CEE.
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                            5
+
+2.2.3 Manual Failure Diagnosis                                     vector of each failure. Then, it aggregates these failure cases
+    Figure 2 shows the manual failure diagnosis workflow.          by clustering. Operators label the root causes of typical cases
+After receiving a performance issue, operators will establish      for each cluster. After a failure occurs, LogKG converts the
+the failure’s influence scope. Then, they will identify failure-   real-time logs into a representation vector and diagnoses the
+related logs and determine the failure’s root cause based          root cause based on the trained model.
+on experience. Important are the failure-related logs. They            Figure 4 shows the KG construction process, where
+will directly affect the results of the failure diagnosis. It is   the main steps are entity extraction and entity alignment.
+necessary to use the possible relations between logs to locate     LogKG extracts triples from log templates in entity extrac-
+them.                                                              tion, addressing the first challenge (i.e., entity extraction).
+    In Table 1, we can see that a log has multiple fields repre-   In entity alignment, LogKG aligns events through seman-
+senting different information. Log relations are contained in      tics, addressing the second challenge (i.e., entity alignment).
+the content field and other fields. For example, different logs    Then it builds a KG to fuse the aligned entities. It gets
+may share the same task ID or IP address. As mentioned in          the representations of logs through KGE. Our proposed
+§1 and Figure 1, Operators cannot capture these relations          FOLR combines the local features of a failure and the global
+when only the content field is used.                               features of all failures to identify the failure-relevant logs. In
+    To reduce the workload, operators usually specify rules        this way, it obtains the failure-oriented representation vector
+while searching a large number of logs. Even so, there are         for each failure, solving the third challenge (i.e., failure-
+some disadvantages. On the one hand, labor-intensive to            oriented log representation).
+manually maintain these rules. On the other hand, it is error-     3.2   Entity Extraction
+prone to diagnose the root cause of failures based on these            A log can be divided into two main parts: structured
+rules.                                                             data and a template in Figure 4. Based on these two parts,
+2.3   Challenges                                                   we can extract three types of entities, i.e., structured entities,
+    Based on the above information, we introduce the three         keywords, and event triples. Structured entities can be ex-
+challenges lying in KG-based log failure diagnosis.                tracted directly. LogKG extracts keywords and event triples.
+    CH.1. Entity Extraction. As listed in Table 4, a log tem-      3.2.1 Keyword Extraction
+plate can represent multiple events. For example, Table 4             Log templates contain keywords related to compo-
+lists that “instance is VAR1” and “VAR1 is instance name”          nents, states, and tasks in the system, such as “MySQL”,
+in the first template represent different events. Existing log-    “DataBase”, “AMQP”, and “Error”. These keywords are
+based event failure diagnosis methods treat each log tem-          important for failure diagnosis. So they need to be extracted.
+plate as a single entity, ignoring the multiple contextually       Specifically, LogKG utilizes CoreNLP [28] to select key-
+relevant events contained in the log. So the different events      words from log templates based on part-of-speech tagging.
+in a log need to be extracted as different event entities.
+                                                                   3.2.2 Event Extraction
+    CH.2. Entity Alignment. Entity alignment aims to merge
+entities from different sources but semantically represent the         As mentioned, a log can contain multiple events. To
+same real-world object [45]. Without entity alignment, some        efficiently extract the multiple events of each log. LogKG
+entities with underlying relations cannot build associations       performs information extraction on templates, extracting
+with each other. For instance, in Table 4, “instance is VAR1”      event triples contained in them. Specifically, it combines
+in the first template and “VAR1 is instance name” in the sec-      Rule Extraction (RE) and OpenIE [47] to extract the triples.
+ond template represent the same event. Intuitively, the first      RE for Rule Triples. The purpose of RE is to take advantage
+and second templates should build associations through the         of the structure of logs. According to our observation, there
+same event entity. However, existing methods cannot align          are some rules for systems to print logs. So, it becomes easier
+the event entities with similar semantics and merge them           to define rules to extract events precisely. Such as in our
+into the same entity.                                              implementation, we use some rules to extract entity-value
+    CH.3. Failure Case Representation. In NLP tasks, repre-        pairs because they’re separated by a “=” or “:” symbol.
+sentation vectors are usually calculated by statistical-based      OpenIE for Semantic Triples. OpenIE [43] is often used
+methods with TF-IDF [46]. However, unlike natural lan-             to extract semantic triples. LogKG utilizes it to extract
+guage, logs contain much noise. E.g., logs generated by            semantic triples from logs, representing the multiple events
+scheduled tasks and normal business activities are usually         in each log. There has been substantial progress in OpenIE
+irrelevant to failures and may interfere with failure diagno-      approaches since it was proposed by Banko et al. [43].
+sis. The native NLP methods are unsuitable for obtaining           These methods take free text as input and yield semantic
+failure-oriented log representations due to noise.                 triples as output, formed by two arguments related by a
+                                                                   predicate such as “Instance”, “is”, and “valid”. Here, the
+3     L OG KG                                                      implementation of OpenIE is not fixed.
+3.1   The Framework of LogKG                                           Based on the above two components, LogKG extracts
+                                                                   rule triples and semantic triples from log templates, respec-
+    LogKG has two parts: offline training and online diagno-
+                                                                   tively. So each event is denoted as an entity through a triple.
+sis in Figure 3. When extracting entities, it not only uses in-
+formation in the structured data but also extracts keywords        3.3   Entity Alignment
+and events from the unstructured texts. It aligns entities             Entity alignment aims to identify entities from different
+from different fields and fuses the multi-field information        sources but semantically represent the same real-world ob-
+through a KG. It uses KGE to generate the representation           ject. We need to align these entities and merge the aligned
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                                            6
+
+
+                 §3.3                 §3.4
+                                    Construct
+                                                             §3.4
+                                                                                    Offline Training                        Online Diagnosis
+                 Align                                       KGE
+                                                                                      Label Typical
+                                                                                         Case
+     Extracted           Aligned                Knowledge            Template
+                                                                                                                         Failure Case         A New Failure
+      Entities           Entities                 Graph             Embeddings
+                                                                                                      §3.6              Representation            Case
+                                                                                                 Assign/Update
+          §3.2                                                      §3.5
+         Extract                                                    FOLR
+                                                                                §3.6
+                                                                              Diagnose
+
+
+       Raw                           Failure                        Failure Case      Failure Case
+                                                                                                                          Root Cause              Failure Report
+       Logs                           Cases                           Vectors           Clusters
+
+                                                            Fig. 3: The framework of LogKG
+
+entities. In this way, we can build associations for the entities
+with underlying relations by the aligned entities. LogKG                                                                               LogParse
+aligns keywords and events as follows.                                                         Structured    Template
+                                                                                                  Text                                               Raw Log
+3.3.1 Keyword Alignment
+                                                                                                            Entity Extraction
+    For keyword entities, LogKG aligns them by integrating
+NLP tools and domain knowledge. Specifically, it semanti-
+cally annotates keyword entities based on the CEE library
+[44] and maps meaningful keywords into concept entities.                                 Structured    Keyword          Event
+However, the concepts contained in CEE are incomplete,                                     Entity       Entity          Entity
+so we extend the concepts of the CEE library based on                                                       Entity Alignment
+domain knowledge. For example, the keyword “AMQP”
+can be annotated as “message middleware”.
+                                                                                                                                  KG Construction
+3.3.2 Triple Alignment                                                                   Structured    Concept       Clustered
+    Although LogKG can automatically extract semantic                                      Entity       Entity         Event
+                                                                                                                       Entity                Knowledge Graph
+triples from logs, the syntax of various triples is very differ-
+ent. Some triples representing similar semantics are pretty
+dissimilar in syntax. Table 4 shows that the events “instance                            Fig. 4: The KG construction framework of LogKG
+is VAR1” in the first template and “VAR1 is instance name”
+in the second template represent similar semantics. Logs                           so Neo4j [52], which is based on graph structure storage,
+corresponding to these two templates are context-related.                          is applied. It has excellent performance for large-scale data
+To associate these context-related log templates, we need to                       queries and flexible unstructured data storage. It includes
+build associations for these templates using event entities.                       a Neo4j data browser to execute CQL (Cassandra Query
+Therefore, we need to align these triples based on semantics                       Language) instructions which is a user-friendly interface.
+and aggregate semantically similar triples into one entity.                            After entity extraction and entity alignment, LogKG con-
+    LogKG aggregate triples into clusters and treats each                          structs a KG based on the explicit relations of different types
+cluster as an event entity. To measure semantic similarity,                        of entities. Since logs contain limited information about the
+it converts these triples into vectors first. Specifically, since                  extracted entities, we cannot obtain the data properties of
+each triple is a complete short sentence, LogKG utilizes a                         the entities. An entity’s name represents the type and object
+pre-trained language model to convert each triple into a                           properties of the entity. Figure 5 shows a subgraph of KG
+fixed-dimensional vector. Some BERT [13] based pre-trained                         constructured by LogKG with different node types. We can
+language models have achieved superior performance in                              see LogKG automatically associates the structured entities
+recent years. We choose a pre-trained language model [48]                          with different logs, e.g., “RequestID”, “Template”, “Level”,
+of them to obtain the vectors of these triples. Please note                        “PID”, “Component”, “CEE”. Logs are also mapped to log
+that the selection of pre-trained natural language models is                       templates, which are associated with event entities and
+not our main contribution. Then, LogKG aggregates these                            keyword entities, e.g., a log template is associated with
+semantically similar triples into event entities by clustering.                    “Event” and “CEE”.
+Since the number of clusters is pending, we choose some                                In this way, different entities extracted from multiple log
+algorithms that do not require specifying the number of                            fields are associated. We focus on the log templates and
+clusters. Here, the clustering algorithm can be DBSCAN                             establish direct or indirect relations between the aligned
+[49], hierarchical clustering [50], OPTICS [51], or others.                        entities and the log templates. These relations express the
+3.4 Knowledge Graph Construction and Embedding                                     correlation between the semantics of different log templates.
+3.4.1 Knowledge Graph Construction                                                     The KG constructed by LogKG contains several types of
+    LogKG requires storing large-scale unstructured data                           entities and relations. As shown in Figure 5, the entity types
+and displaying multi-field information association relations,                      include ”Log”, ”RequestID”, ”PID”, ”Level”, ”Component”,
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                                 7
+
+
+                RequestID             Log            Level              Event
+                                                                                         in logs. Please note that choosing RotatE as the KGE model
+                                                                                         is not our contribution. We can replace it with other KGE
+                Component             CEE           Template              PID            models. We use the representation vectors of templates for
+                                                                                         failure diagnosis. Because each log is mapped to a specific
+                                                      log_87
+     req-...            hasRequestID
+                                                       6151
+                                                                                         template, entities associated with a log also build an under-
+                                                                hasPID                   lying relation with a template. In this way, we can transform
+                             hasLevel
+                                                 hasComponent                            the log sequence during a failure into a representation vector
+       WARN
+                                                                                PID_4
+                                                                                         sequence of templates.
+        ING
+                                                      nova.c                     2079
+                        hasLevel                      omp...                             3.5   Failure-Oriented Log Representations
+     hasLevel
+                                                                                             We have obtained the representation vector of each
+                  hasComponent                         hasComponent
+                                                                                hasPID   template. Next, we need to obtain the representation vector
+     log_27
+      1513                                                                               of each failure for failure diagnosis. Usually, some failure-
+                               hasTemplate                                      log_27   irrelevant logs can appear multiple times during a failure. So
+               hasTemplate                                                       1513
+                                                   hasTemplate                           we need to filter them out and use the remaining for failure
+                                                                                         representation. LogKG first obtains the logs during each
+                               a6cb
+                               54e4         hasCEE             object                    failure. The time window length of collecting logs for each
+                  hasEvent
+                                                                _file                    failure is ω , which varies with different types of services.
+       52                       hasEvent
+                                                                                 8cd5    A time window length ω indicates we collect logs of ω/2
+                                                        hasEvent                 6957    minutes before and after the time when a failure occurs. In
+                                           51                                            our scenario, we set ω = 20 minutes. Then, LogKG can map
+                    hasEvent                                                             these logs to log templates to constitute a template set.
+      25bb
+                                                     hasEvent
+                                        hasEvent                                             TF-IDF [54] is a term weighting technique in informa-
+      3e19                                                              1ebd
+                                                                        32a8
+                                                                                         tion retrieval [14]. Motivated by it, we propose Failure-
+                                          a0cd                                           Oriented Log Representation (FOLR). According to our
+                                          4c86                                           observation, logs frequently appearing in all failure cases
+                                                                                         are usually irrelevant to failures. For each template, LogKG
+                                                                                         thus calculates its IFF (Inverse Failure Frequency) values.
+Fig. 5: A subgraph of an example KG constructed by LogKG.
+                                                                                         IFF represents the frequency of each template in all failure
+”CEE”, ”Template”, and ”Event”. Some of these entity types                               cases. Templates that appear more frequently in all failures
+correspond to the structured fields in logs. Therefore, logs                             usually have lower IFF values. They are usually irrelevant
+from different services may have different types of entities.                            to a specific failure. In order to filter the noisy templates,
+Different entities usually have different relations. For exam-                           LogKG ignores the log templates with lower IFF values.
+ple, the relations between the ”Template” entities and the                               Moreover, for a failure-related log, its template’s occurrence
+”Event” entities are ”hasEvent”.                                                         frequency differs in different types of failures. Therefore,
+                                                                                         for each template during a failure, LogKG calculates its TF
+3.4.2 Knowledge Graph Embedding (KGE)                                                    (Template Frequency). We calculate the frequency of the
+    We need to embed the logs into a vector space to di-                                 occurrence of each template corresponding to a failure as
+agnose failures based on logs. Based on the intuition that                               the TF value. Then, LogKG uses TF-IFF to obtain a weighted
+different logs corresponding to different types of failures                              sum of the representation vectors of the log templates.
+should be easily distinguishable in a vector space, we need                                  Formally, the IFF of template t(t ∈ T ) is calculated as:
+to make related logs closer and irrelevant logs farther apart
+                                                                                                                       N          N
+                                                                                                                 
+in the vector space. Regular embedding methods can only                                                          
+                                                                                                                 log( ) log( ) ≥ θif f
+embed the unstructured content field in the logs. They can-
+                                                                                                                 
+                                                                                                                      nt         nt
+not leverage the multi-filed information in the logs, making                                         wif f (t) =                                     (1)
+                                                                                                                 
+                                                                                                                                 N
+it very difficult to identify failure-related logs in the vector                                                 0
+                                                                                                                            log( ) < θif f
+space.                                                                                                                            nt
+    KGE embeds the components of a KG, including entities                                where N is the total number of failures, nt denotes the
+and relations, into continuous vector spaces [37]. It can                                number of failures where template t appears, and θif f
+utilize the multi-field information fused in the KG and                                  denotes the threshold of IFF. The TF of template t(t ∈ T )
+calculate the semantic relation between entities in the vector                           of the i-th failure fi is calculated as:
+space [53]. Therefore, we apply it to embed logs. While                                                                             nt,i
+training the KGE model, we take the processed triplets                                                             wtf (t, fi ) =                      (2)
+                                                                                                                                    ni
+representing the KG as input. We convert each entity and
+relation to a single identifier and represent triples as tuples                          where nt,i is the number of times template t appears during
+of three identifiers. By taking the processed triples as the                             failure fi , ni denotes the number of logs during fi . By
+input, we can train a KGE model that maps entities and                                   calculating TF and IFF, LogKG can obtain the representation
+relations to the vector space.                                                           vector Vi of failure fi using weighted summation:
+    Here, we adopt RotatE [40] as the KGE model. RotatE                                                      m
+is a model with superior relation inference performance. It
+                                                                                                             X
+                                                                                                      Vi =         wtf (tj , fi ) × wif f (tj ) · ej   (3)
+can describe the potential relation between various entities                                                 j=1
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                     8
+                                                                                   TABLE 5: Detail Of The Datasets
+where tj is the j -th template in T , m is the number of
+                                                                     Datasets    # of logs   # of failure categories   # of failure cases
+templates, and ej denotes the KGE of template tj . After the
+                                                                     GAIA       13,554,024              4                     1,083
+above steps, LogKG can obtain each failure case’s represen-          CMCC        1,461,006              6                       93
+tation vector for diagnosis.                                          TABLE 6: Root Cause Of The Failures In GAIA Dataset
+3.6     Diagnosis                                                          Failure type                 Root cause
+                                                                           Login failure                Network congestion
+    Failure diagnosis, which aims to identify the root cause               Memory anomaly               Excessive memory usage
+of a failure, is usually formalized as a classification task.              File not found               Misconfiguration
+LogKG trains a failure diagnosis model through clustering                  Access permission denied     Software bug
+offline. In the online diagnosis phase, it assigns a failure to
+an existing cluster or updates the clustering result.
+                                                                    GAIA: The GAIA dataset is generated by simulating real-
+3.6.1    Offline Training                                           world microservice failures. It contains the records of all
+    To use the multi-field information fused by the KG              failure injections, including the timestamp, location, and all
+in downstream tasks, LogKG first gets the representation            service logs of each failure. Specifically, 13,554,024 logs are
+vectors of log templates based on KGE, which are then               related to the 1,083 failures, which can be classified into four
+used to obtain the representation vectors of each failure.          types. Table 6 lists the failure types and root causes labeled
+Subsequently, LogKG groups the representation vectors of            by the operators who inject failures.
+failures into different clusters, and operators label the root      CMCC: The CMCC dataset is collected from an OpenStack-
+cause of the typical failure for each cluster.                      based system of CMCC. OpenStack is the open-source cloud
+    Failure Clustering. We employ a density-based clus-             computing platform most widely adopted in the industry
+tering method to cluster the representation vectors of fail-        [55]. It consists of multiple service components, including
+ures. Both DBSCAN [49] and OPTICS [51] are widely used              four core components: Keystone for authentication, Nova
+density-based clustering algorithms. After analyzing the            for computing, Glance for image, and Neutron for network-
+representation vectors of historical failures, we find that the     ing. In addition, it also includes some supporting services,
+densities of different failure types are pretty distinct. There-    such as Database and Advanced Message Queue Protocol
+fore, we adopted the OPTICS clustering algorithm since              [55], each comprising multiple running service daemons.
+our scenario satisfies its assumption and it is insensitive to      Based on the OpenStack framework, CMCC builds a 4G/5G
+hyperparameters. Here, we set the parameter M S , i.e., the         core network to provide services for hundreds of millions of
+minimum number of samples per cluster, to 3.                        users. We collected the 1,461,006 logs related to all randomly
+    Failure Diagnosis. After clustering, operators select each      selected 93 failure cases in 24 days, which can be classified
+cluster’s most representative failure. They usually select the      into six categories. Table 7 lists the failure types and root
+one closest to its cluster centroid as the most representa-         causes labeled by experienced operators.
+tive failure. Afterward, they label the root causes of these            In the following experiments, from either dataset, we
+cases as the root causes of their corresponding clusters. The       leverage the front 70% failure cases as the training data and
+root causes include network congestion, excessive memory            the rest 30% as the testing data.
+usage, software bug, etc. In this way, we can reduce the            4.1.2 Baselines
+labeling effort because the number of failure clusters (ten in          We compare LogKG with two failure diagnosis algo-
+our scenario) is much smaller than that of failures.                rithms: unsupervised algorithm LogCluster [14] and su-
+3.6.2    Online Diagnosis                                           pervised algorithm Cloud19 [3]. The parameters of these
+                                                                    methods are all set best for accuracy. Specifically, a hier-
+     LogKG is triggered when a service failure is detected at       archical clustering model is used to implement LogCluster,
+τ , after that It collects logs in the following closed intervals   and we set its distance threshold to 0.5. For Cloud19, we
+[τ − w/2, τ + w/2] and calculates the failure representation        choose Random Forest as the classification model and set
+vector as in the offline training stage. It assigns this failure    the number of trees in the forest to 9.
+to a failure cluster by calculating the distance between the
+calculated vector and the failure representation vectors of         4.1.3 Experimental Setup
+different clusters of failures. Some new failure types often           We conduct all the experiments on the Jiutian platform
+appear, so the failure diagnosis model needs to be updated.         provided by CMCC. It provides GPU cloud services with
+For failures quite different from the existing ones, LogKG          TeslaV100, 16-core CPU, and 32GB DRAM memory. We
+will update the clusters to adapt to the new failure types.         implement LogKG with Python 3.7 and PyTorch 1.8, and
+                                                                    we implement LogCluster and Cloud19 with Python 3.7 and
+4     E VALUATION                                                   gensim (a free Python library for NLP).
+4.1     Experiment Design
+                                                                      TABLE 7: Root Cause Of The Failures In CMCC Dataset
+4.1.1    Datasets
+                                                                          Failure type                        Root cause
+     We conduct experiments over the GAIA dataset [5], a
+                                                                          AMQP server unreachable             Network link down
+publicly available dataset, and the real-world log dataset                Mysql lost connection
+                                                                                                              Software bug
+collected from the production environment of CMCC, a top-                 Nova-conductor lost connection
+tier global ISP. The detailed information for the two datasets            Computing node down                 Hardware crash
+                                                                          Flavor disk too small
+is listed in Table 5.                                                                                         Misconfiguration
+                                                                          Linuxbridge-agent anomalies
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                                                9
+
+4.1.4 Evaluation Metrics
+                                                                                LogCluster          LogKG                         LogCluster            LogKG
+    In our case, failure diagnosis can be viewed as a mul-                      Cloud19                                           Cloud19
+ticlassification problem. To measure the effectiveness of               1.0 0.96 0.9 1.0     0.96           1.0       1.0                 0.98                  0.99
+                                                                                                     0.87                          0.92
+LogKG, we use accuracy and Macro-F1 score. Accuracy
+                                                                        0.8                                           0.8
+is the percentage of failure cases classified into the same                                                                                              0.6
+
+
+
+
+                                                                    Score
+
+
+
+
+                                                                                                                  Score
+                                                                        0.6                                           0.6
+category as the ground truth to all failure cases. To get a                                                                 0.4
+                                                                        0.4                                           0.4                        0.29
+Macro-F1 score, we should get the F1 score for each failure
+category. For a particular failure category A, the precision            0.2                                           0.2
+                                                                        0.0                                           0.0
+is the percentage of failure cases with both classification                   Accuracy Macro-F1 score                        Accuracy Macro-F1 score
+result and ground truth being category A to all failure                   (a) Score on CMCC             (b) Score on GAIA
+cases classified as A. For all failure cases, the recall is the     Fig. 6: The effectiveness of different methods on the two
+percentage of failure cases with both the classification result     datasets
+and the ground truth being category A. The F1 score of
+failure category A is the harmonic mean of precision (A) and
+                                                                    template of one failure case to get the whole embedding
+recall (A). After we get the F1 score for all failure categories,
+                                                                    of this case. We believe the embedding obtained by this
+the Macro-F1 score can be calculated by taking the average
+                                                                    strategy integrates more log data information and is more
+of the F1 scores of all failure categories.
+                                                                    effective. To evaluate the effectiveness of this strategy, we
+4.2   Evaluation of The Overall Performance                         design the following ablation experiments:
+     In this section, we compare LogKG with the two baseline        Removing KGE. We remove KGE from LogKG and use the
+methods on the two datasets to evaluate the effectiveness of        one-hot vector to embed each log template. More specifi-
+our method. We choose OPTICS as the clustering algorithm.           cally, suppose there are n log templates with indices from
+     Figure 6 shows the comparison results of LogKG and             1 to n in the whole dataset, then we use an n-dimensional
+the two baseline methods on the CMCC and GAIA datasets,             vector to represent the i-th log template where the i-th bit
+respectively. Overall, LogKG achieves the best accuracy and         in the vector is 1, and all other bits are 0. By doing so, we
+Macro-F1 score among the three methods on both two                  get the embedding of each log template. The performance of
+datasets. More specifically, it has an accuracy of 1.0 and a        this method is displayed in Figure 7 as “LogKG w/o KGE”.
+Macro-F1 score of 1.0 on the CMCC dataset. Meanwhile,               Replacing KGE. We replace KGE with traditional algo-
+LogCluster and Cloud19 achieve accuracies of 0.96 and 0.90          rithms in the NLP domain since getting an embedding of
+and Macro-F1 scores of 0.96 and 0.87, respectively, which are       a sentence is a typical NLP task. We choose two typical NLP
+lower than our method. The CMCC dataset contains fewer              algorithms, GloVe [56] and Word2Vec [57], to replace KGE
+failure cases, and logs have simple patterns, so it is easy for     and generate the embedding of each log template, respec-
+all three methods to classify the cases into correct categories.    tively. The scores of LogKG with KGE replaced by GloVe
+However, even with such a task, the other two methods still         and Word2Vec are shown as “GloVe” and “Word2Vec” in
+suffer from many false positives and false negatives.               Figure 7, respectively.
+     On the GAIA dataset, the effectiveness of the three                From Figure 7, we can observe that KGE indeed im-
+methods is more clearly contrasted. LogKG has an accuracy           proves the performance of LogKG. For example, LogKG
+of 0.98 and a Macro-F1 score of 0.99. When evaluating the           without KGE achieves lower accuracy and Macro-F1 score
+performance of a multiclassification method, the shortcom-          on the two datasets than LogKG, respectively. When we
+ings of the accuracy assessment method are particularly             replace KGE with Glove and Word2Vec, the results become
+pronounced if the data is imbalanced. Although Cloud19              less stable and, in most cases, not as good as just replacing
+achieves an accuracy of 0.92, it has a low Macro-F1 score           LogKG with a one-hot vector. Log data is different from
+of 0.60, which shows that this method cannot classify ev-           natural language text. It contains many repeated logs, and
+ery category of failure cases well. LogCluster achieves the         some do not conform to grammatical rules. Glove and
+lowest accuracy and Macro-F1 score on the GAIA dataset.             Word2Vec can extract the semantic information of templates,
+Neither LogCluster nor Cloud19 thoroughly explores the              but the above characteristics of the log data can make them
+multiple fields contained in the logs. At the same time,            inaccurate, degrading their performance. Although the one-
+LogKG fuses the multi-field data of logs through KG. There-         hot method is simple, its statistical idea can be applied
+fore, our method achieves superior failure diagnosis results        to log data, so it performs relatively well. LogKG extracts
+than the two baseline methods.                                      entities from logs and builds a KG. It not only preserves
+                                                                    the semantic information of logs but also mines the relation
+4.3   Ablation Study                                                between logs at a smaller granularity, which better adapts
+    We conduct ablation experiments on the two datasets to          to the characteristics of logs. Thus we can conclude LogKG
+evaluate the effectiveness of the two compulsory modules in         can achieve better accuracy with KGE.
+LogKG: KG (knowledge graph) and FOLR (failure-Oriented
+log representations). Figure 7 shows the results of the abla-       4.3.2     FOLR
+tion experiments on the CMCC and GAIA datasets.                         We propose FOLR to generate the embedding of each
+4.3.1 KGE                                                           failure from log template embedding. FOLR calculates each
+    In our proposed method, we build a KG with multi-               failure case’s embedding by performing a weighted sum
+field data and use KGE to get the embedding of each log             of the embeddings of log templates. In a real production
+template, and then we use the embedding of every log                environment, there are many noise logs during each failure,
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                                                                                                                                                         10
+
+
+              GloVe                     LogKG w/o FOLR                           GloVe                          LogKG w/o FOLR                                    Accuracy               Macro-F1 score                                          Accuracy     Macro-F1 score
+              Word2Vec                  LogKG                                    Word2Vec                       LogKG
+              LogKG w/o KGE                                                      LogKG w/o KGE                                                     1.0                                                                           1.0
+    1.0 0.93 0.89 0.96 0.89 1.0 0.94          0.97
+                                                     0.91
+                                                            1.0
+                                                                      1.0        0.95 0.97 0.95 0.98          0.97 0.94
+                                                                                                                          0.91
+                                                                                                                                 0.99              0.9                                                                           0.8
+
+
+
+
+                                                                                                                                        Score
+
+
+
+
+                                                                                                                                                                                                                      Score
+                                       0.84
+    0.8                                                               0.8                              0.76                                        0.8                                                                           0.6
+    0.6                                                               0.6 0.57
+Score
+
+
+
+
+                                                                  Score
+                                                                                                                                                   0.7
+    0.4                                                               0.4                                                                                    0 0.10.20.30.40.50.60.70.80.9                                                0 0.05 0.1 0.15 0.2 0.25 0.3
+    0.2                                                               0.2                                                                                    (a) θidf on CMCC                                                              (b) θidf on GAIA
+    0.0       Accuracy         Macro-F1 score                         0.0        Accuracy              Macro-F1 score                                              Accuracy              Macro-F1 score                                           Accuracy     Macro-F1 score
+                                                                                                                                                     1.0                                                                           1.0
+      (a) Score on CMCC          (b) Score on GAIA
+Fig. 7: The effectiveness of LogKG when removing KGE,                                                                                                                                                                              0.9
+
+
+
+
+                                                                                                                                        Score
+
+
+
+
+                                                                                                                                                                                                                      Score
+                                                                                                                                                     0.8
+FOLR, or replacing KGE with different methods on the two
+                                                                                                                                                                                                                                   0.8
+datasets
+                                                                                                                                                     0.6
+                                                                                                                                                             2     3      4      5 6                7      8                               3 4 5 6 7 8 9 10 11 12 13
+easily leading to inaccurate classification. FOLR initially per-                                                                                                                 MS                                                                  MS
+forms denoising by discarding parts of the logs with lower                                                                                                   (c) M S on CMCC                                                               (d) M S on GAIA
+inverse failure frequencies, which are considered noisy data.                                                                                                                                                                      60
+                                                                                                                                                     15
+
+
+
+
+                                                                                                                                        Cluster Number
+
+
+
+
+                                                                                                                                                                                                                      Cluster Number
+It uses a threshold to decide which logs to discard.
+    To verify the effectiveness of FOLR, we remove FOLR                                                                                              10                                                                            40
+from LogKG and use the sum of the embeddings of log
+                                                                                                                                                         5                                                                         20
+templates to get the embedding of each failure case directly.
+“LogKG w/o FOLR” in Figure 7 shows the performance                                                                                                           2     3      4      5 6                7      8                               3 4 5 6 7 8 9 10 11 12 13
+                                                                                                                                                                                 MS                                                                  MS
+of this method, and we can observe that LogKG without
+                                                                                                                                        (e) The number of clusters (f) The number of clusters as
+FOLR has lower accuracy and Macro-F1 score on the two
+                                                                                                                                        as M S varies on CMCC      M S varies on GAIA
+datasets than LogKG with FOLR. FOLR increases the Macro-
+                                                                                                                                                                                                        Accuracy                       Macro-F1 score
+F1 score by 0.08. The result indicates that FOLR is effective                                                                                                                        1.0
+and improves the performance of LogKG.
+                                                                                                                                                                                     0.9
+                                                                                                                                                                                 Score
+4.4       Evaluation of Hyper-Parameters
+                                                                                                                                                                                     0.8
+    In this section, we evaluate the hyper-parameters of
+LogKG, which contains the threshold of FOLR (θidf ), the                                                                                                                                        5         10     15             20          25      30
+minimum number of samples per cluster (M S ) of OPTICS,
+and the time window length (ω ), as shown in Figure 8. We                                                                                                      (g) ω on CMCC
+evaluate θidf and M S on the two datasets and ω on the                                                                                  Fig. 8: The effectiveness of LogKG as its parameters vary on
+CMCC dataset because we use the duration of each failure,                                                                               the two datasets
+which can be obtained in the GAIA dataset, as a failure’s                                                                                                              RoBERTa              MPNet                                                RoBERTa       MPNet
+                                                                                                                                                                       MiniLM                                                                    MiniLM
+corresponding time window. In addition, we discuss the
+                                                                                                                                                                 1.0    1.0   1.0         1.0       1.0    1.0                             0.96 0.96 0.98    0.98 0.98 0.99
+effect of clustering algorithms and language models in the                                                                                          1.00                                                                1.00
+entity alignment, as well as the clustering algorithms used                                                                                         0.75                                                                0.75
+                                                                                                                                        Score
+
+
+
+
+                                                                                                                                                                                                                 Score
+
+
+
+
+in the failure clustering on the two datasets.                                                                                                      0.50                                                                0.50
+    Specifically, we increase θidf from 0.00 to 0.30 with a step
+size of 0.05 on the CMCC dataset and from 0.00 to 0.90 with                                                                                         0.25                                                                0.25
+a step size of 0.1 on the GAIA dataset. As in Figure 8(a) and                                                                                       0.00          Accuracy Macro-F1 score 0.00                                               Accuracy Macro-F1 score
+Figure 8(b), we find as θidf increases, the Macro-F1 score
+                                                                                                                                               (a) Score on CMCC           (b) Score on GAIA
+tends to increase first and then decrease. The appropriate                                                                              Fig. 9: The effectiveness of LogKG as the language model of
+interval is from 0.40 to 0.50 on the CMCC dataset and from                                                                              entity alignment varies on the two datasets
+0.10 to 0.20 on the GAIA dataset. LogKG will be influenced
+by more noisy data when choosing a small θidf and discard                                                                               changes on the CMCC dataset and has no more drastic
+more useful logs when using a big one.                                                                                                  changes when M S > 7 on the GAIA dataset. We set
+    As for M S , as shown in Figure 8(c) and Figure 8(d),                                                                               the parameters when LogKG achieves higher accuracy and
+LogKG achieves better when M S < 4 on the CMCC dataset                                                                                  Macro-F1 score, i.e., θidf = 0.4, M S = 3 on the CMCC
+and when M S < 12 on the GAIA dataset. The results are                                                                                  dataset, and θidf = 0.15, M S = 10 on the GAIA dataset.
+stable in most cases when M S takes a small value, and                                                                                     Figure 8(g) shows how the time window length affects
+when the dataset is relatively small, selecting a larger M S                                                                            the performance of LogKG on the CMCC dataset. We in-
+will lead to an unstable clustering result. Besides, we also                                                                            crease ω from 5 to 30 with a step size of 5. We can find that
+count the number of clusters when M S varies since this                                                                                 LogKG achieves the best performance when ω ∈ [20, 25].
+indicator determines labor consumption. A large number of                                                                               Therefore, we set ω = 20. When ω is too small, some
+clusters bring more labeling work to operators. As shown                                                                                logs containing failure information will be missed, so the
+in Figure 8(e) and Figure 8(f), the number of clusters is                                                                               accuracy and Macro-F1 score may be poor and unstable.
+negatively correlated with M S . It is less than 20 when M S                                                                            However, when ω is too large, more logs unrelated to the
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                                                                                                     11
+
+
+                 AC(d)         OPTICS                          AC(d)         OPTICS                          AC(d)             DBSCAN               OPTICS                   AC(d)          DBSCAN              OPTICS
+                 DBSCAN                                        DBSCAN                                        AC(n)             KMeans                                        AC(n)          KMeans
+           1.0    1.0   1.0   1.0   1.0   1.0                               0.97 0.98 0.99              1.0 1.0          1.0 1.0   1.0 1.0          1.0 1.0                                      0.98 0.97 0.94 0.99 0.99
+    1.00                                            1.00   0.95 0.97 0.98                        1.0                                                              1.0 0.95 0.95 0.89 0.98 0.98
+                                                                                                 0.8              0.79                                            0.8
+    0.75                                            0.75                                                                                     0.72
+Score
+
+
+
+
+                                                Score
+                                                                                                 0.6                                                              0.6
+
+
+
+
+                                                                                             Score
+
+
+
+
+                                                                                                                                                              Score
+    0.50                                            0.50
+                                                                                                 0.4                                                              0.4
+    0.25                                            0.25
+                                                                                                 0.2                                                              0.2
+    0.00    Accuracy Macro-F1 score 0.00                    Accuracy Macro-F1 score              0.0         Accuracy              Macro-F1 score                 0.0       Accuracy             Macro-F1 score
+      (a) Score on CMCC            (b) Score on GAIA
+Fig. 10: The effectiveness of LogKG as the clustering algo-                                             (a) Score on CMCC                                               (b) Score on GAIA
+rithm of entity alignment varies on the two datasets                                         Fig. 11: The effectiveness of LogKG as its clustering algo-
+                                                                                             rithm varies on the two datasets
+failure will be introduced, making LogKG less effective.                                     Collection and Processing                       Detection and Diagnosis                        Report and Notification
+    We discuss the several components used in entity
+alignment on the two datasets, including language mod-
+els and clustering algorithms. We conduct experiments                                            Filebeats                                      Failure Detection Failure
+                                                                                                                     Raw                                                                                          SMS
+with three different language models: paraphrase-mpnet-                                                                                               Alert       Cause
+                                                                                                                     Logs
+base-v2(Mpnet), all-distilroberta-v1(Roberta), all-MiniLM-                                                                                                                               Failure Report
+                                                                                                                                                                                             (Web)
+L12-v2(MiniLM) [58], and with three different clustering al-                                         Kafka
+gorithms: OPTICS [51], Agglomerative Clustering [50] with
+specified distance threshold (AC (d)) and DBSCAN [49]. The                                                      Log                    Log                Failure Failure Diagnosis                              Email
+                                                                                                     Logstash Database              Sequences              Case         Model
+results are shown in Figure 9 and Figure 10, respectively. All
+language models and clustering algorithms achieve 1.0 of                                     Fig. 12: The workflow of LogKG in the production environ-
+both accuracy and Macro-F1 scores on the CMCC dataset.                                       ment of CMCC.
+Although there are some minor variations, all the language
+models and clustering algorithms score above 0.95 in both                                    4.5.2           Scope of Logs during Failure
+accuracy and Macro-F1 scores on the GAIA dataset. The                                            In our experiments, we set different ω for the GAIA
+results show that varying language models and clustering                                     and the CMCC datasets, respectively. For the GAIA dataset,
+methods in the entity alignment cause little impact on the                                   since the failure duration is provided, we collect the logs
+effectiveness of LogKG. We choose Mpnet as the language                                      of each failure case according to the information. For the
+model and OPTICS as the clustering method in entity align-                                   CMCC dataset, since only the approximate time of each
+ment since they respectively performed the best in the GAIA                                  failure case is given, we set ω = 20. However, in real
+dataset.                                                                                     scenarios, the duration of a failure case is usually not fixed,
+    We also discuss the effect of different clustering algo-                                 and the recorded alarm time may also have a deviation.
+rithms in failure clustering on the two datasets. We con-                                    The above situations may affect the range of logs during
+duct experiments with five different clustering algorithms:                                  the failure, thereby affecting failure diagnosis performance.
+OPTICS, Agglomerative Clustering with specified distance                                     Since the amount of data in our experiments is still limited,
+threshold (AC (d)), Agglomerative Clustering with a speci-                                   verifying the impact of the above situations is impossible.
+fied number of clusters (AC (n)), DBSCAN and KMeans, and                                     We will verify it on more online large-scale services in future
+the results are shown in Figure 11(a) and Figure 11(b), re-                                  work.
+spectively. Except for DBSCAN, other clustering algorithms
+all achieve 1.0 of both accuracy and Macro-F1 score on the                                   5         D EPLOYMENT & C ASE S TUDY
+CMCC dataset and achieve 0.95+ of both accuracy and                                              We have deployed LogKG in CMCC to verify its perfor-
+Macro-F1 score on the GAIA dataset. DBSCAN achieves                                          mance in KG construction and failure diagnosis. Compared
+low accuracy and Macro-F1 score on the CMCC dataset and                                      with manual failure diagnosis described in §2.2.3, opera-
+does not perform as well as the other four algorithms on the                                 tors don’t need to do a lot of error-prone and inefficient
+GAIA dataset. We choose OPTICS as the clustering method                                      log searching. LogKG shortens failure mitigation time and
+in failure clustering since the experiments show that it and                                 increases failure diagnosis accuracy.
+KMeans perform the best of the five algorithms.
+4.5 Threats to Validity                                                                      5.1        Deployment in CMCC
+4.5.1 Data Quality                                                                           5.1.1           Workflow
+    LogKG consists of two parts: KG construction and failure                                     Figure 12 shows the workflow of LogKG in the produc-
+diagnosis model training. The performance of the failure                                     tion environment of CMCC, including three steps:
+diagnosis model depends on the effect of KG construction.                                        Step. 1: Collection and Processing. CMCC uses Filebeat
+In a real large-scale service scenario, some templates with                                  [59] to aggregate log files from different service instances
+poor quality may lead to incomplete extraction of multi-field                                and writes log streams to Kafka [60]. Operators connect
+information, affecting the effectiveness of KG construction.                                 Kafka with Logstash [61], which preprocesses logs utilizing
+In the face of complex templates or log formats, it’s neces-                                 extensions and plugins. They match the logs to templates
+sary to manually improve the quality of the log template.                                    using the log parsing methods. The logs can be processed
+These additional workloads don’t require human effort.                                       and stored in the database soon after they are generated.
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                   12
+
+    Step. 2: Failure Diagnosis. When a failure is detected        6     C ONCLUSION
+through failure detection methods, LogKG automatically                In this paper, we fuse the multi-field information in logs
+collects logs before and after it. Subsequently, LogKG com-       to automatically construct a knowledge graph, which can
+putes the representation vector of the failure based on           extract more information from logs. We use the knowledge
+these logs and uses the clustering model trained offline to       graph information to train a failure diagnosis model and
+diagnose the root cause of the failure.                           finally determine the cause of the failure. Extensive exper-
+    Step. 3: Report and Notification After LogKG diag-            iments using a simulation dataset and a real-word dataset
+noses the failure, the system will generate a failure report.     have demonstrated the superior performance of LogKG and
+It includes the possible root causes diagnosed by LogKG           the importance of its key components. We take the first
+and suggestions for failure mitigation based on historical        step to fuse the multi-field information in logs using a
+experience. Then, it will be displayed on the Web page and        knowledge graph. In the future, we will verify LogKG’s
+sent to the operators via SMS and email.                          performance in more scenarios.
+
+5.1.2     Performance                                             R EFERENCES
+    Specifically, we have deployed LogKG in Guangdong             [1]  W. Meng, Y. Liu, Y. Zhu, S. Zhang, D. Pei, Y. Liu, Y. Chen, R. Zhang,
+                                                                       S. Tao, P. Sun et al., “Loganomaly: Unsupervised detection of
+Mobile Communications Co., Ltd (GMCC). LogKG is re-
+                                                                       sequential and quantitative anomalies in unstructured logs.” in
+sponsible for diagnosing failures for more than 2000 service           IJCAI, vol. 19, no. 7, 2019, pp. 4739–4745.
+instances, which generate hundreds of millions of logs daily.     [2] S. Huang, Y. Liu, C. Fung, R. He, Y. Zhao, H. Yang, and Z. Luan,
+During the five months of deployment, LogKG averagely                  “Hitanomaly: Hierarchical transformers for anomaly detection in
+                                                                       system log,” IEEE Transactions on Network and Service Management,
+processed 47 failures daily. Based on LogKG, the failure               vol. 17, no. 4, pp. 2064–2076, 2020.
+diagnosis can be completed within five minutes, and the av-       [3] Y. Yuan, W. Shi, B. Liang, and B. Qin, “An approach to cloud
+erage failure mitigation time has been significantly reduced           execution failure diagnosis based on exception logs in openstack,”
+by more than 20 minutes.                                               in 2019 IEEE 12th International Conference on Cloud Computing
+                                                                       (CLOUD), 2019, pp. 124–131.
+                                                                  [4] S. He, P. He, Z. Chen, T. Yang, Y. Su, and M. R. Lyu, “A survey on
+5.2     Case Study                                                     automated log analysis for reliability engineering,” ACM Comput-
+                                                                       ing Surveys (CSUR), vol. 54, no. 6, pp. 1–37, 2021.
+    Here, we use two selected failure cases to compare            [5] CloudWise-OpenSource,           “Gaia-dataset,”    [EB/OL],      https:
+                                                                       //github.com/CloudWise-OpenSource/GAIA-DataSet Accessed
+the amount of work required using LogKG and manual                     October 4, 2022.
+keyword search, respectively. The outage of the MySQL             [6] C. Deng, Y. Jia, H. Xu, C. Zhang, J. Tang, L. Fu, W. Zhang,
+component caused the first failure, and the other was due              H. Zhang, X. Wang, and C. Zhou, “Gakg: A multimodal geoscience
+                                                                       academic knowledge graph,” in Proceedings of the 30th ACM Inter-
+to the exception of the Nova Conductor component. As                   national Conference on Information & Knowledge Management, 2021,
+listed in Table 8, we count the number of logs that need               pp. 4445–4454.
+to be investigated containing different keywords during the       [7] A. V. Kannan, D. Fradkin, I. Akrotirianakis, T. Kulahcioglu,
+above two failure cases. As mentioned above, the support               A. Canedo, A. Roy, S.-Y. Yu, M. Arnav, and M. A. Al Faruque,
+                                                                       “Multimodal knowledge graph for deep learning papers and
+services such as MySQL and AMQP are used in OpenStack                  code,” in Proceedings of the 29th ACM International Conference on
+to provide functions such as database and communica-                   Information & Knowledge Management, 2020, pp. 3417–3420.
+tion. When the MySQL service failed, some services also           [8] X. Zhang, Y. Xu, S. Qin, S. He, B. Qiao, Z. Li, H. Zhang, X. Li,
+failed because of it. For example, “Unexpected error while             Y. Dang, Q. Lin et al., “Onion: identifying incident-indicating logs
+                                                                       for cloud systems,” in Proceedings of the 29th ACM Joint Meeting
+reporting service status” will be printed in other service             on European Software Engineering Conference and Symposium on the
+logs. Moreover, Nova Conductor is a common component                   Foundations of Software Engineering, 2021, pp. 1253–1263.
+in OpenStack. Its exception caused a VM creation failure.         [9] E. Chuah, A. Jhumka, J. C. Browne, B. Barth, and
+                                                                       S. Narasimhamurthy, “Insights into the diagnosis of system
+It resulted in various logs in several components, such as             failures from cluster message logs,” in 2015 11th European
+“Policy check failed with credentials: ...” and “qemu-img              Dependable Computing Conference (EDCC).             IEEE, 2015, pp.
+failed to execute”. Although the operators can search by               225–232.
+keywords to find the failure information provided by these        [10] B. C. Tak, S. Tao, L. Yang, C. Zhu, and Y. Ruan, “Logan: Problem
+                                                                       diagnosis in the cloud using log-based reference models,” in 2016
+logs, it requires much manual work. For instance, they have            IEEE International Conference on Cloud Engineering (IC2E). IEEE,
+to examine 2500+ or 200+ logs to find the logs indicating the          2016, pp. 62–67.
+root causes of the two failures.                                  [11] P. He, J. Zhu, Z. Zheng, and M. R. Lyu, “Drain: An online log
+                                                                       parsing approach with fixed depth tree,” in 2017 IEEE international
+    LogKG significantly reduces manual effort. It automati-            conference on web services (ICWS). IEEE, 2017, pp. 33–40.
+cally calculated the failure vector after an online production    [12] Y. Liu, X. Zhang, S. He, H. Zhang, L. Li, Y. Kang, Y. Xu, M. Ma,
+failure. The offline failure diagnosis model classified it into        Q. Lin, Y. Dang et al., “Uniparser: A unified log parser for hetero-
+                                                                       geneous log data,” arXiv preprint arXiv:2202.06569, 2022.
+known root causes and generated a failure report. The whole
+                                                                  [13] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-
+process is completed without any manual effort.                        training of deep bidirectional transformers for language under-
+                                                                       standing,” arXiv preprint arXiv:1810.04805, 2018.
+TABLE 8: The Number Of Logs Containing Different Key-             [14] Q. Lin, H. Zhang, J.-G. Lou, Y. Zhang, and X. Chen, “Log clustering
+                                                                       based problem identification for online service systems,” in 2016
+words During Two Real-Word Failure Cases                               IEEE/ACM 38th International Conference on Software Engineering
+                                                                       Companion (ICSE-C). IEEE, 2016, pp. 102–111.
+        Failure Case           Kill   Fail   Error   Exception    [15] T. Jia, Y. Wu, C. Hou, and Y. Li, “Logflash: Real-time streaming
+                                                                       anomaly detection and diagnosis from system logs for large-scale
+        Nova Conductor Error   161    60      4          4
+                                                                       software systems,” in 2021 International Symposium on Software
+        MySQL Shutdown         322    15     811       1449
+                                                                       Reliability Engineering (ISSRE). IEEE, 2021.
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                                                                                                13
+
+[16] M. Du, F. Li, G. Zheng, and V. Srikumar, “Deeplog: Anomaly               [35] M. Jiang, J. Shang, T. Cassidy, X. Ren, L. M. Kaplan, T. P. Hanratty,
+     detection and diagnosis from system logs through deep learning,”              and J. Han, “Metapad: Meta pattern discovery from massive text
+     in Proceedings of the 2017 ACM SIGSAC Conference on Computer and              corpora,” in Proceedings of the 23rd ACM SIGKDD International
+     Communications Security, 2017, pp. 1285–1298.                                 Conference on Knowledge Discovery and Data Mining, 2017, pp. 877–
+[17] S. Lu, B. Rao, X. Wei, B. Tak, L. Wang, and L. Wang, “Log-based               886.
+     abnormal task detection and root cause analysis for spark,” in 2017      [36] Y. Zhu, H. Liu, Z. Wu, and Y. Du, “Relation-aware neighborhood
+     IEEE International Conference on Web Services (ICWS). IEEE, 2017,             matching model for entity alignment,” in Proceedings of the AAAI
+     pp. 389–396.                                                                  Conference on Artificial Intelligence, vol. 35, no. 5, 2021, pp. 4749–
+[18] Y. Xie, K. Yang, and P. Luo, “Logm: Log analysis for multiple                 4756.
+     components of hadoop platform,” IEEE Access, vol. 9, pp. 73 522–         [37] Q. Wang, Z. Mao, B. Wang, and L. Guo, “Knowledge graph
+     73 532, 2021.                                                                 embedding: A survey of approaches and applications,” IEEE
+[19] K. Nagaraj, C. Killian, and J. Neville, “Structured comparative               Transactions on Knowledge and Data Engineering, vol. 29, no. 12, pp.
+     analysis of systems logs to diagnose performance problems,” in                2724–2743, 2017.
+     9th USENIX Symposium on Networked Systems Design and Imple-              [38] A. Bordes, N. Usunier, A. Garcia-Duran, J. Weston, and
+     mentation (NSDI 12), 2012, pp. 353–366.                                       O. Yakhnenko, “Translating embeddings for modeling multi-
+[20] H. Ikeuchi, A. Watanabe, T. Kawata, and R. Kawahara, “Root-                   relational data,” in Advances in Neural Information Processing
+     cause diagnosis using logs generated by user actions,” in 2018                Systems, C. Burges, L. Bottou, M. Welling, Z. Ghahramani, and
+     IEEE Global Communications Conference (GLOBECOM). IEEE, 2018,                 K. Weinberger, Eds., vol. 26. Curran Associates, Inc., 2013.
+     pp. 1–7.                                                                      [Online]. Available: https://proceedings.neurips.cc/paper files/
+[21] S. He, Q. Lin, J.-G. Lou, H. Zhang, M. R. Lyu, and D. Zhang,                  paper/2013/file/1cecc7a77928ca8133fa24680a88d2f9-Paper.pdf
+     “Identifying impactful service system problems via log analysis,”        [39] S. He, K. Liu, G. Ji, and J. Zhao, “Learning to represent knowledge
+     in Proceedings of the 2018 26th ACM Joint Meeting on European                 graphs with gaussian embedding,” in Proceedings of the 24th ACM
+     Software Engineering Conference and Symposium on the Foundations              international on conference on information and knowledge management,
+     of Software Engineering, 2018, pp. 60–70.                                     2015, pp. 623–632.
+[22] L. Wang, N. Zhao, J. Chen, P. Li, W. Zhang, and K. Sui, “Root-           [40] Z. Sun, Z.-H. Deng, J.-Y. Nie, and J. Tang, “Rotate: Knowledge
+     cause metric location for microservice systems via log anomaly                graph embedding by relational rotation in complex space,” in
+     detection,” in 2020 IEEE International Conference on Web Services             International Conference on Learning Representations, 2019. [Online].
+     (ICWS). IEEE, 2020, pp. 142–150.                                              Available: https://openreview.net/forum?id=HkgEQnRqYQ
+[23] X. Zhang, Y. Xu, Q. Lin, B. Qiao, H. Zhang, Y. Dang, C. Xie,             [41] M. Nickel, V. Tresp, H.-P. Kriegel et al., “A three-way model for
+     X. Yang, Q. Cheng, Z. Li et al., “Robust log-based anomaly detec-             collective learning on multi-relational data.” in Icml, vol. 11, no.
+     tion on unstable log data,” in Proceedings of the 2019 27th ACM Joint         10.5555, 2011, pp. 3 104 482–3 104 584.
+     Meeting on European Software Engineering Conference and Symposium        [42] B. Yang, W.-t. Yih, X. He, J. Gao, and L. Deng, “Embedding entities
+     on the Foundations of Software Engineering, 2019, pp. 807–817.                and relations for learning and inference in knowledge bases,”
+[24] Y. Zuo, Y. Wu, G. Min, C. Huang, and K. Pei, “An intelligent                  arXiv preprint arXiv:1412.6575, 2014.
+     anomaly detection scheme for micro-services architectures with           [43] M. Banko, M. J. Cafarella, S. Soderland, M. A. Broadhead, and
+     temporal and spatial data analysis,” IEEE Transactions on Cognitive           O. Etzioni, “Open information extraction from the web,” in CACM,
+     Communications and Networking, vol. 6, no. 2, pp. 548–561, 2020.              2008.
+[25] F. Liu, Y. Wen, D. Zhang, X. Jiang, X. Xing, and D. Meng, “Log2vec:
+                                                                              [44] “Mitre: Common event expression.” Website, 2014, https://cee.
+     A heterogeneous graph embedding based approach for detecting
+                                                                                   mitre.org/.
+     cyber threats within enterprise,” in Proceedings of the 2019 ACM
+                                                                              [45] K. Zeng, C. Li, L. Hou, J. Li, and L. Feng, “A comprehensive
+     SIGSAC Conference on Computer and Communications Security, 2019,
+                                                                                   survey of entity alignment for knowledge graphs,” AI Open, vol. 2,
+     pp. 1777–1794.
+                                                                                   pp. 1–13, 2021. [Online]. Available: https://www.sciencedirect.
+[26] F. Wang, A. Bundy, X. Li, R. Zhu, K. Nuamah, L. Xu, S. Mauceri,
+                                                                                   com/science/article/pii/S2666651021000036
+     and J. Z. Pan, “Lekg: A system for constructing knowledge graphs
+     from log extraction,” in The 10th International Joint Conference on      [46] J. Ramos et al., “Using tf-idf to determine word relevance in
+     Knowledge Graphs, 2021, pp. 181–185.                                          document queries,” in Proceedings of the first instructional conference
+                                                                                   on machine learning, vol. 242, no. 1. Citeseer, 2003, pp. 29–48.
+[27] A. Ekelhart, F. J. Ekaputra, and E. Kiesling, “The slogert frame-
+     work for automated log knowledge graph construction,” in Euro-           [47] G. Stanovsky, I. Dagan et al., “Open ie as an intermediate structure
+     pean Semantic Web Conference. Springer, 2021, pp. 631–646.                    for semantic tasks,” in Proceedings of the 53rd Annual Meeting of
+[28] C. D. Manning, M. Surdeanu, J. Bauer, J. R. Finkel, S. Bethard, and           the Association for Computational Linguistics and the 7th International
+     D. McClosky, “The stanford corenlp natural language processing                Joint Conference on Natural Language Processing (Volume 2: Short
+     toolkit,” in Proceedings of 52nd annual meeting of the association for        Papers), 2015, pp. 303–308.
+     computational linguistics: system demonstrations, 2014, pp. 55–60.       [48] N. Reimers and I. Gurevych, “Sentence-bert: Sentence embeddings
+[29] B. Mohit, “Named entity recognition,” in Natural language process-            using siamese bert-networks,” in Proceedings of the 2019 Conference
+     ing of semitic languages. Springer, 2014, pp. 221–245.                        on Empirical Methods in Natural Language Processing and the 9th In-
+[30] D. Cotroneo, L. De Simone, P. Liguori, R. Natella, and N. Bidokhti,           ternational Joint Conference on Natural Language Processing (EMNLP-
+     “How bad can a bug get? an empirical analysis of software failures            IJCNLP), 2019, pp. 3982–3992.
+     in the openstack cloud computing platform,” in Proceedings of            [49] M. Ester, H.-P. Kriegel, J. Sander, and X. Xu, “Density-based spatial
+     the 2019 27th ACM Joint Meeting on European Software Engineering              clustering of applications with noise,” in Int. Conf. Knowledge
+     Conference and Symposium on the Foundations of Software Engineering,          Discovery and Data Mining, vol. 240, 1996, p. 6.
+     2019, pp. 200–211.                                                       [50] F. Murtagh and P. Contreras, “Algorithms for hierarchical cluster-
+[31] J. Lu, F. Li, L. Li, and X. Feng, “Cloudraid: hunting concurrency             ing: an overview,” Wiley Interdisciplinary Reviews: Data Mining and
+     bugs in the cloud via log-mining,” in Proceedings of the 2018 26th            Knowledge Discovery, vol. 2, no. 1, pp. 86–97, 2012.
+     ACM Joint Meeting on European Software Engineering Conference and        [51] M. Ankerst, M. M. Breunig, H.-P. Kriegel, and J. Sander, “Optics:
+     Symposium on the Foundations of Software Engineering, 2018, pp. 3–            Ordering points to identify the clustering structure,” ACM Sigmod
+     14.                                                                           record, vol. 28, no. 2, pp. 49–60, 1999.
+[32] H. Yan, T. Gui, J. Dai, Q. Guo, Z. Zhang, and X. Qiu, “A unified         [52] D. Fernandes and J. Bernardino, “Graph databases comparison:
+     generative framework for various ner subtasks,” arXiv preprint                Allegrograph, arangodb, infinitegraph, neo4j, and orientdb,” in 7th
+     arXiv:2106.01223, 2021.                                                       International Conference on Data Science, Technology and Applications,
+[33] J. Straková, M. Straka, and J. Hajič, “Neural architectures for             2018.
+     nested ner through linearization,” arXiv preprint arXiv:1908.06926,      [53] Y. Dai, S. Wang, N. N. Xiong, and W. Guo, “A survey on
+     2019.                                                                         knowledge graph embedding: Approaches, applications and
+[34] X. Zeng, D. Zeng, S. He, K. Liu, and J. Zhao, “Extracting relational          benchmarks,” Electronics, vol. 9, no. 5, 2020. [Online]. Available:
+     facts by an end-to-end neural model with copy mechanism,”                     https://www.mdpi.com/2079-9292/9/5/750
+     in Proceedings of the 56th Annual Meeting of the Association for         [54] H. Schütze, C. D. Manning, and P. Raghavan, Introduction to
+     Computational Linguistics (Volume 1: Long Papers), 2018, pp. 506–             information retrieval.     Cambridge University Press Cambridge,
+     514.                                                                          2008, vol. 39.
+     evaluation section.                                                                                   tion from an ISP’s point of view,’’ in Proc. IEEE INFOCOM, Mar. 2012,
+                                                                                                           pp. 2756–2760.
+                                                                                                      [17] B. Nguyen, Z. Ge, J. Van der Merwe, H. Yan, and J. Yates, ‘‘Absence:
+IEEE IX. CONCLUSION
+      TRANSACTIONS ON SERVICES COMPUTING                                                                   Usage-based failure detection in mobile networks,’’ in Proc. 21st Annu.            14
+     For an additive KPI with multi-dimensional attributes, it is                                          Int. Conf. Mobile Comput. Netw., 2015, pp. 464–476.
+[55] T. Rosado and J. Bernardino, “An overview of openstack architec-                                 [18] D. Liu et al., ‘‘FOCUS:Zhengdan
+                                                                                                                                    Shedding light
+                                                                                                                                                Li on   the high search
+                                                                                                                                                      received           response
+                                                                                                                                                                  the M.E.          time in
+                                                                                                                                                                               degree    in Soft-
+     a hard problem to localize the overall KPI’s anomaly to                                               the wild,’’ in Proc. IEEE INFOCOM,      Apr. 2016,   pp. 1–9.
+       ture,” in Proceedings of the 18th International Database Engineering &                                                     ware    Engineering        from    Nankai University in
+     the    root cause,
+       Applications          which2014,
+                       Symposium,      is one   (or more) combination of
+                                           pp. 366–367.                                               [19] F. Ahmed, J. Erman, Z.2020.
+                                                                                                                                   Ge, A. X.
+                                                                                                                                          SheLiu, is
+                                                                                                                                                   J. Wang,  and H. Yan, experimentalist
+                                                                                                                                                       an assistant        ‘‘Detecting and    at
+[56] attribute     valuesR.inSocher,
+       J. Pennington,          multiple
+                                      anddimensions.
+                                           C. D. Manning,  Firstly,  we Global
+                                                               “Glove:    consider
+                                                                                 vec-                      localizing end-to-end performance
+                                                                                                                                  the Collegedegradation
+                                                                                                                                                  of Software,for cellular
+                                                                                                                                                                    Nankai  dataUniversity.
+                                                                                                                                                                                 services,’’ Her
+                                                                                                           in Proc. IEEE INFOCOM,      Apr. 2016,   pp. 1–9.
+     this
+       tors anomaly      localization as in
+             for word representation,”       a search   problem
+                                               Proceedings   of the with    a huge
+                                                                     2014 conference                                              research    interests     include Artificial Intelligence,
+       on empirical methods in natural language processing (EMNLP), 2014,                                                          Software Engineering, etc.
+     space.      To deal with the huge search space, our proposed
+       pp. 1532–1543.
+[57] framework,
+       T. Mikolov, HotSpot,
+                        K. Chen, G. adopts   the MCTS
+                                        Corrado,   and J. approach       (the first
+                                                            Dean, “Efficient     esti-
+     time
+       mation in anomaly     localization literature)
+                  of word representations      in vector whose
+                                                            space,”action    value
+                                                                      arXiv preprint
+     isarXiv:1301.3781,
+          our novel potential
+                            2013. score based on the ‘‘ripple effect’’,
+                                                                                                                                   Yongqian Sun
+[58] N. Reimers and I. Gurevych, “Sentence-bert: Sentence embeddings                                                              YONGQIAN        SUN received
+                                                                                                                                                        received thea B.S.
+                                                                                                                                                                      B.S.degree
+                                                                                                                                                                            degree   in statis-
+                                                                                                                                                                                  in sta-
+     which      captures   how   anomalies2019.
+       using siamese bert-networks,”          propagate from the root cause                                                        tical specialty    fromNorthwestern
+                                                                                                                                                              Northwestern      Polytechnical
+                                                                                                                                  tistical specialty from                  Polytechnical
+[59] throughout       the aggregation
+       B. Elasticsearch,                  hierarchy. In
+                             “Filebeat-lightweight        addition,
+                                                      shipper     for we
+                                                                       logspropose
+                                                                             (2020),”                                              University,in Xi’an,
+                                                                                                                                  University              China,
+                                                                                                                                                   2012. He         in 2012,
+                                                                                                                                                              is currently      and Ph.D.
+                                                                                                                                                                            pursuing  the    in
+     aURLhierarchical    pruning
+              https://www.   elastic.approach   to further reduce
+                                      co/products/beats/filebeat.       the search
+                                                                  Accessed,  pp. 02–                                               computer
+                                                                                                                                  Ph.D.    degreescience
+                                                                                                                                                   with thefrom   Tsinghua
+                                                                                                                                                             Department    of University,
+                                                                                                                                                                              Computer Bei-
+       12, 2021.                                                                                                                   jing, China,
+                                                                                                                                  Science,         in 2018.
+                                                                                                                                             Tsinghua         He isBeijing,
+                                                                                                                                                        University,   currently  an assistant
+                                                                                                                                                                              China. His
+     space.     Our experiments based on the data from a real-world                                                                professor      at the   College    ofanomaly
+                                                                                                                                                                          Software,     Nankai
+[60] J. Kreps, N. Narkhede, J. Rao et al., “Kafka: A distributed messag-                                                          current   research interests  include           detec-
+     search     engine
+       ing system    for show    that HotSpot
+                          log processing,”        achieves much
+                                             in Proceedings          better accu-
+                                                              of the NetDB,   vol. 11,                                             University, Tianjin, China. His research interests
+                                                                                                                                  tion, root cause localization, and high performance
+     racy
+       2011,than    previous approaches. Our operational experiences
+               pp. 1–7.                                                                                                            include anomaly detection and root cause local-
+                                                                                                                                  switching in datacenter.
+[61] show      that HotSpot
+       E. Stack,                  can reduce
+                       “Elasticsearch,           the localization
+                                          logstash,   kibana— elastic,”time fromURL:                                               ization in service management.
+       https://www. elastic.co/what-is/elk-stack, 2021.
+     about more than 1 hour in manual efforts to less than 20 sec-
+     onds, and that HotSpot is an approach generally applicable to                                                                 Fangrui Guo received the M.E. degree in Soft-
+     the anomaly localization
+                      YichengforSuiadditive
+                                    receivedKPI  metrics.
+                                             a B.S. degree in Software                                                             ware Engineering from Nankai University in
+                            Engineering from Nankai University in 2020.                                                            2020. Her research interests include anomaly
+                            He is currently a Ph.D. student at the College                                                         detection and failure diagnosis.
+     REFERENCES             of Software, Nankai University. His current re-                                                       YOUJIAN ZHAO received the B.S. degree from
+     [1] R. Bhagwan et al.,    ‘‘Adtributor:
+                            search           Revenue
+                                      interests       debugging
+                                                 include   machinein advertising
+                                                                       learningsys-
+                                                                                 and                                              Tsinghua University in 1991, the M.S. degree from
+         tems,’’ in Proc. 11th USENIX
+                            deep        Symp. Netw. Syst. Design Implement. (NSDI),
+                                  learning.                                                                                       the Shenyang Institute of Computing Technology,
+          2014, pp. 43–55.                                                                                                        Chinese Academy of Sciences, in 1995, and the
+      [2] Q. Lin, J.-G. Lou, H. Zhang, and D. Zhang, ‘‘iDice: Problem identification                                              Ph.D. degree in computer science from Northeast-
+          for emerging issues,’’ in Proc. 38th Int. Conf. Softw. Eng., May 2016,                                                  ern University, China, in 1999. He is currently a
+          pp. 214–224.                                                                                                            Professor with the Computer Science Department,
+      [3] J. Han, J. Pei, and M. Kamber, Data Mining: Concepts and Techniques.                                                    Tsinghua University. His research interests include
+          Amsterdam, The Netherlands: Elsevier, 2011.                                                                              Junyu
+                                                                                                                                  high      Shen
+                                                                                                                                        speed       received
+                                                                                                                                               Internet       the B.S.
+                                                                                                                                                        architecture,    degreeand
+                                                                                                                                                                      switching    in Soft-
+      [4] C. B. Browne et al.,    ‘‘A survey   of Monte   Carlo tree  searchdegree
+                                                                             methods,’’  inIEEE                                    ware Engineering
+                              Yuzhe       Zhang      received     a B.S.                     Soft-                                routing, and high-speed from
+                                                                                                                                                           networkNankai    University in
+                                                                                                                                                                    equipment.
+          Trans. Comput. Intell. AI Games, vol. 4, no. 1, pp. 1–43, Mar. 2012.                                                     2022. He is currently an M.S. student at the
+                              ware Engineering from Nankai University in
+      [5] D. Silver et al., ‘‘Mastering the game of Go with deep neural networks and                                               College of Software, Nankai University. His cur-
+                              2020. He is currently an M.S. student at the Col-
+          tree search,’’ Nature, vol. 529, no. 7587, pp. 484–489, 2016.                                                            rent research interest includes anomaly detec-
+                              lege of Software, Nankai University. His research
+      [6] S.-B. Lee et al., ‘‘Threshold compression for 3G scalable monitoring,’’ in
+                              interests                                                                                            tion and natural language processing.
+          Proc. IEEE INFOCOM,           Mar.include
+                                              2012, pp.deep    learning and anomaly de-
+                                                         1350–1358.
+      [7] L. Kocsis and C.tection.
+                               Szepesvári, ‘‘Bandit based Monte-Carlo planning,’’ in
+          Proc. Eur. Conf. Mach. Learn., 2006, pp. 282–293.                                                              YA SU received the B.S. degree from the Uni-
+      [8] P. Auer, N. Cesa-Bianchi, and P. Fischer, ‘‘Finite-time analysis of the                                        versity of Electronic Science and Technology of
+          multiarmed bandit problem,’’ Mach. Learn., vol. 47, no. 2, pp. 235–256,                                        China in 2016. He is currently pursuing the Ph.D.
+          2002.                                                                                                          degree with the Department of Computer Science,
+      [9] A. Soule, K. Salamatian, and N. Taft, ‘‘Combining filtering and statistical                                     Yuzhi Zhang
+                                                                                                                         Tsinghua            received
+                                                                                                                                    University,  Beijing,the  B.S.His
+                                                                                                                                                           China.    and    M.S. de-
+                                                                                                                                                                        current
+          methods for anomaly detection,’’ in Proc. 5th ACM SIGCOMM Conf.                                                 gree in interests
+                                                                                                                                    computer     science
+                              Jianjun                                                                                    research             include  datafrom    the Department
+                                                                                                                                                              analysis,  model
+          Internet Meas., 2005,      p. 31. Sun received B.S. in semiconductor                                            of Computerand  Science
+                              physics                                                                                    development,        machineand    Technology, Tsinghua
+                                                                                                                                                      learning.
+     [10] List of HTTP status       codes. and      devices
+                                            Accessed:    Oct. 1,from
+                                                                  2017. Tsinghua          Univer-
+                                                                         [Online]. Available:                             University in 1985 and 1987, respectively, and
+                              sity, Beijing, China, in 1991, and M.S. in radio
+          https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#4xx_Client_                                             the Ph.D. degree in computer science from
+          errors              electronics from Jinan University, Guangzhou,                                               the Institute of Computing Technology, Chinese
+     [11] M. Y. Chen, E. Kiciman,
+                              China, E.    in Fratkin,
+                                               1994. A.He  Fox,is and  E. Brewer,
+                                                                    currently    the‘‘Pinpoint:
+                                                                                         general                          Academy of Sciences in 1991. He is currently
+          Problem determination
+                              manager  in large,
+                                              of dynamic    InternetManagement
+                                                  the Network         services,’’ in Proc.   Int.
+                                                                                          Center                          dean of the College of Software, Nankai Uni-
+          Conf. Depend. Syst. of Netw.
+                                    China (DSN),   Jun. 2002,
+                                              Mobile            pp. 595–604. Corporation
+                                                         Communications                                                   versity, and is also a distinguished professor.
+     [12] R. R. Kompella, Guangdong
+                               J. Yates, A. Greenberg,
+                                                  Co., LTDand   HisA. current
+                                                                       C. Snoeren,    ‘‘IP faultin-
+                                                                                 research                                 His research interests include deep learning and
+          localization via risk
+                              terestsmodeling,’’
+                                         includeincommunication
+                                                       Proc. 2nd Conf. network
+                                                                           Symp. Netw.      Syst.
+                                                                                       manage-                            other aspects of artificial intelligence.
+          Design Implement.,  mentvol. and
+                                        2. 2005,
+                                              NFV pp.cloud
+                                                      57–70.network architecture.
+                                                                                                                         DAPENG LIU received the B.S. degree from the
+     [13] S. Kandula, D. Katabi, and J.-P. Vasseur, ‘‘Shrink: A tool for failure
+                                                                                                                         Harbin Institute of Technology in 2010 and the
+          diagnosis in IP networks,’’ in Proc. ACM SIGCOMM Workshop Mining                                                Dan degree
+                                                                                                                                Pei received
+          Netw. Data, 2005, pp. 173–178.
+                                                                                                                         Ph.D.          from Tsinghua
+                                                                                                                                                 the B.E. University,
+                                                                                                                                                             and M.S.Beijing,
+                                                                                                                                                                          degrees in
+                                                                                                                          computer
+                                                                                                                         China,       science
+                                                                                                                                 in 2016. He is from   the aDepartment
+                                                                                                                                                 currently    Senior Engineerof Com-
+     [14] R. R. Kompella, TingJ. Yates,XuA.received
+                                               Greenberg,the
+                                                           andM.E.
+                                                                 A. C.degree
+                                                                        Snoeren,in‘‘Detection
+                                                                                       Software
+          and localization of     network blackfrom
+                              Engineering           holes,’’ in Proc.South
+                                                          Central       26th IEEE    Int. Conf.in
+                                                                                University                               atputer
+                                                                                                                            Baidu,Science     and Technology,
+                                                                                                                                   Inc. His current                  Tsinghua
+                                                                                                                                                    research interests  include Uni-
+                                                                                                                          versity in 1997
+                                                                                                                         monitoring,  anomaly and   2000, and
+                                                                                                                                                 detection  respectively,    and the
+                                                                                                                                                                 troubleshoot-
+          Comput. Commun.                She is May
+                                 (INFOCOM),
+                              2020.                     2007, pp.
+                                                    currently     a 2180–2188.
+                                                                     Ph.D. student at the
+     [15] P. Bahl, R. Chandra,         A. ofGreenberg,    S. Nankai
+                                                              Kandula, University.
+                                                                          D. A. Maltz,                                    Ph.D.
+                                                                                                                         ing, datadegree   inand
+                                                                                                                                   analysis,  computer
+                                                                                                                                                  machinescience
+                                                                                                                                                            learning.from the Com-
+                              College           Software,                                 Herand
+                                                                                               re-
+          M. Zhang, ‘‘Towards       highly   reliable enterprise                                                          puter Science Department, University of Califor-
+                              search      interests    include network
+                                                                   anomaly  services  via infer-
+                                                                               detection      and
+          ence of multi-level     dependencies,’’    ACM                                                                  nia, Los Angeles (UCLA) in 2005. He is cur-
+                              failure    diagnosis.     SheSIGCOMM
+                                                              is an IEEE  Comput.
+                                                                              Member.Commun.
+          Rev., vol. 37, no. 4, pp. 13–24, 2007.                                                                          rently an associate professor at the Department
+                                                                                                                          of Computer Science and Technology, Tsinghua
+                                                                                                                          University. His research interests include net-
+     10922                                                                                                                                                      VOLUME 6, 2018
+                                                                                                                          work and service management in general. He is
+                                                                                                      an IEEE senior member and an ACM senior member.
+
+                               Shenglin Zhang received B.S. in network engi-                                                       Xiao Yang received M.S. in communication en-
+                               neering from the School of Computer Science                                                         gineering from Beijing University of Posts and
+                               and Technology, Xidian University, Xi’an, China,                                                    Telecommunications, Beijing, China, in 2017. He
+                               in 2012 and Ph.D. in computer science from Ts-                                                      is currently the project manager of the Inno-
+                               inghua University, Beijing, China, in 2017. He is                                                   vation Research Institute of China Mobile. His
+                               currently an associate professor with the College                                                   current research interests include network man-
+                               of Software, Nankai University, Tianjin, China.                                                     agement.
+                               His current research interests include failure
+                               detection, diagnosis, and prediction for service
+                               management. He is an IEEE Member.
+IEEE TRANSACTIONS ON SERVICES COMPUTING                                15
+
+                   Li Yu received M.S. in communication engineer-
+                   ing from Beijing University of Posts and Telecom-
+                   munications, Beijing, China, in 2007. He is cur-
+                   rently the vice president of the Innovation Re-
+                   search Institute of China Mobile (Zhejiang) His
+                   current research interests include mobile com-
+                   munication technology, network intelligence, and
+                   big data of communication networks.
+

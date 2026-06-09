@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Latency-Based WiFi Congestion Control in the Air for Dense WiFi Networks（IWQoS2017）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+
+</style>
+</head>
+<body>
+<h1>Latency-Based WiFi Congestion Control in the Air for Dense WiFi Networks（IWQoS2017）</h1>
+<blockquote>作者：Changhua Pei, Youjian Zhao, Yunxin Liu, Kun Tan, Jiansong Zhang, Yuan Meng, Dan Pei  </blockquote>
+<p>>机构：清华大学、华为、Microsoft Research、清华信息科学与技术国家实验室（TNList）</p>
+<blockquote>发表年份：2017  </blockquote>
+<p>>会议/期刊：IEEE/ACM IWQoS2017 >关联 PDF：同目录下 <code>iwqos2017-pch.pdf</code></p>
+<h2>一、文档信息速览</h2>
+<table><tr><th>字段</th><th>值</th></tr><tr><td>标题</td><td>Latency-Based WiFi Congestion Control in the Air for Dense WiFi Networks</td></tr><tr><td>作者</td><td>Changhua Pei, Youjian Zhao, Yunxin Liu, Kun Tan, Jiansong Zhang, Yuan Meng, Dan Pei</td></tr><tr><td>机构</td><td>Tsinghua University; Huawei; Microsoft Research; TNList</td></tr><tr><td>发表年份</td><td>2017</td></tr><tr><td>会议/期刊</td><td>IEEE/ACM International Symposium on Quality of Service (IWQoS)2017</td></tr><tr><td>分类</td><td>网络 / WiFi拥塞控制</td></tr><tr><td>核心问题</td><td>密集 WiFi环境下802.11分布式队列过长导致每帧时延大，QoS 类机制（802.11e）不能扩展</td></tr><tr><td>主要贡献</td><td>1) 提出把&quot;空中分布式队列&quot;转移到&quot;主机队列&quot;的新思路；2) 设计分布式 QAir 控制算法；3) 在商用 OpenWrt路由器上完整实现并验证，ping RTT下降50–75%。</td></tr></table>
+<h2>二、背景（Background）</h2>
+<p>Wi-Fi 是当前最主要的 Internet接入方式。802.11ac 等 PHY 标准已经能把物理层峰值速率推到1.3 Gbps，但 MAC 层时延却始终难以压下去；在会议厅、教室、宿舍这类"密集 Wi-Fi"场景下，文献 [1] 测得90 分位 Wi-Fi跳时延能超过25 ms。Web 浏览这种业务，网络层几十毫秒的尾延迟会被上层重传、连接握手等放大到秒级（多至100 倍）。这种"最后一跳"已成为端到端时延的最弱一环。MAC 层时延的来源主要有两类：(a)主机内部排队（IP 层、driver、PHY队列等）；(b)802.11 DCF 在共享信道上造成的"分布式队列"——所有节点 HOL 的帧在"空中"轮流争抢信道。文献 [3] 表明主机排队可以用端侧 QoS绕开，但分布式队列受 DCF约束不可绕过。IEEE802.11e/EDCA试图用更小的 CW 和 IFS 给高优先级帧"插队"，然而一旦密集部署中话音流数量增多，小 CW 会导致严重冲突，性能反而下降；论文 [15] 中的图3 也直接证实了这一点。集中式调度（PCF、CENTAUR、DOMINO 等）虽然能彻底避免冲突，但需要中心控制器与严格时间同步，几乎没有在消费级产品中落地。因此"既不修改 AP / PHY，又不依赖集中控制器、又能在密集场景下显著降低 MAC 层延迟"就成了一个长期未解的难题。</p>
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<ul>
+<li><strong>痛点1：分布式队列无法绕过</strong>：高优先级流即使在 driver 层享受本地 QoS，也仍要在共享信道排队等待，被最差信道节点"拖死"。</li>
+<li><strong>痛点2：802.11e/EDCA不可扩展</strong>：高优先级帧共用一个小 CW，节点增多后碰撞概率暴增，时延反而恶化。</li>
+<li><strong>痛点3：集中式方案难部署</strong>：PCF、Soft-TDMAC、CENTAUR 等都需要中心调度或 PHY 层改动，几乎没有商业 AP 支持。</li>
+<li><strong>痛点4：现有拥塞控制方案只盯吞吐量</strong>：Idle Sense 等虽能改善 goodput，但对每帧延迟（对实时流体验至关重要）几乎没有作用。</li>
+<li><strong>解决方案</strong>：用每帧时延作为信道竞争激烈程度的实时信号，分布式地让每个节点估算当前竞争者数量 β，并在 driver 内引入一个 Rate Regulator，把"信道上同时竞争的节点数"从 β 控制到接近1，从而把分布式队列变回主机队列，让延迟敏感流能"插队"。</li>
+</ul>
+<h2>四、核心原理（Principles）</h2>
+<p>QAir 的核心思想非常直观：如果存在一个集中调度器，它就可以调节 driver→PHY 的下发速率，从而控制分布式队列的长度。QAir 没有中心调度器，但<strong>模拟</strong>了这一行为：每个节点根据本地测得的每帧延迟估计 β，再把"每秒允许下发到 PHY层的帧数"控制到只剩 β≈1 的水平。延迟敏感的小流自然能绕过几乎所有排队。</p>
+<p>定义 Wi-Fi 一帧的延迟：</p>
+<p><code>t = t_{\text{const}} + t_{\text{cont}} + t_{\text{tr}}</code></p>
+<p>其中 <code>t_{\text{const}} = \text{DIFS} + \text{SIFS} + T_{\text{ack}}</code>，<code>t_{\text{tr}}</code> 是帧本身的发送时间，<code>t_{\text{cont}}</code> 是 DCF退避时间。当有 β 个节点争抢信道时，退避时间随 β线性增长：</p>
+<p><code>t_{\text{max}} \approx t_{\text{const}} + \text{SLOT} \cdot CW_{\text{max}} + \beta \cdot \frac{\text{avgframe}}{\text{avgphyrate}}</code></p>
+<p>也就是说 β越大，每帧最坏延迟越大。QAir 的目标就是让 β ≈1。</p>
+<p>为了稳定地得到 β 的代理指标，QAir 采用两层滑动平均：先在每个 <code>checkInterval</code> 时窗内对帧延迟做算术平均得到 <code>T_i</code>，再跨时窗做指数滑动平均得到 <code>\hat{T}</code>：</p>
+<p><code>\hat{T}_{\text{new}} = \alpha \cdot \hat{T}_{\text{old}} + (1-\alpha) \cdot T_i</code></p>
+<p>其中 <code>checkInterval</code> 的选取原则是"至少能发出 CW_min 个包"，在802.11n、1500B 包、100Mbps真实速率下大约1.8 ms。算法据此控制速率：</p>
+<p><code>\hat{T} < T_{\text{target}} \Rightarrow R_{\text{tc}} \leftarrow \min(R_{\text{tc}}+\delta, R_{\text{max}})</code></p>
+<p><code>\hat{T} \ge T_{\text{target}} \Rightarrow R_{\text{tc}} \leftarrow \max\!\Big(\frac{T_{\text{target}}}{\hat{T}} \cdot R_{\text{tc}},\; R_{\text{min}}\Big)</code></p>
+<p>这里的"加性增、乘性减"借鉴自 TCP/AIMD，区别在于：(1) 上界 <code>R_{\text{max}}</code>防止恢复期抖动下速率飙升；(2) 下界 <code>R_{\text{min}}</code>防止"死锁"（<code>R_{\text{tc}}=0</code> 后永远等不到新的 <code>\hat{T}</code>反馈）；(3) 控制目标 <code>T_{\text{target}}</code> 是用户可配的延迟-吞吐权衡点。</p>
+<h2>五、算法详解（Algorithm）</h2>
+<p><strong>输入</strong>：每帧延迟 <code>t_k</code>（内核打时间戳），控制目标 <code>T_{\text{target}}</code>。 <strong>输出</strong>：每秒下发到 PHY层的最大帧速率 <code>R_{\text{tc}}</code>，由 Rate Regulator强制执行。 <strong>核心模块</strong>：</p>
+<ul>
+<li>Delay Monitor：在 ath9k驱动中打三段时间戳 $t_w(p)$、$t_h(p)$、$t_e(p)$。其中 $t_h(p)$ 通过前一个包 ACK时刻 $t_e(p-1)$推断：</li>
+<p><code>t_h(p) = \max\{t_w(p),\; t_e(p-1)\}</code></p>
+<li>Control Algorithm：每收到一次 ACK 调用 <code>F(t_k)</code>，累积 <code>checkInterval</code>窗口内的延迟，窗口结束更新 $\hat{T}$，按 AIMD规则更新 $R_{\text{tc}}$。</li>
+<li>Rate Regulator：在 ath9k driver 与 PHY 之间插入一个 token bucket，按 $R_{\text{tc}}$速率发放 token。数据包到来时若无 token 则缓存。</li>
+</ul>
+<p><strong>伪代码</strong>：</p>
+<pre><code>def F(tk): #每次 ACK触发
+ global sum, ntrans, That
+ sum += tk
+ ntrans +=1
+ if (now - last_time) &gt; checkInterval:
+ Ti = sum / ntrans
+ That = alpha * That + (1 - alpha) * Ti
+ last_time = now
+ sum =0; ntrans =0
+ if That &lt; Ttarget:
+ Rtc = min(Rtc + delta, Rmax)
+ else:
+ Rtc = max((Ttarget / That) * Rtc, Rmin)
+ return Rtc</code></pre>
+<p><strong>关键数学</strong>：见 §四的方程。 <strong>复杂度</strong>：每个 ACK 仅一次常数时间更新，复杂度 O(1)；token bucket 占 O(1)内存。 <strong>推理流程</strong>：ACK→ <code>t_k</code>累积→窗口结束→ 更新 <code>\hat{T}</code>→ 更新 <code>R_{\text{tc}}</code>→ token bucket决定下一个包能否下发到 PHY。</p>
+<p><strong>示例</strong>：4 个节点 S1–S4 同时向 PHY 各塞1帧。在 DCF 下 β=4，延迟正比于4；QAir 把 S1、S3 在 Rate Regulator 层缓存后 β=2，每个竞争节点的延迟下降到一半；缓存包的额外延迟远小于原信道上叠加的退避延迟。</p>
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+ A[Application 层 / IP 层] --> B[ath9k driver队列]
+ B --> C[Delay Monitor<br/>记录 tw, th, te]
+ C --> D[Control Algorithm<br/>滑动平均 + AIMD]
+ D -->|Rtc| E[Rate Regulator<br/>token bucket]
+ E -->|受控下发| F[Wi-Fi PHY队列]
+ F -->|空中分布式队列| G[无线信道]
+ C -->|延迟样本 tk| D
+</div>
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+ S1[帧到达 ath9k] --> S2{令牌桶有 token?}
+ S2 -- 是 --> S3[下发到 PHY]
+ S3 --> S4[DCF退避并发送]
+ S4 --> S5[收到 ACK]
+ S5 --> S6[计算 tk = te - th - Tp - C]
+ S6 --> S7[累积到 checkInterval窗口]
+ S7 --> S8{窗口结束?}
+ S8 -- 否 --> S1
+ S8 -- 是 --> S9[更新 That]
+ S9 --> S10{That 与 Ttarget 比较}
+ S10 -- 小于 --> S11[Rtc 加性增]
+ S10 -- 大于 --> S12[Rtc乘性减]
+ S11 --> S13[token bucket速率更新]
+ S12 --> S13
+ S2 -- 否 --> S14[在 Rate Regulator缓存]
+ S14 --> S1
+</div>
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+分布式队列转主机队列</strong>：放弃"如何在共享信道排队"的思路，转而把排队拉回到本地 driver缓存，从而让本地 QoS真正生效。</li>
+<li><strong>+ 自适应 AIMD 控制</strong>：借鉴 TCP拥塞控制但针对无线特性定制 $R_{\min}$/$R_{\max}$，既避免"死锁"，也避免剧烈抖动。</li>
+<li><strong>+ 双层滑动平均的延迟估计</strong>：直接对原始帧延迟做 EWMA会被极端值带飞（差100 倍），先做时间桶内算术平均再做跨桶 EWMA，稳态估计与瞬时值兼顾。</li>
+<li><strong>+ 三时间戳精确测每帧延迟</strong>：在 ath9k 中利用 $t_h(p)=\max(t_w(p),t_e(p-1))$准确推断 PHY队列 HOL时刻，无需修改硬件。</li>
+<li><strong>+ 完全分布式、无需集中调度</strong>：单台路由器上修改驱动即可上线，可与现有802.11e 共存，不需时间同步。</li>
+</ul>
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>测试床</strong>：20 台 NETGEAR WNDR4300 双频路由器（OpenWrt15.05、560 MHz CPU、128 MB RAM），5 GHz802.11n、20 MHz、固定在同一信道；10 条 AP–client链路。</li>
+<li><strong>Baseline</strong>：原生 IEEE802.11 DCF（即 QAir关闭）。</li>
+<li><strong>指标</strong>：聚合吞吐量 + ping 平均 RTT。</li>
+<li><strong>结果</strong>：</li>
+<li>UDP背景流：在1–4 条并发时 ping RTT下降 <strong>50%–75%</strong>；9 条并发时下降更明显，吞吐量与 baseline持平。</li>
+<li>TCP背景流：在1–5 条并发时 ping RTT下降 <strong>50%–60%</strong>，吞吐量损失 ≤15%。</li>
+<p>-直播实测：把两部手机面对面做实时时钟直播，100 s 内 baseline出现 <strong>7 次缓冲</strong>，端到端时延2.15–9.76 s；QAir开启后 <strong>0 次缓冲</strong>，时延压缩到2.15–2.23 s。</p>
+<li><strong>消融</strong>：本论文没有逐组件的 ablation，但 $\alpha$、$T_{\text{target}}$ 的取值都对收敛速度与延迟有可观测影响；增大 $T_{\text{target}}$提升吞吐量、减小则进一步压延迟。</li>
+<li><strong>效率</strong>：CPU几乎无开销；token bucket 在 Linux <code>hrtimer</code> 上以 µs 级精度调度。</li>
+</ul>
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li>大型会场、校园宿舍的实时直播 /视频会议：希望低延迟流"插队"绕过普通文件下载。</li>
+<li>VoIP、在线游戏：低流量但极敏感，小流隐式享受更高优先级。</li>
+</ul>
+<p>-智能工厂 /远程控制：周期性小包命令需要稳定低时延。 -智能终端推送：消息通知、即时通信等短包业务。 -共享同一 AP 的多设备家庭网络（路由器厂商可直接集成）。 ##十一、相关论文（Related Papers in this set）</p>
+<ul>
+<li><code>icccn2017-pch</code>（How Much Are Your Neighbors Interfering with Your WiFi Delay?）——同组 Pei团队，把"邻居干扰"量化成每个包浪费的时间比例。</li>
+<li><code>PID1194354</code>（How Vulnerable Is the Public WiFi AP You Are Using?）——同组 SAVY，关注 AP本身的脆弱性，与 Wi-Fi性能互补。</li>
+<li><code>lanman16-sui</code>（Understanding the Impact of AP Density）——同组 Sui，关注 EAP部署密度对性能的相反方向影响。</li>
+</ul>
+<p>##十二、术语表（Glossary）</p>
+<ul>
+<li><strong>DCF</strong>：Distributed Coordination Function，802.11 的基本 CSMA/CA退避机制。</li>
+<li><strong>CW</strong>：Contention Window，竞争窗口，节点在 [0, CW] 内选退避计数。</li>
+<li><strong>DIFS / SIFS</strong>：分布式帧间隔 /短帧间隔，802.11 时序常量。</li>
+<li><strong>ECMP / EDCA</strong>：IEEE802.1ad 多路径等价路由 / IEEE802.11e增强分布式信道访问。</li>
+<li><strong>AIMD</strong>：Additive Increase Multiplicative Decrease，TCP拥塞控制经典规则。</li>
+<li><strong>PSM</strong>：Power Save Mode，节能模式下 beacon/DTIM调度。</li>
+<li><strong>MSDU / A-MPDU</strong>：MAC Service Data Unit /聚合 MAC协议数据单元。</li>
+<li><strong>ath9k</strong>：Atheros802.11n Linux 开源驱动，本文的实现对象。</li>
+</ul>
+<p>##十三、参考与延伸阅读</p>
+<p>-论文 [1]：Pei 等，<em>WiFi Can Be the Weakest Link of Round Trip Network Latency</em>，INFOCOM2016，提供了"Wi-Fi 是最弱一环"的实测证据。 -论文 [15]：Verkaik 等，<em>SoftSpeak: Making VoIP play well in existing802.11 deployments</em>，NSDI2009，验证802.11e 在密集话音流下的退化。 -论文 [27]：Mittal 等，<em>TIMELY: RTT-based Congestion Control for the Datacenter</em>，SIGCOMM2015，把 RTT-based 控制搬到数据中心，是 QAir 设计思路的姊妹篇。 -论文 [25]：Heusse 等，<em>Idle Sense</em>，SIGCOMM2005，最早做 distributed contention control 的工作，与 QAir目标互补。 -工具/平台：OpenWrt15.05（<code>https://openwrt.org/</code>）、ath9k驱动（<code>http://wireless.kernel.org/en/users/Drivers/ath9k</code>）；现代等价平台可以使用 Linux <code>mac80211</code> + <code>cfg80211</code> 重做。</p>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

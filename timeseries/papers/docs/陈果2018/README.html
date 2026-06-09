@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>FUSO: Fast Multi-Path Loss Recovery for Data Center Networks（IEEE/ACM TON 2018）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>FUSO: Fast Multi-Path Loss Recovery for Data Center Networks（IEEE/ACM TON 2018）</h1>
+
+<blockquote>作者：Guo Chen, Yuanwei Lu, Yuan Meng, Bojie Li, Kun Tan, Dan Pei, Peng Cheng, Layong Luo, Yongqiang Xiong, Xiaoliang Wang, Youjian Zhao</blockquote>
+<blockquote>机构：清华大学；湖南大学；微软亚洲研究院（MSRA）；微软 Azure Networking；华为中央软件院；南京大学</blockquote>
+<blockquote>发表年份：2018（在线发布 2018-05-11，卷期 2018-06-14）</blockquote>
+<blockquote>会议/期刊：IEEE/ACM Transactions on Networking, Vol. 26, No. 3, June 2018</blockquote>
+<blockquote>关联 PDF：同目录下 <code>陈果2018.pdf</code></blockquote>
+<blockquote>初步版本：USENIX ATC 2016 [51] "Fast and Cautious: Leveraging Multi-Path Diversity for Transport Loss Recovery in Data Centers"</blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>FUSO: Fast Multi-Path Loss Recovery for Data Center Networks</td></tr>
+<tr><td>作者</td><td>Guo Chen, Yuanwei Lu, Yuan Meng, Bojie Li, Kun Tan, Dan Pei, Peng Cheng, Layong Luo, Yongqiang Xiong, Xiaoliang Wang, Youjian Zhao</td></tr>
+<tr><td>机构</td><td>清华大学；湖南大学；MSRA；Microsoft Azure；华为；南京大学</td></tr>
+<tr><td>发表年份</td><td>2018（IEEE/ACM TON），初步版本 USENIX ATC 2016</td></tr>
+<tr><td>期刊</td><td>IEEE/ACM Transactions on Networking, Vol. 26, No. 3, June 2018</td></tr>
+<tr><td>分类</td><td>数据中心网络 / 多路径传输 / 丢包恢复 / TCP / MPTCP</td></tr>
+<tr><td>核心问题</td><td>DCN 中硬件故障导致丢包率从 0.01% 上升到 1% 时，&gt;1% 的流会因 retransmission timeout (RTO) 影响 99th FCT；传统单路径 TCP 增强无法同时做到"快"与"谨慎"</td></tr>
+<tr><td>主要贡献</td><td>(1) 首次量化分析丢包率与 TCP FCT 的关系；(2) 提出利用多路径多样性的 FUSO 多路径丢包恢复机制；(3) Linux 内核 ~900 行代码实现；(4) 实验证明 1Gbps 测试床 99th FCT 降低最多 82.3%、10Gbps 大规模仿真降低最多 87.9%</td></tr>
+<tr><td>数据集</td><td>微软 Azure 生产 DCN 5 天测量（2015-12-01 ~ 12-05）；实验室 1Gbps 测试床；ns-2 大规模仿真</td></tr>
+<tr><td>实验指标</td><td>99th FCT、超时概率、路径丢失率分布、额外负载（extra load）</td></tr>
+<tr><td>路径多样性</td><td>64+ 并行路径（DCTCP 优化过的 DCN）</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>近年来大型数据中心在全球以前所未有的速率和规模建造。每个数据中心可能包含 10 万台服务器，由数千个网络设备（交换机、链路）相互连接组成的大型数据中心网络（DCN）。在 DCN 中运行的应用非常关注尾流完成时间（tail FCT，例如 99th percentile）：一次用户请求（如 Bing、Google、Facebook）通常涉及数百台机器的并行延迟敏感流，整体应用性能由最后完成的流决定 [1], [2]。</p>
+
+<p>如果网络有损，应用的尾 FCT 将受到严重影响，因为这些延迟敏感流的 TCP 流可能在有损条件下遭受重传超时（RTO）[3], [4]。</p>
+
+<p>然而，即使在精心设计的现代数据中心网络中，丢包也并不罕见（§II-A）。传统上，大多数丢包由拥塞引起（如 incast [5], [6]），但随着 ECN 部署和精细调优的 TCP 拥塞控制算法（如 DCTCP [1]、[7]）的部署，拥塞已被大幅缓解（从 1% 降至 0.01% [6]），但仍无法完全消除 [7], [8]。</p>
+
+<p>拥塞之外，丢包也可能由故障引起（如硬件故障 [3]）。正常情况下硬件引起的丢包率很低（~0.001% [3]），但当硬件出现故障时丢包率可超过 1%。硬件故障的原因是复杂的，可能来自 ASIC 缺陷或设备老化。一旦发生硬件故障，通常需要数小时或数天才能检测和缓解 [3]。</p>
+
+<p>论文通过分析和实验展示：即使是适度的丢包率上升（如 1%）也已经能让 &gt;1% 的流命中 RTO，从而极大增加 FCT 的 99th percentile（论文 Fig. 2）。因此，需要一个更稳健的传输协议，能够在面对这种有损硬件的不利情况时仍能保证低尾 FCT。</p>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<p>论文将数据中心网络传输丢包恢复所面临的核心挑战总结为：</p>
+
+<p><b>如何在不引起额外拥塞的情况下，在各种丢包条件下加速丢包恢复？</b></p>
+
+<ul>
+<li>单路径丢包恢复的局限性：恢复包必须通过与丢包相同的路径发送，但发送方通常无法准确知道丢包是拥塞还是故障引起的。</li>
+<li>现有方案的困境：要么太激进（如 Proactive [4]）会违反精细调优的拥塞控制引起拥塞丢包，要么太保守（如 TLP [22]）仍会导致延迟敏感流的高 FCT。</li>
+</ul>
+
+<p>论文倡导利用多路径并行路径（在大多数 DCN 拓扑中数量丰富 [6], [9]–[12]）来执行更快的丢包恢复而不引入更多拥塞，提出了 FUSO 机制。</p>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>FUSO 核心思想</b>：在多路径传输中，当某个子流（sub-flow）疑似丢包时，立即通过另一条不丢包或丢包较少且有空闲拥塞窗口的子流发送恢复包。</p>
+
+<ul>
+<li><b>Fast（快速）</b>：FUSO 不必等待有损子流的超时；</li>
+<li><b>Cautious（谨慎）</b>：FUSO 不违反精细调优的 TCP 拥塞控制算法；只有当子流没有新数据可发且有空闲 cwnd 时才发送恢复包。</li>
+</ul>
+
+<p><b>与 MPTCP 的区别</b>：MPTCP 虽然为长流提供了出色的吞吐量性能，但可能损害小延迟敏感流的尾 FCT；因为 MPTCP 中每个子流通常必须自己恢复丢包，因此整体完成时间取决于"最差路径上最后完成的子流"。FUSO 与 MPTCP 的 opportunistic retransmission（机会性重传）[14] 类似但目标不同：MPTCP opportunistic retransmission 是为 WAN 设计，在新数据因接收窗口或发送缓冲区满而无法发送时触发；而 FUSO 在子流"没有新数据可发"时利用其空闲资源立即做主动恢复。</p>
+
+<p><b>关键概念</b>：</p>
+
+<ul>
+<li><b>Sub-flow（子流）</b>：一个 TCP 流被分成多个并行子流；</li>
+<li><b>Path Diversity（路径多样性）</b>：DCN 中多条物理路径上的不同拥塞/故障条件；</li>
+<li><b>ECMP</b>：Equal-Cost Multi-Path；</li>
+<li><b>DCTCP</b>：Data Center TCP（精细调优的 TCP 拥塞控制）；</li>
+<li><b>ECN</b>：Explicit Congestion Notification；</li>
+<li><b>RTO</b>：Retransmission Timeout（重传超时）；</li>
+<li><b>DACKs</b>：Duplicate ACKs（重复确认）；</li>
+<li><b>TLP（Tail Loss Probe）</b>：2RTT 后发 prober；</li>
+<li><b>TCP-IR（TCP Instant Recovery）</b>：1/4 RTT 后发 coded packet；</li>
+<li><b>Proactive</b>：零等待时间主动冗余；</li>
+<li><b>MPTCP（Multipath TCP）</b>：多路径 TCP；</li>
+<li><b>RepFlow</b>：应用层双流复制；</li>
+<li><b>Loss rate（lossrate）</b>：总丢包率；</li>
+<li><b>Recent loss rate（lossratelast）</b>：从最近一次重传起的丢包率；</li>
+<li><b>C_l = α·lossrate + β·lossratelast</b>：路径质量度量；</li>
+<li><b>Worst sub-flow</b>：当前 C_l 最大且有 un-ACKed 数据的子流；</li>
+<li><b>Best sub-flow</b>：当前 C_l 最小且 cwnd 有空闲的子流；</li>
+<li><b>BytesInFlightTotal</b>：总在飞字节数；</li>
+<li><b>CwndTotal</b>：总拥塞窗口；</li>
+<li><b>Recovery packet</b>：通过 best sub-flow 发送的恢复包；</li>
+<li><b>Opportunistic Retransmission</b>：MPTCP 机会重传；</li>
+<li><b>Reinjection</b>：MPTCP 死流重定向到 reinject queue；</li>
+<li><b>DSN（Data Sequence Number）</b>：MPTCP 数据级序列号；</li>
+<li><b>OoS Queue</b>：MPTCP 子流乱序队列。</li>
+</ul>
+
+<p><b>丢包率统计（论文 Fig. 1）</b>：在 22:00–23:00 这一小时窗口中：</p>
+
+<ul>
+<li>平均丢包率约 4%；</li>
+<li>约 63% 的有损链路丢包率介于 1%–10%；</li>
+<li>约 22% 的链路丢包率 &gt;60%（如 packet black-hole）；</li>
+<li>仅约 22% 的有损链路在边缘（server↔ToR），约 78% 在网络（ToR↔Agg、Agg↔Spine、Spine↔Core）。</li>
+</ul>
+
+<p><b>超时时延分析（论文 Fig. 2）</b>：</p>
+
+<ul>
+<li>对路径丢包率 $p$，最后 k 包丢失概率 $p_{tail} = 1 - (1-p)^k$；早期重传 (k=1) 时 $p_{tail} = p$；</li>
+<li>重传丢失概率 $p_{retx} = 1 - (1 - p^2)^{x-k}$；</li>
+<li>整体超时概率 $p_{RTO} \approx p_{tail} + p_{retx}$（忽略 whole window loss）；</li>
+<li>微小流（10KB）：超时概率随 $p$ 线性增长；</li>
+<li>较大流（≥100KB）：重传丢失主导，丢包率 &gt;1% 后超时概率显著上升。</li>
+</ul>
+
+<p><b>FUSO 的数学分析（论文 Eq. 与 Fig. 4）</b>：</p>
+
+<ul>
+<li>假设 $n_p$ 条并行路径，其中 1 条丢包率 $p$；</li>
+<li>$n_s$ 个 MPTCP 子流，MPTCP 的整体超时概率：$1 - [(1 - 1/n_p) + 1/n_p (1 - p^{s_{RTO}})^{n_s}]$；</li>
+<li>FUSO 整体超时概率：$(1/n_p)^{n_s} \cdot [1/n_s \cdot p^2_{s_{RTO}} + (p_{s_{retx}} + p^2)]$；</li>
+<li>相对 TCP 减少 $10^4$–$10^3$ 倍的超时概率。</li>
+</ul>
+
+<p><b>与现有技术的差异</b>：</p>
+
+<ul>
+<li>相对 TLP：TLP 2RTT 等待、太保守；</li>
+<li>相对 TCP-IR：TCP-IR 1/4 RTT 等待、稍激进；</li>
+<li>相对 Proactive：Proactive 零等待、过激进、可能加剧拥塞；</li>
+<li>相对 MPTCP：MPTCP 多路径"各自恢复"，整体完成时间受限于最差路径；</li>
+<li>相对 RepFlow：RepFlow 复制两个流但 ECMP 哈希冲突导致冗余浪费；</li>
+<li>FUSO：利用多路径多样性，"快速"+"谨慎"。</li>
+</ul>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<p><b>输入 / 输出</b>：</p>
+
+<ul>
+<li>输入：TCP/MPTCP 多路径连接，每条子流维护自己的 cwnd、bytes in flight 等；</li>
+<li>输出：通过 best sub-flow 主动发送的 recovery packet 序列（每个 un-ACKed 包最多一次）。</li>
+</ul>
+
+<p><b>核心模块</b>：</p>
+
+<ol>
+<li><b>TRY_SEND_RECOVERIES()</b>：监控 BytesInFlightTotal、cwndTotal、应用新数据，决定是否发送 recovery packet；</li>
+<li><b>SEND_A_RECOVERY()</b>：
+<ul>
+<li>FIND_WORST_SUB-FLOW()：找 un-ACKed 数据最多且 C_l 最大的子流；</li>
+<li>FIND_BEST_SUB-FLOW()：找 cwnd 空闲且 C_l 最小的子流；</li>
+<li>若都找到，则取 worst sub-flow 最旧的 un-ACKed 包作为 recovery packet 发送到 best sub-flow；</li>
+</ul>
+</li>
+<li><b>路径选择度量</b>：$C_l = \alpha \cdot \text{lossrate} + \beta \cdot \text{lossratelast}}$；</li>
+<li><b>MPTCP 接收端</b>：FUSO recovery packet 通过 DSN 直接插入 data-level 接收缓冲区。</li>
+</ol>
+
+<p><b>伪代码（论文 Algorithm 1）</b>：</p>
+
+<pre><code class="language-python">
+def TRY_SEND_RECOVERIES():
+    while BytesInFlightTotal &lt; CwndTotal and no new data:
+        ret = SEND_A_RECOVERY()
+        if ret == NOT_SEND:
+            break
+    return
+
+
+def SEND_A_RECOVERY():
+    FIND_WORST_SUBFLOW()  # 在有 un-ACKed 数据的子流中选 Cl 最大
+    FIND_BEST_SUBFLOW()   # 在 cwnd 空闲的子流中选 Cl 最小
+    if not worst or not best:
+        return NOT_SEND
+    # 选 worst sub-flow 最旧的 un-ACKed 包（按 TCP seq 升序）
+    recovery_packet = pick_oldest_unacked(worst)
+    send_through(recovery_packet, best)  # 把 best sub-flow 的 cwnd-1
+    BytesInFlightTotal += size(recovery_packet)
+    return SENT
+</code></pre>
+
+<p><b>关键路径选择细节</b>：</p>
+
+<ul>
+<li>worst sub-flow 在有 un-ACKed 数据且 C_l 最大的子流中选取；若无任何重传，C_l=0；若有 C_l=0，按最大 RTT 选；</li>
+<li>best sub-flow 在 cwnd 空闲且 C_l 最小的子流中选取；若无重传，C_l=0；若仍多个，按最小 RTT 选；</li>
+<li>若所有子流从未传输过数据，则 C_l = ∞，优先级最低；若所有都是 ∞，随机选一个作为 best。</li>
+</ul>
+
+<p><b>关键数学</b>：见 §四。</p>
+
+<p><b>复杂度分析</b>：</p>
+
+<ul>
+<li>TRY_SEND_RECOVERIES 在每次数据发送完或 ACK 处理后被调用，每次最坏情况遍历所有子流对；</li>
+<li>每个 un-ACKed 包最多被 FUSO 主动重传一次，避免冗余爆炸；</li>
+<li>在小测试床 3 条路径 / 4 sub-flows 的情况下开销可忽略；</li>
+<li>在 ns-2 仿真 64 服务器 / 20 交换机的 Fat-tree 中可扩展。</li>
+</ul>
+
+<p><b>训练 / 部署参数</b>：</p>
+
+<ul>
+<li>路径选择参数 $\alpha = \beta = 0.5$；</li>
+<li>实施在 Linux Kernel 3.18，约 900 行代码（基于 MPTCP v0.90）；</li>
+<li>1Gbps 测试床：6 台 ToR 交换机、6 台主机（Intel E7300 Core2 Duo 2.66GHz、4GB RAM、1Gbps NIC、Ubuntu 14.04 + Linux 3.18.20）、ECMP + ECN（RED 阈值 32KB）、TCP minRTO 5ms、基础 RTT ~280μs；</li>
+<li>10Gbps 仿真：3 层 4 pod Fat-tree，4 Spine 交换 + 4 pods（每 pod 2 Agg + 2 ToR），20 交换机、64 服务器（10Gbps 下连、40Gbps 上连），1MB 端口 buffer，ECN 阈值 300KB 接入 / 1200KB 上行，TCP minRTO 5ms，8 sub-flows；</li>
+<li>32K flows / run，10 runs。</li>
+</ul>
+
+<p><b>示例</b>：对于 1Gbps 测试床的 web-search + data-mining 流量，FUSO 在 1% 路径丢包率下，1Gbps 测试床 99th FCT 从 ~22ms 降到 &lt;2.4ms（降低 82.3%），timeout fraction 从 7%+ 降到 &lt;0.096%（降低接近 100%）。</p>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[多路径 TCP 连接 FUSO] --> B[子流 1 best]
+    A --> C[子流 2 worst]
+    A --> D[子流 N good]
+    C --> C1[未 ACK 数据 P3 P4]
+    B --> B1[cwnd 空闲]
+    D --> D1[cwnd 空闲]
+    C1 --> E[FIND_WORST_SUBFLOW Cl 最大]
+    B1 --> F[FIND_BEST_SUBFLOW Cl 最小 + cwnd 空闲]
+    D1 --> F
+    E --> G[SEND_A_RECOVERY P3 P4 副本]
+    F --> G
+    G --> H[通过 best sub-flow 发送恢复包]
+    H --> I[接收端 MPTCP DSN 插入 data-level 接收缓冲]
+    C --> J[worst sub-flow 仍按 TCP 自身 RTO 恢复]
+    J --> K[与 FUSO 恢复存在少量冗余重传]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[应用数据交付到 send buffer] --> S2[所有数据已发送]
+    S2 --> S3[调用 TRY_SEND_RECOVERIES]
+    S3 --> S4{有新数据可发?}
+    S4 -- 是 --> S5[正常发送新数据]
+    S4 -- 否 --> S6{BytesInFlightTotal &lt; CwndTotal?}
+    S6 -- 否 --> S7[结束]
+    S6 -- 是 --> S8[SEND_A_RECOVERY]
+    S8 --> S9[FIND_WORST_SUBFLOW un-ACKed Cl 最大]
+    S8 --> S10[FIND_BEST_SUBFLOW cwnd 空闲 Cl 最小]
+    S9 --> S11{找到 worst 与 best?}
+    S10 --> S11
+    S11 -- 否 --> S12[结束]
+    S11 -- 是 --> S13[取 worst 最旧 un-ACKed 包]
+    S13 --> S14[通过 best sub-flow 发送]
+    S14 --> S15[BytesInFlightTotal 累加]
+    S15 --> S3
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ 利用多路径多样性加速丢包恢复</b>：FUSO 通过 good sub-flows 主动为 bad sub-flow 恢复丢包，无需等待 RTO；</li>
+<li><b>+ 严格遵循精细调优的拥塞控制</b>：恢复包占用 best sub-flow 的 cwnd，不增加额外拥塞；</li>
+<li><b>+ 自适应路径选择度量 $C_l$</b>：综合考虑整体丢包率与最近丢包率，动态识别 worst/best sub-flow；</li>
+<li><b>+ 谨慎 / 快速权衡</b>：FUSO 在 good path 空闲时"快速"恢复，在拥塞（无 cwnd 空闲）时"谨慎"不发送冗余（incast 实验中冗余随负载下降）；</li>
+<li><b>+ Linux 内核 ~900 行实现</b>：可部署在生产 MPTCP 之上；</li>
+<li><b>+ 真实生产 DCN 测量</b>：基于 Microsoft Azure 5 天实测数据，发现大多数有损链路丢包率 1%–10%；</li>
+<li><b>+ 显著降低尾 FCT</b>：1Gbps 测试床 99th FCT 降最多 82.3%，10Gbps 仿真降最多 87.9%。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>：
+<ul>
+<li>微软 Azure 生产 DCN 5 天测量（2015-12-01 ~ 12-05），4 层交换机 ToR / Agg / Spine / Core；</li>
+<li>1Gbps 测试床（3 路径 × 4 sub-flows）；</li>
+<li>10Gbps ns-2 仿真（3 层 4 pod Fat-tree，64 服务器）。</li>
+</ul>
+</li>
+<li><b>Baseline</b>：TCP（含 SACK、Limited Transmit、Early Retransmit）、TLP、TCP-IR、Proactive、MPTCP、RepFlow。</li>
+<li><b>主要指标</b>：99th FCT、平均 FCT、timeout fraction、extra load。</li>
+<li><b>关键结果数字</b>：
+<ul>
+<li>网络丢包（path P1 0.125%–4%）：FUSO 99th FCT &lt;2.4ms、timeout fraction &lt;0.096%；相比其它方案 FCT 降低最多 82.3%、timeout fraction 降低最多 100%；</li>
+<li>边缘丢包（所有 access 链路同时丢包）：丢包率 &lt;1% 时 FUSO timeout fraction &lt;0.8%（其它 &gt;3.3%），99th FCT 降低最多 80.4%；丢包率 &gt;2% 时 FUSO 99th FCT &lt;12.7ms；</li>
+<li>Failure + Congestion（2% path P1 丢包 + 0.1–0.9 负载）：FUSO 平均 FCT 比 MPTCP/TCP/TLP 低 28.2%–47.1%；99th FCT 低 17.2%–80.6%；比 RepFlow 平均低 10%–30.3%、尾低 20.1%–44.8%；</li>
+<li>Incast（fanout 23–70）：FUSO 始终最优，fanout=30 时 RepFlow ~47ms、Proactive ~58ms、FUSO &lt;25ms；fanout=70 时 FUSO 完成时间 &lt;51.2ms；</li>
+<li>大规模 ns-2 仿真（web-search 负载）：FUSO 平均 FCT 低于其它 10.4%–60.3%，99th FCT 低 29.2%–87.4%；</li>
+<li>大规模 ns-2 仿真（data-mining 负载）：FUSO 平均 FCT 低 4.1%–39.4%，99th FCT 低 0%–87.9%；</li>
+<li>各种 sub-flow 数量：FUSO1 差；FUSO2/4/8 在小测试床 3 路径下 4 sub-flows 已足够；MPTCP sub-flow 越多越差（受最差路径限制）；</li>
+<li>FUSO 的额外负载（extra load）：低负载 0.1 时 ~42%、高负载 0.9 时降到 ~40%，自适应；incast 时进一步降到极低。</li>
+</ul>
+</li>
+<li><b>超时概率理论分析（Fig. 4）</b>：3 路径 / 1 路径丢包 0.1%–10% 随机丢包下，FUSO 相比 TCP 减少 $10^4$–$10^3$ 倍超时概率。</li>
+<li><b>可扩展性</b>：从测试床到大规模仿真，FUSO 表现稳定优于基线。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>数据中心网络 TCP 丢包恢复</b>：低延迟 FCT 关键（电商、搜索、推荐）；</li>
+<li><b>微服务 RPC 调用的尾 FCT 优化</b>：服务间调用多路径；</li>
+<li><b>在线金融支付链路</b>：99th FCT 严格 SLA；</li>
+<li><b>RDMA 替代方案</b>：RDMA 在故障丢包（即使是 0.1%）上表现很差，FUSO 思想可推广到 RDMA/PFC；</li>
+<li><b>MapReduce 等 incast 场景</b>：FUSO 通过多路径恢复避免突发超时；</li>
+<li><b>跨数据中心 WAN</b>：可借鉴多路径思想。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>TraceSieve_ISSRE23</code>（追踪异常检测）；</li>
+<li><code>刘平issre</code>（TraceAnomaly）；</li>
+<li><code>Chain-of-Event_Interpretable-Root-Cause-Analysis-for-MicroservicesFSE24-Camera-Ready</code>；</li>
+<li><code>AlertRCA_CCGRID2024_CameraReady</code>；</li>
+<li><code>TCS23-DiagFusion</code>；</li>
+<li><code>CMDiagnostor</code>（调用指标根因）；</li>
+<li><code>zsl期刊</code>（FUNNEL）；</li>
+<li><code>Proactive</code>（SIGCOMM 2013）；</li>
+<li><code>TLP</code>（RFC 5827）；</li>
+<li><code>TCP-IR</code>（RFC 5827）；</li>
+<li><code>MPTCP</code>（RFC 6824）；</li>
+<li><code>RepFlow</code>（INFOCOM 2014）。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>DCN</b>：Data Center Network；</li>
+<li><b>DCTCP</b>：Data Center TCP；</li>
+<li><b>ECN</b>：Explicit Congestion Notification；</li>
+<li><b>RTO</b>：Retransmission Timeout；</li>
+<li><b>DACK</b>：Duplicate ACK；</li>
+<li><b>DACKs</b>：Duplicate ACKs；</li>
+<li><b>SACK</b>：Selective Acknowledgment（RFC 2018 / RFC 6675）；</li>
+<li><b>TLP</b>：Tail Loss Probe（RFC 5827）；</li>
+<li><b>TCP-IR</b>：TCP Instant Recovery（FEC）；</li>
+<li><b>MPTCP</b>：Multipath TCP（RFC 6824）；</li>
+<li><b>ECMP</b>：Equal-Cost Multi-Path；</li>
+<li><b>PFC</b>：Priority-based Flow Control；</li>
+<li><b>RDMA</b>：Remote Direct Memory Access；</li>
+<li><b>NetBouncer</b>：微软生产 DCN 端到端延迟/丢包测量系统；</li>
+<li><b>netem</b>：Linux 网络模拟器（用于注入丢包）；</li>
+<li><b>Linux qdisc RED</b>：Random Early Detection；</li>
+<li><b>minRTO</b>：最小重传超时（Linux 默认 5ms）；</li>
+<li><b>early retransmit</b>：早期重传（k=1）；</li>
+<li><b>FUSO</b>：Fast mUlti-path lOss recovery；</li>
+<li><b>Path Diversity</b>：路径多样性；</li>
+<li><b>Worst sub-flow</b>：当前 Cl 最大且有 un-ACKed 的子流；</li>
+<li><b>Best sub-flow</b>：当前 Cl 最小且 cwnd 空闲的子流；</li>
+<li><b>BytesInFlightTotal</b>：总在飞字节数；</li>
+<li><b>CwndTotal</b>：总拥塞窗口；</li>
+<li><b>DSN</b>：Data Sequence Number（MPTCP）；</li>
+<li><b>OoS</b>：Out-of-Sequence；</li>
+<li><b>Reinjection</b>：死流重定向机制；</li>
+<li><b>DSS</b>：Data Sequence Signal（MPTCP option）。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: FUSO USENIX ATC 2016 [51]（preliminary version）；</li>
+<li>Paper: DCTCP（Alizadeh et al., SIGCOMM 2010 [1]）；</li>
+<li>Paper: DCTCP+ECN 调优（Wu et al., CoNEXT 2012 [7]）；</li>
+<li>Paper: Pingmesh（Guo et al., SIGCOMM 2015 [3]）；</li>
+<li>Paper: TCP incast（Chen et al., WREN 2009 [5]）；</li>
+<li>Paper: Proactive（Flach et al., SIGCOMM 2013 [4]）；</li>
+<li>Paper: TLP（RFC 5827 [22]）；</li>
+<li>Paper: TCP-IR（RFC 5827 [23]）；</li>
+<li>Paper: MPTCP v0.90（Paasch et al. [29]）；</li>
+<li>Paper: MPTCP（RFC 6824 [15]）；</li>
+<li>Paper: RepFlow（Xu &amp; Li, INFOCOM 2014 [31]）；</li>
+<li>Paper: ECMP（RFC 2992 [26]）；</li>
+<li>Paper: Netem（Linux Foundation）；</li>
+<li>Paper: catch the whole lot（Cheng et al., NSDI 2014 [24]）；</li>
+<li>Paper: Hedera（Al-Fares et al., NSDI 2010 [25]）。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

@@ -1,0 +1,1716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>VAEPP: 具有Pull-back先验的变分自编码器</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; text-align: center; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+.toc { background: #f6f8fa; padding: 1rem 1.5rem; border-radius: 6px; margin: 1rem 0; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+<h1>VAEPP: 具有Pull-back先验的变分自编码器</h1>
+
+<p><strong>原文标题：</strong>VAEPP: Variational Autoencoder with a Pull-back Prior</p>
+
+<h2>1. 文档信息速览</h2>
+
+<table>
+
+<tr><th>项目</th>
+<th>内容</th>
+</tr>
+
+<tr><td>论文标题</td>
+<td>VAEPP: 具有Pull-back先验的变分自编码器</td>
+</tr>
+
+<tr><td>原文标题</td>
+<td>VAEPP: Variational Autoencoder with a Pull-back Prior</td>
+</tr>
+
+<tr><td>发表会议/期刊</td>
+<td>未知（投稿中）</td>
+</tr>
+
+<tr><td>发表年份</td>
+<td>2019</td>
+</tr>
+
+<tr><td>作者</td>
+<td>Wenxiao Chen, Wenda Liu, Zhenting Cai, Haowen Xu, Dan Pei</td>
+</tr>
+
+<tr><td>所属机构</td>
+<td>清华大学计算机科学与技术系, 北京国家信息科学与技术研究中心(BNRist)</td>
+</tr>
+
+<tr><td>核心任务</td>
+<td>提出一种新型可学习先验——Pull-back Prior，通过判别器调整VAE先验分布以提升对数似然和采样质量</td>
+</tr>
+
+<tr><td>关键词</td>
+<td>变分自编码器; 深度生成模型; 对抗训练; Pull-back先验; 朗之万动力学</td>
+</tr>
+
+</table>
+
+<h2>目录</h2>
+
+<div class="toc">
+
+<ol>
+
+<li><a href="#sec1">文档信息速览</a></li>
+
+<li><a href="#sec2">研究背景</a></li>
+
+<li><a href="#sec3">论文目的与解决的问题</a></li>
+
+<li><a href="#sec4">核心原理（含数学公式）</a></li>
+
+<li><a href="#sec5">系统/算法整体架构（Mermaid图）</a></li>
+
+<li><a href="#sec6">关键算法详解（含伪代码、复杂度分析）</a></li>
+
+<li><a href="#sec7">实现细节</a></li>
+
+<li><a href="#sec8">实验设计与结果（含结果表）</a></li>
+
+<li><a href="#sec9">消融实验（含消融表）</a></li>
+
+<li><a href="#sec10">与已有工作的对比（对比表）</a></li>
+
+<li><a href="#sec11">工程落地与部署</a></li>
+
+<li><a href="#sec12">局限性与未来工作</a></li>
+
+<li><a href="#sec13">总结与启示</a></li>
+
+<li><a href="#sec14">附录（术语表、参数表、数据集表）</a></li>
+
+</ol>
+
+</div>
+
+<h2 id="sec2">2. 研究背景</h2>
+
+<p>深度生成模型是机器学习领域的核心挑战之一，旨在从高维空间中学习复杂的数据分布。目前主流的生成模型包括：</p>
+
+<ul>
+
+<li><strong>生成对抗网络（GAN）：</strong>通过生成器与判别器的对抗训练生成高质量样本，但对数似然难以计算或不佳。</li>
+
+<li><strong>流模型（Flow-based）：</strong>通过可逆变换建模数据分布，计算成本高。</li>
+
+<li><strong>自回归模型（如PixelCNN）：</strong>逐像素建模，生成质量好但速度慢。</li>
+
+<li><strong>变分自编码器（VAE）：</strong>基于变分推断和重参数化技巧优化对数似然的证据下界（ELBO）。</li>
+
+</ul>
+
+<p>VAE的ELBO目标函数为：</p>
+
+<p>\[
+\ln p_	heta(x) \geq \mathbb{E}_{q_\phi(z|x)}[\ln p_	heta(x|z) + \ln p_	heta(z) - \ln q_\phi(z|x)] 	riangleq \mathcal{L}(x;	heta,\phi)
+\]</p>
+
+<p>传统VAE使用标准高斯先验 \(p_	heta(z) = \mathcal{N}(0,I)\)。但近期研究[26]表明，这种简单先验会导致欠拟合。因此，许多可学习先验被提出，大多聚焦于逼近聚合后验 \(q_\phi(z)\)——理论上最大化ELBO的最优先验。然而，现有方法的性能有限，且聚合后验的实际意义不明确。</p>
+
+<p>本文注意到<strong>判别器可以评估数据的质量</strong>，并认为应当利用判别器来调整可学习先验，其中判别器具有明确的实际意义。</p>
+
+<h2 id="sec3">3. 论文目的与解决的问题</h2>
+
+<p>本文旨在解决以下关键问题：</p>
+
+<ol>
+
+<li><strong>先验分布过于简单：</strong>标准高斯先验无法捕捉复杂数据分布，导致欠拟合。</li>
+
+<li><strong>聚合后验先验的局限性：</strong>现有基于聚合后验的可学习先验性能有限，且缺乏实际解释。</li>
+
+<li><strong>VAE采样质量差：</strong>相比GAN，VAE生成的样本通常更模糊，缺乏锐利细节。</li>
+
+<li><strong>训练稳定性：</strong>VAE与GAN的混合训练往往不稳定。</li>
+
+</ol>
+
+<p>为此，本文提出Pull-back Prior和VAEPP框架，通过判别器评估数据质量来调整先验密度，从而同时提升对数似然和采样质量。</p>
+
+<h2 id="sec4">4. 核心原理</h2>
+
+<h3>4.1 Pull-back Prior定义</h3>
+
+<p>\[
+p_\lambda(z) = rac{1}{Z} p_N(z) \cdot e^{-eta D(G(z))}
+\]</p>
+
+<p>其中 \(p_N\) 是简单先验（如标准高斯），\(D\) 是判别器，\(G\) 是生成器（取 \(p_	heta(x|z)\) 的均值），\(eta\) 是可学习标量，\(Z\) 是配分函数。</p>
+
+<h3>4.2 最优\(eta\)的梯度推导</h3>
+
+<p>\[
+rac{\partial \mathcal{L}}{\partial eta} = -\mathbb{E}_{q_\phi(z)}[D(G(z))] + \mathbb{E}_{p_\lambda(z)}[D(G(z))]
+\]</p>
+
+<p>当训练收敛时，\(\partial\mathcal{L}/\partialeta = 0\)，意味着判别器无法区分重构数据和生成数据，与GAN的哲学一致。</p>
+
+<h3>4.3 ELBO中的可学习先验项</h3>
+
+<p>\[
+\mathcal{L}(	heta,\phi,\lambda) = \mathbb{E}_{p^*(x)}\mathbb{E}_{q_\phi(z|x)}[\ln p_	heta(x|z)] + \mathbb{E}_{p^*(x)}H[q_\phi(z|x)] + \mathbb{E}_{q_\phi(z)}[\ln p_\lambda(z)]
+\]</p>
+
+<h3>4.4 Wasserstein距离</h3>
+
+<p>\[
+W_1(\mu,
+u) = \sup_{	ext{Lip}(D)\leq 1}\{\mathbb{E}_{\mu(x)}D(x) - \mathbb{E}_{
+u(x)}D(x)\}
+\]</p>
+
+<h3>4.5 配分函数上界</h3>
+
+<p>\[
+\hat{Z} = \mathbb{E}_{p^*(x)}\mathbb{E}_{q_\phi(z|x)}\left[rac{f_\lambda(z)}{rac{1}{N}q_\phi(z|x)}
+ight] \geq \mathbb{E}_{q_\phi(z)}\left[rac{f_\lambda(z)}{q_\phi(z)}
+ight] = Z
+\]</p>
+
+<h3>4.6 Pull-back Prior的理论推导</h3>
+
+<p>通过变分法求解约束优化问题：</p>
+
+<p>\[
+\min_\lambda\{\mathbb{E}_{p_\lambda(z)}[D(G(z))] - \mathbb{E}_{p^*(x)}[D(x)]\} \quad 	ext{s.t.} \quad 	ext{KL}(p_\lambda, p_N) = lpha, \int p_\lambda(z)dz = 1
+\]</p>
+
+<p>利用欧拉-拉格朗日方程，得到最优解为Pull-back Prior的形式。</p>
+
+<h2 id="sec5">5. 系统/算法整体架构</h2>
+
+<div class="mermaid">
+graph TD
+    subgraph VAEPP框架
+        A[输入数据 x] --> B[编码器 q_φ(z|x)]
+        B --> C[隐变量 z]
+        C --> D[解码器 p_θ(x|z)]
+        C --> E[Pull-back Prior p_λ(z)]
+        E --> F[判别器 D(G(z))]
+        F --> G[评估数据质量]
+        G --> E
+        D --> H[生成数据 x̂]
+        H --> F
+    end
+</div>
+
+<div class="mermaid">
+graph LR
+    subgraph 训练流程
+        A[输入e] --> B[编码器 q_φ(z|e)]
+        B --> C[采样 z]
+        C --> D[解码器 p_θ(x|z)]
+        C --> E[Pull-back先验 f_λ(z)]
+        D --> F[重构 x]
+        E --> G[计算 Ẑ]
+        F --> H[计算ELBO]
+        G --> H
+        H --> I[梯度更新 θ,φ,β,ω]
+        J[随机噪声 ε] --> K[生成器 G(ε)]
+        K --> L[梯度惩罚项 ζ]
+        L --> I
+    end
+</div>
+
+<h2 id="sec6">6. 关键算法详解</h2>
+
+<h3>6.1 1步训练算法（VAEPP）</h3>
+
+<pre><code>算法2: VAEPP 1步训练算法
+
+输入: 梯度惩罚方法R, batch大小b, Adam参数τ
+输出: 训练好的θ, φ, β, ω
+
+1: while θ, φ, β, ω 未收敛 do
+2:    for i = 1 to b do
+3:        采样 e, x ~ p*, z ~ q_φ(z|e), ε ~ p_N
+4:        计算 ê ← G(ε), 梯度惩罚 ζ ← R(e, ê)
+5:        计算 Z^(i) = 0.5 * (e^{-βD(G(ε))} + f_λ(z) / (M * q_φ(z|e)))
+6:        计算 L^(i) = ln p_θ(x|z) + ln f_λ(z) - ln q_φ(z|e) + βζ
+7:    end for
+8:    θ, φ, β, ω ← Adam(∇(1/b ΣL^(i) - ln(1/b ΣZ^(i))), {θ,φ,β,ω}, τ)
+9: end while</code>
+</pre>
+
+<h3>6.2 2步训练算法（Naive VAEPP）</h3>
+
+<pre><code>算法1: Naive VAEPP 2步训练算法
+
+输入: 梯度惩罚算法R, batch大小b, critic迭代数n_c, Adam参数τ
+输出: 训练好的θ, φ, β, ω
+
+1: while θ, φ, β, ω 未收敛 do
+2:    for k = 1 to n_c do
+3:        // VAE步骤：更新θ, φ, β
+4:        采样并计算L^(i)和Z^(i)
+5:        θ, φ, β ← Adam(∇(1/b ΣL^(i) - ln(1/b ΣZ^(i))), {θ,φ,β}, τ)
+6:    end for
+7:    // WGAN步骤：更新ω（判别器）
+8:    采样 e, x ~ p*, z ~ p_N, ê ← G(z)
+9:    计算梯度惩罚 ζ ← R(e, ê)
+10:   L_D ← D(x̂) - D(x) + ζ
+11:   ω ← Adam(∇(1/b ΣL_D), ω, τ)
+12: end while</code>
+</pre>
+
+<h3>6.3 复杂度分析</h3>
+
+<table>
+
+<tr><th>操作</th>
+<th>时间复杂度</th>
+<th>说明</th>
+</tr>
+
+<tr><td>编码器前向</td>
+<td>O(d·h)</td>
+<td>d=输入维度, h=隐藏层维度</td>
+</tr>
+
+<tr><td>解码器前向</td>
+<td>O(h·d)</td>
+<td>与编码器对称</td>
+</tr>
+
+<tr><td>判别器前向</td>
+<td>O(d·h_d)</td>
+<td>h_d=判别器隐藏层维度</td>
+</tr>
+
+<tr><td>配分函数估计Ẑ</td>
+<td>O(M·d_z)</td>
+<td>M=样本数, d_z=隐空间维度</td>
+</tr>
+
+<tr><td>朗之万动力学采样</td>
+<td>O(T·d_z)</td>
+<td>T=采样步数</td>
+</tr>
+
+</table>
+
+<h2 id="sec7">7. 实现细节</h2>
+
+<p><strong>编码器：</strong>使用截断正态分布（丢弃偏离均值超过2个标准差的样本）代替正态分布，显著降低Ẑ的方差（MNIST上从0.809260降至0.000967）。</p>
+
+<p><strong>解码器：</strong>MNIST上使用Bernoulli分布，CIFAR-10上使用Discretized Logistic分布。</p>
+
+<p><strong>生成器G(z)：</strong>取解码器均值 \(G(z) = \mathbb{E}_{p_	heta(x|z)}[x]\)。</p>
+
+<p><strong>梯度惩罚策略：</strong>默认使用WGAN-div-1（在真实数据和生成数据的线性插值上采样），在三类策略（WGAN-GP, WGAN-div-1, WGAN-div-2）中表现最佳。</p>
+
+<p><strong>采样过程：</strong>三步采样——(1) 用GAN从 \(q_\phi(z)\) 采样初始 \(z_0\)；(2) 通过Metropolis-Adjusted Langevin Algorithm (MALA)从 \(p_\lambda(z)\) 采样；(3) 用解码器生成图像。</p>
+
+<p><strong>隐空间维度选择：</strong>在CIFAR-10上，隐维度d_z=128时获得最佳FID。隐维度增大时，BPD持续改善但采样质量下降。</p>
+
+<h2 id="sec8">8. 实验设计与结果</h2>
+
+<h3>8.1 对数似然评估</h3>
+
+<table>
+
+<tr><th>模型</th>
+<th>MNIST (NLL↓)</th>
+<th>CIFAR-10 (bits/dim↓)</th>
+</tr>
+
+<tr><td>PixelCNN（自回归）</td>
+<td>81.30</td>
+<td>3.14</td>
+</tr>
+
+<tr><td>IAFVAE</td>
+<td>79.88</td>
+<td>3.11</td>
+</tr>
+
+<tr><td>BIVA</td>
+<td>78.59</td>
+<td>3.08</td>
+</tr>
+
+<tr><td>VampPrior</td>
+<td>79.75</td>
+<td>-</td>
+</tr>
+
+<tr><td>Naive VAEPP</td>
+<td>76.49</td>
+<td>3.15</td>
+</tr>
+
+<tr><td><strong>VAEPP</strong></td>
+<td><strong>76.37</strong></td>
+<td><strong>2.91</strong></td>
+</tr>
+
+<tr><td><strong>VAEPP+Flow</strong></td>
+<td><strong>76.23</strong></td>
+<td><strong>2.84</strong></td>
+</tr>
+
+</table>
+
+<h3>8.2 FID采样质量对比</h3>
+
+<table>
+
+<tr><th>模型</th>
+<th>MNIST</th>
+<th>Fashion</th>
+<th>CIFAR-10</th>
+<th>CelebA</th>
+</tr>
+
+<tr><td>Best GAN</td>
+<td>~10</td>
+<td>~32</td>
+<td>~70</td>
+<td>~49</td>
+</tr>
+
+<tr><td>VAE+Flow</td>
+<td>54.8</td>
+<td>62.1</td>
+<td>81.2</td>
+<td>65.7</td>
+</tr>
+
+<tr><td>2-Stage VAE</td>
+<td>12.6</td>
+<td>29.3</td>
+<td>72.9</td>
+<td>44.4</td>
+</tr>
+
+<tr><td>GAN-VAEPP</td>
+<td>12.7</td>
+<td>26.4</td>
+<td>74.1</td>
+<td>53.4</td>
+</tr>
+
+<tr><td><strong>VAEPP</strong></td>
+<td><strong>12.0</strong></td>
+<td><strong>26.4</strong></td>
+<td><strong>71.0</strong></td>
+<td><strong>53.4</strong></td>
+</tr>
+
+</table>
+
+<h3>8.3 梯度惩罚策略对比</h3>
+
+<table>
+
+<tr><th>策略</th>
+<th>Naive VAEPP (CIFAR-10 BPD)</th>
+<th>VAEPP (CIFAR-10 BPD)</th>
+</tr>
+
+<tr><td>WGAN-GP</td>
+<td>3.15</td>
+<td>2.95</td>
+</tr>
+
+<tr><td>WGAN-div-1</td>
+<td>3.20</td>
+<td>2.91</td>
+</tr>
+
+<tr><td>WGAN-div-2</td>
+<td>4.47</td>
+<td>2.99</td>
+</tr>
+
+</table>
+
+<h2 id="sec9">9. 消融实验</h2>
+
+<h3>9.1 1步训练 vs 2步训练</h3>
+
+<p>在CIFAR-10上比较Naive VAEPP（算法1）和VAEPP（算法2）。对于所有梯度惩罚策略，VAEPP均优于Naive VAEPP，验证了1步训练的稳定性和有效性。VAEPP的训练曲线更平滑，且全程优于Naive VAEPP。</p>
+
+<h3>9.2 配分函数估计：q_φ(z) vs p_N(z)</h3>
+
+<table>
+
+<tr><th>KL散度</th>
+<th>CIFAR-10</th>
+<th>MNIST</th>
+</tr>
+
+<tr><td>KL(q_φ(z) || p_λ(z))</td>
+<td>180.3</td>
+<td>12.497</td>
+</tr>
+
+<tr><td>KL(p_N(z) || p_λ(z))</td>
+<td>1011.30</td>
+<td>57.45</td>
+</tr>
+
+</table>
+
+<p>q_φ(z)比p_N(z)更接近p_λ(z)，因此使用q_φ(z)作为建议分布估计Z更准确。</p>
+
+<h3>9.3 截断正态分布的效果</h3>
+
+<table>
+
+<tr><th>分布类型</th>
+<th>Ẑ的方差（MNIST, 10⁹样本）</th>
+</tr>
+
+<tr><td>正态分布</td>
+<td>0.809260</td>
+</tr>
+
+<tr><td>截断正态分布</td>
+<td>0.000967</td>
+</tr>
+
+</table>
+
+<h2 id="sec10">10. 与已有工作的对比</h2>
+
+<table>
+
+<tr><th>方法</th>
+<th>先验类型</th>
+<th>判别器作用</th>
+<th>训练方式</th>
+<th>对数似然</th>
+<th>采样质量</th>
+</tr>
+
+<tr><td>标准VAE[10]</td>
+<td>标准高斯</td>
+<td>无</td>
+<td>端到端</td>
+<td>一般</td>
+<td>模糊</td>
+</tr>
+
+<tr><td>VampPrior[26]</td>
+<td>可学习（混合）</td>
+<td>无</td>
+<td>端到端</td>
+<td>较好</td>
+<td>一般</td>
+</tr>
+
+<tr><td>AAE[18]</td>
+<td>对抗先验</td>
+<td>匹配聚合后验</td>
+<td>两阶段</td>
+<td>一般</td>
+<td>较好</td>
+</tr>
+
+<tr><td>2-Stage VAE[4]</td>
+<td>隐式（GAN）</td>
+<td>匹配隐空间</td>
+<td>两阶段</td>
+<td>较好</td>
+<td>好</td>
+</tr>
+
+<tr><td><strong>VAEPP（本文）</strong></td>
+<td>Pull-back（显式）</td>
+<td>评估数据质量</td>
+<td>1步端到端</td>
+<td><strong>SOTA（无自回归）</strong></td>
+<td><strong>接近GAN</strong></td>
+</tr>
+
+</table>
+
+<h2 id="sec11">11. 工程落地与部署</h2>
+
+<div class="mermaid">
+graph LR
+    subgraph VAEPP部署
+        A[训练数据] --> B[编码器 q_φ]
+        B --> C[隐变量 z]
+        C --> D[解码器 p_θ]
+        D --> E[生成图像]
+        C --> F[Pull-back先验评估]
+        F --> G[判别器 D]
+        G --> H[质量评分]
+        H --> I[朗之万采样优化]
+        I --> E
+    end
+</div>
+
+<p>VAEPP的训练和评估较为耗时（因额外判别器和朗之万动力学），暂未应用自回归组件。隐空间维度d_z应选略大于真实数据流形维度的数值。在CIFAR-10上，d_z=128时获得最佳FID。使用截断正态分布可显著降低估计方差。</p>
+
+<h2 id="sec12">12. 局限性与未来工作</h2>
+
+<ul>
+
+<li><strong>自回归组件缺失：</strong>由于训练和采样已很耗时，VAEPP未集成自回归组件（如PixelCNN），若能集成可能进一步提升性能。</li>
+
+<li><strong>隐空间维度选择：</strong>FID/IS与BPD的变化趋势不一致，需要针对不同指标分别调优隐维度。</li>
+
+<li><strong>配分函数估计：</strong>当前使用重要性采样估计Z的上界，估计方差虽可接受但仍有改进空间。</li>
+
+<li><strong>大规模数据集：</strong>当前仅在MNIST、CIFAR-10、CelebA等中等规模数据集上验证，ImageNet等更大规模数据集上的性能有待验证。</li>
+
+<li><strong>朗之万动力学效率：</strong>采样过程需要多步迭代，生成速度受限。</li>
+
+</ul>
+
+<h2 id="sec13">13. 总结与启示</h2>
+
+<p>VAEPP通过Pull-back Prior这一新颖的可学习先验，成功弥合了VAE与GAN之间的差距：</p>
+
+<ol>
+
+<li><strong>判别器指导先验学习：</strong>利用判别器评估数据质量的能力来调整隐空间先验密度，使先验具有明确的物理意义。</li>
+
+<li><strong>1步训练框架：</strong>将VAE和WGAN的优化合并为统一的端到端训练，提高了训练稳定性和效率。</li>
+
+<li><strong>显式先验的优势：</strong>相比2-Stage VAE的隐式先验，Pull-back Prior的显式形式使得朗之万动力学采样可行，进一步提升了采样质量。</li>
+
+<li><strong>SOTA性能：</strong>在无需自回归组件的条件下，VAEPP的对数似然达到最优，采样质量接近GAN。</li>
+
+</ol>
+
+<h2 id="sec14">14. 附录</h2>
+
+<h3>14.1 术语表</h3>
+
+<table>
+
+<tr><th>术语</th>
+<th>定义</th>
+</tr>
+
+<tr><td>变分自编码器（VAE）</td>
+<td>基于变分推断和重参数化的生成模型</td>
+</tr>
+
+<tr><td>证据下界（ELBO）</td>
+<td>对数似然的变分下界</td>
+</tr>
+
+<tr><td>Pull-back Prior</td>
+<td>通过判别器评估数据质量来调整的先验分布</td>
+</tr>
+
+<tr><td>配分函数Z</td>
+<td>归一化常数，使先验分布积分为1</td>
+</tr>
+
+<tr><td>Wasserstein距离</td>
+<td>度量两个概率分布之间的最优传输距离</td>
+</tr>
+
+<tr><td>朗之万动力学</td>
+<td>基于梯度信息的MCMC采样方法</td>
+</tr>
+
+<tr><td>MALA</td>
+<td>Metropolis调整的朗之万算法</td>
+</tr>
+
+<tr><td>SGVB</td>
+<td>随机梯度变分贝叶斯，VAE的标准训练方法</td>
+</tr>
+
+</table>
+
+<h3>14.2 参数表</h3>
+
+<table>
+
+<tr><th>参数</th>
+<th>说明</th>
+</tr>
+
+<tr><td>β（可学习标量）</td>
+<td>控制Pull-back Prior中判别器影响力的权重</td>
+</tr>
+
+<tr><td>d_z（隐维度）</td>
+<td>隐变量z的维度，默认128（CIFAR-10最佳FID）</td>
+</tr>
+
+<tr><td>γ（可学习标量）</td>
+<td>解码器p_θ(x|z)的方差</td>
+</tr>
+
+<tr><td>M（伯努利数据集）</td>
+<td>原始灰度图像数据集大小</td>
+</tr>
+
+<tr><td>T（朗之万步数）</td>
+<td>MALA采样迭代步数</td>
+</tr>
+
+</table>
+
+<h3>14.3 数据集表</h3>
+
+<table>
+
+<tr><th>数据集</th>
+<th>训练样本数</th>
+<th>测试样本数</th>
+<th>图像尺寸</th>
+<th>类别数</th>
+</tr>
+
+<tr><td>MNIST</td>
+<td>60,000</td>
+<td>10,000</td>
+<td>28×28</td>
+<td>10</td>
+</tr>
+
+<tr><td>Fashion-MNIST</td>
+<td>60,000</td>
+<td>10,000</td>
+<td>28×28</td>
+<td>10</td>
+</tr>
+
+<tr><td>CIFAR-10</td>
+<td>50,000</td>
+<td>10,000</td>
+<td>32×32</td>
+<td>10</td>
+</tr>
+
+<tr><td>CelebA</td>
+<td>202,599</td>
+<td>-</td>
+<td>64×64</td>
+<td>-</td>
+</tr>
+
+<tr><td>Omniglot</td>
+<td>24,345</td>
+<td>8,070</td>
+<td>28×28</td>
+<td>1,623</td>
+</tr>
+
+</table>
+
+<h2>2a. 研究背景深入分析</h2>
+
+<h3>2a.1 VAE的发展与挑战</h3>
+
+<p>变分自编码器自2013年提出以来，经历了多次重要改进。原始VAE[10,21]使用标准高斯先验和简单的编码器-解码器结构。Kingma等人[12]提出逆自回归流（Inverse Autoregressive Flow, IAF），通过丰富变分后验来提升ELBO。Tomczak和Welling[26]提出VampPrior，使用混合分布作为可学习先验，逼近聚合后验。Bauer和Mnih[2]提出重采样先验，通过重要性采样从简单先验构造更丰富的先验。</p>
+
+<p>尽管这些方法在丰富后验或先验方面取得了进展，但仍存在根本性问题：基于聚合后验的方法[2,25,26]性能有限，且聚合后验的物理意义不清晰。VAEPP通过引入判别器评估数据质量来调整先验，提供了更直观的先验设计思路。</p>
+
+<h3>2a.2 GAN的发展与Wasserstein距离</h3>
+
+<p>生成对抗网络[6]通过生成器与判别器的对抗训练实现高质量样本生成。然而，原始GAN训练不稳定，容易模式崩溃。WGAN[1]引入Wasserstein距离替代JS散度，显著提升了训练稳定性。WGAN-GP[7]通过梯度惩罚代替权重裁剪，进一步改善了Lipschitz约束的实现。WGAN-div[28]提出了更灵活的散度度量。</p>
+
+<p>VAEPP利用WGAN的梯度惩罚技术，但目的不同——不是为了训练独立的GAN，而是将判别器融入VAE的训练过程，用于调整先验分布。</p>
+
+<h3>2a.3 朗之万动力学与MCMC采样</h3>
+
+<p>朗之万动力学（Langevin Dynamics）是一种基于随机微分方程的MCMC采样方法。给定目标分布p(z)，采样迭代公式为：</p>
+
+<p>\[
+z_{t+1} = z_t + rac{\epsilon}{2}
+abla_z \log p(z_t) + \sqrt{\epsilon}\eta_t, \quad \eta_t \sim \mathcal{N}(0, I)
+\]</p>
+
+<p>Metropolis-Adjusted Langevin Algorithm (MALA)在朗之万动力学基础上添加了接受-拒绝步骤，保证采样的正确性。Kumar等人[13]在能量模型中使用MALA进行采样，其中密度函数也包含判别器项。VAEPP借鉴了这一方法，从显式先验p_λ(z)中采样。</p>
+
+<h3>2a.4 VAE与GAN的融合探索</h3>
+
+<p>VAE和GAN各有优劣：VAE有明确的对数似然目标但采样质量差，GAN采样质量好但缺乏似然保证。许多工作尝试融合两者：</p>
+
+<ul>
+
+<li><strong>VAE-GAN[18]：</strong>使用GAN的判别器作为VAE的额外损失项，改善重构质量。</li>
+
+<li><strong>2-Stage VAE[4]：</strong>先训练标准VAE，再用GAN学习隐空间的先验分布。</li>
+
+<li><strong>WAE[18]：</strong>使用Wasserstein距离替代KL散度作为正则项。</li>
+
+</ul>
+
+<p>VAEPP与这些方法的根本区别在于：判别器不是用于匹配隐空间分布或改善重构，而是用于调整先验密度——增加生成好数据的z的密度，降低生成差数据的z的密度。</p>
+
+<h2>4a. 核心原理深入推导</h2>
+
+<h3>4a.1 Pull-back Prior的变分推导</h3>
+
+<p>Pull-back Prior可以通过变分法严格推导。考虑以下约束优化问题：在给定θ, φ的条件下，搜索使W¹(p_θ, p*)最小化的先验p_λ：</p>
+
+<p>\[
+\min_\lambda \sup_{	ext{Lip}(D) \leq 1} \{\mathbb{E}_{p_\lambda(z)}\mathbb{E}_{p_	heta(x|z)}[D(x)] - \mathbb{E}_{p^*(x)}[D(x)]\}
+\]</p>
+
+<p>引入假设 \(\mathbb{E}_{p_	heta(x|z)}[D(x)] = D(G(z))\)，并使用近似的判别器\(	ilde{D}\)代替D，简化后的优化问题为：</p>
+
+<p>\[
+\min_\lambda \{\mathbb{E}_{p_\lambda(z)}[D(G(z))] - \mathbb{E}_{p^*(x)}[D(x)]\} \quad 	ext{s.t.} \quad 	ext{KL}(p_\lambda, p_N) = lpha
+\]</p>
+
+<p>利用拉格朗日乘子法和欧拉-拉格朗日方程，得到最优解为Pull-back Prior的形式，其中β=1/γ（γ为KL约束的拉格朗日乘子），ln Z = (1 + η/γ)（η为归一化约束的拉格朗日乘子）。</p>
+
+<h3>4a.2 1步训练与2步训练的等价性</h3>
+
+<p>定理3证明了1步训练的优化过程等价于最大化K项（ELBO中与先验相关的项），且K是βW¹(p†, p*)的下界：</p>
+
+<p>\[
+K = -\mathbb{E}_{q_\phi(z)}[eta \cdot D(G(z))] - \ln Z \leq eta \max_{	ext{Lip}(D)\leq1}\{\mathbb{E}_{p^\dagger(x)}[D(x)] - \mathbb{E}_{p^r(x)}[D(x)]\} = eta W^1(p^\dagger, p^r)
+\]</p>
+
+<p>其中p†(x) = E_{p_N(z)}[p_θ(x|z)]为从简单先验生成的数据分布，p^r(x) = E_{q_φ(z)}[p_θ(x|z)]为从编码器采样的重构数据分布。实验观察到p^r ≈ p*。</p>
+
+<h3>4a.3 配分函数Z的估计策略</h3>
+
+<p>配分函数Z的精确计算在高维空间中是不可行的。VAEPP使用重要性采样估计Z的上界Ż。关键选择是建议分布——使用q_φ(z)还是p_N(z)：</p>
+
+<ul>
+
+<li>当KL(p_N, p_λ)较小时（训练初期），p_N(z)作为建议分布是合理的。</li>
+
+<li>当KL(q_φ, p_λ)远小于KL(p_N, p_λ)时（训练后期），q_φ(z)更优。</li>
+
+</ul>
+
+<p>实验表明，即使在MNIST上，KL(q_φ, p_λ) = 12.497，而KL(p_N, p_λ) = 57.45，差距近5倍。在CIFAR-10上差距更大（180.3 vs 1011.30）。因此VAEPP默认使用q_φ(z)作为建议分布。</p>
+
+<h3>4a.4 Bernoulli数据集的特殊处理</h3>
+
+<p>对于MNIST等二值图像数据集，通常从灰度图像（连续值）采样二值图像。这导致样本空间指数级增大（2^像素数），直接使用公式(7)估计Ż会严重高估Z。VAEPP提出使用p*(e)（灰度图像分布）代替p*(x)（二值图像分布）来估计q_φ(z)的下界：</p>
+
+<p>\[
+q_\phi(z) = \mathbb{E}_{p^*(x)}[q_\phi(z|x)] = \mathbb{E}_{p^*(e)}[q_\phi(z|e)]
+\]</p>
+
+<p>其中q_φ(z|e) = E_{p*(x|e)}[q_φ(z|x)]，即从灰度图像e的条件分布中采样二值图像x，再计算q_φ(z|x)的期望。这种方法显著降低了Ż的方差。</p>
+
+<h2>7a. 实现细节深入</h2>
+
+<h3>7a.1 截断正态分布的实现</h3>
+
+<p>编码器q_φ(z|e)使用截断正态分布，丢弃偏离均值超过2个标准差的样本。这一简单改动对Ż的方差影响巨大：</p>
+
+<ul>
+
+<li>标准正态分布：Var(Ż) = 0.809260（不可接受）</li>
+
+<li>截断正态分布：Var(Ż) = 0.000967（可接受，10⁹样本）</li>
+
+</ul>
+
+<p>截断正态分布减少了q_φ(z|x)和(1/M)q_φ(z|x)之间的差距，因为截断使分布更集中，单个样本的q_φ(z|x)值更接近(1/M)q_φ(z)。</p>
+
+<h3>7a.2 可学习方差γ的设计</h3>
+
+<p>解码器p_θ(x|z)的方差设为可学习标量γ。这一设计受Dai和Wipf[4]的启发：当隐维度d_z增大时，FID和IS的变化趋势与BPD相反。通过将方差设为可学习参数，模型能够自适应地平衡重构精度和采样质量。</p>
+
+<p>实验发现，VAEPP在d_z=128时达到最佳FID（CIFAR-10上71.0），而BPD在d_z=1024时仍然在改善。这说明d_z应选择略大于真实数据流形维度的数值。</p>
+
+<h3>7a.3 1步训练vs 2步训练的稳定性</h3>
+
+<p>2步训练（Naive VAEPP）的主要问题是不稳定性：两个独立优化（VAE和WGAN）交替进行，可能导致训练损失震荡甚至崩溃。在CIFAR-10上，Naive VAEPP在约80个epoch时几乎崩溃。</p>
+
+<p>1步训练（VAEPP）将两个优化合并为一个，梯度惩罚项乘以β后加入ELBO损失。由于β在训练过程中自适应调整，梯度惩罚的影响也会相应变化，从而保持训练稳定性。</p>
+
+<h3>7a.4 IvOM指标</h3>
+
+<p>IvOM（Importance weighted Oracles Metric）[19]是评估生成模型数据覆盖率的指标。VAEPP在MNIST和CIFAR-10上分别达到0.018和0.017的IvOM值，表明模型具有良好的数据覆盖能力。</p>
+
+<h3>7a.5 朗之万动力学的初始点选择</h3>
+
+<p>朗之万动力学要求初始点z₀的密度p_λ(z₀)足够高，否则采样链需要很长时间才能收敛。VAEPP使用GAN从q_φ(z)中采样初始z₀，因为q_φ(z)与p_λ(z)接近（KL散度小），保证初始密度足够高。</p>
+
+<p>实验比较了从z₀直接解码（GAN-VAEPP）和经过朗之万动力学后再解码（VAEPP）的采样质量。在MNIST、Fashion-MNIST和CIFAR-10上，VAEPP的FID通常优于GAN-VAEPP，验证了朗之万动力学对采样质量的提升作用。</p>
+
+<h2>8a. 实验结果深入分析</h2>
+
+<h3>8a.1 隐维度对多指标的影响</h3>
+
+<p>隐维度d_z的选择对BPD、FID和IS三个指标有截然不同的影响：</p>
+
+<ul>
+
+<li><strong>BPD：</strong>随d_z增大持续改善（更多参数拟合数据）。</li>
+
+<li><strong>FID：</strong>在d_z=128时达到最优，之后开始恶化（过多参数导致采样质量下降）。</li>
+
+<li><strong>IS：</strong>在d_z≈128时也达到最优。</li>
+
+</ul>
+
+<p>这一现象验证了Dai和Wipf[4]的命题：d_z应选择为活跃隐维度的最小数量。当d_z过大时，冗余维度引入噪声，降低了采样质量。</p>
+
+<h3>8a.2 对抗验证损失分析</h3>
+
+<p>FGSM攻击下，不同稀疏度模型的对抗验证损失曲线显示：</p>
+
+<ul>
+
+<li>稀疏度P_m=16.9%时，模型在验证集上达到最低对抗损失，说明这是MNIST Digits上的"最佳稀疏度"。</li>
+
+<li>继续增加稀疏度（P_m=3.6%, 1.8%），对抗损失开始上升，但即使在P_m=1.8%时，对抗准确率仍保持在90%以上。</li>
+
+</ul>
+
+<h3>8a.3 初始权重分布分析</h3>
+
+<p>对中奖彩票在不同稀疏度下的初始权重分布进行分析，发现：</p>
+
+<ul>
+
+<li>随着剪枝进行，保留的权重趋向于具有更大的初始绝对值。</li>
+
+<li>FGSM对抗训练和PGD对抗训练下的权重分布与正常训练的分布有所不同，表明对抗训练确实选择了不同的子网络结构。</li>
+
+<li>第一隐藏层的权重分布最为集中，第二隐藏层次之，输出层最分散。</li>
+
+</ul>
+
+<h3>8a.4 补充数据集结果</h3>
+
+<table>
+
+<tr><th>模型</th>
+<th>Static-MNIST (NLL)</th>
+<th>Fashion (NLL)</th>
+<th>Omniglot (NLL)</th>
+</tr>
+
+<tr><td>Naive VAEPP</td>
+<td>78.06</td>
+<td>214.63</td>
+<td>90.72</td>
+</tr>
+
+<tr><td>VAEPP</td>
+<td>77.73</td>
+<td>213.24</td>
+<td>89.60</td>
+</tr>
+
+<tr><td>VAEPP+Flow</td>
+<td>77.66</td>
+<td>213.19</td>
+<td>89.24</td>
+</tr>
+
+</table>
+
+<p>在所有补充数据集上，VAEPP均优于Naive VAEPP，VAEPP+Flow进一步改善。这验证了1步训练和归一化流的额外增益。</p>
+
+<h2>14a. 补充附录</h2>
+
+<h3>14a.1 VAEPP与其他VAE变体的架构对比</h3>
+
+<table>
+
+<tr><th>方法</th>
+<th>先验</th>
+<th>后验</th>
+<th>判别器</th>
+<th>采样方法</th>
+</tr>
+
+<tr><td>VAE</td>
+<td>标准高斯</td>
+<td>对角高斯</td>
+<td>无</td>
+<td>直接采样</td>
+</tr>
+
+<tr><td>VampPrior</td>
+<td>混合分布</td>
+<td>对角高斯</td>
+<td>无</td>
+<td>直接采样</td>
+</tr>
+
+<tr><td>IAF-VAE</td>
+<td>标准高斯</td>
+<td>自回归流</td>
+<td>无</td>
+<td>直接采样</td>
+</tr>
+
+<tr><td>2-Stage VAE</td>
+<td>隐式(GAN)</td>
+<td>对角高斯</td>
+<td>隐空间匹配</td>
+<td>GAN采样</td>
+</tr>
+
+<tr><td>VAEPP</td>
+<td>Pull-back(显式)</td>
+<td>对角高斯/流</td>
+<td>数据质量评估</td>
+<td>MALA</td>
+</tr>
+
+</table>
+
+<h3>14a.2 关键代码片段</h3>
+
+<pre><code># VAEPP 1步训练伪代码
+def vaepp_train_step(batch, encoder, decoder, discriminator, gp_method, beta, optimizer):
+    e, x = batch  # 灰度图像和二值图像
+    z = encoder.sample(e)  # 从q_φ(z|e)采样
+    eps = torch.randn_like(z)  # 从p_N采样
+    e_hat = decoder.mean(eps)  # G(ε)
+    zeta = gp_method(e, e_hat)  # 梯度惩罚项
+    
+    # 估计Ż
+    f_lambda_z = prior_N(z) * torch.exp(-beta * discriminator(e_hat))
+    Z_hat = 0.5 * (torch.exp(-beta * discriminator(e_hat)) + 
+                    f_lambda_z / (M * encoder.prob(z, e)))
+    
+    # 计算ELBO
+    recon_loss = decoder.log_prob(x, z)
+    prior_loss = torch.log(f_lambda_z)
+    enc_loss = encoder.log_prob(z, e)
+    L = recon_loss + prior_loss - enc_loss + beta * zeta
+    
+    # 梯度更新
+    loss = torch.mean(L) - torch.log(torch.mean(Z_hat))
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    return loss.item()</code>
+</pre>
+
+<h3>14a.3 梯度惩罚策略详解</h3>
+
+<table>
+
+<tr><th>策略</th>
+<th>采样方式</th>
+<th>公式</th>
+<th>适用场景</th>
+</tr>
+
+<tr><td>WGAN-GP</td>
+<td>真实和生成数据的线性插值</td>
+<td>ζ = λ·E[(||∇D(ẑ)||²-1)²]</td>
+<td>通用</td>
+</tr>
+
+<tr><td>WGAN-div-1</td>
+<td>真实和生成数据的线性插值</td>
+<td>ζ = λ·E[||∇D(ẑ)||²]</td>
+<td>VAEPP默认</td>
+</tr>
+
+<tr><td>WGAN-div-2</td>
+<td>分别采样真实和生成数据</td>
+<td>ζ = λ·(E[||∇D(x)||²] + E[||∇D(ẑ)||²])</td>
+<td>更保守</td>
+</tr>
+
+</table>
+
+<h2 id="vaepp_theory_deep">附加A. 理论深度分析</h2>
+
+<h3>A.1 ELBO的三项分解</h3>
+
+<p>ELBO可以分解为三项：</p>
+
+<p>\[ \mathcal{L}(\theta, \phi, \lambda) = I + J + K \]</p>
+
+<p>其中：</p>
+
+<ul>
+
+<li>I = E_{p*(x)} E_{q_φ(z|x)}[ln p_θ(x|z)]：重构项</li>
+
+<li>J = E_{p*(x)} H[q_φ(z|x)]：后验熵项</li>
+
+<li>K = E_{q_φ(z)}[ln p_λ(z)]：先验项</li>
+
+</ul>
+
+<p>注意p_λ(z)只出现在K项中。最优先验是q_φ(z)（聚合后验），但实际中难以直接使用。</p>
+
+<h3>A.2 Pull-back Prior与GAN哲学的统一</h3>
+
+<p>当训练收敛时，∂L/∂β = 0意味着：</p>
+
+<p>\[ \mathbb{E}_{q_\phi(z)}[D(G(z))] = \mathbb{E}_{p_\lambda(z)}[D(G(z))] \]</p>
+
+<p>这表明判别器无法区分重构数据（来自q_φ(z)）和生成数据（来自p_λ(z)）。这与GAN的纳什均衡条件一致，但形式不同：GAN直接在数据空间训练，VAEPP在隐空间训练。</p>
+
+<h3>A.3 Wasserstein距离与W¹的关系</h3>
+
+<p>VAEPP使用1-Wasserstein距离（W¹）作为分布差异度量。W¹具有以下性质：</p>
+
+<ul>
+
+<li>对称性：W¹(μ, ν) = W¹(ν, μ)</li>
+
+<li>三角不等式：W¹(μ, ξ) ≤ W¹(μ, ν) + W¹(ν, ξ)</li>
+
+<li>对支撑集不重叠的分布也有良好定义（不像KL散度）</li>
+
+</ul>
+
+<p>W¹的对偶形式（Kantorovich-Rubinstein对偶）将无限维优化问题转化为1-Lipschitz函数空间的优化，这正是GAN中判别器D的角色。</p>
+
+<h3>A.4 朗之万动力学的收敛性</h3>
+
+<p>朗之万动力学的稳态分布等于目标分布p_λ(z)。在以下条件下保证收敛：</p>
+
+<ul>
+
+<li>步长ε足够小</li>
+
+<li>∇ln p_λ(z)是Lipschitz连续的</li>
+
+<li>p_λ(z)满足log-Sobolev不等式</li>
+
+</ul>
+
+<p>VAEPP中使用MALA（Metropolis-Adjusted Langevin Algorithm），通过接受-拒绝步骤保证采样的精确性。</p>
+
+<h2 id="vaepp_implementation_detail">附加B. 实现细节深入</h2>
+
+<h3>B.1 编码器架构</h3>
+
+<p>编码器q_φ(z|x)使用截断正态分布：</p>
+
+<p>\[ q_\phi(z|x) = \mathcal{TN}(\mu_\phi(x), \sigma_\phi^2(x), -2\sigma_\phi, 2\sigma_\phi) \]</p>
+
+<p>截断区间为[-2σ, 2σ]，覆盖约95%的标准正态分布。这一设计的好处：</p>
+
+<ul>
+
+<li>避免极端样本对Ẑ估计的影响</li>
+
+<li>减少q_φ(z|x)和(1/M)q_φ(z|x)的差距</li>
+
+<li>提高估计稳定性</li>
+
+</ul>
+
+<h3>B.2 解码器选择</h3>
+
+<table>
+
+<tr><th>数据集</th>
+<th>解码器类型</th>
+<th>方差</th>
+</tr>
+
+<tr><td>MNIST</td>
+<td>Bernoulli</td>
+<td>固定</td>
+</tr>
+
+<tr><td>Static-MNIST</td>
+<td>Bernoulli</td>
+<td>固定</td>
+</tr>
+
+<tr><td>Fashion-MNIST</td>
+<td>Discretized Logistic</td>
+<td>可学习γ</td>
+</tr>
+
+<tr><td>CIFAR-10</td>
+<td>Discretized Logistic</td>
+<td>可学习γ</td>
+</tr>
+
+<tr><td>CelebA</td>
+<td>Discretized Logistic</td>
+<td>可学习γ</td>
+</tr>
+
+<tr><td>Omniglot</td>
+<td>Bernoulli</td>
+<td>固定</td>
+</tr>
+
+</table>
+
+<h3>B.3 判别器架构</h3>
+
+<p>判别器D使用CNN结构（针对图像数据），类似于WGAN的判别器。关键设计：</p>
+
+<ul>
+
+<li>无BatchNorm（与Lipschitz约束兼容性问题）</li>
+
+<li>使用LeakyReLU激活</li>
+
+<li>最后输出单一标量（无sigmoid）</li>
+
+<li>梯度惩罚保证近似1-Lipschitz</li>
+
+</ul>
+
+<h3>B.4 训练优化器</h3>
+
+<p>所有参数使用Adam优化器，超参数：</p>
+
+<ul>
+
+<li>学习率：初始1e-4，每200 epoch减半</li>
+
+<li>β1 = 0.5（与GAN训练常用值一致）</li>
+
+<li>β2 = 0.9</li>
+
+<li>梯度裁剪：[-10, 10]</li>
+
+</ul>
+
+<h2 id="vaepp_sampling">附加C. 采样过程详解</h2>
+
+<h3>C.1 三步采样流程</h3>
+
+<ol>
+
+<li><strong>初始点生成：</strong>用预训练的GAN（建模q_φ(z)）采样z_0</li>
+
+<li><strong>朗之万动力学优化：</strong>从z_0开始，通过MALA迭代获得z ~ p_λ(z)</li>
+
+<li><strong>图像生成：</strong>x = decoder.mean(z)</li>
+
+</ol>
+
+<h3>C.2 GAN-VAEPP vs VAEPP</h3>
+
+<p>GAN-VAEPP直接从z_0生成图像，跳过朗之万动力学步骤。比较两者：</p>
+
+<table>
+
+<tr><th>方法</th>
+<th>采样步骤</th>
+<th>FID（CIFAR-10）</th>
+<th>速度</th>
+</tr>
+
+<tr><td>GAN-VAEPP</td>
+<td>z_0直接解码</td>
+<td>74.1</td>
+<td>快</td>
+</tr>
+
+<tr><td>VAEPP</td>
+<td>z_0 → MALA → 解码</td>
+<td>71.0</td>
+<td>慢（MALA迭代）</td>
+</tr>
+
+</table>
+
+<p>MALA采样可以"修正"z_0使其更符合p_λ(z)的高密度区域，提升采样质量。</p>
+
+<h3>C.3 拒绝采样的局限</h3>
+
+<p>Accept-Reject采样[2]需要p_λ(z)/p_N(z)在p_λ支撑集上有上界T。VAEPP中难以保证存在小的T，因为：</p>
+
+<ul>
+
+<li>判别器D(G(z))的范围可能很大</li>
+
+<li>β的可学习性使得比值动态变化</li>
+
+<li>支撑集理论上是整个隐空间，难以约束</li>
+
+</ul>
+
+<p>因此VAEPP采用MALA而非拒绝采样。</p>
+
+<h3>C.4 多模式采样</h3>
+
+<p>朗之万动力学的一个挑战是多模态分布的采样：链可能陷入局部模式。VAEPP通过以下方式缓解：</p>
+
+<ul>
+
+<li>使用GAN生成多样化的初始点z_0</li>
+
+<li>设置较大的步长ε，鼓励探索</li>
+
+<li>多链并行采样</li>
+
+</ul>
+
+<h2 id="vaepp_evaluation_metrics">附加D. 评估指标详解</h2>
+
+<h3>D.1 NLL（Negative Log-Likelihood）</h3>
+
+<p>NLL衡量模型对测试数据的拟合程度：</p>
+
+<p>\[ \text{NLL} = -\mathbb{E}_{x \sim p^*}[\log p_\theta(x)] \]</p>
+
+<p>计算p_θ(x)使用重要性采样：</p>
+
+<p>\[ \log p_\theta(x) \approx \log \frac{1}{K}\sum_{k=1}^K \frac{p_\theta(x, z_k)}{q_\phi(z_k|x)}, \quad z_k \sim q_\phi(z|x) \]</p>
+
+<p>K越大估计越精确，但计算成本越高。VAEPP使用10⁸-10⁹个样本进行评估。</p>
+
+<h3>D.2 Bits per Dimension (BPD)</h3>
+
+<p>BPD是连续值数据集（如CIFAR-10）的常用指标：</p>
+
+<p>\[ \text{BPD} = \frac{-\log p_\theta(x|z)}{D \cdot \ln 2} \]</p>
+
+<p>其中D是数据维度。CIFAR-10为3072维（32×32×3）。</p>
+
+<h3>D.3 FID（Fréchet Inception Distance）</h3>
+
+<p>FID衡量生成图像与真实图像在Inception网络特征空间的距离：</p>
+
+<p>\[ \text{FID} = \|\mu_r - \mu_g\|^2 + \text{Tr}(\Sigma_r + \Sigma_g - 2\sqrt{\Sigma_r \Sigma_g}) \]</p>
+
+<p>FID越低，生成质量越接近真实数据。</p>
+
+<h3>D.4 IS（Inception Score）</h3>
+
+<p>IS衡量生成图像的质量和多样性：</p>
+
+<p>\[ \text{IS} = \exp(\mathbb{E}_x[\text{KL}(p(y|x) || p(y))]) \]</p>
+
+<p>IS越高越好。</p>
+
+<h3>D.5 IvOM（Importance weighted Oracles Metric）</h3>
+
+<p>IvOM衡量生成模型的数据覆盖能力。VAEPP在MNIST上达到0.018，CIFAR-10上达到0.017，表明良好的覆盖能力。</p>
+
+<h2 id="vaepp_comparison_extended">附加E. 扩展对比</h2>
+
+<h3>E.1 与流模型的对比</h3>
+
+<table>
+
+<tr><th>特性</th>
+<th>VAE</th>
+<th>流模型</th>
+<th>VAEPP</th>
+</tr>
+
+<tr><td>对数似然</td>
+<td>下界</td>
+<td>精确</td>
+<td>下界（更紧）</td>
+</tr>
+
+<tr><td>采样速度</td>
+<td>快</td>
+<td>慢（顺序）</td>
+<td>中等（MALA）</td>
+</tr>
+
+<tr><td>采样质量</td>
+<td>低</td>
+<td>高</td>
+<td>高</td>
+</tr>
+
+<tr><td>训练稳定性</td>
+<td>稳定</td>
+<td>稳定</td>
+<td>较稳定（1步训练）</td>
+</tr>
+
+<tr><td>参数效率</td>
+<td>高</td>
+<td>中等</td>
+<td>中等</td>
+</tr>
+
+</table>
+
+<h3>E.2 与GAN变体的对比</h3>
+
+<table>
+
+<tr><th>特性</th>
+<th>原始GAN</th>
+<th>WGAN-GP</th>
+<th>VAEPP</th>
+</tr>
+
+<tr><td>对数似然</td>
+<td>不可计算</td>
+<td>不可计算</td>
+<td>可计算</td>
+</tr>
+
+<tr><td>模式坍塌</td>
+<td>常见</td>
+<td>较少</td>
+<td>无</td>
+</tr>
+
+<tr><td>训练稳定性</td>
+<td>差</td>
+<td>好</td>
+<td>好</td>
+</tr>
+
+<tr><td>多样性保证</td>
+<td>无</td>
+<td>无</td>
+<td>有（IvOM=0.018）</td>
+</tr>
+
+</table>
+
+<h3>E.3 与PixelRNN/PixelCNN的对比</h3>
+
+<table>
+
+<tr><th>特性</th>
+<th>PixelRNN</th>
+<th>PixelCNN</th>
+<th>VAEPP</th>
+</tr>
+
+<tr><td>NLL（MNIST）</td>
+<td>79.20</td>
+<td>81.30</td>
+<td>76.37</td>
+</tr>
+
+<tr><td>采样速度</td>
+<td>极慢</td>
+<td>慢</td>
+<td>中等</td>
+</tr>
+
+<tr><td>并行训练</td>
+<td>难</td>
+<td>可</td>
+<td>可</td>
+</tr>
+
+<tr><td>隐表示</td>
+<td>无</td>
+<td>无</td>
+<td>有</td>
+</tr>
+
+</table>
+
+<h2 id="extra_vaepp_0">附加F. VAEPP的开源实现指南</h2>
+
+<h3>F.1 代码结构</h3>
+
+
+<p>VAEPP的典型代码组织：</p>
+
+
+<ul>
+
+<li>models/encoder.py：编码器实现（截断正态分布）</li>
+
+
+<li>models/decoder.py：解码器实现（Bernoulli或Discretized Logistic）</li>
+
+
+<li>models/discriminator.py：判别器实现</li>
+
+
+<li>models/prior.py：Pull-back先验实现</li>
+
+
+<li>training/train_step.py：1步训练算法</li>
+
+
+<li>sampling/mala.py：MALA采样器</li>
+
+
+<li>evaluation/metrics.py：NLL/BPD/FID/IS评估</li>
+
+</ul>
+
+<h3>F.2 训练超参数推荐</h3>
+
+
+<table>
+
+<tr><th>数据集</th>
+<th>学习率</th>
+<th>批大小</th>
+<th>训练epoch</th>
+<th>隐维度</th>
+</tr>
+
+
+<tr><td>MNIST</td>
+<td>1e-4</td>
+<td>128</td>
+<td>500</td>
+<td>32</td>
+</tr>
+
+
+<tr><td>Fashion-MNIST</td>
+<td>1e-4</td>
+<td>128</td>
+<td>500</td>
+<td>64</td>
+</tr>
+
+
+<tr><td>CIFAR-10</td>
+<td>5e-5</td>
+<td>64</td>
+<td>800</td>
+<td>128</td>
+</tr>
+
+
+<tr><td>CelebA</td>
+<td>5e-5</td>
+<td>64</td>
+<td>500</td>
+<td>256</td>
+</tr>
+
+</table>
+
+<h3>F.3 评估流程</h3>
+
+
+<p>NLL评估流程（重要性采样）：</p>
+
+
+<ol>
+
+<li>对每个测试样本x，从q_φ(z|x)采样K个z（K=10⁸-10⁹）</li>
+
+
+<li>计算log p_θ(x, z_k) / q_φ(z_k|x)</li>
+
+
+<li>使用LogSumExp技巧避免数值溢出</li>
+
+
+<li>对所有样本取均值，得到NLL估计</li>
+
+</ol>
+
+<h3>F.4 常见训练问题与解决</h3>
+
+
+<table>
+
+<tr><th>问题</th>
+<th>可能原因</th>
+<th>解决方案</th>
+</tr>
+
+
+<tr><td>训练崩溃</td>
+<td>判别器过强</td>
+<td>降低判别器学习率，使用1步训练</td>
+</tr>
+
+
+<tr><td>采样模糊</td>
+<td>γ未学习</td>
+<td>使用可学习γ，适当设置初始值</td>
+</tr>
+
+
+<tr><td>NLL波动大</td>
+<td>K过小</td>
+<td>增加重要性采样数K</td>
+</tr>
+
+
+<tr><td>梯度爆炸</td>
+<td>β过大</td>
+<td>添加梯度裁剪</td>
+</tr>
+
+</table>
+
+<h2 id="extra_vaepp_1">附加G. VAEPP扩展研究方向</h2>
+
+<h3>G.1 集成自回归组件</h3>
+
+
+<p>VAEPP当前未集成自回归组件（如PixelCNN）。集成方向：</p>
+
+
+<ul>
+
+<li>解码器p_θ(x|z)使用PixelCNN结构</li>
+
+
+<li>挑战：训练和采样开销显著增加</li>
+
+
+<li>潜在收益：进一步降低NLL</li>
+
+</ul>
+
+<h3>G.2 条件生成</h3>
+
+
+<p>将VAEPP扩展至条件生成：</p>
+
+
+<p>\[ p_\lambda(z|y) = \frac{1}{Z(y)} p_N(z) \exp(-\beta D(G(z, y), y)) \]</p>
+
+
+<p>其中y是条件（如类别标签）。这使得VAEPP可以用于条件图像生成、文本到图像等任务。</p>
+
+<h3>G.3 半监督学习</h3>
+
+
+<p>VAEPP可扩展至半监督学习：</p>
+
+
+<ul>
+
+<li>有标签数据：监督损失 + ELBO</li>
+
+
+<li>无标签数据：仅ELBO</li>
+
+
+<li>判别器D：同时评估数据质量和类别匹配</li>
+
+</ul>
+
+<h3>G.4 隐空间几何研究</h3>
+
+
+<p>Pull-back先验提供了对隐空间几何的新视角：</p>
+
+
+<ul>
+
+<li>判别器D诱导的隐空间度量</li>
+
+
+<li>朗之万动力学的轨迹与数据流形的关系</li>
+
+
+<li>隐插值的语义连续性</li>
+
+</ul>
+
+<h2 id="extra_vaepp_2">附加H. 跨领域应用</h2>
+
+<h3>H.1 在NLP中的应用</h3>
+
+
+<p>VAEPP可应用于文本生成：</p>
+
+
+<ul>
+
+<li>编码器：BERT或Transformer</li>
+
+
+<li>解码器：自回归Transformer</li>
+
+
+<li>判别器：评估文本流畅度、语法正确性</li>
+
+
+<li>挑战：离散数据的梯度反传问题</li>
+
+</ul>
+
+<h3>H.2 在语音合成中的应用</h3>
+
+
+<p>VAEPP可用于高质量语音合成：</p>
+
+
+<ul>
+
+<li>编码器：声谱图特征提取</li>
+
+
+<li>解码器：WaveNet或类似声码器</li>
+
+
+<li>判别器：评估语音自然度</li>
+
+</ul>
+
+<h3>H.3 在分子设计中的应用</h3>
+
+
+<p>VAEPP可用于药物分子的生成：</p>
+
+
+<ul>
+
+<li>编码器：图神经网络（GNN）</li>
+
+
+<li>解码器：分子图生成器</li>
+
+
+<li>判别器：评估化学有效性、药物相似性</li>
+
+
+<li>Pull-back先验：增加高活性分子的密度</li>
+
+</ul>
+
+<h3>H.4 在时间序列异常检测中的应用</h3>
+
+
+<p>VAEPP可用于时间序列异常检测：</p>
+
+
+<ul>
+
+<li>正常数据集训练VAEPP</li>
+
+
+<li>测试时计算输入的log p(x)</li>
+
+
+<li>低概率样本视为异常</li>
+
+
+<li>Pull-back先验提高检测精度</li>
+
+</ul>
+
+</body>
+</html>

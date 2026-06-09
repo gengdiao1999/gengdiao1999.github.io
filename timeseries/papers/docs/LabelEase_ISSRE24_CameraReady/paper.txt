@@ -1,0 +1,724 @@
+     LabelEase: A Semi-Automatic Tool for Efficient
+      and Accurate Trace Labeling in Microservices
+      Shenglin Zhang†∥ , Zeyu Che† , Zhongjie Pan† , Xiaohui Nie‡ , Yongqian Sun∗‡‡† , Lemeng Pan§ , Dan Pei¶
+             † Nankai University, {zhangsl, sunyongqian}@nankai.edu.cn, {chezeyu, zhongjie}@mail.nankai.edu.cn
+                     ‡ Computer Network Information Center, Chinese Academy of Sciences, xhnie@cnic.cn
+                                                 § Huawei, panlemeng@huawei.com
+ ¶ Tsinghua University, Beijing National Research Center for Information Science and Technology, peidan@tsinghua.edu.cn
+                                ∥ Haihe Laboratory of Information Technology Application Innovation
+                        ‡‡ Tianjin Key Laboratory of Software Experience and Human Computer Interaction
+
+
+
+
+   Abstract—Trace data is crucial for system observability and                                                           Trace 1    Trace 2     Trace 3         Trace n
+maintainability within microservices architectures, and many                                                              Login      Login       Login            …
+                                                                                           User
+operation algorithms depend heavily on trace data, including                                                                                                …
+anomaly detection, root cause analysis, etc. However, the actual                                                          Cart        Cart      Logout            …
+                                                                                           Login
+performance of these algorithms might be unsatisfactory due to                                               濛濙濢濙濦濕濨濙
+
+the absence of high-quality labeled datasets for effective training                                                       Redis       Redis              Trace data
+and evaluation. Since billions of traces could be generated daily            Payment       Cart        Logout
+                                                                                                                                                  濠濕濖濙濠
+for large-scale microservices, labeling overhead is the main
+                                                                                                                        Anomaly Trace Labels= [Trace 1, Trace 2]
+hurdle to obtaining high-quality trace datasets.                                                                        Root Cause Labels = [{
+                                                                                                                            "duration " : ሾ‫ͳݐ‬ǡ ‫ʹݐ‬ሿ,
+   In this paper, we propose LabelEase, a novel semi-automatic                             Redis                            " service" : " Redis ",
+trace labeling tool, which uses active learning techniques to                                                               " fault type " : " memory "
+                                                                                                                                                        Trace Labels
+                                                                                        Microservice                    }]
+achieve efficient and accurate trace labeling. For anomaly trace
+labeling, LabelEase clusters similar traces with a graph-based
+trace representation technique and selects a few representative            Fig. 1. An toy example of the trace labeling process for a simple e-commerce
+traces for human labeling, avoiding labeling most of the traces.           microservice system. A memory fault happened at the Redis service, the trace
+For root cause labeling, LabelEase aggregates the labeled anoma-           labels should contain the anomaly traces and root cause information of Redis.
+lous traces and identifies the service’s failures for operators to
+label. Our systematic experiments on two large-scale datasets              challenging task. On the one hand, there are only a few public
+show that LabelEase achieves over 0.98 F1 -score in anomaly                trace datasets (e.g., train ticket dataset [12], NetManAIOps
+trace labeling and 0.89 precision of failure detection in root cause       dataset [13]) can be found, which are not only limited in
+labeling, LabelEase can reduce operators’ labeling overhead by             the number of traces but also in the types of faults. On the
+more than 99.9%. To the best of our knowledge, we are the
+                                                                           other hand, it should be evaluated by the data specific to that
+first to propose a semi-automatic trace labeling tool capable of
+achieving efficient and accurate trace labeling.                           scenario, since the characteristics of trace data vary across dif-
+   Index Terms—Data labeling tool, Trace anomaly detection,                ferent scenarios. Furthermore, although many current anomaly
+Root cause localization                                                    detection and root cause analysis algorithms are unsupervised
+                                                                           or semi-supervised, the availability of high-quality labeled data
+                         I. I NTRODUCTION                                  could aid in their training process and potentially enhance their
+   Nowadays microservices architecture has emerged as a                    performance. Unfortunately, there is currently no efficient tool
+leading paradigm for building modern software systems, de-                 available for trace labeling. Therefore, the development of an
+composing applications into a collection of loosely coupled,               efficient and accurate trace labeling tool is an urgent need.
+independently deployable services [1]–[3]. Large-scale mi-                 Such datasets would greatly benefit trace anomaly detection
+croservice systems could contain tens of thousands of service              and root cause analysis research and practice, similar to
+modules [4]. Trace data of microservices is crucial for under-             the impact of ImageNet [14] on computer vision and deep
+standing system behavior, diagnosing performance issues, and               learning.
+ensuring reliability. By analyzing traces, operators can gain                 Generally, in combination with human expertise, operators
+insights into service interactions, identify bottlenecks, detect           manually label all traces to acquire a high-quality dataset.
+anomalies, and optimize system performance [5]–[7].                        Fig. 1 shows a toy example of the trace labeling process.
+   Many anomaly detection and root cause analysis algorithms               Labeling trace involves examining the trace data to identify
+based on trace data have been proposed for efficient system                anomalous traces and summarizing their root causes. Un-
+maintenance [3], [8]–[11]. However, evaluating and selecting               fortunately, completely manually labeling a trace dataset is
+the appropriate algorithm for application in practice is a                 not a simple task. Previous manual trace labeling methods
+                                                                           require observing traces’ call structure and latency character-
+  ∗ Yongqian Sun is the corresponding author.                              istics individually and comparing them with similar requests.
+
+
+
+                                                                       1
+Therefore, manually labeling trace data for system analysis               belEase’s effectiveness and efficiency using two datasets.
+requires significant time and labor. Due to the huge amount               The results show that our approach labels trace anomalies
+of the trace dataset and the complex structural information of            in the microservices system with an average F1 -score of
+the traces, operators cannot manually label the entire dataset.           0.99 and 0.98 with an extraordinarily small amount of
+State-of-the-art unsupervised anomaly detection models are                traces that need to be labeled, respectively.
+not up to the task, which will be discussed in § V-B.                  4) A high-quality dataset on trace anomaly detection is pub-
+   To reduce the overhead of manual labeling, our goal is to              lished, which not only identifies whether each trace is
+build a semi-automatic trace labeling tool to help operators la-          anomalous or normal but also shows the root cause of
+bel anomaly traces and root causes efficiently and accurately.            each anomalous trace. Moreover, we have made our source
+Three challenges are encountered in building this tool:                   code of LabelEase and the labeled trace dataset openly
+1) Massive traces: Microservice systems could generate a                  accessible 1 , helping readers better understand our work.
+   massive amount of trace data every day for labeling. For                                                 II. P RELIMINARY
+   instance, within eBay’s infrastructure, the microservices
+   system generates approximately 150 billion traces on a
+   daily basis [15]. It is impossible to label all of the traces                                    User
+                                                                                                                                           Information of Span 4
+   manually.                                                                                           Span 1
+                                                                                                                                   Span id          06679e8f36286279
+2) Complex trace structures: Traces are characterized by                                            Login                          Trace id         2c624a8ed3df65537Ċ
+                                                                                                                                   Parent span id   2c624a8ed3df6553
+   complex and rich structures [16]. How to model the traces                                                                       Timestamp        1703000007734377
+                                                                                        Span 2                  Span 3             Duration         422 (ms)
+   is a problem. A trace exhibits a complex structure arising                                                                      Status code      200
+                                                                                                                                   Operation name   GetProduct
+   from the hierarchy of service invocations, as well as                                Cart                    Payment
+
+   parallel and asynchronous invocations [6]. Typically, a                    Latency
+                                                                                                            Span 5
+                                                                                                                          Structural
+                                                                           濊 Anomaly Span 4                               Anomaly
+   trace manifests as a complex graph structure and may
+   encompass numerous service operations, ranging from                              Redis                        Wallet
+   dozens to hundreds in number [10].
+3) Hard-to-determine root cause: The root cause is challeng-                   Fig. 2.           An example of the trace in microservice system.
+   ing to label even after trace anomalies are identified. Gen-
+   erally, root cause labeling needs to consider multiple traces       A. Microservice System
+   over a while. It is challenging to check all the anomalous             Microservice system is a software development approach
+   trace data and conclude the root cause information.                 characterized by decomposing applications into small, inde-
+   In this paper, we propose LabelEase, a semi-automatic tool          pendent services [17]. This architectural decomposition fa-
+for efficient and accurate trace labeling in microservices. (1)        cilitates enhanced flexibility, scalability, and maintainability,
+To address the first challenge, we use active learning, which          rendering the microservice system an increasingly favored
+allows us to obtain a high-quality trace dataset by labeling           choice among organizations striving to deliver robust and
+only a small number of traces. After labeling the anomalies            resilient software solutions [18].
+of all the traces, we aggregate the anomalous period traces to            For instance, the microservice system shown in Fig. 2
+visually provide reference information for operators to label          consists of five distinct services denoted, including “Login”,
+the root cause. (2) To address the second challenge, we train          “Cart”, “Redis”, “Payment” and “Wallet”. Through the de-
+a graph neural network to encode all trace data, ensuring that         coupling of services, the microservice system enables inde-
+similar traces possess similar vector representations. (3) To          pendent development, deployment, and scaling, empowering
+address the third challenge, we design a trace aggregation and         organizations to promptly respond to evolving business needs
+root cause localization technique to aggregate the anomalous           and technological advancements [19].
+traces and identify failure periods for operators to label. Our        B. Trace
+contributions can be summarized as follows:
+                                                                          A trace represents the sequence of service interactions
+1) To the best of our knowledge, this is the first work to             in response to a single user request or transaction in the
+   focus on reducing the labeling workload for trace labeling.         microservice system [20]. For example, Fig. 2 shows a trace
+   It integrates algorithmic approaches with operators’ exper-         of the microservice system, consisting of Span 1 through 5.
+   tise and can assist operators in labeling trace anomalies              A span refers to a specific unit of work or operation within a
+   efficiently and accurately.                                         trace [15]. For instance, as shown in Fig. 2, the span contains
+2) We propose LabelEase, a novel tool that consists of three           essential information such as the timestamp, service name,
+   components: graph-based trace representation, anomaly               operation name, duration, etc.
+   labeling, and root cause labeling. It clusters massive                 Trace anomalies can be categorized into two primary types:
+   amounts of trace data into a few groups and selects the             latency anomaly and structural anomaly. For example, as
+   most representative traces for operators to label, which            shown in Fig. 2, when “Cart” calls “Redis”, Span 4 has
+   significantly reduces the label overhead.
+3) We conduct a series of experimental studies to evaluate La-           1 https://doi.org/10.5281/zenodo.13338156
+
+
+
+
+                                                                   2
+a relatively high duration, resulting in a latency anomaly.                           B. Graph-based Trace Representation
+Furthermore, if the anticipated invocation sequence between                              1) Data Preprocessing: During the trace analysis process,
+“Payment” and “Wallet” fails to materialize within the trace,                         we primarily focus on the semantic information (e.g., service
+it indicates a disruption, i.e., a structure anomaly occurs.                          name and operation name), temporal features, status codes
+C. Anomaly Detection and Root Cause Localization                                      within the span, and the calling relationships between different
+                                                                                      services. We convert the raw trace data into a graph data format
+   Anomaly detection identifies potential anomalies in service
+                                                                                      following the methodology outlined by Zhang et al. [23].
+execution and generates timely alerts [21]. It reports abnor-
+                                                                                         For semantic information within a span, we use common
+mal traces, offering context for further troubleshooting. By
+                                                                                      separators in microservice systems (e.g., ‘/’, ‘-’, ‘:’) to split
+examining these traces, one can investigate the upstream and
+                                                                                      the textual information. All words are then converted to
+downstream services associated with the anomaly’s location.
+                                                                                      lowercase, and non-character tokens (e.g., punctuation marks,
+   Root cause localization identifies the components affected
+                                                                                      numbers) are removed. For out-of-vocabulary (OOV) or new
+by a particular fault. It involves isolating the issue to the
+                                                                                      compound words, we employ WordPiece tokenization [24],
+specific component or subsystem responsible for the failure
+                                                                                      which involves breaking down words into individual characters
+and then conducting a detailed examination to determine the
+                                                                                      and iteratively identifying the most common character combi-
+exact sources of errors [22]. This process is indispensable
+                                                                                      nations until the desired vocabulary is achieved. Subsequently,
+for effectively diagnosing and resolving issues inherent to
+                                                                                      we utilize the feature extraction capabilities of a pre-trained
+complex and distributed systems.
+                                                                                      BERT model to obtain semantic vectors [25], representing the
+              III. L ABEL E ASE A PPROACH                                             span’s service and operation names.
+A. Design Overview                                                                       For time features within a span, the start time and duration
+                                Operators                                             of a service invocation provide valuable insights into the
+ Root Cause                                                      Graph-based
+                                                  Upload                              performance and behavior of the microservice system. By
+  Labeling                                    unlabeled trace       Trace
+                                                   data         Representation        analyzing the duration, waiting time, local execution time, and
+       Root Cause
+       Localization
+                                                                                      relative start time of each span [23], we can comprehensively
+                                                                     Data
+                                                                 Preprocessing
+                                                                                      understand service interactions and performance within the
+                                                  Anomaly
+                                                  Labeling
+                                                                                      system. The high dimensionality of the previous semantic
+         Trace                   Human
+       Aggregation              Feedback                                              encoding can lead to the neglect of time features in span
+                                                                 GNN Training
+                                                                                      representation. Additionally, the substantial variation in dura-
+              true
+                                                                                      tion across different traces complicates model training conver-
+        All traces      false                  Hybrid
+        have been                           Representative
+                                                                   Vectorized         gence. To address these issues, we consolidate these four time-
+         labeled                                                 Representation
+       accurately?
+                                              Selection                               related features into a vector for time information extraction
+                                                                                      and project them into a high-dimensional vector [26].
+                                                                                         Status codes within a span pertain to the numeric codes
+              Fig. 3.     The overview framework of LabelEase.                        employed by servers in response to client requests within
+   The overall framework of LabelEase is illustrated in Fig. 3.                       the HTTP protocol. These codes are typically classified into
+It comprises three principal components: the graph-based trace                        five categories: informational, success, redirection, client error,
+representation module, the anomaly labeling module, and the                           and server error codes, with each code representing a distinct
+root cause labeling module. This tool enables operators to                            outcome. For instance, the code “200” indicates a successful
+conduct anomaly labeling and root cause identification on raw                         request. Incorporating status codes aids in comprehending the
+traces, thereby producing a high-quality trace dataset.                               outcomes of requests and facilitates the adoption of appropri-
+   In the graph-based trace representation module, the unla-                          ate actions. In our work, we encode the status codes using
+beled trace data uploaded by operators is first preprocessed                          one-hot encoding methodology.
+into graph-structured data. Subsequently, we train a Graph                               Intuitively, a trace exhibits a complex hierarchical structure
+Neural Network (GNN) to differentiate between various traces                          of calling relationships, rendering it suitable for representation
+based on their representations. The trained model then encodes                        as a directed acyclic graph. Within this graph, each node
+the trace data into representation vectors.                                           corresponds to a span, while the edges denote the parent-
+   In the anomaly labeling module, we utilize a hybrid repre-                         child relationship between spans. The vector representation
+sentative selection approach to cluster the trace representation                      of each span encompasses three fundamental components of
+vectors into multiple classes. Operators then employ their                            information encoding: semantic information, time features,
+expertise to identify anomalies at the center points of each                          and status code in span.
+cluster. With human feedback, active learning is applied to                              2) GNN Training: We employ GNN to capture the struc-
+label the remaining traces accurately.                                                tural and relational intricacies within the trace data. Upon
+   In the root cause labeling module, traces from abnormal                            training the GNN, we utilize it to encode each trace into a
+intervals are aggregated. Operators can more effectively deter-                       fixed-size vector representation. This representation succinctly
+mine the root cause by analyzing the frequency of access to                           encapsulates the trace’s salient features while encoding its
+each service and examining the associated calling information.                        inherent structure and inter-span relationships. Specifically,
+
+
+
+                                                                                  3
+we utilize the Graph Attention Network (GAT) [27], a GNN                   vectorized representation for each trace. These representations
+variant grounded on the multi-head self-attention mechanism.               encapsulate each trace’s distinctive features, facilitating sub-
+GAT offers a more adaptive and expressive approach to                      sequent analysis and comparison tasks.
+learning representations from graph-structured data.
+   Graph Contrastive Learning (GCL) represents a standard                  C. Anomaly Labeling Module
+methodology for training GNN. The primary objective of GCL                    At this stage, the unlabeled trace data undergo a labeling
+is to incentivize the model to converge representations of                 process incorporating operators’ knowledge and expertise. Our
+similar graphs towards each other within the embedding space               objective is to minimize the labeling effort while ensuring
+while simultaneously driving representations of dissimilar                 high-quality data labels. In this regard, active learning [30], a
+graphs apart.                                                              machine learning paradigm, is particularly well-suited. Active
+   To achieve similar vector representations for analogous                 learning seeks to optimize performance gains while minimiz-
+traces, we train the GNN utilizing preprocessed traces while               ing the number of labeled samples required for training. It
+integrating trace-specific domain knowledge, as outlined in He             selects the most informative data points from an unlabeled
+et al. [28]. The model’s input comprises a triplet consisting              dataset for labeling through human feedback. It reduces label-
+of three traces (denoted as A, B, and C), intending to                     ing costs while preserving performance levels.
+predict their relative relationships. Specifically, the task entails          Following graph-based trace representation, all traces under-
+discerning that trace A bears greater similarity to trace B than           went vectorization via GNN. Consequently, for certain similar
+to trace C.                                                                traces, selecting the most representative trace for labeling
+   At first, following He et al. [28], we produce a large number           suffices to ensure the correct labeling of other traces within
+of trace triplets. We mainly focus on the structural differences           the same cluster. We partitioned traces into different classes
+and time latency between different traces. On the one hand, we             utilizing clustering algorithms. For the traces in each class, the
+generate for each trace a path ID that can uniquely identify a             cluster center point is selected as the most representative trace
+calling path to determine whether the traces have the same                 for operators to label.
+structure [15]. The same structure implies that every node                    In practical terms, if an operator opts to label k traces, the
+position in two traces must have the same span names and                   trace data will be clustered into k distinct clusters using a
+caller-callee relations. On the other hand, the trace latency              clustering algorithm. Intuitively, as human feedback and the
+represents the duration of end-to-end requests. Intuitively,               number of labeled traces increase, it is anticipated that the
+there are different time latencies between normal traces and               accuracy of the labeled dataset will progressively converge
+abnormal traces.                                                           towards 100%. We will discuss this in § V-E.
+   Initially, the GNN independently encodes each trace, yield-                However, with the expansion of total data size and the
+ing representations GA , GB , and GC for traces A, B, and                  increasing number of labeled traces, the clustering process
+C, respectively, with shared parameters across all traces.                 may incur significant space and time overhead. Traditional
+By learning their relative similarities, GNN training aims to              clustering algorithms often struggle to handle large-scale data
+accurately capture trace representations by encoding similarity            efficiently [31]. To address this challenge, we draw insights
+information. The similarity for measuring the distance of                  from Huang et al. [32] and employ hybrid representative
+two traces, d(x, y), is computed with cosine similarity by                 selection. Specifically, we sample one-tenth of the data from
+Equation 1:                                                                the entire dataset, ensuring that the distribution characteristics
+                                      x·y                                  of the sampled data in the vector space remain consistent with
+                     d(x, y) = 1 −                               (1)
+                                     ∥x∥∥y∥                                those of the original dataset. Subsequently, we apply the k-
+   We train the model with the triplet loss [29] to minimize the           means method to derive k clusters, utilizing the resulting k
+distance between GA and GB while maximizing the distance                   cluster centers as the set of representatives.
+between GA and GC . The loss function L(A, B, C) is defined                   We provide operators with a visual representation of the
+by Equation 2:                                                             topology diagram illustrating the interactive relationships be-
+                                                                           tween spans. Simultaneously, to ensure a precise understand-
+ L(A, B, C) = max {d(GA , GB ) − d(GA , GB ) + margin, 0} (2)
+                                                                           ing of span delay and its severity, we offer a corresponding
+   where margin is a fixed value to control the gap of two                 timeline for each span, depicting its temporal latency and
+distances. By minimizing the triplet loss via backpropagation,             calling level. In summary, LabelEase facilitates operators in
+the GNN’s ability to represent and distinguish different traces            intuitively and clearly labeling trace anomalies.
+is gradually satisfying.
+   3) Vectorized Representation: Leveraging the trained GNN,               D. Root Cause Labeling
+we exploit its capacity to generate diverse vector representa-                Once all trace data are labeled, the subsequent task involves
+tions for individual traces. By preserving each trace’s intricate          identifying the root cause of traces during abnormal periods.
+structure and attribute information, similar traces exhibit closer         This process entails partitioning the trace data into abnormal
+proximity within the vector space.                                         periods based on the outcomes of abnormal labeling.
+   We input preprocessed graph data representing each trace                   A service characterized by a higher frequency of abnormal
+into the trained GNN. This process generates a 64-dimensional              traces and a lower occurrence of normal traces passing through
+
+
+
+                                                                       4
+             Fig. 4. Interface of trace anomalies labeling                               Fig. 5. Interface of root cause labeling
+
+it is more likely to be identified as the root cause service [2],         each similar call path in the entire dataset as a labeling refer-
+[33]. To ascertain the likelihood of a service being the                  ence. In providing this comprehensive environment, LabelEase
+root cause, we employ the spectrum-based fault localization               facilitates operators in efficiently labeling anomalies.
+(SBFL) technique. This method computes the suspicious score                  In the trace list displayed on the left side of the page,
+of each service within a service set P based on the presence              each trace is visually distinguished: green signifies a label
+of normal and abnormal traces. In SBFL, we focus primarily                of “normal”, red indicates a label of “abnormal”, and black
+on four distinct statistics for a given service O ∈ P : Oef , Oep ,       denotes traces awaiting labeling. Operators can label each
+Onf , and Onp . Here, Oef represents the count of abnormal                trace by selecting either the “abnormal” or “normal” buttons,
+traces covering service O, while Oep signifies the count of               guided by structural information at the top right and delay
+normal traces covering service O. Conversely, Onf denotes                 information at the bottom right of the page. Operators can
+the count of abnormal traces not covering service O, and Onp              customize the number of traces to be labeled according to
+indicates the count of normal traces not covering service O.              the situation that will be discussed in § V-E. This adaptive
+   Based on the above statistics, we leverage Equation 3 to               approach ensures efficient and tailored labeling processes to
+calculate suspicious score ScoreO of service O, and prior                 suit varying circumstances.
+work has proved its effectiveness [34].                                      Upon completion of labeling for the provided traces, Labe-
+                                   Oef                                    lEase can automatically label the remaining unlabeled traces,
+            ScoreO = p                                          (3)
+                          (Oef + Oep ) ∗ (Oef + Onf )                     reducing the workload of manual labeling. Moreover, all trace
+   Nevertheless, spectrum analysis solely accounts for abnor-             labels can be exported directly with extremely high accuracy.
+mal and normal traces for each service, disregarding service
+latency and dependency relationships. Consequently, it may                B. Root Cause Labeling
+fail to accurately identify the true culprits in scenarios where             After all traces are labeled, operators will go to the page of
+multiple services with closely interdependent relationships are           labeling root cause in Fig. 5. LabelEase will merge the periods
+implicated in anomalous requests [34].                                    when the faults occurred based on the time when the labeled
+   Henceforth, we integrate the visualization of service depen-           anomaly trace occurred. Traces within each period will then
+dency topology and service latency information on the front               be aggregated. Leveraging SBFL, LabelEase will compute a
+end. It aims to provide operators with an intuitive perceptual            suspicious score for each server.
+experience, facilitating rapid labeling tasks. By presenting                 However, SBFL overlooks important factors such as service
+these insights, we strive to better leverage operators’ profes-           latency and service dependencies. To address this limitation,
+sional knowledge to enable actionable root cause localization.            the interface will incorporate additional information, including
+                                                                          the average latency of the aggregated traces for passing
+                    IV. I MPLEMENTATION                                   through each service and the invocation relationship between
+   We have seamlessly integrated the LabelEase approach into              the services in each period, etc. Meanwhile, the average
+a bespoke labeling tool. Fig. 4 shows the interface of trace              latency and standard deviation of traces passing through each
+anomalies labeling and Fig. 5 shows the interface of root cause           service across the entire dataset will be calculated as a
+labeling.                                                                 reference for labeling information. As a result, operators can
+                                                                          utilize their initiative and professional knowledge to correctly
+A. Trace Anomalies Labeling                                               label the root cause of anomalous traces.
+   After LabelEase selects representative traces for labeling,               For each period, a microservice system relationship diagram
+the operators will label the given traces on the page shown               is featured prominently in the center of the page. The higher
+in Fig. 4. It presents trace and span-related information in a            the suspicious score, the more likely the root cause is, and the
+visual and intuitive manner, encompassing structural topology             darker the service will be displayed on the interface. Upon
+diagrams, duration, status codes, operation names, hierarchical           selecting a service, detailed information about it is displayed
+relationships, etc. Additionally, LabelEase also provides the             in the right box. Operators can set the type of fault to label
+average value, standard deviation, and other information about            the root cause. Then, the service labeled as the root cause is
+
+
+
+                                                                      5
+highlighted in red. Eventually, the dataset’s ground truth can        TraceCRL [10], TraceVAE [11] and TraceSieve [3]. These
+be exported, and this high-quality trace dataset can be used          unsupervised algorithms use the given trace data for training
+for other scientific tasks.                                           and labeling to suit our application scenario of labeling traces.
+                                                                      By comparing with LabelEase, we aim to evaluate whether
+                      V. E VALUATION                                  these state-of-the-art anomaly detection models exhibit similar
+   In this section, we first introduce the experimental setup         proficiency in dataset labeling even if numerous anomalous
+of LabelEase. Then, we conduct extensive experiments to               traces are present in the training data.
+evaluate the performance of LabelEase and aim to answer the              Performance Metrics: In the root cause labeling task,
+following research questions (RQs) :                                  operators are provided with a visually enriched labeling en-
+RQ1. How does the effectiveness and efficiency of LabelEase           vironment, facilitating rapid and accurate labeling. Operators’
+compare to baseline methods in terms of trace anomaly                 professional expertise is pivotal in locating root causes, with
+detection?                                                            their subjective initiative often guiding the process. Ideally,
+RQ2. How effective is LabelEase in graph-based trace rep-             root cause labeling aims for 100% accuracy. Consequently,
+resentation compared with baseline trace vectorization ap-            we focus on evaluating the effectiveness of anomaly detection
+proaches?                                                             labeling for the entire dataset, assuming the correctness of
+RQ3. How well does the hybrid representative selection with           trace anomalies labeled by operators. The task of labeling
+active learning compare to other clustering methods?                  trace anomalies can be framed as a binary classification for
+RQ4. How do the number of traces operators need to label              each trace, with the F1 score serving as a widely accepted
+influence the performance?                                            performance metric, which is given by Equation 4. Here,
+RQ5. How effective is labeling the root cause?                        T P represents true positives, F P represents false positives,
+                                                                      and F N represents false negatives. P recision denotes the
+A. Experiment Setup                                                   proportion of predicted positive samples that are true posi-
+   Datasets: We conducted experiments to evaluate the                 tive samples. Recall denotes the proportion of true positive
+performance of LabelEase using two datasets, denoted as               samples that are correctly predicted as positive. Consequently,
+Dataset 1 (D1) and Dataset 2 (D2). The traces and root                F1 score provides a balanced assessment by computing the
+causes within these datasets were meticulously labeled by             harmonic mean of precision and recall.
+professional operators. D1 is collected from a benchmark
+                                                                                                    TP
+microservice system that we developed, utilizing the open-                          P recision =
+                                                                                                TP + FP
+source e-commerce application Online Boutique [35]. This                                        TP
+dataset includes user activities such as browsing items, adding                     Recall =                                        (4)
+                                                                                             TP + FN
+items to the cart, and making purchases. Various faults were                                         P recision × Recall
+                                                                                    F1 − score = 2 ×
+deliberately injected into the system using Chaos Mesh [36],                                         P recision + Recall
+such as pod failure, delay, packet loss, memory issues, etc. We
+                                                                      B. LabelEase vs. Baseline Algorithms (RQ1)
+use a set of 103078 normal traces and 27285 anomaly traces
+to conduct experiments. D2 is collected from a large-scale               The results of trace anomaly labeling of LabelEase and the
+microservice system operated by a top-tier global commercial          baseline approaches are shown in Table I. LabelEase exhibits
+bank. It includes services such as account managements, bill          superior performance over all baseline approaches across both
+payments, fund transfers and personal financial plans. This           datasets, achieving F1 scores of 0.99 and 0.98, respectively.
+dataset emulates a real-world production environment of a             Notably, this performance is attained with operators labeling
+large-scale life service application, incorporating end-to-end        only 35 traces in D1 and 67 traces in D2.
+full-link logs, multivariate time series (MTS), and traces. We           Among the baseline methods, MultimodalTrace achieves the
+utilize a total of 112,786 traces from this dataset, compris-         lowest performance. MultimodalTrace trains an LSTM-based
+ing 19,207 anomaly traces, to evaluate the performance of             model based on the operation sequences of traces, primarily
+anomaly labeling of LabelEase.                                        utilizing recorded timestamps for reconstruction. However, its
+   Environment and Hyperparameters: All experiments are               feature extraction process is relatively simplistic and limited,
+run on a server with two 16C32T Intel(R) Xeon(R) Gold 5218            leading to inadequate discrimination between normal and
+CPU @ 2.30 GHz, one NVIDIA(R) Tesla(R) V100S, and 192                 abnormal data.
+GB RAM. The implementation of LabelEase is in Python                     TraceAnomaly and CRISP utilize a service trace vector
+3.7.0, with PyTorch 1.5.0 serving as the primary deep learning        (STV) representation to characterize traces and detect anoma-
+framework. During the GNN training phase, we employed a               lies through Variational Autoencoder (VAE) reconstruction.
+batch size of 32, a learning rate of 0.0001, and conducted            However, they solely incorporate service sequences and re-
+training over 15 epochs.                                              sponse times from traces, neglecting the status code infor-
+   Baselines: To evaluate the performance of LabelEase on             mation. Due to the presence of more normal data and sim-
+anomaly labeling, we employ six recently proposed trace unsu-         pler service calls on D1 than on D2, TraceAnomaly and
+pervised anomaly detection methods as baseline methods, in-           CRISP can learn more accurate normal pattern features on
+cluding MultimodalTrace [37], TraceAnomaly [8], CRISP [9],            D1, achieve higher precision than on D2. This variance in
+
+
+
+                                                                  6
+dataset complexity accounts for the differences in performance                                           / D E H O ( D V H                 X V L Q J  6 7 9                                  X V L Q J  6 & 9 3                 X V L Q J  7 ) 0
+between D1 and D2.                                                                                                                                                                
+
+   TraceCRL constructs an operation invocation graph for each                                                                                                                     
+
+
+
+
+                                                                           )   V F R U H
+
+
+
+
+                                                                                                                                                                )   V F R U H
+trace and employs a contrastive learning mechanism to train a                                                                                                                     
+graph neural network-based model. However, while TraceCRL                                                                                                                         
+learns the features of traces through graph structure and data
+                                                                                                                                                                                  
+augmentation strategies, proper feature selection is still crucial
+for anomaly detection. If the model fails to capture all the                                        D   $ Q R P D O \  / D E H O L Q J  R Q    1                            
+                                                                                                                                                                                               E   $ Q R P D O \  / D E H O L Q J  R Q  2
+features associated with anomalies, it may lead to missed or              Fig. 6. The effects of graph-based trace representation in comparison with
+false alarms.                                                             different trace vectorization approaches on two datasets
+
+   TraceVAE employs a dual-variable graph VAE architecture                C. The Effects of Graph-based Trace Representation (RQ2)
+and an innovative dispatching layer to separately encode the
+                                                                             We conduct a series of experiments to evaluate the effects of
+structure of traces and the time consumption of nodes. Trace-
+                                                                          graph-based trace representation on two datasets compared to
+VAE proposes techniques to reduce the entropy gap, but the
+                                                                          other trace vectorization approaches. Fig. 6 shows LabelEase
+effectiveness may vary depending on specific data distributions
+                                                                          with the graph-based representation can outperform other trace
+and anomaly types. Hence, adaptation or further optimization
+                                                                          vectorization methods.
+may be necessary in different application scenarios.
+                                                                             In LabelEase using STV, we change the graph-based trace
+   TraceSieve integrates the Variational Graph Auto-Encoder               representation into STV [8]. A specific trace’s STV is con-
+(VGAE) with Elastic Weight Consolidation (EWC) to formu-                  structed with the call path list. Within this representation, the
+late an unsupervised trace anomaly detection method. It uti-              value of each dimension signifies the response time associated
+lizes an auto-encoder architecture within an adversarial train-           with a particular invocation path for a given trace. Notably,
+ing framework to filter out noise data. Thereby, TraceSieve               when a dimension’s value is -1, it signifies the absence of
+is more accurate in identifying anomalies and reduces the                 this specific call path. However, STV may not capture the
+number of false alarms with high precision on D1. Unfortu-                intricate interactions and dependencies prevalent in complex
+nately, the sensitivity of noise filtering impacts the features and       systems. Consequently, it risks overlooking crucial invocation
+patterns learned by the model. Excessive sensitivity may cause            information between spans, potentially undermining model
+the model to overlook the key information, misclassify real               performance or leading to erroneous outcomes.
+data as noise, and fail to filter noise effectively. Consequently,           In LabelEase using SCVP, the graph-based trace representa-
+this affects the model’s generalization ability and prediction            tion is replaced with service critical path vectors (SCVP) [9].
+performance, leading to a subpar performance on D2.                       CRISP encodes only on the call paths for those on the critical
+                                                                          path spans. Compared with the STV, SCPV encoding reduces
+   In summary, the results presented in Table I underscore
+                                                                          the feature dimensions and decreases the inference time.
+the inadequacy of existing unsupervised trace anomaly detec-
+                                                                          However, this selective encoding strategy raises concerns.
+tion methods in effectively labeling the dataset. The subpar
+                                                                          First, by exclusively considering call paths on the critical
+performance of these baseline approaches can be attributed
+                                                                          path, SCPV may overlook essential information, particularly
+primarily to the substantial presence of anomalous data in
+                                                                          regarding paths not on the critical path that could nonetheless
+the training set, hindering the models from learning accurate
+                                                                          impact system performance. Second, accurate identification
+feature representations. Consequently, none of these methods
+                                                                          and definition of critical paths are imperative for SCPV.
+can accurately differentiate between normal and anomalous
+                                                                          This often necessitates domain knowledge and experience and
+traces.
+                                                                          potentially relies on assumptions about the system’s structure
+   Regarding efficiency, we evaluate the time cost of trace               and operation.
+anomalies labeling with all baseline methods and LabelEase.                  In LabelEase using TFM, we replace the graph-based trace
+As depicted in Table I, we present the time overhead incurred             representation used in the existing method with trace feature
+during the testing and labeling processes with the trained base-          matrix (TFM) [3]. TFM stores extracted features, encompass-
+line models. LabelEase exhibits superior efficiency compared              ing both execution and waiting times from traces. However,
+to the baseline methods, boasting the shortest time overhead              despite TFM’s inclusion of additional temporal features, it
+and highest labeling efficiency. The baseline methods are                 remains deficient in adequately capturing the invocation re-
+characterized by intricate neural network architectures, which            lationships between services and the dependency associations
+entail complex forward propagation operations, resulting in               between spans.
+significant time overhead. In contrast, LabelEase leverages                  In LabelEase, we leverage trained GNN to generate a vec-
+active learning, relying on the efficient hybrid representa-              torized representation for each trace to measure the distance
+tive selection, and acquires all trace labels through human               between different traces. The graph-based trace representation
+feedback. As a result, LabelEase outperforms other baseline               approach promises to accurately capture the intricate structure
+methods with extremely high effectiveness and efficiency.                 and attributes of traces in a microservice system. Conse-
+
+
+
+                                                                      7
+                                                              TABLE I
+                        T HE EFFECTS OF LabelEase IN COMPARISON WITH DIFFERENT APPROACHES ON TWO DATASETS
+
+                                                        D1                                                                         D2
+                 Approach
+                                   Precision   Recall    F1 -score         Time         Precision                        Recall     F1 -score               Time
+                LabelEase              1        0.98       0.99            6.53s          0.96                            0.99        0.98                 21.68s
+           MultimodalTrace [37]       0.2       0.15       0.17           1.9min          0.17                            0.15        0.16                 1.6min
+            TraceAnomaly [8]         0.94       0.67       0.78          27.2min          0.21                             0.2         0.2                22.2min
+                CRISP [9]             0.8       0.57       0.67          26.1min          0.24                            0.21        0.23                17.3min
+             TraceCRL [10]           0.39       0.28       0.33            8.9h           0.48                            0.43        0.45                  7.2h
+             TraceVAE [11]            0.4        0.3       0.35            1.7h           0.14                            0.77        0.23                51.3min
+              TraceSieve [3]           1        0.74       0.85           7.6min          0.17                            0.15        0.15                 9.8min
+
+quently, adopting this approach enables the acquisition of                                                
+richer and more comprehensive trace information, potentially
+leading to improved F1 -score.                                                                            
+
+                                                                                                          
+
+
+
+
+                                                                                     )   V F R U H
+D. Effectiveness of Clustering Strategies (RQ3)
+   We leverage the hybrid representative selection strategy                                                                                                   1
+                                                                                                                                                                 2
+to select the most representative data for active learning. In
+                                                                                                          
+particular, after filtering out a part of the trace collection
+refer to [32], clustering methods are employed to identify                                                
+cluster centroids. Our experimental evaluation encompasses                                                                                      
+                                                                                                                               1 X P E H U  R I  / D E H O V
+four classical clustering algorithms to determine the most                    Fig. 7. The effect of different numbers of traces to be labeled
+effective and efficient approach for this task.
+   K-means is an iterative clustering algorithm that partitions          E. Sensitivity of the Number of Traces to be Labeled (RQ4)
+data into k clusters by minimizing the sum of squared                       We focus on the impact of the sensitivity of different
+distances from data points to cluster centroids. Hierarchical            numbers of traces to be labeled on the overall labeling results
+clustering constructs a hierarchical structure by evaluating the         with LabelEase. Fig. 7 shows how the F1 -score of LabelEase
+similarity between objects. DBSCAN, a density-based cluster-             changes with different trace numbers of labels. In LabelEase,
+ing method, groups closely situated points together based on a           We employ K-means to cluster the data into k clusters,
+defined minimum number of points within a specified radius.              selecting the trace at the center of each cluster for manual
+Spectral clustering partitions data into clusters by analyzing           labeling. Operators can determine the number of traces to be
+the eigenvectors of a similarity matrix derived from the data.           labeled, significantly enhancing flexibility and initiative.
+   Table II presents the performance and efficiency of Labe-                As the number of labels increases, the F1 score of Labe-
+lEase employing various clustering algorithms. The results               lEase improves. However, It also leads to higher time and
+indicate generally satisfactory performance across most clus-            cost overhead. Therefore, to balance the labeling workload and
+tering methods evaluated. Notably, the K-means algorithm                 achieve satisfactory results, referring to the red dotted lines in
+exhibits superior effects and the shortest computational time            Fig. 7, we choose 35 as the number of labels for D1 and 67
+among the considered algorithms, indicating heightened ef-               as the number of labels for D2. In this case, the F1 -score on
+ficiency compared to alternatives. Consequently, we opt for              the two datasets will be 0.99 and 0.98, respectively.
+the K-means algorithm as the preferred clustering method for
+                                                                            The number of traces to be labeled can be increased if higher
+LabelEase.
+                                                                         performance is required. As shown in Fig. 7, the F1 -score
+   In addition, we conducted a comparison by randomly se-                grows slowly and gradually converges to 1 when the number of
+lecting traces for labeling to assess the effectiveness of the           labels reaches a certain threshold. Our experimental evaluation
+hybrid representative selection strategy. Table II demonstrates          results indicate that for any dataset, operators can use 0.1%
+the worst results of using random selection. As traces are               of the total number of traces as the labeling threshold. By
+chosen randomly as representatives, their selection time is not          adopting this threshold, we demonstrate the universality of
+factored into the analysis. On the one hand, after using graph-          LabelEase, significantly reducing operators’ labeling overhead
+based trace representation in the previous step, similar traces          by more than 99.9% while acquiring a high-quality dataset.
+have similar embedding representations, so the precision of
+LabelEase using random selection is not low. On the other
+                                                                         F. Effectiveness of Labeling Root Cause (RQ5)
+hand, the proportion of normal traces is relatively large, and
+random selection makes it easy to select normal samples,                   After labeling all anomalies, we evaluate the effectiveness
+resulting in inferior recall. In conclusion, adopting random             of root cause localization. We use LabelEase to aggregate
+selection to replace clustering shows unsatisfactory results,            anomaly traces and determine the period during which faults
+underscoring the importance of accurately selecting the most             occurred. Since operators’ expertise is employed for labeling,
+representative trace data.                                               we believe they have correctly identified the root cause for
+
+
+
+                                                                     8
+                                                                  TABLE II
+                                      T HE EFFECTS OF THE DIFFERENT CLUSTER METHODS ON TWO DATASETS
+
+                                                                 D1                                                   D2
+                     Approach
+                                            Precision   Recall     F1 -score      Time(s)      Precision     Recall     F1 -score    Time(s)
+                   using K-means                1        0.98        0.99          6.53          0.96         0.99        0.98        21.68
+            using hierarchical clustering     0.99       0.98        0.99          96.9          0.96         0.95        0.96        51.98
+                   using DBSCAN               0.99       0.92        0.95         116.07         0.83           1         0.91        97.55
+              using Spectral clustering       0.99       0.98        0.98         200.84         0.96         0.93        0.94       264.24
+               using random selection          0.8        0.2        0.32            -           0.95         0.33        0.49          -
+
+each fault period. Consequently, it is essential to ensure that              Therefore, a semi-automatic, trace-specific labeling tool that
+all fault periods in the dataset are accurately identified.                  can reduce costs while achieving high-quality labels is urgently
+   Since D2 doesn’t contain abundant fault cases, we only used               needed.
+D1 for the experiments. We compared the aggregated fault                        To our knowledge, LabelEase represents the initial effort in
+periods identified by LabelEase with the ground truth labeled                this direction. Serving as the inaugural semi-automatic labeling
+in the dataset. To evaluate the effectiveness of LabelEase in                tool, it is designed to mitigate the labeling overhead associated
+detecting fault periods, we used point-wise PA, which can give               with trace datasets through algorithmic approaches.
+an inflated score if some anomaly segments persist for a long
+duration [38]. The experimental results show that the precision                                          VII. C ONCLUSION
+of fault period detection is 0.89. This indicates that as long as               In this paper, we argue that traces with labels hold sig-
+an abnormal trace can be labeled, it is possible to accurately               nificant importance in training and evaluating trace anomaly
+and efficiently identify the period in which the corresponding               detection and root cause localization. However, manual trace
+fault occurred, thus enabling precise root cause labeling.                   labeling will generate a considerable workload and cost over-
+   However, there are many false negatives when locating the                 head due to the extensive volume and the rich and complex
+fault period, with a recall of 0.44. This discrepancy arises                 structure of traces. To address this issue, we propose a semi-
+from two main issues. Firstly, anomalies in the unreported                   automatic trace labeling tool LabelEase. We evaluate Labe-
+fault periods are not reflected in the traces but primarily in               lEase using two datasets, achieving F1 -score of 0.99 and 0.98
+the multivariate time series (MTS). Secondly, in D1, the unre-               with a small number of traces manually labeled, respectively.
+ported periods predominantly occur during pod failures. Other                We reduce the workload of manual labeling by at least 99.9%
+faults, such as “loss”, “delay”, “CPU”, and “memory”, do not                 while ensuring the acquisition of the high-quality trace dataset.
+crash the program but degrade its performance. These faults                  Furthermore, we also exhibit that employing unsupervised
+still allow traces to be recorded, with anomalies evident in                 trace anomaly detection models for training and labeling raw
+latency and call patterns. In this case, if the pod failure occurs,          data is not feasible.
+the anomalies will be reflected in traces only when the root                    In future work, we aim to leverage transfer learning to
+cause is on the recommendation service instance. Therefore,                  optimize model training and reduce the time cost of model
+we conclude that the factors affecting trace anomalies are the               training before the labeling process. Additionally, we intend
+type of fault and the instance where it is in effect.                        to deploy LabelEase onto a server, thus enabling accessibility
+                                                                             for individuals requiring its functionalities online. We believe
+                      VI. R ELATED WORK                                      that access to high-quality trace datasets will surely contribute
+   Distributed tracing plays a crucial role in the microservice              to the rapid development of intelligent AIOps in academia and
+system. In recent years, various open-source distributed trace               industry.
+recording infrastructures have been developed and integrated
+                                                                                                  VIII. ACKNOWLEDGEMENT
+into the modern microservice system, including Jaeger [39],
+Zipkin [40] and SkyWalking [41]. As fundamental tools, they                    This work is supported by the Natural Science Foundation
+are used to troubleshoot programs but cannot label data.                     of China (62272249, 62302244, 62072264).
+   In other areas of operations and maintenance within the
+microservice system, Zhao et al. [42] introduces a semi-                                                    R EFERENCES
+automatic labeling tool Label-Less for the MTS. It employs                     [1] T. Bi, Y. Pan, X. Jiang, M. Ma, and P. Wang, “Vecrosim: A versatile
+robust and rapid anomaly similarity search to save operators                       metric-oriented microservice fault simulation system (tools and artifact
+                                                                                   track),” in 2022 IEEE 33rd International Symposium on Software
+from scanning and checking the long KPIs back and forth                            Reliability Engineering (ISSRE). IEEE, 2022, pp. 297–308.
+for abnormal patterns or label consistency, improving labeling                 [2] Z. Li, J. Chen, R. Jiao, N. Zhao, Z. Wang, S. Zhang, Y. Wu, L. Jiang,
+efficiency. However, there is a lack of such a labeling tool to                    L. Yan, Z. Wang et al., “Practical root cause localization for microservice
+                                                                                   systems via trace analysis,” in 2021 IEEE/ACM 29th International
+promote the field of trace analysis in the microservice system.                    Symposium on Quality of Service (IWQOS). IEEE, 2021, pp. 1–10.
+   Although numerous trace anomaly detection [3], [8]–[11],                    [3] S. Zhang, Z. Pan, H. Liu, P. Jin, Y. Sun, Q. Ouyang, J. Wang, X. Jia,
+[37] and root cause localization algorithms [2], [3], [8], [33],                   Y. Zhang, H. Yang et al., “Efficient and robust trace anomaly detection
+                                                                                   for large-scale microservice systems,” in 2023 IEEE 34th International
+[34], [43] have been proposed, none can reduce the workload                        Symposium on Software Reliability Engineering (ISSRE). IEEE, 2023,
+of trace data labeling and still obtain a high-quality dataset.                    pp. 69–79.
+
+
+
+
+                                                                         9
+ [4] D. Liu, C. He, X. Peng, F. Lin, C. Zhang, S. Gong, Z. Li, J. Ou,                [22] P. Notaro, J. Cardoso, and M. Gerndt, “A survey of aiops methods
+     and Z. Wu, “Microhecl: High-efficient root cause localization in large-              for failure management,” ACM Transactions on Intelligent Systems and
+     scale microservice systems,” in 2021 IEEE/ACM 43rd International                     Technology (TIST), vol. 12, no. 6, pp. 1–45, 2021.
+     Conference on Software Engineering: Software Engineering in Practice            [23] K. Zhang, C. Zhang, X. Peng, and C. Sha, “Putracead: Trace anomaly
+     (ICSE-SEIP). IEEE, 2021, pp. 338–347.                                                detection with partial labels based on gnn and pu learning,” in 2022
+ [5] L. Huang and T. Zhu, “tprof: Performance profiling via structural                    IEEE 33rd International Symposium on Software Reliability Engineering
+     aggregation and automated analysis of distributed systems traces,” in                (ISSRE). IEEE, 2022, pp. 239–250.
+     Proceedings of the ACM Symposium on Cloud Computing, 2021, pp.                  [24] M. Schuster and K. Nakajima, “Japanese and korean voice search,” in
+     76–91.                                                                               2012 IEEE international conference on acoustics, speech and signal
+ [6] C. Zhang, X. Peng, C. Sha, K. Zhang, Z. Fu, X. Wu, Q. Lin, and                       processing (ICASSP). IEEE, 2012, pp. 5149–5152.
+     D. Zhang, “Deeptralog: Trace-log combined microservice anomaly de-              [25] V.-H. Le and H. Zhang, “Log-based anomaly detection without log pars-
+     tection through graph-based deep learning,” in Proceedings of the 44th               ing,” in 2021 36th IEEE/ACM International Conference on Automated
+     International Conference on Software Engineering, 2022, pp. 623–634.                 Software Engineering (ASE). IEEE, 2021, pp. 492–504.
+ [7] Z. Zeng, Y. Zhang, Y. Xu, M. Ma, B. Qiao, W. Zou, Q. Chen,                      [26] X. Li, P. Chen, L. Jing, Z. He, and G. Yu, “Swisslog: Robust and unified
+     M. Zhang, X. Zhang, H. Zhang et al., “Traceark: Towards actionable                   deep learning based log anomaly detection for diverse faults,” in 2020
+     performance anomaly alerting for online service systems,” in 2023                    IEEE 31st International Symposium on Software Reliability Engineering
+     IEEE/ACM 45th International Conference on Software Engineering:                      (ISSRE). IEEE, 2020, pp. 92–103.
+     Software Engineering in Practice (ICSE-SEIP). IEEE, 2023, pp. 258–              [27] P. Veličković, G. Cucurull, A. Casanova, A. Romero, P. Lio, and Y. Ben-
+     269.                                                                                 gio, “Graph attention networks,” arXiv preprint arXiv:1710.10903, 2017.
+ [8] P. Liu, H. Xu, Q. Ouyang, R. Jiao, Z. Chen, S. Zhang, J. Yang,                  [28] S. He, B. Feng, L. Li, X. Zhang, Y. Kang, Q. Lin, S. Rajmohan,
+     L. Mo, J. Zeng, W. Xue et al., “Unsupervised detection of microservice               and D. Zhang, “Steam: Observability-preserving trace sampling,” in
+     trace anomalies through service-level deep bayesian networks,” in 2020               Proceedings of the 31st ACM Joint European Software Engineering
+     IEEE 31st International Symposium on Software Reliability Engineering                Conference and Symposium on the Foundations of Software Engineering,
+     (ISSRE). IEEE, 2020, pp. 48–58.                                                      2023, pp. 1750–1761.
+ [9] Z. Zhang, M. K. Ramanathan, P. Raj, A. Parwal, T. Sherwood, and                 [29] G. Chechik, V. Sharma, U. Shalit, and S. Bengio, “Large scale online
+     M. Chabbi, “{CRISP}: Critical path analysis of {Large-Scale} mi-                     learning of image similarity through ranking.” Journal of Machine
+     croservice architectures,” in 2022 USENIX Annual Technical Conference                Learning Research, vol. 11, no. 3, 2010.
+     (USENIX ATC 22), 2022, pp. 655–672.                                             [30] P. Ren, Y. Xiao, X. Chang, P.-Y. Huang, Z. Li, B. B. Gupta, X. Chen, and
+                                                                                          X. Wang, “A survey of deep active learning,” ACM computing surveys
+[10] C. Zhang, X. Peng, T. Zhou, C. Sha, Z. Yan, Y. Chen, and H. Yang,
+                                                                                          (CSUR), vol. 54, no. 9, pp. 1–40, 2021.
+     “Tracecrl: contrastive representation learning for microservice trace
+                                                                                     [31] Y. Zhou, “Scalable clustering: Large scale unsupervised learning of
+     analysis,” in Proceedings of the 30th ACM Joint European Software
+                                                                                          gaussian mixture models with outliers,” Ph.D. dissertation, The Florida
+     Engineering Conference and Symposium on the Foundations of Software
+                                                                                          State University, 2023.
+     Engineering, 2022, pp. 1221–1232.
+                                                                                     [32] D. Huang, C.-D. Wang, J.-S. Wu, J.-H. Lai, and C.-K. Kwoh, “Ultra-
+[11] Z. Xie, H. Xu, W. Chen, W. Li, H. Jiang, L. Su, H. Wang, and D. Pei,
+                                                                                          scalable spectral clustering and ensemble clustering,” IEEE Transactions
+     “Unsupervised anomaly detection on microservice traces through graph
+                                                                                          on Knowledge and Data Engineering, vol. 32, no. 6, pp. 1212–1226,
+     vae,” in Proceedings of the ACM Web Conference 2023, 2023, pp. 2874–
+                                                                                          2019.
+     2884.
+                                                                                     [33] G. Yu, P. Chen, H. Chen, Z. Guan, Z. Huang, L. Jing, T. Weng,
+[12] X. Zhou, X. Peng, T. Xie, J. Sun, C. Ji, W. Li, and D. Ding, “Fault                  X. Sun, and X. Li, “Microrank: End-to-end latency issue localization
+     analysis and debugging of microservice systems: Industrial survey,                   with extended spectrum analysis in microservice environments,” in
+     benchmark system, and empirical study,” IEEE Transactions on Software                Proceedings of the Web Conference 2021, 2021, pp. 3087–3098.
+     Engineering, vol. 47, no. 2, pp. 243–260, 2018.                                 [34] G. Yu, Z. Huang, and P. Chen, “Tracerank: Abnormal service localization
+[13] Z. Li, N. Zhao, S. Zhang, Y. Sun, P. Chen, X. Wen, M. Ma, and                        with dis-aggregated end-to-end tracing data in cloud native systems,”
+     D. Pei, “Constructing large-scale real-world benchmark datasets for                  Journal of Software: Evolution and Process, vol. 35, no. 10, p. e2413,
+     aiops,” arXiv preprint arXiv:2208.03938, 2022.                                       2023.
+[14] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “Imagenet:        [35] “Online      boutique.”      [Online].   Available:     https://github.com/
+     A large-scale hierarchical image database,” in 2009 IEEE conference on               GoogleCloudPlatform/microservices-demo
+     computer vision and pattern recognition. Ieee, 2009, pp. 248–255.               [36] “Chaos mesh,” 2022. [Online]. Available: https://chaos-mesh.org
+[15] X. Guo, X. Peng, H. Wang, W. Li, H. Jiang, D. Ding, T. Xie, and L. Su,          [37] S. Nedelkoski, J. Cardoso, and O. Kao, “Anomaly detection from
+     “Graph-based trace analysis for microservice architecture understanding              system tracing data using multimodal deep learning,” in 2019 IEEE
+     and problem diagnosis,” in Proceedings of the 28th ACM Joint Meeting                 12th International Conference on Cloud Computing (CLOUD). IEEE,
+     on European Software Engineering Conference and Symposium on the                     2019, pp. 179–186.
+     Foundations of Software Engineering, 2020, pp. 1387–1397.                       [38] H. Si, C. Pei, H. Cui, J. Yang, Y. Sun, S. Zhang, J. Li, H. Zhang, J. Han,
+[16] C. Zhang, Z. Dong, X. Peng, B. Zhang, and M. Chen, “Trace-based                      D. Pei et al., “Timeseriesbench: An industrial-grade benchmark for time
+     multi-dimensional root cause localization of performance issues in mi-               series anomaly detection models,” arXiv preprint arXiv:2402.10802,
+     croservice systems,” in Proceedings of the IEEE/ACM 46th International               2024.
+     Conference on Software Engineering, 2024, pp. 1–12.                             [39] Jaegertracing.io, “Jaeger,” 2022, last accessed 1 August 2022. [Online].
+[17] Y. Cai, B. Han, J. Li, N. Zhao, and J. Su, “Modelcoder: A fault model                Available: https://www.jaegertracing.io/
+     based automatic root cause localization framework for microservice              [40] Twitter, “Zipkin,” 2022, last accessed 1 August 2022. [Online].
+     systems,” in 2021 IEEE/ACM 29th International Symposium on Quality                   Available: https://zipkin.io/
+     of Service (IWQOS). IEEE, 2021, pp. 1–6.                                        [41] A. SkyWalking, “Skywalking,” 2022, last accessed 30 July 2022.
+[18] V. Velepucha and P. Flores, “A survey on microservices architecture:                 [Online]. Available: https://skywalking.apache.org/
+     Principles, patterns and migration challenges.” IEEE Access, 2023.              [42] N. Zhao, J. Zhu, R. Liu, D. Liu, M. Zhang, and D. Pei, “Label-less: A
+[19] P. Vitharana and S. A. Daya, “Adopting and sustaining microservice-                  semi-automatic labelling tool for kpi anomalies,” in IEEE INFOCOM
+     based software development: Organizational challenges can be more                    2019-IEEE Conference on Computer Communications. IEEE, 2019,
+     difficult than technical ones.” Communications of the ACM, 2024.                     pp. 1882–1890.
+[20] Z. Xie, C. Pei, W. Li, H. Jiang, L. Su, J. Li, G. Xie, and D. Pei,              [43] Y. Gan, M. Liang, S. Dev, D. Lo, and C. Delimitrou, “Sage: practical
+     “From point-wise to group-wise: A fast and accurate microservice trace               and scalable ml-driven performance debugging in microservices,” in
+     anomaly detection approach,” in Proceedings of the 31st ACM Joint                    Proceedings of the 26th ACM International Conference on Architectural
+     European Software Engineering Conference and Symposium on the                        Support for Programming Languages and Operating Systems, 2021, pp.
+     Foundations of Software Engineering, 2023, pp. 1739–1749.                            135–151.
+[21] B. Li, X. Peng, Q. Xiang, H. Wang, T. Xie, J. Sun, and X. Liu, “Enjoy
+     your observability: an industrial survey of microservice tracing and
+     analysis,” Empirical Software Engineering, vol. 27, pp. 1–28, 2022.
+
+
+
+
+                                                                                10
+

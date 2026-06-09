@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Diagnosing Root Causes of Intermittent Slow Queries in Cloud Databases（VLDB 2020）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<h1>Diagnosing Root Causes of Intermittent Slow Queries in Cloud Databases（VLDB 2020）</h1>
+
+<blockquote>作者：Minghua Ma, Zheng Yin, Shenglin Zhang, Sheng Wang, Christopher Zheng, Xinhao Jiang, Hanwen Hu, Cheng Luo, Yilin Li, Nengwen Qiu, Feifei Li, Changcheng Chen, Dan Pei</blockquote>
+<blockquote>机构：清华大学；阿里巴巴集团；南开大学</blockquote>
+<blockquote>发表年份：2020</blockquote>
+<blockquote>会议/期刊：VLDB 2020（Proceedings of the VLDB Endowment, Vol. 13, No. 8, pp. 1176-1189）</blockquote>
+<blockquote>关联 PDF：同目录下 <code>vldb20_slowsql.pdf</code></blockquote>
+
+<h2>一、文档信息速览</h2>
+
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Diagnosing Root Causes of Intermittent Slow Queries in Cloud Databases</td></tr>
+<tr><td>作者</td><td>Minghua Ma, Zheng Yin, Shenglin Zhang, Sheng Wang, Christopher Zheng, Xinhao Jiang, Hanwen Hu, Cheng Luo, Yilin Li, Nengwen Qiu, Feifei Li, Changcheng Chen, Dan Pei</td></tr>
+<tr><td>机构</td><td>清华大学；阿里巴巴集团；南开大学</td></tr>
+<tr><td>发表年份</td><td>2020</td></tr>
+<tr><td>会议/期刊</td><td>VLDB 2020</td></tr>
+<tr><td>分类</td><td>云数据库 / 慢查询诊断 / 根因分析</td></tr>
+<tr><td>核心问题</td><td>阿里云数据库每天产生数万条"间歇性慢查询（iSQ）"</td></tr>
+<tr><td>主要贡献</td><td>(1) iSQUAD 框架；(2) 平均 F1 80.4%，比 DBSherlock 高 49.2%；(3) 在线部署：几百 iSQ 诊断从约 1 周缩短到 80 分钟</td></tr>
+</tbody></table>
+
+<h2>二、背景（Background）</h2>
+
+<p>云数据库（Amazon RDS、Azure SQL、Google Cloud SQL、阿里 OLTP Database）已成为企业日常运营的核心基础设施。任何服务中断 / 性能抖动都意味着巨大损失。</p>
+
+<p>论文发现一类特殊的慢查询——"Intermittent Slow Queries (iSQs)"：iSQ 是查询时间 X_t > z 且 P(X_i > z) &lt; ε 的 SQL（z=1s，ε=0.01，T=10⁴）。iSQ 占慢查询 1%，但具有突发性、突然性、高危害：每次 web 加载延迟 0.1s，Amazon 损失 1% 销售额；Google 搜索延迟 0.5s 损失 20% 流量。</p>
+
+<p>iSQ 的根因诊断面临三大挑战：(1) 多 DB 实例共享物理机 → 资源争抢导致跨实例根因；(2) 云原生架构（实例迁移、扩缩容、存算分离）使根因更复杂；(3) 每天数万 iSQ → case-by-case 诊断（每条 7.5 分钟）完全不可行。</p>
+
+<p>论文从阿里 OLTP 数据库 1 年的故障记录中归纳 4 个关键观察：</p>
+<ol>
+<li>DBA 需要扫描数百 KPI 才能定位症状；传统 RCA 只看单类 KPI 无法区分 8 类根因。</li>
+<li>同样的异常 KPI 集合、不同异常模式 → 不同根因；只看"是否异常"会混淆。</li>
+<li>KPI 异常高度相关，故障传播是单向 / 双向。</li>
+<li>相似症状 → 相同根因；同类 KPI 可互换，但异常类别不变。</li>
+</ol>
+
+<p>基于此提出 iSQUAD 框架，把机器学习与 DBA 领域知识结合。</p>
+
+<h2>三、目的（Problems Solved）</h2>
+
+<ul>
+<li><b>iSQ 根因难以诊断</b>：iSQUAD 4 组件流水线 + DBA 一次性标注。</li>
+<li><b>异常类型被传统检测器忽略</b>：Anomaly Extraction 把 KPI 异常分为 4 种。</li>
+<li><b>KPI 依赖导致信息冗余</b>：Dependency Cleansing 用 Confidence 度量消除伪相关。</li>
+<li><b>标注成本过高</b>：TOPIC 把同类 iSQ 自动聚成一类，DBA 每类只需标一次。</li>
+<li><b>聚类难解释</b>：Bayesian Case Model 给出每个 cluster 的原型 + 关键 KPI 子空间。</li>
+<li><b>在线 / 离线一致</b>：离线训练 + 在线匹配 + 新 cluster 增量更新。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+
+<p><b>系统总览</b>：iSQUAD 离线 + 在线两阶段。离线：从历史 iSQ 提取异常 + 依赖清洗 → TOPIC 聚类 → BCM 提 case-subspace → DBA 一次性标注。在线：对新 iSQ 做相同预处理 → 匹配 cluster → 输出根因。</p>
+
+<p><b>关键概念</b>：</p>
+<ul>
+<li><b>iSQ</b>：间歇性慢查询。</li>
+<li><b>KPI</b>：分 8 类。</li>
+<li><b>Anomaly Type</b>：spike up、spike down、level shift up、level shift down、void。</li>
+<li><b>Confidence</b>：关联规则支持度。</li>
+<li><b>TOPIC</b>：Type-Oriented Pattern Integration Clustering。</li>
+<li><b>Bayesian Case Model (BCM)</b>：基于案例的原型 + 特征子空间。</li>
+<li><b>Case-Subspace</b>：cluster 的原型 iSQ + 关键 KPI。</li>
+</ul>
+
+<p><b>数学原理</b>：</p>
+
+<p><b>Confidence 关联规则</b>：</p>
+\[ \text{confidence}(A \to B) = \frac{|A \cap B|}{|A|} \]
+
+<p>Confidence Precision 90.91% / Recall 100% / F1 95.24%（论文 Table 5）。</p>
+
+<p><b>相似度</b>：</p>
+\[ S_{ij} = \sqrt{ \frac{1}{T} \sum_{t=1}^{T} \left| k_{i}^t, k_{j}^t \right|^2 } \]
+
+<p><b>Simple Matching Coefficient</b>：</p>
+\[ |k_i^t, k_j^t| = \frac{\#\text{Matching Anomaly States in type } t}{\#\text{Anomaly States in type } t} \]
+
+<p><b>TOPIC 算法</b>：基于 KD-tree + 相似度阈值 σ=0.67 合并；时间复杂度 O(n log n)。</p>
+
+<p><b>BCM</b>：EM 学习 cluster 原型 + 特征子空间。</p>
+
+<p><b>与现有技术的差异</b>：与 DBSherlock 相比，iSQUAD 用 Confidence + 类型感知聚类 + 案例推理，准确率提升 49.2%。</p>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<ol>
+<li><b>输入 / 输出</b>：</li>
+</ol>
+<ul>
+<li>输入：iSQ 时间戳 + 位置 + 59 个 KPI 在 ±1h 内的数据。</li>
+<li>输出：每个 iSQ 的根因（10 类之一）。</li>
+</ul>
+
+<ol>
+<li><b>核心模块</b>：</li>
+</ol>
+<ul>
+<li><b>Anomaly Extraction</b>：Robust Threshold（T-spike）+ T-Test（level shift）+ void 判断。</li>
+<li><b>Dependency Cleansing</b>：Confidence &gt; 0.9 视为依赖，剔除冗余。</li>
+<li><b>TOPIC 聚类</b>：按 KPI 类型分块 + KD-tree + 相似度阈值 σ=0.67 合并。</li>
+<li><b>Bayesian Case Model</b>：生成原型 + 关键 KPI 子空间。</li>
+<li><b>在线阶段</b>：预处理 → 匹配 → 输出根因。</li>
+</ul>
+
+<ol>
+<li><b>伪代码</b>：</li>
+</ol>
+
+<pre><code class="language-python">
+def anomaly_extraction(kpi_segment):
+    if robust_threshold(kpi_segment) > 0:
+        return 'spike_up' if dir_ > 0 else 'spike_down'
+    if t_test(kpi_segment) > thresh:
+        return 'level_shift_up' if dir_ > 0 else 'level_shift_down'
+    if all_zero_or_missing(kpi_segment):
+        return 'void'
+    return 'normal'
+
+def dependency_cleansing(anomalies, confidence_threshold=0.9):
+    kept = []
+    for i, a_i in enumerate(anomalies):
+        if all(confidence(a_i, a_j) &lt; confidence_threshold for j in kept):
+            kept.append(a_i)
+    return kept
+
+def topic(iSQs, sigma=0.67):
+    S = {idx: pattern(i) for idx, i in enumerate(iSQs)}
+    if all_zero_pattern in S:
+        all_zero_cluster = S.pop(all_zero_pattern)
+    D = reverse_dict(S)
+    return PatternCluster(D)
+
+def PatternCluster(D):
+    KDTree(D.keys())
+    changed = True
+    while changed:
+        changed = False
+        for i in list(D.keys()):
+            j = KDTree.query(i)
+            if i in D and j in D and similarity(i, j) &gt; sigma:
+                k = max([i, j], key=lambda x: len(D[x]))
+                D[k] = D.pop(i) + D.pop(j)
+                changed = True
+    return D
+
+def online_diagnose(new_iSQ, clusters, sigma=0.67):
+    p = preprocess(new_iSQ)
+    best, best_sim = None, -1
+    for c in clusters:
+        s = similarity(p, c.pattern)
+        if s &gt; sigma and s &gt; best_sim:
+            best, best_sim = c, s
+    if best is None:
+        new_cluster = create_cluster(p)
+        clusters.append(new_cluster)
+        return "请 DBA 诊断", new_cluster
+    return best.root_cause, best
+</code></pre>
+
+<ol>
+<li><b>关键数学</b>：见 §四。</li>
+</ol>
+
+<ol>
+<li><b>复杂度分析</b>：</li>
+</ol>
+<ul>
+<li>Anomaly Extraction：每 KPI O(N)。</li>
+<li>Dependency Cleansing：O(|KPI|²)。</li>
+<li>TOPIC：O(n log n)。</li>
+<li>DBSherlock 0.46s/cluster vs iSQUAD 0.38s/cluster。</li>
+</ul>
+
+<ol>
+<li><b>训练与推理</b>：</li>
+</ol>
+<ul>
+<li>训练：319 条 iSQ 由 DBA 标注（offline 55%，online 45%）。</li>
+<li>推理：iSQ 时间戳触发 → 离线模型匹配 → 输出根因。</li>
+</ul>
+
+<ol>
+<li><b>示例</b>：阿里云数据库 11:50 mysql.qps level shift down + mysql.active-session spike → iSQUAD 离线匹配到"database internal problem" cluster，输出根因。</li>
+</ol>
+
+<h2>六、系统架构图（Architecture）</h2>
+
+<div class="mermaid">
+graph TB
+    A[iSQ 发生] --> B[Anomaly Extraction]
+    B --> B1[Robust Threshold 检测 spike]
+    B --> B2[T-Test 检测 level shift]
+    B --> B3[void 检测]
+    B1 --> C[Dependency Cleansing]
+    B2 --> C
+    B3 --> C
+    C --> D[Confidence 度量剔除依赖]
+    D --> E[TOPIC 聚类]
+    E --> E1[按 KPI 类型分块]
+    E --> E2[KD-tree 近邻]
+    E --> E3[相似度 sigma=0.67 合并]
+    E --> F[Bayesian Case Model]
+    F --> F1[生成原型 iSQ]
+    F --> F2[提取关键 KPI 子空间]
+    F --> G[DBA 一次性标注每 cluster]
+    G --> H[10 类根因]
+    H --> I[在线阶段]
+    I --> J[新 iSQ 预处理]
+    J --> K[匹配 cluster]
+    K -- 命中 --> L[输出 cluster 根因]
+    K -- 未命中 --> M[新建 cluster]
+    M --> N[DBA 诊断]
+    N --> O[更新 cluster 库]
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+
+<div class="mermaid">
+flowchart TD
+    S1[离线 历史 iSQ 数据] --> S2[Anomaly Extraction]
+    S2 --> S3[Dependency Cleansing]
+    S3 --> S4[TOPIC 聚类 sigma=0.67]
+    S4 --> S5[BCM 提 case subspace]
+    S5 --> S6[DBA 一次性标注 10 类根因]
+    S6 --> S7[离线模型就绪]
+    S7 --> S8[在线 新 iSQ 触发]
+    S8 --> S9[相同预处理 异常 + 依赖]
+    S9 --> S10{匹配已有 cluster?}
+    S10 -- 是 --> S11[输出 cluster 根因]
+    S10 -- 否 --> S12[新建 cluster]
+    S12 --> S13[DBA 诊断并加入库]
+    S13 --> S7
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+
+<ul>
+<li><b>+ 异常类型而非二元检测</b>：区分 spike up/down、level shift up/down、void。</li>
+<li><b>+ Confidence 依赖清洗</b>：比 Mutual Information 更准。</li>
+<li><b>+ TOPIC 类型感知聚类</b>：考虑 KPI 类型 + 异常模式。</li>
+<li><b>+ Bayesian Case Model 可解释</b>：每个 cluster 生成原型 + 关键 KPI。</li>
+<li><b>+ 真实生产部署</b>：阿里 OLTP 数据库实测。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+
+<ul>
+<li><b>数据集</b>：阿里 OLTP Database 三天 iSQ 数据；最终选 319 条唯一 iSQ。</li>
+<li><b>KPI</b>：59 个，覆盖 8 类。</li>
+<li><b>Baseline</b>：DBSherlock（SIGMOD 2016）。</li>
+<li><b>指标</b>：Weighted Avg Precision、Recall、F1；Clustering Accuracy、NMI。</li>
+<li><b>关键数字</b>：</li>
+<li>iSQUAD Weighted Avg Precision 84.1%、Recall 79.3%、F1 80.4%；</li>
+<li>DBSherlock Precision 42.5%、Recall 29.7%、F1 31.2%；</li>
+<li>F1 提升 49.2%，时间节省 17.4%（0.38s vs 0.46s）；</li>
+<li>Robust Threshold F1 98.7%，运行 0.19s；T-Test F1 92.6%，运行 0.23s；</li>
+<li>Confidence F1 95.24%，Mutual Info F1 57.14%；</li>
+<li>TOPIC 聚类 ACC 比 hierarchical / K-means / DBSCAN 高 30%+；</li>
+<li>BCM 用户调研：平均正确率从 48.4% 提升到 67.2%；</li>
+<li>离线聚类 174 iSQ → 10 clusters；在线测试 145 iSQ → 80 分钟完成诊断；</li>
+<li>10 类根因：Instance CPU Intensive Workload 27.6% / Host I/O Bottleneck 17.2% / Instance I/O Intensive Workload 0.9% / Accompanying Slow SQL 8.6% / Instance CPU &amp; I/O Intensive 8.1% / Host CPU Bottleneck 7.5% / Host Network Bottleneck 6.9% / External Operations 6.9% / Database Internal Problem 3.4% / Unknown 2.9%。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+
+<ul>
+<li><b>云数据库慢查询诊断</b>：阿里 OLTP Database、Amazon RDS、Azure SQL、Google Cloud SQL。</li>
+<li><b>多租户数据库实例共享场景</b>：实例间资源争抢根因定位。</li>
+<li><b>存储计算分离架构</b>：计算节点 ↔ 存储节点瓶颈诊断。</li>
+<li><b>闪购 / 大促</b>：突发负载导致的 iSQ。</li>
+<li><b>数据库升级 / 迁移</b>：上线后的回归诊断。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+
+<ul>
+<li><code>vldb20_slowsql</code>（本文）</li>
+<li><code>马明华atc21_JumpStarter</code>（JumpStarter：KPI 多变量异常检测，同一作者）</li>
+<li><code>issre-stepwise</code>（StepWise：KPI 概念漂移适应）</li>
+<li><code>liuping-camera-ready</code>（FluxRank：根因机器定位）</li>
+<li><code>wch_ISSRE-1</code>（PatternMatcher：根因指标识别）</li>
+<li><code>TraceSieve_ISSRE23</code>（追踪异常检测）</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+
+<ul>
+<li><b>iSQ</b>：间歇性慢查询。</li>
+<li><b>Alibaba OLTP Database</b>：阿里云 DBPaaS 数据库。</li>
+<li><b>Robust Threshold</b>：基于 median + MAD + Cauchy 分布。</li>
+<li><b>T-Test</b>：均值差异显著性检验。</li>
+<li><b>Confidence</b>：关联规则支持度。</li>
+<li><b>TOPIC</b>：Type-Oriented Pattern Integration Clustering。</li>
+<li><b>Bayesian Case Model (BCM)</b>：原型 + 特征子空间。</li>
+<li><b>Case-Subspace</b>：cluster 原型 iSQ + 关键 KPI。</li>
+<li><b>DBSherlock</b>：SIGMOD 2016 数据库性能诊断工具。</li>
+<li><b>PerfXplain</b>：VLDB 2012 MapReduce 性能解释。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+
+<ul>
+<li>Paper: DBSherlock（SIGMOD 2016）。</li>
+<li>Paper: Bayesian Case Model（NeurIPS 2014）。</li>
+<li>Paper: TCP-RT（SIGMOD 2018）。</li>
+<li>Paper: SageDB、NoisePage。</li>
+<li>Paper: PerfXplain（VLDB 2012）。</li>
+<li>工具：MySQL、Oracle、SQL Server、CVXPY、Kafka、InfluxDB、Apache Flink。</li>
+<li>相关论文：<code>马明华atc21_JumpStarter</code>、<code>issre-stepwise</code>、<code>liuping-camera-ready</code>、<code>wch_ISSRE-1</code>、<code>TraceSieve_ISSRE23</code>。</li>
+</ul>
+
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

@@ -1,0 +1,493 @@
+  NDN Live Video Broadcasting over Wireless LAN
+
+                              Menghan Li∗ , Dan Pei∗ , Xiaoping Zhang∗ , Beichuan Zhang† , Ke Xu∗
+                                 ∗ Tsinghua National Laboratory for Information Science and Technology
+
+                               Department of Computer Science and Technology, Tsinghua University
+                          Email: limenghan12@mails.tsinghua.edu.cn, {peidan, zhxp, xuke}@tsinghua.edu.cn
+                                      † Department of Computer Science, University of Arizona
+
+                                                   Email: bzhang@cs.arizona.edu
+
+    Abstract—Named Data Networking (NDN) is a new Internet                  While video streaming has already received considerable
+architecture that replaces today’s focus on where – addresses           attention in the NDN research community in [4]–[11], little
+and hosts – with what – the content that users and applications         research work has been done on scalable and efficient video
+care about. One of NDN’s prominent advantages is scalable and           streaming over WLAN. In broadcast media such as WLAN,
+efficient content distribution due to its native support of caching     content delivery will benefit significantly if content is broad-
+and multicast in the network. However, at the last hop to wireless
+                                                                        casted to multiple clients when they are requesting for the same
+users, often the WiFi link, current NDN implementation still
+treats the communication as multiple unicast sessions, which will       popular content. However, in IP networks, multiple clients in
+cause duplicate packets and waste of bandwidth when multiple            the same WLAN are served via multiple unicast sessions,
+users request for the same popular content. WiFi’s built-in             resulting in duplicate data packets and waste of bandwidth.
+broadcast mechanism can alleviate this problem, but it suffers          The current NDN implementation, running as overlay on top
+from packet loss since there is no MAC-layer acknowledgement            of IP, suffers from the same problem of not being able to take
+as in unicast. In this paper, we develop a new NDN-based                advantage of the broadcast nature of underlying media. This
+cross-layer approach called NLB for efficient and scalable live         inefficiency at the last hop may negate all NDN’s benefits in
+video streaming over wireless LAN. The idea is to use WiFi’s            wired networks for content distribution.
+broadcast channel to deliver content from the access point
+to the users, a leader-based mechanism to suppress duplicate                In this paper, we develop an efficient and scalable solution
+requests from users, and receiver-driven rate control and loss          for NDN live video streaming over WLAN. Live video stream-
+recovery. The design is implemented and evaluated in a physical         ing has more stringent performance requirements than Video-
+testbed comprised of a commodity residential access point and 20
+WiFi clients. While NDN with multiple unicast sessions or plain
+                                                                        on-Demand (VoD), because it cannot prefetch the content from
+broadcast can support no more than 7 concurrent viewers of a            servers to caches which are much closer to the clients as in
+1Mbps streaming video, NDN plus NLB supports all 20 viewers,            VoD. The time interval for buffering live stream cannot be too
+and can likely support many more when present.                          large and the transmission rate must satisfy the stream bit rate.
+                                                                        In fact, live video streaming has to deal with a specific class
+                                                                        of problems to ensure timely delivery of an ordered stream of
+                        I.   I NTRODUCTION
+                                                                        video chunks.
+    A major trend of Internet traffic in the last few years
+is the fast increase of video content. For example, in North               Furthermore, live video streaming over WiFi has important
+America, Netflix as a video streaming company has become                use scenarios. For example, campus-wide live speech with
+the largest source of Internet traffic, consuming 29.7% of peak         thousands to tens of thousands of viewers in a company or a
+downstream traffic [1]. Another major trend is the proliferation        university [12], country-wide live events such as SuperBowl,
+of mobile devices, such as smartphones, tablets and laptops.            NBA finals, World Cup games, Olympic Opening ceremonies,
+Subsequently, more and more contents, especially video con-             president’s speech etc. As the popularity of mobile devices
+tents, are consumed on wireless mobile devices, and because of          keeps increasing, people will more and more to use mobile
+the cost advantage of WiFi over cellular, most video contents           devices to watch these live events online over WiFi.
+are consumed over WiFi links as the last hop to the users.
+                                                                            For the above reasons, we believe that supporting live video
+According to a recent forecast by Cisco [2], 61% Internet
+                                                                        broadcasting over WiFi has important real-world impacts, and
+access will be over WiFi and mobile devices by 2018.
+                                                                        that leveraging and extending NDN protocols is one promising
+    The need for efficient and scalable video distribution has          direction to approach this problem.
+not only driven the upgrade and expansion of operational
+networks, but also the development of new network designs                   Our basic idea is to use WLAN’s built-in broadcast to
+and architectures. Named Data Networking (NDN) [3] is a new             deliver the same piece of Data once to multiple clients at the
+Internet architecture that emphasizes the content itself rather         same time, and make it efficient and robust. The proposed
+than its container (e.g., host) or channel (e.g., connection).          approach, called NDN Live video Broadcasting (NLB), is
+By including the content name in each packet, NDN enables               a combination of NDN layer and application layer mecha-
+native multicast and caching support in the network, which              nisms (both above the MAC layer) and does not require any
+will greatly improve large-scale content distribution, including        modification to the 802.11 MAC layer. Therefore, NLB is
+video distribution.                                                     different from and complement previous work that provides
+                                                                        802.11 broadcasting/multicasting mechanism via packet re-
+  ∗ Xiaoping Zhang is the corresponding author.                         transmission, ordering, network coding, or PHY rate adapting,
+
+
+
+                                                  978-1-4799-9964-4/15/$31.00 ©2015 IEEE
+etc., such as Medusa [12], Dircast [13], Flexcast [14], and        according to its name to the content provider, and maintain
+[15]–[17].                                                         a pending interest table (PIT) which tracks the entrance in-
+                                                                   terface (called face in the rest of the paper following [19]’s
+   NLB needs to address two major challenges without the           convention) of the Interest. Therefore, a returning Data packet
+help of MAC layer. First, unlike its unicast, 802.11’s broadcast   can trace the reverse path back to the consumer and be also
+doesn’t have ACK, which means that more packet loss will be        cached in the Content Store (CS) at the NDN routers along the
+exposed to upper layer and often it will lead to performance       path. When an NDN router receives multiple Interest packets
+degradation. Second, without any coordination, all clients will    destined for the same content, it only creates one PIT entry
+send the same Interest to the access point, which will waste       which records all the entrance faces of the Interest packets,
+bandwidth and cause contention with Data transmission.             and forwards only one Interest to the upstream.
+    NLB addresses the above challenges using a couple of in-
+tuitive approaches. First, an NDN AP runs as a standard NDN        B. NDNVideo
+router except that it forwards streaming Data to its WLAN via
+                                                                      Video streaming services could benefit significantly from
+broadcasting. This way, the Data is only sent once (when there
+                                                                   NDN. The Interest aggregation mechanism and Data caching
+is no re-transmission) to multiple clients. Second, to address
+                                                                   in NDN can greatly save the bandwidth of backbone routers
+the Interest contention problem, the AP chooses the first client
+                                                                   and offload the pressure of video servers. In fact, NDN project
+whose Interest is received by the AP as the Leader. Then the
+                                                                   team has released an NDNVideo software [11] and conducted
+AP will broadcast a periodical Interest ACK (a special Data
+                                                                   several live demos already.
+Packet) to tell all clients about the Leader and the number
+of active clients upon every Pack received Interest packets            The NDNVideo publisher cuts the video stream into equal-
+from the Leader. All other clients except the Leader are the       length segments and put them into NDN repository with the
+Followers. All clients including the Leader and the Followers      name prefix like /repo/stream/video/segments/=number. The
+use an Interest pipeline mechanism to control Interest sending     NDNVideo player uses a pipeline to send successive Interest
+rate and ensure the reliable transmission. The Leader forwards     packets to request video segments. If a specific Interest or
+Interest packets with best-effort manner in NDN layer. On          Data is lost during transmission, the player will retransmit this
+the other hand, the followers use a Delayed Interest Sending       Interest according to the Interest retransmission timer for at
+mechanism in NDN layer to suppress duplicate Interest/Data         most Rmax times.
+packets to save bandwidth and reduce contention.
+    To the best of our knowledge, NLB is the first NDN-based       C. Problem Settings: receiver-driven broadcasting over WLAN
+cross-layer design to support live video broadcasting over WiFi        We consider a typical WLAN in which an access point
+without any modification to the MAC layer. To evaluate NLB,        (AP) provides N wireless clients (clients) the access to the
+we have implemented it in NDN and ported the AP’s code             Internet-based service. The video server and AP are connected
+to OpenWrt [18], an embedded Linux that can run on many            through high-speed wired network. We assume that N clients
+commodity WLAN APs. The client’s code runs on Ubuntu               are simultaneously accessing the same live video stream ser-
+and MacOS. Thus NLB is a practical and deployable solution.        vice from the server. In order to save bandwidth and eliminate
+We have deployed NLB on a physical testbed consisted of a          the redundant packets in wireless medium, it is intuitive and
+commodity AP and 20 clients. The results have shown that           desired that the AP broadcasts (as opposed to unicast) the
+NLB performs significantly better than NDN video streaming         stream data to multiple clients.
+over plain broadcasting and over multiple unicast sessions.
+While the latter can support no more than 7 concurrent clients         In traditional IP broadcasting over WLAN such as in [12],
+for 1Mbps video, NLB supports all 20 clients and likely many       the server first pushes the data to the AP, then the AP
+more when they are present. The analysis has shown that            broadcasts the data to clients in WLAN. Unlike IP broad-
+NLB’s mechanisms are effective in reducing duplicate packets,      casting, NDN broadcasting over WLAN is a receiver-driven
+contention, buffering ratio, and CPU usage.                        broadcasting. The client must first send the Interest to the AP,
+                                                                   then the AP adds the Interest to the PIT and forwards it to
+    The remainder of the paper is organized as follows. Sec-       the content provider. When the Data tracks the reverse path of
+tion II introduces NDN background and our problem settings.        the Interest back to the AP, if the PIT entry records multiple
+NLB’s design and implementation are described in details           entrance faces from WLAN, then the AP can broadcast the
+in Section III. In Section IV, we evaluate NLB using real          Data to WLAN.
+implementation and testbed experiments. Section V briefly
+reviews the related work. Finally, a conclusion and the future         However, the efficiency of this receiver-driven broadcasting
+work are presented in Section VI.                                  may be impacted by the Interest transmission. If the Interest is
+                                                                   broadcasted over WLAN, WiFi broadcast’s lack of MAC layer
+                                                                   ACK introduces a lot of Interest loss in upper layer. NDN’s
+       II.   BACKGROUND AND P ROBLEM S ETTINGS                     receiver-driven Interest retransmission mechanism (with long
+A. NDN                                                             timeout value which references RTT between the consumer and
+                                                                   the provider) cannot recover the lost Interest in time, restricting
+    NDN architecture [19] has two basic packet types: Interest     the streaming performance potentially. If multiple clients send
+packet and Data packet. Each content chunk is identified by        Interest packets to the AP via unicast simultaneously, they will
+the meaningful and hierarchically structured name. In NDN,         send repeated Interest packets before receiving corresponding
+all communication is driven by the consumer who sends the          Data. Besides, multiple clients sending Interest packets via uni-
+Interest packet firstly. NDN routers forward the Interest packet   cast could result in wireless channel contention with the Data
+broadcast, and aggravate the Data loss in WLAN. Therefore,          NDN packets. Like 802.11 broadcast, UDP broadcast does
+in order to mitigate wireless channel contention, we also need      not support the reliable transmission. Therefore, running NDN
+a mechanism to suppress redundant Interest packets. Based on        over UDP tunnels does not affect the functionality of NLB
+the above analysis, the design problem of NLB can be stated         design and just introduces the overhead of UDP headers.
+as:
+                                                                       In application layer, the video server runs an original
+    For a live video broadcasting with a given bit rate and a       NDNVideo [11] publisher. Multiple clients run a modified
+given number of clients in a WLAN, minimize the amount of           NDNVideo player to support live video streaming over 802.11
+Interest and Data packets transmitted over wireless medium,         wireless medium, which typically has high data loss rate and
+under the premise of smoothed playback.                             severe delay jitter.
+                                                                        We use ccnx-0.8.1 [20] as the base implementation of
+           III.   NLB D ESIGN AND I MPLEMENTATION
+                                                                    NDN protocol. NLB involves three different ccnd (NDN
+A. Leader-based receiver-driven broadcasting over WLAN              forwarding daemon implemented in ccnx) implementations: 1)
+                                                                    a video server running an unchanged ccnd, 2) an AP running
+    Because NDN broadcasting is receiver-driven, there must         a modified ccnd which can broadcast the live streaming
+be at least one Interest to trigger a Data broadcasting. The        data and the periodic Interest ACK, and 3) multiple clients
+design goal of NLB is to reduce the overhead of Interest            running a modified ccnd which can identify the Interest ACK
+sending as much as possible and avoid the competition between       and then determine to run as the Leader or Follower. The
+clients. Our design intuition to suppress repeated Interest         Delayed Interest Table is NLB’s major newly added module
+packets is shown as follows. Ideally, for each Data, just one       to implement the Interest suppression mechanism.
+Interest is sent over WLAN by one of the clients, and then all
+the clients can receive the Data broadcasted by the AP without
+sending their own Interest to WLAN. Instead of selecting a          C. Controlling Interest production in application layer
+potentially different client to send the Interest for each Data,
+NLB chooses to use a very straightforward approach: we make             Live stream bootstrap. When bootstrapping a live stream
+one client (called the Leader) stay ahead of other clients to       in NDN, the player must locate the first newly valid Data seg-
+send the Interest and other clients (called the Followers) wait     ment of the video stream. This mechanism has been supported
+for Data packets broadcasted by the AP. Once a Leader is            by NDNVideo prototype. In order to handle the high loss rate
+chosen, we do not risk frequently selecting a new Leader            of WiFi broadcast and smooth the resulting severe delay jitter
+because the time granularity of client joining/leaving the live     of arriving Data, after receiving the first valid Data segment of
+video broadcast is much larger than the Interest/Data packet        the live video stream, the player needs to buffer the successive
+rate. In the rest of the section, we will describe the NLB design   Data segments for a time period before actually playing the
+crossing application layer and NDN layer.                           video. This time period is called playout delay and denoted by
+                                                                    Tpd .
+B. NLB protocol layers                                                  Interest sending rate. For NDN live streaming, the player
+    In order to maximize the deployment opportunities, NLB          should not fetch the Data too quickly, nor request the Data
+should be able to compatible with existing IP network and           that is not yet produced by the publisher. Otherwise, if it does
+802.11 protocols. In this way, it can be deployed onto most         not receive a Data by the timeout, the player will retransmit
+commodity wireless APs running OpenWrt, and can use UDP             the corresponding Interest. Thus, consistently being ahead of
+tunnels to connect to the rest of NDN networks on the Internet      the Data production will cause a lot of repeated Interests.
+to run NDN live video streaming, while the same APs can still           To solve this problem, the player must get the stream
+run IP applications. As such, we seek solutions that do not         bit rate and then determine the proper Interest sending rate.
+require modifying 802.11 MAC protocols.                             Although the stream bit rate can be obtained from the metadata
+                                                                    of the video stream, this stream bit rate is an average value
+                                                                    set by the video codec. The actual stream bit rate will vary
+                                                                    with the dynamics of video frames. In the situation of IP’s
+                                                                    push-based transmission, the video server can timely adjust
+                                                                    the sending rate according to the varied stream bit rate.
+                                                                         For NDN’s receiver-driven transmission, the player can
+                                                                    first obtain the dynamics of stream bit rate from the video
+                                                                    server and then adjust the Interest sending rate. We use
+                                                                    a straightforward method to recurrently (every Ts seconds)
+Fig. 1.   NLB protocol layers                                       request the latest Data (S: the segment number of the latest
+                                                                    Data) to determine the upper bound of Interest to be sent.
+    As illustrated in the Fig. 1, we build a NDN-based cross-       Besides, we can calculate the stream bit rate from the number
+layer solution over UDP tunnels. In particular, NLB can be          of segments produced every Ts seconds, then determine the
+run directly on top of 802.11 MAC layer, besides UDP is             Interest pipeline size (W ) which is the maximum number of
+not absolutely necessary. However, because our purpose is           pending Interests sent by the player. For example, the average
+to verify the effectiveness of NLB, so in order to reduce           RTT of an Interest to get back a Data is Tr . And the two latest
+the implementation difficulty, we use UDP sockets to wrap           Data segments obtained by the player in Ts interval are S1 and
+S2 successively. Then we can get                                   received from the player with the best-effort manner in NDN
+                                                                   layer. The Follower ccnd delays all the Interest packets, which
+                    W = (S2 − S1 )Tr /Ts                     (1)   are not matched in the CS and will wait for the matched Data
+When the player starts, it first requests two latest Data seg-     to “consume” the Interest. Besides determining the running
+ments and then gets W from the equation 1. The player sets         mode from the Interest ACK, the Followers can also learn the
+the Interest pipeline size to W and updates it every Ts seconds.   Interest sending progress of the Leader (SNmax : the maximum
+                                                                   segment number of the Interest sent by the Leader) from the
+     Interest retransmission timer. Because WiFi broadcast         Interest ACK.
+cannot guarantee the reliable Data delivery, clients have to
+deal with the problem of how to re-request the Data lost in            Clients leaving. For requesting the stream Data segments,
+wireless medium. The player adjusts Interest retransmission        a client sends an Interest to get the stream production progress
+timer based on previous RTT values [11]. It uses a low pass        periodically, and this special Interest will not be delayed by
+filter                                                             the client. The AP determines whether a client is still alive
+                                                                   according to this Interest. If an AP has not received this Interest
+    SRT T = (1 − α) ∗ SRT T + α ∗ RT T, (α = 1/8)            (2)   from a client in a period, it will declare this client has left. If
+                                                                   the leaving client is a Follower, the AP will just update the
+to smooth RTT values, and uses the TCP/IP formula                  client number N in the next Interest ACK. If the leaving client
+            RT T V AR = (1 − β) ∗ RT T V AR+                       is the Leader, the AP will select the sender of the Interest
+                                                             (3)   received right after the ex-Leader leaves as the new Leader.
+                β ∗ |SRT T − RT T |, (β = 1/4)
+                                                                   The new Leader will keep running in the Follower mode until
+to smooth variance. The Interest retransmission timer is cal-      the SN of received Interest is larger than SNmax , which is
+culated using                                                      the maximum segment number of Interest already sent by ex-
+                                                                   Leader (to avoid resending these Interests), before switching
+          Ti = SRT T + K ∗ RT T V AR, (K = 3)                (4)
+                                                                   to the Leader mode.
+If the Data is not returned back after Ti when the Interest is         Interest suppression. For the Leader, besides forwarding
+sent out, the player will retransmit the Interest. Here, α = 1/8   all the newly received Interest packets to the AP, ccnd main-
+and β = 1/4 are the recommended values from RFC2988 [21].          tains a Delayed Interest Table (DIT) to record them. When the
+And K = 3 is refereced from the NDNVideo technical                 Leader ccnd receives a Data, if the Data consumes a matched
+report [11]. These parameter value work well for the single        Interest in the DIT, the ccnd records the segment number of
+client requesting the stream. In multiple clients situation, if    this Interest (SNi ) and removes any Interest of which SN is
+the player continues fetching Data packets from the local CS,      smaller than SNi from the DIT. The Leader ccnd delays the
+Ti will fall to a very small value which is much lower than        retransmitted Interest which is still in the DIT.
+the RTT between the consumer and the producer. And the
+player will keep retransmitting Interests according to this very       When the Follower ccnd receives an Interest from the
+small Ti . This will result in an explosive growth of repeated     player, if there is no matched Data in the CS, it adds the
+Interest packets in a short period. Therefore, we exclude the      Interest into the DIT. There are three events which may trigger
+very short RTT values (less than 10ms in our experimentation)      the Follower ccnd to update the DIT: When 1) an Interest hits
+caused by the local CS in equation 2, so that it can reflect the   a matched Data in the CS or 2) a received Data consumes
+actual network delay.                                              a matched Interest in the DIT, the ccnd records the segment
+                                                                   number of Interest (SNi ). Then it updates the DIT and sends
+    The main optimization goal of NLB is to suppress duplicate     the Interest of which SN is less than SNi randomly with
+Interest packets. Therefore, we do not tune the parameter          the probability 1/(N − R). N is the number of clients which
+values for calculating the Interest retransmission timer and       are requesting the live stream. R is the times for which the
+just use a conservative method to exclude the very short RTT       ccnd received the same Interest retransmitted from the player.
+values.                                                            If the ccnd successfully sends the Interest out, it will remove
+                                                                   the Interest entry from the DIT. 3) When the ccnd receives a
+D. Leader-based Interest suppression in NDN layer                  retransmitted Interest from the player, if R > N/2, the delayed
+                                                                   Interest will be sent out unconditionally.
+    Choosing the Leader. When a client requests the live
+stream for the first time, it first sends an Interest containing        NLB delays the Interest sending in NDN layer because
+the name of the stream. The AP establishes a new face for this     of the following reasons. Due to the interference in wireless
+client and records the stream name. If any other clients request   channel, wireless transmission may suffer from burst delay jit-
+the same stream, the AP will update the number of clients N        ter. The Interest retransmission timer estimation in application
+which request this specific stream. The AP chooses the first       layer cannot timely respond to the delay variation. Therefore,
+client requesting the live stream as the Leader and replies an     the Interest retransmission mechanism in application layer
+Interest ACK for every Pack received Interest packets from         cannot accurately determine if the packet is indeed lost and
+the Leader. The Interest ACK is a special Data packet which        may result in repeated Interest and Data packets. When the
+contains its corresponding Interest and the current number of      Interest SNi is consumed by the Data SNi , if any Interest’s
+clients N . When a client receives the Interest ACK, it will       SN is smaller than SNi has not consumed yet, the Interest
+check its nonce value. If the nonce value is matched with any      ifself or its corresponding Data could be determined to be lost.
+Interest in its PIT, a client will know that itself was chosen     For the Followers, in order to refrain multiple followers from
+as the Leader by the AP. Otherwise, a client will run as a         requesting the same lost Data and to ensure the lost Data can
+Follower. The Leader ccnd forwards every new Interest packet       be recovered in time, the ccnd sends the Interest randomly
+with a probability which is determined by the client number           ccnd on a Mercury MW4530R Router with a 720MHz CPU.
+and the Interest retransmission times.                                To avoid the unpredictable background traffic interference
+                                                                      from affecting our measurement results, we use the router’s
+              IV.   P ERFORMANCE E VALUATION                          802.11ac 5GHz channel (which is less crowded than 2.4GHz
+                                                                      Channels). Its combined receiving and sending unicast band-
+    In this section, we first define the performance metrics          width is 750Mbps, but the broadcast bandwidth is limited to
+for the live video streaming, and describe the compared               6Mbps by the 802.11ac standard.
+approaches and experiment setups. Using these metrics, we
+then compare the scalability of the NLB with other approaches             The NDNVideo publisher is installed on an Ubuntu server,
+as the client number increases.                                       which keeps generating the live video segments and stores
+                                                                      them into NDN data repository. We install the NDNVideo
+A. Performance Metrics                                                player and the client ccnd on Linux virtual machines running
+                                                                      on PCs. Each VM, running a single client, combines an
+    According to [22], the quality of Internet live video is better   independent wireless card. We have up to 20 clients connected
+measured by buffering rate, buffering ratio, etc., because they       to the Mercury AP via WLAN.
+are more related to the viewing experience than traditional
+PSNR metric. Therefore, in this paper we primarily focus on               We experiment with a benchmark Mobile calendar video
+these two metrics, defined for each individual client:                clip [23]. The video is encoded at the rate of 1Mbps using
+                                                                      FFmpeg [24] tool with H.264 codec. We have repeated each
+   •    Buffering Rate is defined as the number of buffering          experiment of 300 seconds duration for 5 runs. In our exper-
+        events occur during the stream session divided by the         iments, for all compared approaches, the playout delay Tpd
+        duration of the session.                                      is set to 5 seconds and this duration is included in the time
+                                                                      spent on buffering. The time interval Ts of players requesting
+   •    Buffering Ratio is defined as the time spent on
+                                                                      the latest Data is also 5 seconds. Here, we do not evaluate
+        buffering divided by the sum of buffering and playing
+                                                                      the impacts of changing these settings. And as shown in the
+        time.
+                                                                      following results, 5 seconds is an adequate value and fair for
+    As discussed in the previous section, NLB’s scalability is        three compared approaches. For NLB approach, the period
+primarily achieved by effectively reducing repeated Interest          Pack of the Interest ACK replied by the AP is every 30 received
+and Data packets in wireless medium. As such, in order to             Interest packets from the Leader. This value is sufficient for
+better explain the scalability results, we further define two         the Followers to track Leader’s process and the overhead
+metrics to evaluate the packet redundancy in a WLAN running           introduced by the Interest ACK does not significantly affect
+a live video streaming:                                               the performance of NLB. We intend to evaluate the benefits to
+                                                                      NLB of adaptively modifying these parameters as our future
+   •    Interest Redundancy is defined as the ratio of the            work.
+        total number of Interest packets sent by the ccnd of
+        all clients to the average number of Data packets             C. Performance Results
+        delivered to a player.
+                                                                          We vary the number of clients and measure the above-
+   •    Data Redundancy is defined as the ratio of the total          defined metrics over multiple clients to evaluate the scalability
+        number of Data packets sent by the AP to the average          of 3 different approaches.
+        number of Data packets delivered to a player.
+                                                                          Scalability in the client number. Our goal is to compare
+   In the ideal situation where there are no packet loss or           the scalability in the client number of different approaches in
+repeated packets, the Interest/Data redundancy is 100%. A             the premise for ensuring reliable transmission. Therefore, we
+100% redundancy means that each Data packet delivered to              set an infinite Rmax to guarantee no Data loss in application
+players is requested by just one Interest packet, with no             layer. As illustrated in the Fig. 2, for NLB approach within the
+redundant Interest/Data packets.                                      period of 300 seconds, the average number of buffering events
+                                                                      occured for each client is no more than 2 and the average
+B. Compared Approaches and Experiment Setups                          duration of buffering time is at most nearly 1 second (the initial
+                                                                      buffering time is excluded). These two values show that NLB
+   We primarily compare the performance of NLB with two               can support 20 clients to play back 1Mbps video smoothly. The
+other NDN approaches:                                                 curve of NLB does not show any clear turning point yet up to
+   •    UCast: The clients run NLB’s player. The clients and          20 clients, although the results were limited to 20 clients due
+        the AP running the original ccnd send the Interest and        to logistic difficulty in obtaining more client machines at the
+        Data over UDP unicast.                                        time of our experiments. The performance of BCast degrades
+                                                                      sharply when the client number is larger than 4. And UCast can
+   •    BCast: The clients running NLB’s player and the               only support up to 7 clients to play back the video smoothly.
+        original ccnd send the Interest over UDP unicast. The         For the scalability in the client number, NLB outperforms at
+        AP running a slightly modified ccnd just broadcasts           least 3 times than UCast and 5 times than BCast.
+        each stream Data segment to the clients.
+                                                                          Packet redundancy. The results in the Fig. 2 can be
+   We have implemented the AP ccnd on OpenWrt [18],                   further explained by the packet redundancy results in the
+a software router system on embedded linux that can run               Fig. 3(a) and Fig. 3(b), which illustrate the ratio of redundant
+on all major commodity APs. We install OpenWrt and AP                 Interest and Data packets transmitted over wireless medium
+                             0.06                                                                                                 1000
+
+
+
+
+                                                                                               Interest Redundancy(%,log scale)
+                                                                         NLB                                                                                          NLB
+                                       0.041                             Ucast                                                                                        Ucast
+          Buffer Rate(#/s)                                               Bcast                                                                                        Bcast
+                             0.04                                                                                                  500                                Ideal Ucast
+
+
+                                                       0.026
+                             0.02                                        0.01                                                      200                                     122.96
+
+
+                                  0                                                                                                100
+                                   1           5      10          15            20                                                    1     5          10             15            20
+                                                     #client                                                                                          #client
+                                          (a) Average Buffering Rate.                                                                      (a) Interest Redundancy.
+
+                             50                                                                                                   1000
+
+
+
+
+                                                                                               Data Redundancy(%,log scale)
+                                                                         NLB                                                                                          NLB
+                                                                         Ucast                                                                                        Ucast
+                             40
+           Buffer Ratio(%)
+
+
+
+
+                                                                         Bcast                                                                                        Bcast
+                                                                                                                                   500                                Ideal Ucast
+                             30
+                                        14.03
+                             20
+                                                                                                                                   200
+                                                                         1.99                                                                                              118.75
+                             10                        4.02
+
+                              0                                                                                                    100
+                               1           5         10          15             20                                                    1     5          10             15            20
+                                                    #client                                                                                           #client
+                                          (b) Average Buffering Ratio.                                                                         (b) Data Redundancy.
+
+Fig. 2.   Scalability comparison                                                                                                  100
+                                                                                                                                                                            NLB
+                                                                                                                                                                            Ucast
+                                                                                                                                   80
+                                                                                                CPU Usage(%)
+
+
+
+                                                                                                                                                                            Bcast
+as the client number varies. With the increase of the client
+number, the Interest and Data redundancy in NLB increase                                                                           60
+very slowly. Even for 20 clients in NLB, the ratio of the
+packet redundancy is only about 120%, which means that                                                                             40
+the additional packet redundancy introduced by one client is
+about 1%. This result suggests that NLB has the potential                                                                          20
+to support more clients simultaneously playing 1Mbps video.
+The black solid curve represents an ideal UCast situation                                                                           0
+                                                                                                                                     1     5           10             15            20
+where there is no Interest or Data loss over wireless medium.                                                                                         #client
+Because the packet loss rate in wireless medium increases                                                                                      (c) CPU Utilization.
+with the number of clients, the two curves of UCast gradually
+deviate upward from the black solid curves. As our analysis                          Fig. 3.   The utilization of wireless channel and computing resource
+in Section II-C shows, if multiple clients send the Interest
+to AP via unicasting simultaneously, they are likely to send
+repeated Interest packets before receiving the corresponding                         For NLB approach, the CPU usage by the ccnd always stays
+Data. Therefore, the Interest redundancy curve of BCast is very                      at around 30%, which means that the total amount of packets
+close to the black solid curve. Due to Data broadcasting, the                        transmitted over wireless medium grows very slowly with the
+Data redundancy of BCast is significantly better than UCast,                         client number.
+although it is still much worse than NLB.
+                                                                                         In summary, above results clearly show that NLB’s perfor-
+    CPU usage. The Fig. 3(c) shows the CPU usage by the                              mance is highly scalable as the client number increases, by
+ccnd running on the AP. The CPU usage can reflect the amount                         effectively suppressing repeated and useless Interest packets
+of packets processed by the ccnd in the unit time. When the                          and saving bandwidth to transmit useful Data packets.
+client number is larger than 7 in UCast, the CPU usage by
+the ccnd is more than 90%. Such high CPU utilization on                                                                                   V.     R ELATED W ORK
+a low-end CPU (720MHz) is apparently a major contributor
+to the sharp performance degradation in UCast. However, for                              Video streaming has already received considerable atten-
+BCast approach, when the client number is larger than 4, the                         tion in the CCN/NDN research community. But none of the
+CPU usage by the ccnd stays at around 60%. We can infer                              following works specially consider live video broadcasting
+that the performance of BCast is limited by the AP’s 6Mpbs                           over WLAN. The authors in [4] propose an architecture
+broadcast bandwidth when the client number is larger than 4.                         for mapping HTTP-based streaming applications in CCN. A
+cooperative caching strategy is introduced to enable time-                                       R EFERENCES
+shifted TV services in [5]. In order to reduce the transmission      [1] “Internet    Phenomena       report,”   2011.     [Online].   Available:
+overhead of Interest packets, a time-based Interest protocol             https://www.sandvine.com/trends/global-internet-phenomena/
+is proposed in [6], in which a consumer sends a specific             [2] “Cisco        visual      networking       index:      forecast      and
+Interest packet requesting a group of content chunks during              methodology,           2013-2018.”           [Online].        Available:
+a specific time interval. A real-time streaming TV service is            http://www.cisco.com/c/en/us/solutions/collateral/service-provider/ip-
+provided and evaluated in [7]. In [8] the authors present a CCN          ngn-ip-next-generation-network/white paper c11-481360.pdf
+P2P video streaming application running on mobile devices            [3] L. Zhang, A. Afanasyev, J. Burke, V. Jacobson, kc cllaffy, P. Crowley,
+                                                                         C. Papadopoulos, L. Wang, and B. Zhang, “Named Data Networking,”
+to offload the cellular radio interface. A CCN adaptive video            ACM SIGCOMM Computer Communication Review (CCR), vol. 44,
+streaming application named AMVS-NDN is proposed in [9],                 no. 3, July 2014.
+which enables a mobile device either to use its own 3G/4G            [4] H. Xu, Z. Chen, R. Chen, and J. Cao, “Live streaming with content cen-
+connection or to connect via WiFi to another mobile device for           tric networking,” in Proc. 3rd Int. Conf. on Networking and Distributed
+exploiting its possibly better 3G/4G link. In [10] the authors           Computing, Hangzhou, China, 2012.
+present a P2P CCN application for live streaming of videos           [5] Z. Li and G. Simon, “Time-shifted TV in content centric networks: the
+encoded at multiple bitrates, which allow peers to play a video          case for cooperative in-network caching,” in Proc. of IEEE ICC, 2011.
+at a coding rate close to the sum of their cellular capacities       [6] J. Park, J. Kim, M. Jang, and B. Lee, “Time-based interest protocol for
+                                                                         real-time content streaming in content-centric networking (CCN),” in
+to improve video quality. In [11] the authors set up a test-bed          Proc. of IEEE Int. Conf. on Consumer Electronics (ICCE), 2013.
+for video streaming over CCN, named NDNVideo.                        [7] V. Ciancaglini, G. Piro, R. Loti, L. A. Grieco, and L. Liquori, “CCN-
+   There have been considerable amount of related works                  TV: a data-centric approach to real-time video services,” in Proc. of
+                                                                         IEEE AINA, Barcelona, Spain, Mar 2012.
+on providing WiFi broadcasting/multicasting mechanism via
+packet re-transmission, ordering, network coding, or PHY rate        [8] A. Detti, M. Pomposini, N. Blefari-Melazzi, S. Salsano, and A. Bra-
+                                                                         gagnini, “Offloading cellular networks with Information-Centric Net-
+adapting, etc., such as Medusa [12], Dircast [13], Flexcast [14],        working: the case of video streaming,” in Proceedings of the IEEE
+and [15]–[17]. NLB is different from these approaches, be-               WoWMoM, 2012.
+cause NLB is a cross-layer design above the MAC layer and            [9] B. Han, N. Choi, T. Kwon, and Y. Choi, “AMVS-NDN: Adaptive
+does not try to modify MAC layer behavior. In fact, it can work          Mobile Video Streaming and Sharing in Wireless Named Data Net-
+with and complement these MAC layer-based approaches.                    working,” in Proc. of IEEE NOMEN, 2013.
+                                                                    [10] A. Detti, M. Pomposini, and N. Blefari-Melazzi, “Peer-to-peer live
+                     VI.   C ONCLUSIONS                                  adaptive video streaming for information centric cellular networks,” in
+                                                                         Proc. of IEEE 24th PIMRC, 2013.
+    NLB achieves scalable and efficient delivery of live stream-    [11] D. Kulinski and J. Burke, “NDNVideo: Random-access Live and Pre-
+ing video by taking advantage of NDN’s data-centric and                  recorded Streaming using NDN,” NDN, Tech. Rep. TR-0007, 2012.
+receiver-driven communication model as well as the broadcast        [12] S. Sen, N. Madabhushi, and S. Banerjee, “Scalable WiFi Media
+nature of the underlying WLAN medium. It is a practical solu-            Delivery through Adaptive Broadcasts.” in NSDI, 2010, pp. 191–204.
+tion in that it can run on commodity access points and mobile       [13] R. Chandra, S. Karanth, T. Moscibroda, V. Navda, J. Padhye, R. Ramjee,
+devices without any changes to existing 802.11 MAC layer.                and L. Ravindranath, “Dircast: A practical and efficient Wi-Fi multicast
+                                                                         system,” in Network Protocols, 2009. ICNP 2009. 17th IEEE Interna-
+Combined with NDN’s advantages of caching and multicast                  tional Conference on. IEEE, 2009, pp. 161–170.
+in the wired networks, NLB completes the picture of scalable        [14] S. Aditya and S. Katti, “Flexcast: graceful wireless video streaming,”
+content distribution end to end.                                         in Proceedings of the 17th annual international conference on Mobile
+    As advocated in [3], building and experimenting with                 computing and networking. ACM, 2011, pp. 277–288.
+applications is the way to push forward network architecture        [15] S. Jakubczak and D. Katabi, “A cross-layer design for scalable mobile
+                                                                         video,” in Proceedings of the 17th annual international conference on
+research. We believe that NLB not only provides a practical              Mobile computing and networking. ACM, 2011, pp. 289–300.
+solution to live video broadcasting, but also experience and        [16] Y. Park, C. Jo, S. Yun, and H. Kim, “Multi-room IPTV delivery through
+insights into NDN’s protocol design. Its cross-layer approach            Pseudo-Broadcast over IEEE 802.11 links,” in Vehicular Technology
+and Interest suppression mechanism may be applicable to                  Conference, 2010 IEEE 71st. IEEE, 2010, pp. 1–5.
+NDN over broadcast medium in general. Thus our future work          [17] Y. Bejerano, J. Ferragut, K. Guo, V. Gupta, C. Gutterman,
+includes experimenting with NLB in larger, more realistic                T. Nandagopal, and G. Zussman, “Scalable WiFi Multicast Services
+settings, and generalizing the solution to NDN over broadcast.           for Very Large Groups,” in the 21th IEEE ICNP, 2013, pp. 7–11.
+                                                                    [18] OpenWrt, “https://openwrt.org/.”
+                    ACKNOWLEDGEMENT                                 [19] V. Jacobson, D. K. Smetters, J. D. Thornton, M. F. Plass, N. H. Briggs,
+                                                                         and R. L. Braynard, “Networking named content,” in Proceedings of
+   This work has been supported by the National Key                      the 5th international conference on Emerging networking experiments
+Basic Research Program of China (973 program) under                      and technologies. ACM, 2009, pp. 1–12.
+Grant No.2013CB329105, and the National Natural Science             [20] CCNx, “http://www.ccnx.org/.”
+Foundation of China (NSFC) under Grant No.61233007,                 [21] V. Paxson and M. Allman, “Computing TCP’s retransmission timer,”
+No.61472210, No.61472214.                                                RFC 2988, Nov. 2000.
+                                                                    [22] A. Balachandran, V. Sekar, A. Akella, S. Seshan, I. Stoica, and
+    We would like to thank the reviewers for their valuable              H. Zhang, “Developing a predictive model of quality of experience for
+comments. And we sincerely appreciate Lixia Zhang, Jeff                  internet video,” in Proceedings of the ACM SIGCOMM 2013 conference
+Burke, Ilya Moiseenko, and Lijing Wang for their useful                  on SIGCOMM. ACM, 2013, pp. 339–350.
+experience on NDN project. Also, we express thanks to               [23] “MPEG-2 hd test patterns.” [Online]. Available: http://www.w6rz.net/
+Jianxun Cao, Yantao Lai and Changhua Pei for their assistance       [24] “FFmpeg - digital audio converter.” [Online]. Available:
+on experimenting. At last, we thank Juexing Liao for her                 http://www.ffmpeg.org/
+proofreading of this paper.
+

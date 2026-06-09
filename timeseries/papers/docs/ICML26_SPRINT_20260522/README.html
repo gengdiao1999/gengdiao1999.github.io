@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>See More, Forecast Better and Faster: Enhancing Time Series Foundation Models via Inference-Time Plug-and-Play Downsampling（ICML 2026）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+
+</style>
+</head>
+<body>
+<h1>See More, Forecast Better and Faster: Enhancing Time Series Foundation Models via Inference-Time Plug-and-Play Downsampling（ICML 2026）</h1>
+<blockquote>作者：Longlong Xu、Zeyan Li、Xiao He、Zhaoyang Yu、Dazhong Wen、Mingze Sun、Changhua Pei、Dan Pei  <br>机构：清华大学；字节跳动；中国科学院计算机网络信息中心  <br>发表年份：2026  <br>会议/期刊：The 43rd International Conference on Machine Learning (ICML 2026)，首尔  <br>关联 PDF：同目录下 `ICML26_SPRINT_20260522.pdf`</blockquote>
+<h2>一、文档信息速览</h2>
+<table><tr><th>字段</th><th>值</th></tr><tr><td>标题</td><td>See More, Forecast Better and Faster: Enhancing Time Series Foundation Models via Inference-Time Plug-and-Play Downsampling</td></tr><tr><td>作者</td><td>Longlong Xu, Zeyan Li, Xiao He, Zhaoyang Yu, Dazhong Wen, Mingze Sun, Changhua Pei, Dan Pei</td></tr><tr><td>机构</td><td>清华大学；字节跳动；中科院计算网络信息中心</td></tr><tr><td>发表年份</td><td>2026</td></tr><tr><td>会议/期刊</td><td>ICML 2026</td></tr><tr><td>分类</td><td>时序基础模型 / 长时序预测 / 推理加速</td></tr><tr><td>核心问题</td><td>现有 TSFMs 处理长 / 超长序列时计算 / 内存爆炸，且零样本精度下降</td></tr><tr><td>主要贡献</td><td>(1) 提出 SPRINT：训练免费的即插即用框架；(2) Resolution Interpolation 处理低频趋势；(3) Pattern Replication 保留高频季节；(4) 9 数据集 / 7 TSFM 全方位验证，精度+19%，效率 6.4× 内存 / 16.9× 推理时间</td></tr></table>
+<h2>二、背景（Background）</h2>
+<p>时序基础模型（Time Series Foundation Models, TSFMs）——TimesFM、Chronos、Moirai、Timer、TimeMoE、ToTo、VisionTS、TTM 等——通过大规模预训练在跨域零样本任务上取得显著成绩。然而现实部署中存在两类典型困难：</p>
+<ol>
+<li><strong>高采样率 / 长序列</strong>：MarmAudio 等数据集采样率达 96 kHz；分钟级数据一个日周期就 1440 个点，覆盖周 / 月级模式需要数万点。</li>
+<li><strong>超长预测（Ultra LTSF）</strong>：预测长度 L 与回看长度 H 都很长，TSFMs 的 attention 复杂度（平方级）导致计算与内存爆炸；同时由于长程依赖复杂，零样本预测精度也显著下降。</li>
+</ul>
+<p>关键观察：<strong>时序数据有显著冗余</strong>——基于香农采样定理和频域压缩的理论，许多复杂信号可从更少的"关键成分"被准确重建。这意味着核心信息在降采样后仍可保留。</p>
+<p>由此引出本文的核心 idea：<strong>在降采样后的低分辨率空间做预测</strong>。这种"降采样 + 重建"的策略让 TSFMs 能"看见"更长的历史窗口，同时显著降低推理成本。但实现这一思想面临三大挑战：</p>
+<ol>
+<li><strong>信息损失</strong>：朴素降采样（如直接抽点）会丢失高频分量（尖峰、周期模式），而这些对预测至关重要。</li>
+<li><strong>分辨率不匹配</strong>：降采样空间是粗粒度的，但目标输出是细粒度的，需要准确且高效地把低分辨率预测插值回原始分辨率。</li>
+<li><strong>模型无关性</strong>：作为基础性改进，方案应当是<strong>通用适配器</strong>——对任何 TSFM 即插即用，无须微调或新增参数。</li>
+</ul>
+<h2>三、目的（Problems Solved）</h2>
+<ul>
+<li><strong>提升 TSFMs 长 / 超长预测的精度</strong>：在不修改骨干模型的前提下，让现有 TSFMs 在 L ∈ {96, 192, 336, 720, 1440, 2880, 4320, 5760} 上预测误差显著降低。</li>
+<li><strong>降低 TSFMs 推理成本</strong>：通过降采样把骨干的输入长度压缩 $1/k$，把 GPU 内存、MACs、推理时间分别降至 1/6.4、1/343、1/16.9。</li>
+<li><strong>保留高频信息</strong>：通过把"降采样 + 重建"和"周期模式直接复用"分离，避免尖峰、突变被破坏。</li>
+<li><strong>模型无关 / 即插即用</strong>：同一套代码可作用于 7 种不同架构的 TSFMs（编码器-解码器、纯编码器、纯解码器、VLM-based）。</li>
+<li><strong>处理非周期 / 平滑数据</strong>：自动 k 选择机制允许 SPRINT 在弱周期数据上仅保留 Resolution Interpolation 部分。</li>
+</ul>
+<h2>四、核心原理（Principles）</h2>
+<p><strong>总览</strong>：SPRINT（<strong>S</strong>easonal <strong>P</strong>attern <strong>R</strong>eplication and <strong>T</strong>rend <strong>R</strong>esolution <strong>INT</strong>erpolation）是一个<strong>训练免费、推理时使用、即插即用</strong>的 wrapper。它对输入时序做三步处理：(1) 用移动平均（窗口 = 周期 P）把序列拆成<strong>低频趋势</strong> <code>T</code> 与<strong>高频季节</strong> <code>S</code>；(2) 对 <code>T</code> 做<strong>Resolution Interpolation</strong>——降采样后输入 TSFM 得到低分辨率预测，再用样条插值回到原分辨率；(3) 对 <code>S</code> 做<strong>Pattern Replication</strong>——从历史取最近 N 个完整周期，用指数加权平均合成"代表模式" <code>s_{\text{rep}}</code>，直接复用到预测窗口。最终 <code>\hat Y = \hat T + \hat S</code>。</p>
+<p><strong>关键概念</strong>：</p>
+<ul>
+<li><strong>季节-趋势分解（Moving Average）</strong>：$T_t = \frac{1}{P}\sum_{i=0}^{P-1} X_{t-i}$，$S_t = X_t - T_t$。MA 窗口 $P$ 通常等于数据内禀周期。</li>
+<li><strong>Resolution Interpolation</strong>：低分辨率趋势 $T_{\text{low}} \in \mathbb{R}^{\lfloor H/k \rfloor}$ 进 TSFM，输出 $\hat T_{\text{low}}$，再用样条插值到 $\hat T \in \mathbb{R}^{L}$。</li>
+<li><strong>Pattern Replication</strong>：从最近 N 个周期 $\{s_1, ..., s_N\}$ 用 $s_{\text{rep}} = \frac{\sum_{i=1}^{N} w^{N-i} s_i}{\sum_{i=1}^{N} w^{N-i}}$ 合成代表模式，直接重复铺满未来 L 步。</li>
+<li><strong>降采样间隔 k</strong>：默认 $k = P/4$，需满足 $k < P/2$（Nyquist 条件）。</li>
+<li><strong>模型无关</strong>：TSFM 被视为黑盒，不修改其架构与参数。</li>
+</ul>
+<p><strong>核心数学</strong>：</p>
+<ul>
+<li><strong>趋势重建（基于 Nyquist-Shannon）</strong>：设 MA 窗口为 P，则 $f_{\max} \approx 1/P$。要满足 $1/k > 2 f_{\max}$，需要 $k < P/2$。趋势可被连续插值完美重建。</li>
+<li><strong>季节误差界（Proposition 4.3）</strong>：设 $S_t = S_{t-P} + \epsilon_t$，则 Pattern Replication 累积误差 $\in O(L^2 \epsilon_{\max})$，<strong>多项式增长</strong>，远好于自回归预测的指数级误差累积。</li>
+<li><strong>自动 k 选择</strong>：对非周期数据用 $s = r_{\text{turn}} \cdot v_{\text{norm}}$ 度量平滑度（转向点比例 × 归一化波动），s 越小越平滑，可选更大的 k。</li>
+</ul>
+<p><strong>为什么这样做</strong>：</p>
+<ul>
+<li>时序数据的高频信息（季节、尖峰）本质上是<strong>可重复</strong>的（最近周期的复刻），无须复杂 DL 模型预测；</li>
+<li>时序数据的低频信息（趋势）<strong>平滑且可学习</strong>，可以降采样后用更小代价预测，再用连续插值还原；</li>
+<li>把二者解耦可同时获得<strong>精度提升</strong>（高/低频分别最适处理）和<strong>效率提升</strong>（骨干只处理低频短序列）。</li>
+</ul>
+<h2>五、算法详解（Algorithm）</h2>
+<ol>
+<li><strong>输入 / 输出</strong></li>
+<li>输入：历史时序 $X \in \mathbb{R}^{H\times C}$，TSFM 模型 $M$（黑盒），预测长度 L</li>
+<li>输出：未来预测 $\hat Y \in \mathbb{R}^{L\times C}$</li>
+</ul>
+<ol>
+<li><strong>核心模块</strong></li>
+<li><strong>MA 分解器</strong>：输出趋势 $T$ 与季节 $S$</li>
+<li><strong>Pattern Replication</strong>：从 $S$ 取最近 N 个周期合成 $s_{\text{rep}}$ 并复制铺满</li>
+<li><strong>Resolution Interpolation</strong>：降采样 → TSFM → 样条上采样</li>
+<li><strong>加和器</strong>：$\hat Y = \hat T + \hat S$</li>
+<li><strong>（可选）自动 k 选择器</strong>：仅对非周期数据使用</li>
+</ul>
+<ol>
+<li><strong>伪代码</strong>（推理时）</li>
+</ul>
+<pre><code>def sprint_forecast(X, tsfm, L, P, k=None, w=0.9):
+    H, C = X.shape
+    # === 1) 季节-趋势分解（移动平均窗口 P）===
+    T_hist = moving_average(X, window=P)         # R^{H x C}
+    S_hist = X - T_hist                          # R^{H x C}
+
+    # === 2) Pattern Replication 预测季节 ===
+    N = H // P
+    cycles = [S_hist[i*P:(i+1)*P] for i in range(N)]  # 多个 P x C 周期
+    # 指数加权平均合成代表模式
+    weights = [w**(N-1-i) for i in range(N)]
+    s_rep = sum(w_i * s_i for w_i, s_i in zip(weights, cycles)) / sum(weights)
+    # 复制铺满未来 L
+    S_hat = np.tile(s_rep, ((L + P - 1) // P, 1))[:L]   # R^{L x C}
+
+    # === 3) Resolution Interpolation 预测趋势 ===
+    if k is None:
+        k = max(1, P // 4)                       # 默认 k = P/4
+    T_low = T_hist[::k]                          # 降采样
+    T_low_pred = tsfm.predict(T_low, length=L//k)  # TSFM 黑盒
+    # 样条插值回原分辨率
+    coarse_idx = np.arange(len(T_low_pred)) * k
+    fine_idx = np.arange(L)
+    T_hat = np.stack([
+        scipy.interpolate.interp1d(coarse_idx, T_low_pred[:, c], kind=&#x27;cubic&#x27;)(fine_idx)
+        for c in range(C)
+    ], axis=1)                                    # R^{L x C}
+
+    # === 4) 加和 ===
+    Y_hat = T_hat + S_hat
+    return Y_hat</code></pre>
+<ol>
+<li><strong>关键数学</strong></li>
+<li>趋势重建：$k < P/2$（Nyquist），$T_{\text{low}} \in \mathbb{R}^{\lfloor H/k\rfloor}$，$\hat T_{\text{low}} \in \mathbb{R}^{\lfloor L/k\rfloor}$</li>
+<li>季节合成：$s_{\text{rep}} = \frac{\sum_{i=1}^N w^{N-i} s_i}{\sum_{i=1}^N w^{N-i}}$，$\hat S_t = s_{\text{rep},\, t\bmod P}$</li>
+<li>平滑度：$s = r_{\text{turn}} \cdot v_{\text{norm}}$</li>
+<li>Pearson 相关：$\text{corr}(s, \log_2 k_{\text{opt}}) = -0.859$（金融数据上）</li>
+</ul>
+<ol>
+<li><strong>复杂度分析</strong></li>
+<li>TSFM 计算：原本 $O((H+L)^2 d)$，降采样后 $O((H/k + L/k)^2 d) \approx O((H+L)^2 d / k^2)$</li>
+<li>季节：$O(P \cdot C)$（常数级）</li>
+<li>插值：$O(L \cdot C)$</li>
+<li>整体：骨干调用规模缩小 $1/k^2$ 量级</li>
+</ul>
+<ol>
+<li><strong>训练与推理</strong></li>
+<li><strong>无训练</strong>：SPRINT 是 wrapper，所有"参数"（P, k, w）由数据驱动或默认</li>
+<li><strong>推理</strong>：单次降采样 + TSFM + 上采样 + 季节复制，毫秒级</li>
+</ul>
+<ol>
+<li><strong>示例</strong></li>
+</ul>
+<p>对 ETTm1（每 15 分钟一个点，<code>P=96</code>）：<code>H=2880=30P</code>，<code>k=24</code>，<code>T_{\text{low}} \in \mathbb{R}^{120}</code>，TSFM 预测 <code>L/k=30</code> 个点，再用样条插值到 <code>L=720</code> 个点；季节部分取最近 30 个周期（每个 96 点）加权合成 <code>s_{\text{rep}}</code>，直接复制 7.5 次。</p>
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    A[历史时序 X, H x C] --> B[MA 分解: 窗口 P]
+    B --> T[T_hist 趋势: H x C]
+    B --> S[S_hist 季节: H x C]
+    S --> C[Pattern Replication]
+    C --> C1[取最近 N = H/P 个周期]
+    C1 --> C2[指数加权平均合成 s_rep]
+    C2 --> C3[复制铺满未来 L: S_hat]
+    T --> D[降采样: 间隔 k = P/4]
+    D --> E[T_low: H/k 点]
+    E --> F[TSFM 黑盒: predict T_low]
+    F --> G[T_low_pred: L/k 点]
+    G --> H[样条插值: T_hat, L x C]
+    H --> I[加和: Y_hat = T_hat + S_hat]
+    C3 --> I
+    I --> J[最终预测 Y_hat, L x C]
+</div>
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S0[输入 X] --> Q1{数据有强周期?}
+    Q1 -- 是 --> S1[MA 窗口 P = 周期]
+    Q1 -- 否 --> S2[仅 Resolution Interpolation]
+    S1 --> S3[拆分为 T 与 S]
+    S2 --> S4[数据平滑度 s = rturn * vnorm]
+    S4 --> S5[自动选 k: s 小则 k 大]
+    S3 --> S6[Pattern Replication: 合成 s_rep]
+    S3 --> S7[降采样 T 到 T_low]
+    S6 --> S8[复制铺满 -> S_hat]
+    S7 --> S9[TSFM 黑盒预测 -> T_low_pred]
+    S9 --> S10[样条插值回 T_hat]
+    S5 --> S7
+    S8 --> S11[Y_hat = T_hat + S_hat]
+    S10 --> S11
+    S11 --> S12[输出预测]
+</div>
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 训练免费即插即用 TSFM wrapper</strong>：SPRINT 不修改任何 TSFM 参数，可在 7 个 SOTA TSFMs 上即插即用（Chronos / Moirai / TimesFM / TimeMoE / Timer / ToTo / VisionTS）。</li>
+<li><strong>+ 趋势与季节解耦的双路径处理</strong>：低频趋势用"降采样 + TSFM + 样条插值"路径；高频季节用"周期模式复制"路径，理论保证 Pattern Replication 误差 $O(L^2)$，远好于自回归的指数累积。</li>
+<li><strong>+ Nyquist-Shannon 指导的降采样间隔选择</strong>：要求 $k < P/2$，默认 $k = P/4$，既保证趋势可被连续插值完美重建，又最大化计算节省。</li>
+<li><strong>+ 自动 k 选择 + 平滑度指标</strong>：对非周期数据用 $s = r_{\text{turn}} \cdot v_{\text{norm}}$ 量化平滑度，自动选 k，无需人工调参。</li>
+<li><strong>+ 大幅效率提升</strong>：MACs 降低 343.62×、GPU 内存降低 6.36×、推理时间降低 16.87×，且精度反而提升 19%。</li>
+</ul>
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>数据集</strong>：9 个数据集跨 5 域——ETTh1/ETTh2/ETTm1/ETTm2（电力）、Weather（气象）、Solar（光伏）、Wind（风电）、ZafNoo、Service（自建高采样率数据集）。</li>
+<li><strong>TSFM 骨干</strong>：Chronos (Small)、Moirai (2.0 Small)、TimesFM、TimeMoE、Timer、ToTo、VisionTS、Seasonal Naive（基线）。</li>
+<li><strong>主要指标</strong>：MSE、MACs、Max Memory、Infer Time。</li>
+<li><strong>配置</strong>：$k = P/4$，$w = 0.9$，$H = 30P$，L ∈ {96, 192, 336, 720}（标准 LTSF）和 {1440, 2880, 4320, 5760}（超长 LTSF）。</li>
+<li><strong>关键结果</strong>：</li>
+<li><strong>标准 LTSF</strong>：在所有 TSFM × 所有数据集上，SPRINT 几乎全部带来 MSE 下降，平均相对下降范围 6.60%~29.81%。在 Solar 与 Service（高采样、高频）上收益最大。</li>
+<li><strong>超长 LTSF</strong>：L=1440 时平均相对下降 18.45%~32.39%；L=5760 时 Timer（无 SPRINT 会 NaN）配合 SPRINT 仍能正常出结果。</li>
+<li><strong>效率</strong>：ETTm1 H=2880 L=720 batch=12：MACs 从 6.44T 降到 181.92G（35.4×）；Max Memory 从 12.48GB 降到 3.40GB（3.67×）；Infer Time 从 1707ms 降到 28.45ms（60×）。</li>
+<li><strong>消融实验</strong>（ETTh2/ETTm2/Weather/Service × Chronos/Moirai/TimeMoE）：</li>
+<li>w/o Decomposition：性能显著下降（直接在原序列做降采样丢失高频信息）。</li>
+<li>STL Decomposition：效果不如 MA 分解且慢（STL 不支持 tensor 计算）。</li>
+<li>Season Only（不要趋势）：误差大（趋势对非平稳漂移很重要）。</li>
+<li>Season Last（用最近一个周期代替加权平均）：效果下降（缺少全局上下文，对噪声和漂移敏感）。</li>
+<li>w/o Trend Downsampling（趋势不做降采样）：误差上升（验证了降采样的去噪和简化作用）。</li>
+<li><strong>组件级分析</strong>：</li>
+<li>季节预测误差（仅用 Pattern Replication）在所有数据集上比 TSFM 整体预测误差小一个数量级，证明高频季节可绕过 DL。</li>
+<li>趋势预测（TSFM 在低分辨率上）的 MSE 比整体预测低很多（Prop 4.1 验证）。</li>
+<li>趋势重建（降采样→插值）的 MSE 可忽略（< 0.01），证明 Nyquist 条件满足时低频信号可被完美重建。</li>
+</ul>
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>大规模云监控容量预测</strong>：对分钟级、秒级 KPI 做长程预测，用 SPRINT 加速推理并提升精度。</li>
+<li><strong>超长电力 / 气象 / 能源预测</strong>：周级、月级负荷预测，传统 TSFM 撑不住长度，SPRINT 降采样后轻松处理。</li>
+<li><strong>资源受限的边缘部署</strong>：IoT 设备 / 嵌入式系统跑不了大 TSFM，SPRINT 把内存 / 时间大幅压低。</li>
+<li><strong>TSFM 服务降本</strong>：在线 TSFM 推理服务通过 SPRINT 把单请求 GPU 时间压缩 ~17×，TCO 显著下降。</li>
+<li><strong>金融 / 高频时序</strong>：对强周期 + 高频信号（如订单流、报价）SPRINT 收益最大，Solar / Service 上 MSE 减半。</li>
+</ul>
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li>同为 NetMan AIOps Lab 的 <strong>TameR</strong>（ICML 2026）研究"recent-data bias"并提出训练时随机采样 + 基投影；SPRINT 研究"推理时降采样"。两者都强调"充分利用全局上下文 / 长上下文"，但<strong>训练 vs 推理时</strong>互补。</li>
+<li>同样来自 NetMan 的 <strong>AutoDA-Timeseries</strong> 处理训练时数据增强，与 SPRINT 在"数据压缩 / 减负"上有相似思想。</li>
+</ul>
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>TSFM (Time Series Foundation Model)</strong>：时序基础模型。</li>
+<li><strong>LTSF / Ultra-LTSF</strong>：Long-Term / Ultra-Long-Term Time Series Forecasting。</li>
+<li><strong>MACs</strong>：Multiply-Accumulate Operations，乘累加运算数。</li>
+<li><strong>Nyquist-Shannon 采样定理</strong>：若采样率 > 2 × 信号最高频率，则信号可被完美重建。</li>
+<li><strong>MA (Moving Average)</strong>：移动平均，用于趋势-周期分解。</li>
+<li><strong>Cubic Spline Interpolation</strong>：三次样条插值，连续平滑。</li>
+<li><strong>Pattern Replication</strong>：周期性模式直接复制。</li>
+<li><strong>Spline</strong>：分段多项式插值函数。</li>
+<li><strong>Pearson Correlation</strong>：皮尔逊相关系数，本文 -0.859。</li>
+<li><strong>Turning Points</strong>：局部极值点（序列方向改变的点）。</li>
+<li><strong>r_turn / v_norm</strong>：转向点比例 / 归一化波动率。</li>
+</ul>
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>Das et al., <strong>TimesFM</strong>（ICML 2024）；Ansari et al., <strong>Chronos</strong>；Woo et al., <strong>Moirai 2.0</strong>；Shi et al., <strong>TimeMoE</strong>；Liu et al., <strong>Timer</strong>；Cohen et al., <strong>ToTo</strong>——被 SPRINT 验证的 6 个 TSFM 骨干。</li>
+<li>Chen et al., <strong>VisionTS</strong>：VLM-based TSFM，是 SPRINT 的兼容基线。</li>
+<li>Cleveland et al., <strong>STL: A Seasonal-Trend Decomposition Procedure Based on Loess</strong>（1990）：本文消融中对比的季节-趋势分解方法。</li>
+<li>Shannon, <strong>Communication in the Presence of Noise</strong>（1949）：Nyquist-Shannon 采样定理。</li>
+<li>代码：https://github.com/NetManAIOps/SPRINT</li>
+</ul>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

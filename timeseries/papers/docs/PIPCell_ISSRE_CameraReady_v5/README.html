@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>PIPCell (ASE 2025) 方案说明</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>PIPCell：蜂窝网络参数调整影响预测（ASE 2025）</h1>
+
+<blockquote>
+作者：Yongqian Sun, Qingliang Zhang, Yu Luo, Mingjie Li, Shenglin Zhang 等<br>
+机构：南开大学软件学院、中国移动研究院、清华大学<br>
+发表年份：2025<br>
+会议/期刊：ASE 2025 (CCF A)<br>
+关联 PDF：<code>PIPCell_ISSRE_CameraReady_v5.pdf</code>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<tr><th>字段</th><th>值</th></tr>
+<tr><td>标题</td><td>Predicting the Impact of Parameter Adjustments on Cellular Networks (PIPCell)</td></tr>
+<tr><td>作者</td><td>Yongqian Sun, Qingliang Zhang, Yu Luo, Mingjie Li, Shenglin Zhang 等</td></tr>
+<tr><td>机构</td><td>南开大学软件学院、中国移动研究院、清华大学</td></tr>
+<tr><td>发表年份</td><td>2025</td></tr>
+<tr><td>会议/期刊</td><td>ASE 2025 (CCF A)</td></tr>
+<tr><td>分类</td><td>蜂窝网络运维 / 时序预测 / 因果推断 / 参数调整</td></tr>
+<tr><td>核心问题</td><td>在真实部署前预测 TP/CIO 参数调整对蜂窝网络 KPI 的影响</td></tr>
+<tr><td>主要贡献</td><td>(1) 闭式 multiplier 校准；(2) 因果图引导的多 Transformer 跨指标依赖建模；(3) 中国移动真实数据验证</td></tr>
+</table>
+
+<h2>二、背景</h2>
+<p>5G 网络中，gNB 持续进行参数调整（如 TP 发射功率、CIO 小区个体偏移），以应对流量与负载的时空动态。运营商每天做出大量参数决策，但反馈延迟长达数小时，导致调优周期长、用户体验受损。传统时序预测模型默认系统配置静态，无法捕捉参数调整后关键指标的突变。概念漂移适应方法在漂移发生后才更新模型，缺乏"提前预判"能力。</p>
+<p>论文以中国移动真实网络为研究对象，把参数调整视为外生干预，建立"参数调整 → KPI"反事实预测框架。</p>
+
+<h2>三、目的</h2>
+<ul>
+<li>痛点 1：参数调整历史数据稀缺 → 闭式 multiplier 校准。</li>
+<li>痛点 2：指标间复杂依赖 → 因果图 + 多 Transformer。</li>
+<li>痛点 3：参数组合空间巨大（18,000+） → 闭式 multiplier + 因果图传递。</li>
+<li>痛点 4：缺评估基准 → 中国移动真实 KPI 数据集，3 类 17 指标。</li>
+</ul>
+
+<h2>四、核心原理</h2>
+<p>PIPCell 由两阶段组成：(1) 在无参数调整的历史数据上预训练 Transformer 预测 Workload 与 Interference；(2) 用 3GPP 域知识推导的闭式 multiplier $\alpha(\beta|\theta)$ 对 Workload 预测做校准，再用因果图传递到 QoS 等下游指标。</p>
+<p>闭式 multiplier 公式：</p>
+<p>$$\alpha(\beta|\theta)=\begin{cases}\frac{4(\beta\gamma-\sqrt{\beta}\sin\gamma)\beta^{1/2}\gamma}{(1-\beta)^{2}\tan(\theta/2)} & \beta<1\\ 1 & \beta=1\\ 2-\alpha(1/\beta|\theta) & \beta>1\end{cases}$$</p>
+<p>校准公式：$W\approx \tilde{W}\cdot\alpha(\beta|\theta)$。</p>
+
+<h2>五、算法详解</h2>
+<pre><code># Phase 1: 无调整预测
+W0_pred = transformer_workload.predict(windowed_history)
+I0_pred = transformer_interference.predict(windowed_history)
+
+# multiplier 校准
+beta = 10 ** (0.1 * (delta + delta_o))
+alpha = compute_alpha(beta, theta)
+W_pred = W0_pred * alpha
+
+# Phase 2: 因果图传播
+for node in topological_sort(causal_graph):
+    parents = causal_graph.parents(node)
+    parent_preds = [outputs[p] for p in parents]
+    outputs[node] = transformer[node].predict(history, parent_preds)
+
+# 联合损失
+loss = mse(W_pred, label_W) + sum(mse(outputs[k], label[k]) for k in nodes)
+</code></pre>
+
+<h2>六、系统架构图</h2>
+<div class="mermaid">
+graph TB
+    A[历史 KPI 序列] --> B[Transformer Workload 预测]
+    A --> C[Transformer Interference 预测]
+    D[参数调整 delta + delta_o] --> E[闭式 multiplier alpha]
+    E --> F[校准 Workload 预测]
+    B --> F
+    F --> G[因果图根节点]
+    G --> H[Transformer QoS 节点 1]
+    G --> I[Transformer QoS 节点 2]
+    H --> J[最终KPI预测]
+    I --> J
+    C --> J
+</div>
+
+<h2>七、流程图</h2>
+<div class="mermaid">
+flowchart TD
+    S1[采集历史KPI] --> S2[预训练 Transformer Workload/Interference]
+    S2 --> S3[输入参数调整 delta, delta_o]
+    S3 --> S4[计算闭式 multiplier]
+    S4 --> S5[校准 Workload 预测]
+    S5 --> S6[按因果图传播]
+    S6 --> S7[多 Transformer 联合预测]
+    S7 --> S8[计算联合损失]
+    S8 --> S9{收敛?}
+    S9 -- 否 --> S2
+    S9 -- 是 --> S10[输出 KPI 反事实预测]
+</div>
+
+<h2>八、关键创新点</h2>
+<ul>
+<li><strong>闭式 multiplier 校准</strong>：把 3GPP 域知识转化为可微公式。</li>
+<li><strong>因果图组织的多 Transformer</strong>：父节点预测嵌入子节点输入。</li>
+<li><strong>反事实预测框架</strong>：真实部署前预判。</li>
+<li><strong>两阶段训练策略</strong>：无调整预训练 + 干预微调。</li>
+<li><strong>真实工业级评估</strong>：中国移动 17 指标 KPI。</li>
+</ul>
+
+<h2>九、实验与结果</h2>
+<ul>
+<li>数据集：中国移动真实网络 KPI，3 类 17 指标。</li>
+<li>Baseline：ARIMA、Prophet、Transformer 变体、TimesNet、Informer、CrossFormer。</li>
+<li>主要指标：RMSE、sMAPE。</li>
+<li>关键数字：RMSE 提升 25.8%、sMAPE 提升 59.0%。</li>
+<li>消融：去掉 multiplier 校准或因果图都会显著退化。</li>
+<li>效率：单小区推理 &lt; 10 ms。</li>
+</ul>
+
+<h2>十、应用场景</h2>
+<ul>
+<li>5G 容量优化</li>
+<li>能耗管理</li>
+<li>负载均衡</li>
+<li>应急通信保障</li>
+<li>自动化运维决策</li>
+</ul>
+
+<h2>十一、相关论文</h2>
+<ul>
+<li>RefinedEdge：互补——后者边缘异常检测，前者云端参数影响预测。</li>
+<li>TimeSeriesBench、TADBench：同属时序方向。</li>
+<li>Lindorm-UWC：同属网络与 IoV，但 PIPCell 关心网络参数调整。</li>
+</ul>
+
+<h2>十二、术语表</h2>
+<ul>
+<li><strong>TP</strong>：Transmission Power 发射功率。</li>
+<li><strong>CIO</strong>：Cell Individual Offset 小区个体偏移。</li>
+<li><strong>RSRP</strong>：Reference Signal Received Power 参考信号接收功率。</li>
+<li><strong>RRC</strong>：Radio Resource Control 无线资源控制。</li>
+<li><strong>PRB</strong>：Physical Resource Block 物理资源块。</li>
+<li><strong>Workload / QoS / Interference</strong>：三类核心 KPI 簇。</li>
+<li><strong>闭式 multiplier</strong>：基于域知识推导的校准系数。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li>3GPP TS 36.304：UE 空闲态过程。</li>
+<li>ARIMA、Prophet：经典时序预测方法。</li>
+<li>Informer、Autoformer、TimesNet：Transformer 时序模型。</li>
+<li>Causal Forest：因果推断基线。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>

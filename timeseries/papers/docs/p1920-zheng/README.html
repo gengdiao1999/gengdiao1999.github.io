@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Lindorm-UWC: An Ultra-Wide-Column Database for Internet of Vehicles</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1f2328; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Lindorm-UWC: An Ultra-Wide-Column Database for Internet of Vehicles（PVLDB 2024）</h1>
+
+<blockquote>
+作者：Qianyu Ouyang, Peng Yu, Qilu Zhong, Zhicheng Ji, Dan Pei, Chunhui Shen, Qiang Xiao, Xiang Wang, Wei Meng, Wei Zhang, Wenlong Yang, Jianhui Lei, Yong Lin, Cen Zheng, Feifei Li, Yadong Chen, Qingyi Meng, Sheng Wang, Jingren Zhou<br>
+机构：清华大学、浙江大学、阿里云<br>
+发表年份：2024<br>
+会议/期刊：PVLDB 2024（Vol. 17, No. 12, 4117-4129）<br>
+关联 PDF：同目录下 <code>p1920-zheng.pdf</code>
+</blockquote>
+
+<h2>一、文档信息速览</h2>
+<table>
+<thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody>
+<tr><td>标题</td><td>Lindorm-UWC: An Ultra-Wide-Column Database for Internet of Vehicles</td></tr>
+<tr><td>作者</td><td>Qianyu Ouyang, Peng Yu, Qilu Zhong, Zhicheng Ji, Dan Pei, Chunhui Shen, Qiang Xiao, Xiang Wang, Wei Meng, Wei Zhang, Wenlong Yang, Jianhui Lei, Yong Lin, Cen Zheng, Feifei Li, Yadong Chen, Qingyi Meng, Sheng Wang, Jingren Zhou</td></tr>
+<tr><td>机构</td><td>清华大学、浙江大学、阿里云</td></tr>
+<tr><td>发表年份</td><td>2024</td></tr>
+<tr><td>会议/期刊</td><td>PVLDB 2024</td></tr>
+<tr><td>分类</td><td>时序数据库 / IoV / 超宽列存储 / 工业系统</td></tr>
+<tr><td>核心问题</td><td>智能网联车（IoV）场景下，单车 2500+ 传感器指标、80TB/天、GB/s 写入通量，传统时序数据库（InfluxDB）/ 宽列数据库（HBase）/ 文档数据库（MongoDB）都无法同时满足"高写入吞吐 + 多指标查询效率 + 低存储成本"。</td></tr>
+<tr><td>主要贡献</td><td>1) 第一次系统性 empirical study 三家国内 IoV 公司的工作负载（A/B/C），总结三大挑战；2) 设计 Lindorm-UWC：分布式 + 冷热数据分离 + 超宽列存储引擎（基于 LSM-tree）；3) 写路径上把多指标合并为单列 + append-only 避免 update-in-place；4) 读路径上行存+列存双格式，减少读放大；5) 在阿里云上从 2019 年起服务，管理数十 PB 数据、千万 QPS，写吞吐比 MongoDB/HBase/InfluxDB 高 79% 到一个数量级。</td></tr>
+</tbody>
+</table>
+
+<h2>二、背景（Background）</h2>
+<p>随着 ICT 与车载传感技术发展，智能网联车（IoV）成为汽车产业新标准。每辆智能车都搭载大量传感器（ADAS、BMS、DCU 等），持续采集车辆运行、驾驶行为、道路信息，并通过 5G 等无线技术上传到云端。云端数据库为 TSP（Telematics Service Provider）、整车厂、自动驾驶厂商、政府监管等多方提供数据管理能力——当车辆出故障时，TSP 可远程通过云端数据库查询运行数据做诊断。</p>
+<p>IoV 数据本质是多维时序数据，与 IoT 和 DevOps 指标类似，但有三个独特之处：</p>
+<ol>
+<li><strong>单设备指标规模差异巨大</strong>：DevOps 单服务器几十到几百指标，IoT 设备单设备几百指标，IoV 单车 2500+ 指标（ADAS、BMS、DCU 等子组件多）。</li>
+<li><strong>写吞吐极高</strong>：B 公司一天可达 80TB、平均 1GB/s，A 公司约 721MB/s。</li>
+<li><strong>"update-style writing"</strong>：单车不同子组件独立上传数据，timestamp 在数据库侧对齐到秒/分钟级；当某秒已有数据，本次写入是"在该行追加新指标"而不是"插入新行"。</li>
+</ol>
+<p>传统数据库的痛点：</p>
+<ul>
+<li><strong>InfluxDB（时序库）</strong>：单指标管理；查询大量指标需要逐个独立检索 → I/O 爆炸。</li>
+<li><strong>HBase（宽列库）</strong>：每个数据点视为一个 key-value；查询大量指标 → CPU 大量花在 key 比较上。</li>
+<li><strong>MongoDB（文档库）</strong>：把同一 timestamp 的所有指标存为文档，看似解决多指标问题；但 update-style 写入需要"读出文档 → 修改 → 写回"，小指标子集查询要 fetch 整篇文档 → 读放大严重。</li>
+</ul>
+<p>Lindorm-UWC 是阿里云在 Lindorm 多模数据库之上专门为 IoV 场景设计的"超宽列"存储引擎，从 2019 年起已在阿里云生产环境上服务多家 IoV 企业客户，管理数十 PB 数据、千万级 QPS。</p>
+
+<h2>三、目的（Purpose / Problems Solved）</h2>
+<p>论文从 empirical study 中明确总结三大挑战：</p>
+<ul>
+<li><strong>挑战 C1：极致的写入吞吐。</strong>IoV 系统数据流量 &gt;1GB/s、80TB/天，对数据库写吞吐要求极高。Lindorm-UWC 用 LSM-tree + append-only + 多指标合并为单列，让一次写入承载尽可能多的指标。</li>
+<li><strong>挑战 C2：单车辆数千指标 + update-style 写入。</strong>一次写入不会包含所有指标，且多次写入"按时间对齐后更新同一行"。Lindorm-UWC 放弃 update-in-place，每次写入都是 append 到当前行对应时间桶的最新状态，避免 HBase/MongoDB 那种"先读再改"的代价。</li>
+<li><strong>挑战 C3：多样化查询模式。</strong>查询可能涉及大量指标（综合分析）也可能仅几个指标（远程故障诊断），需要数据库既支持"少量指标快速查"也支持"全部指标批量拉"。Lindorm-UWC 同时维护行存+列存双格式，让不同查询模式走最优路径。</li>
+</ul>
+
+<h2>四、核心原理（Principles）</h2>
+<p>Lindorm-UWC 整体架构包含三层：</p>
+<ul>
+<li><strong>分布式层</strong>：按"车辆 ID + 时间"对数据进行分区；支持自动负载均衡。</li>
+<li><strong>超宽列存储引擎</strong>：每个数据分区用独立的 LSM-tree 引擎。两条关键设计：
+<ul>
+<li><strong>多指标合并为单列</strong>：一次写入请求中的多个指标值合并到一个列里，避免在写路径上对不同指标分别建索引和分组。</li>
+<li><strong>append-only</strong>：每次写请求以 append 方式追加到对应车辆-时间桶的最新数据单元，不做 in-place update。</li>
+</ul>
+</li>
+<li><strong>冷热数据分离</strong>：把访问频率低的数据 offload 到廉价存储介质（OSS、HDD），热数据留在高性能介质（NVMe SSD），降低单位存储成本。</li>
+</ul>
+<p>读路径：</p>
+<ul>
+<li><strong>双格式存储</strong>：磁盘上同时维护行存 + 列存两种格式，根据查询的"指标数 vs 时间跨度"选择最合适的读路径：
+<ul>
+<li>少量指标 + 长时间跨度 → 列存（只读需要的列，I/O 最小）。</li>
+<li>大量指标 + 短时间跨度 → 行存（一次读多列）。</li>
+</ul>
+</li>
+<li><strong>减少读放大</strong>：通过双格式让"读不必要数据"最小化。</li>
+</ul>
+<p><strong>与现有方案差异</strong>：</p>
+<ul>
+<li>vs <strong>InfluxDB</strong>：本方法按"车辆"管理多指标，而不是按"单指标"管理，查询大量指标不再需要 N 次独立检索。</li>
+<li>vs <strong>HBase</strong>：本方法把多指标合并到一列，写入时不需要为每个数据点建 KV 条目；查询时也不需要大量 key 比较。</li>
+<li>vs <strong>MongoDB</strong>：本方法 append-only + 双格式，避免"读整篇文档再修改"；少量指标查询可直接走列存，不读全文档。</li>
+</ul>
+<p>数学上，论文没有特别强调新颖的数学公式，更多是工程架构创新。其核心数学度量：</p>
+<ul>
+<li><strong>写吞吐</strong>：writes/s，Lindorm-UWC 在 100–5000 metrics/write 范围内均保持最高吞吐。</li>
+<li><strong>查询延迟</strong>：p99 延迟在高并发下仍可控。</li>
+<li><strong>存储压缩比</strong>：相对基线的压缩率提升。</li>
+</ul>
+
+<h2>五、算法详解（Algorithm）</h2>
+
+<h3>1. 输入 / 输出</h3>
+<ul>
+<li><strong>输入</strong>：IoV 设备上传的 (vehicle_id, timestamp, metrics) 三元组。</li>
+<li><strong>输出</strong>：低延迟写入、灵活的 (vehicle_id, time_range, metric_set) 查询。</li>
+</ul>
+
+<h3>2. 核心模块</h3>
+<ul>
+<li><strong>Distributed Coordinator</strong>：分布式协调；按 vehicle_id + 时间分区。</li>
+<li><strong>Storage Engine (Ultra-Wide-Column)</strong>：基于 LSM-tree 的单分区内存储引擎。</li>
+<li><strong>Multi-metric Merge</strong>：把多指标值合并为单列存储。</li>
+<li><strong>Append-only Writer</strong>：append-only 写，不做 update-in-place。</li>
+<li><strong>Dual-format Storage</strong>：行存 + 列存双格式。</li>
+<li><strong>Cold/Hot Tier</strong>：冷热数据分离存储。</li>
+<li><strong>Query Router</strong>：根据查询的指标数与时间跨度选择行/列路径。</li>
+</ul>
+
+<h3>3. 伪代码</h3>
+<pre><code># === 多指标合并为单列 ===
+def merge_metrics_to_single_column(metrics: dict) -> bytes:
+    # 用列存格式紧凑编码多个指标
+    # 避免按指标分别建索引
+    return columnar_encode(metrics)
+
+# === Append-only 写入 ===
+def append_write(partition, vehicle_id, timestamp, metrics):
+    # 找到 vehicle_id 对应时间桶
+    bucket = partition.get_or_create_bucket(vehicle_id, timestamp)
+    # 直接 append，不做 in-place update
+    return bucket.append(merge_metrics_to_single_column(metrics))
+
+# === 双格式读取 ===
+def read(partition, vehicle_id, time_range, metric_set):
+    if len(metric_set) &lt;= THRESHOLD or time_range is wide:
+        # 少量指标 / 长时间 → 列存
+        return columnar_read(partition, vehicle_id, time_range, metric_set)
+    else:
+        # 多指标 / 短时间 → 行存
+        return row_read(partition, vehicle_id, time_range, metric_set)
+</code></pre>
+
+<h3>4. 关键数学</h3>
+<ul>
+<li>写吞吐（Table 4）：</li>
+</ul>
+<p>$$\mathrm{WriteThroughput} = \frac{\#\mathrm{writes}}{\mathrm{second}}$$</p>
+<p>论文在 #Metrics=100 时 Lindorm-UWC 写吞吐 ≥200K writes/s（论文实测），MongoDB 85K、HBase 199K、InfluxDB 156K。</p>
+<ul>
+<li>查询延迟：</li>
+</ul>
+<p>$$L_{p99} = \mathrm{P99\ of\ query\ latency}$$</p>
+<ul>
+<li>存储压缩比：</li>
+</ul>
+<p>$$R = \frac{\mathrm{raw\ size}}{\mathrm{compressed\ size}}$$</p>
+
+<h3>5. 复杂度分析</h3>
+<p>论文未给严格算法复杂度，更多关注 I/O 路径优化：一次写入的 I/O 量与"指标数 × 写入频次"相关；查询的 I/O 量与"返回指标数"相关。Lindorm-UWC 的双格式让两种查询模式都能保持 I/O 与"实际需要的数据量"成正比，避免读放大。</p>
+
+<h3>6. 训练与推理</h3>
+<p>这是数据库系统论文，没有"训练"环节。系统服务相关参数：</p>
+<ul>
+<li>分布式分区数：自动扩展。</li>
+<li>列存/行存选择阈值：可配置。</li>
+<li>冷热数据迁移策略：基于访问频率。</li>
+</ul>
+
+<h3>7. 示例</h3>
+<p>论文 Table 1 给出三个 IoV 数据样本示例（v001 包含 BMS 指标、v002 包含 STATE 指标、v003 包含 DCU 指标），说明同 timestamp 车辆上传的指标集合可能完全不同。论文用此说明"update-style writing"——同一车辆的 v001 在 1699255800 时刻可能先上传 BMS_volt、BMS_batt，后续又上传 BMS_svdt、BMS_ncell，timestamp 对齐后数据库侧做"追加指标"操作。</p>
+
+<h2>六、系统架构图（Architecture）</h2>
+<div class="mermaid">
+graph TB
+    subgraph Vehicles["车辆端"]
+        A1[ADAS 传感器]
+        A2[BMS 传感器]
+        A3[DCU 传感器]
+    end
+    subgraph Cloud["云端"]
+        B1[Kafka 队列]
+        B2[Distributed Coordinator<br>按 vehicle_id + 时间分区]
+    end
+    subgraph Engine["超宽列存储引擎 (每个分区一个)"]
+        C1[Multi-Metric Merge<br>多指标合并为单列]
+        C2[Append-only Writer<br>不 in-place update]
+        C3[LSM-tree MemTable + SST]
+        C4[Dual-format Storage<br>行存 + 列存]
+    end
+    subgraph Tier["冷热数据分离"]
+        D1[Hot: NVMe SSD]
+        D2[Cold: OSS/HDD]
+    end
+    subgraph Query["查询路由"]
+        E1{指标数 vs 时间跨度?}
+        E2[列存路径: 少量指标/长时间]
+        E3[行存路径: 多指标/短时间]
+    end
+    A1 & A2 & A3 --> B1 --> B2
+    B2 --> C1 --> C2 --> C3 --> C4
+    C4 --> D1 & D2
+    C4 --> E1
+    E1 -- 列存 --> E2
+    E1 -- 行存 --> E3
+</div>
+
+<h2>七、流程图（Process Flow）</h2>
+<div class="mermaid">
+flowchart TD
+    S1[车辆传感器生成数据] --> S2[5G/网络上传到 Kafka]
+    S2 --> S3[Distributed Coordinator 按 vehicle_id + 时间分区]
+    S3 --> S4[Multi-Metric Merge: 多个指标合并为单列]
+    S4 --> S5[Append-only Writer: 追加到 LSM-tree]
+    S5 --> S6[MemTable Flush + Compaction]
+    S6 --> S7{数据访问频率?}
+    S7 -- 高频 --> S8[保留在 NVMe SSD]
+    S7 -- 低频 --> S9[迁移到 OSS/HDD]
+    S8 & S9 --> S10[查询: (vehicle_id, time_range, metric_set)]
+    S10 --> S11{指标数 vs 时间跨度?}
+    S11 -- 少量指标/长时间 --> S12[列存读]
+    S11 -- 多指标/短时间 --> S13[行存读]
+    S12 & S13 --> S14[返回结果]
+</div>
+
+<h2>八、关键创新点（Key Innovations）</h2>
+<ul>
+<li><strong>+ 第一次 IoV 工作负载系统化 empirical study</strong>：从三家国内主要 IoV 企业（A/B/C）拿到月级写日志 + 周级查询日志，揭示单车 2500+ 指标、update-style writing、单车辆查询为主等关键特征，让后续的数据库设计有数据支撑。</li>
+<li><strong>+ 超宽列（Ultra-Wide-Column）存储引擎</strong>：突破"每指标一列"的传统时序库设计，把一次写入的多个指标合并为单列存储，避免写路径上对不同指标分别建索引和分组。</li>
+<li><strong>+ Append-only 写入策略</strong>：放弃 update-in-place，每次写都是"追加到当前车辆-时间桶的最新数据"，避免 HBase/MongoDB 那种"读出-修改-写回"的开销；与 LSM-tree 的天然 append 特性契合。</li>
+<li><strong>+ 行存+列存双格式按需读取</strong>：根据查询的"指标数 vs 时间跨度"自动选择读路径，让"少量指标快速查"和"大量指标批量拉"两种模式都能保持低 I/O。</li>
+<li><strong>+ 冷热数据自动分层</strong>：热数据留 NVMe、冷数据 offload 到廉价介质，降低单位存储成本。论文部署在阿里云 Lindorm 上，已管理数十 PB 数据。</li>
+<li><strong>+ 79% 到数量级写吞吐提升</strong>：Table 4 显示 Lindorm-UWC 在 #Metrics=100 时写吞吐 200K+/s，相对 MongoDB 85K、HBase 199K、InfluxDB 156K 都有显著优势，特别是 metric 数增加时优势更明显（#Metrics=5000 时领先一个数量级）。</li>
+</ul>
+
+<h2>九、实验与结果（Experiments）</h2>
+<ul>
+<li><strong>数据集 / Workload</strong>：基于三家 IoV 公司（A/B/C）的月级写日志、周级查询日志构建的 benchmark suite。</li>
+<li><strong>Baseline</strong>：MongoDB、HBase、InfluxDB。</li>
+<li><strong>关键结果数字</strong>：
+<ul>
+<li><strong>写吞吐（Table 4）</strong>：
+<ul>
+<li>#Metrics=100：Lindorm-UWC &gt; 200K writes/s；HBase 199K、InfluxDB 156K、MongoDB 85K。</li>
+<li>#Metrics=5000：Lindorm-UWC 仍保持优势（具体数字看 Table 4 后续行），相对基线领先 79%–一个数量级。</li>
+</ul>
+</li>
+<li><strong>数据吞吐</strong>：A 公司 560–950MB/s（平均 721MB/s）；B 公司 &gt;800MB/s（平均 907MB/s，峰值 1.68GB/s）；C 公司 ~55MB/s。</li>
+<li><strong>查询性能</strong>：单车辆查询为主（A 100%、B 100%、C 99.79%）；Lindorm-UWC 在少量指标和大量指标两种查询模式下均保持高并发低延迟。</li>
+<li><strong>存储成本</strong>：通过冷热分层，存储成本显著低于全 SSD 方案。</li>
+<li><strong>多样性查询</strong>：A 的查询指标数 ≤130（占总数 2999 的 &lt;4.4%），验证双格式设计的合理性。</li>
+</ul>
+</li>
+<li><strong>消融实验</strong>：论文未严格做 ablation（架构性工作），但 Table 4 通过变化 #Metrics 隐式验证多指标合并设计的优势。</li>
+<li><strong>效率分析</strong>：写吞吐随 #Metrics 增加的优势扩大（双格式 + 合并列的扩展性）。</li>
+<li><strong>工业部署</strong>：2019 年起服务阿里云 IoV 企业客户，管理数十 PB 数据、千万级 QPS。</li>
+</ul>
+
+<h2>十、应用场景（Use Cases）</h2>
+<ul>
+<li><strong>智能网联车数据管理</strong>：单车 2500+ 传感器、1GB/s 写吞吐的工业场景核心数据库。</li>
+<li><strong>车队远程诊断</strong>：TSP 工程师按车辆 ID + 时间段 + 几个特定指标快速查询数据。</li>
+<li><strong>驾驶行为分析</strong>：按车辆 ID + 长时间跨度 + 全部指标的批量分析（行存路径）。</li>
+<li><strong>故障回溯</strong>：按工单号查某辆车的多个系统在故障时刻前后的指标数据。</li>
+<li><strong>政府监管数据上报</strong>：批量导出某时间段某区域所有车辆的运行数据。</li>
+<li><strong>云原生时序存储底座</strong>：Lindorm-UWC 的架构思想可推广到任何"高维度 + 高并发写 + 灵活查询"的工业场景。</li>
+</ul>
+
+<h2>十一、相关论文（Related Papers in this set）</h2>
+<ul>
+<li><code>Mengyao__SiameseLSTM</code>：KPI 时序异常检测（应用层），与本篇存储层互补。</li>
+<li><code>TSC-TADBench</code>：trace 异常检测评测，与本篇都属"时序数据"主题。</li>
+<li><code>2402.10802v3</code>（TimeSeriesBench）：KPI 异常检测评测，本篇与之都属"时序"主题但侧重存储/查询层。</li>
+<li><code>p1920-zheng</code>（本篇，Lindorm-UWC）：工业级 IoV 数据库 PVLDB 论文。</li>
+</ul>
+
+<h2>十二、术语表（Glossary）</h2>
+<ul>
+<li><strong>IoV（Internet of Vehicles）</strong>：智能网联车系统。</li>
+<li><strong>TSP（Telematics Service Provider）</strong>：车联网服务提供商。</li>
+<li><strong>ADAS（Advanced Driver Assistance Systems）</strong>：高级驾驶辅助系统。</li>
+<li><strong>BMS（Battery Management System）</strong>：电池管理系统。</li>
+<li><strong>DCU（Domain Control Unit）</strong>：域控制器。</li>
+<li><strong>LSM-tree（Log-Structured Merge tree）</strong>：日志结构合并树，Lindorm-UWC 底层数据结构。</li>
+<li><strong>Wide-Column Store</strong>：宽列存储，如 HBase。</li>
+<li><strong>Ultra-Wide-Column (UWC)</strong>：超宽列，本论文的核心创新。</li>
+<li><strong>Append-only</strong>：仅追加写，不做 in-place update。</li>
+<li><strong>Cold/Hot Data Separation</strong>：冷热数据分层存储。</li>
+<li><strong>Row-oriented / Column-oriented Storage</strong>：行存/列存。</li>
+<li><strong>Update-style Writing</strong>：多轮写入按 timestamp 对齐后"追加指标"到同一行。</li>
+<li><strong>Lindorm</strong>：阿里云多模数据库品牌。</li>
+<li><strong>OSS（Object Storage Service）</strong>：阿里云对象存储。</li>
+<li><strong>PVLDB</strong>：Proceedings of the VLDB Endowment，国际数据库顶刊。</li>
+<li><strong>Kafka</strong>：分布式消息队列，IoV 数据汇聚层。</li>
+<li><strong>MemTable / SST</strong>：LSM-tree 的内存表与磁盘有序字符串表。</li>
+</ul>
+
+<h2>十三、参考与延伸阅读</h2>
+<ul>
+<li><strong>HBase</strong>（论文 [8]）：Apache 宽列数据库，本文主要对比对象之一。</li>
+<li><strong>InfluxDB</strong>（论文 [13]）：时序数据库，本文主要对比对象之一。</li>
+<li><strong>MongoDB</strong>（论文 [14]）：文档数据库，本文主要对比对象之一。</li>
+<li><strong>Prometheus</strong>（论文 [15]）：云原生时序监控系统。</li>
+<li><strong>IoTDB</strong>（论文 [44]）：清华大学主导的 IoT 时序数据库，与 IoV 场景紧密相关。</li>
+<li><strong>LSM-tree</strong>（论文 [38]）：Lindorm-UWC 底层数据结构原始论文。</li>
+<li><strong>Lindorm</strong>：阿里云多模数据库品牌的官方介绍（<a href="https://www.aliyun.com/product/lindorm">https://www.aliyun.com/product/lindorm</a>）。</li>
+</ul>
+
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body>
+</html>
