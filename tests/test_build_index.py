@@ -9,6 +9,7 @@ from build_index import (
     load_papers_csv,
     load_patents_csv,
     render_paper_card,
+    render_patent_card,
 )
 
 
@@ -75,3 +76,23 @@ def test_render_paper_card_contains_title_year_and_links():
     assert "arxiv.org/abs/2510.04710" in html
     assert "./docs/2510.04710v1_11/README.html" in html
     assert "./2510.04710v1_11.pdf" in html
+
+
+def test_render_patent_card_contains_patent_id_and_links():
+    row = {
+        "patent_id": "CN110532550A",
+        "title": "一种基于日志词频树的智能系统日志解析处理方法",
+        "application_no": "201910742035.5",
+        "publication_date": "2019.12.03",
+        "assignee": "北京必示科技有限公司",
+        "pub_kind": "发明专利申请",
+        "pdf_file": "CN110532550A.pdf",
+        "google_patents_url": "https://patents.google.com/patent/CN110532550A/zh",
+    }
+    doc_fields = {"title": "一种日志词频树方法", "summary": "基于词频树的日志解析方案。", "topic": "log"}
+    html = render_patent_card(row, doc_fields, "CN110532550A")
+    assert 'data-topic="log"' in html
+    assert 'CN110532550A' in html
+    assert './docs/CN110532550A/README.html' in html
+    assert './CN110532550A.pdf' in html
+    assert 'patents.google.com/patent/CN110532550A' in html

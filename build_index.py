@@ -134,3 +134,37 @@ def render_paper_card(row, doc_fields, doc_dir_name):
     </div>
   </article>
 """
+
+
+def render_patent_card(row, doc_fields, doc_dir_name):
+    title = _html_escape(doc_fields["title"])
+    etitle = _html_escape(row.get("title", ""))
+    pub_date = row.get("publication_date", "")
+    year = pub_date.split(".")[0] if pub_date else ""
+    assignee = _html_escape(row.get("assignee", ""))
+    pub_kind = _html_escape(row.get("pub_kind", ""))
+    summary = _html_escape(doc_fields["summary"])
+    topic = doc_fields["topic"]
+    gp_url = _html_escape(row.get("google_patents_url", ""))
+    badge = ""
+    if "发明" in pub_kind:
+        badge = '<span class="badge badge-llm">发明</span>'
+    elif "实用新型" in pub_kind:
+        badge = '<span class="badge badge-obs">实用新型</span>'
+    return f"""  <article class="card" data-topic="{topic}" data-year="{year}"
+           data-keywords="{title} {etitle} {assignee}">
+    <a class="ctitle" href="./docs/{doc_dir_name}/README.html">{title}</a>
+    <p class="etitle">{etitle}</p>
+    <div class="meta">
+      {badge}
+      <span class="year-tag">{year}</span>
+      <a class="arxiv-link" href="{gp_url}" target="_blank" rel="noopener">{_html_escape(row.get('patent_id',''))}</a>
+    </div>
+    <p class="venue">{assignee} · {pub_kind}</p>
+    <p class="summary">{summary}</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="./docs/{doc_dir_name}/README.html">阅读方案说明</a>
+      <a class="btn" href="./{_html_escape(row.get('pdf_file',''))}" target="_blank">查看 PDF</a>
+    </div>
+  </article>
+"""
