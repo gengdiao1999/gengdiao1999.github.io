@@ -1,6 +1,14 @@
 """Generate timeseries/papers/index.html and timeseries/pdfs/index.html from CSV + docs.
 
 Reuses CSS/JS skeleton from timeseries/alibaba/index.html. Does NOT read PDFs.
+
+Spec:   docs/superpowers/specs/2026-06-10-timeseries-papers-pdfs-index-design.md
+Plan:   docs/superpowers/plans/2026-06-10-timeseries-papers-pdfs-index.md
+
+Usage:
+    python3 build_index.py            # generate both papers and pdfs
+    python3 build_index.py papers     # papers only
+    python3 build_index.py pdfs       # pdfs only
 """
 import csv
 import re
