@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from build_index import (
+    build_papers_index_html,
     extract_doc_fields,
     load_alibaba_template,
     load_papers_csv,
@@ -96,3 +97,12 @@ def test_render_patent_card_contains_patent_id_and_links():
     assert './docs/CN110532550A/README.html' in html
     assert './CN110532550A.pdf' in html
     assert 'patents.google.com/patent/CN110532550A' in html
+
+
+def test_build_papers_index_html_has_176_cards():
+    html = build_papers_index_html()
+    assert html.count('<article class="card"') == 176
+    assert 'class="chip"' in html
+    assert 'id="paper-grid"' in html
+    assert 'id="search-input"' in html
+    assert 'function applyFilter' in html
