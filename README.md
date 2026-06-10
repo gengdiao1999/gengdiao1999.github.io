@@ -52,7 +52,7 @@ study/
 
 | 专题 | 简介 | 落地数据 | 入口 |
 |---|---|---|---|
-| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 | ✅ **176 篇论文 + 34 件专利** + **16 篇阿里 AIOps** | [`timeseries/papers/`](timeseries/papers/) · [`timeseries/pdfs/`](timeseries/pdfs/) · [`timeseries/alibaba/`](timeseries/alibaba/index.html) |
+| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 34 件专利** | [`papers/`](timeseries/papers/) · [`pdfs/`](timeseries/pdfs/) · [`alibaba/`](timeseries/alibaba/index.html) |
 | 🟡 **日志（logs）** | 日志解析 / 异常识别 / LLM 日志分析 | ⏳ 规划中 | [`logs/`](logs/) |
 | 🟣 **调用链（tracing）** | 微服务追踪 / 根因定位 / Span 关联 | ⏳ 规划中 | [`tracing/`](tracing/) |
 
@@ -95,6 +95,8 @@ timeseries/papers/
    <https://gengdiao1999.github.io/timeseries/papers/docs/SmartIW-Camera-Ready/README.html>
 2. **本地** → `open timeseries/papers/docs/<目录名>/README.html`（macOS / Linux）
 3. **看原文 PDF** → 打开 `timeseries/papers/<目录名>.pdf`
+4. **阿里 AIOps 16 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/alibaba/index.html)
+   或本地 `open timeseries/alibaba/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv）
 
 **用 CSV 检索**：
 ```bash
@@ -173,6 +175,20 @@ awk -F, 'NR>1 {print $1}' timeseries/papers/papers_index.csv | sort | uniq -c
   1. 1 篇源站 403/404 已剔除
   2. 3 个 URL 共享同一文件名，下载时被后者覆盖
   3. 标题解析按 `.` 切分，对带缩写的英文名偶尔切错（详见 CSV）
+
+---
+
+### 16 篇阿里 AIOps 论文（独立子集）
+
+达摩院 / 阿里云 PAI / EagleEye / 蚂蚁 等 2020–2026 年 AIOps 与时序分析代表性论文。
+
+| 维度 | 数值 |
+|---|---|
+| 论文数 | **16** |
+| 时间跨度 | **2020 – 2026** |
+| 主题分布 | 异常检测 4 / 根因分析 4 / 时序预测 4 / 故障预测 2 / 可观测性 2 / LLM Agent 2 |
+| 中文方案说明 | **16 / 16 完整覆盖**（`alibaba/<目录名>/README.html`） |
+| 入口 | [`timeseries/alibaba/index.html`](timeseries/alibaba/index.html)（带搜索 / 分类筛选 / 超链接的可浏览索引页） |
 
 ---
 
