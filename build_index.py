@@ -391,3 +391,19 @@ def build_pdfs_index_html():
 </body>
 </html>
 """
+
+
+def main(argv):
+    target = argv[1] if len(argv) > 1 else "all"
+    if target in ("all", "papers"):
+        out = PAPERS_DIR / "index.html"
+        out.write_text(build_papers_index_html(), encoding="utf-8")
+        print(f"[papers] wrote {out} ({out.stat().st_size} bytes)")
+    if target in ("all", "pdfs"):
+        out = PDFS_DIR / "index.html"
+        out.write_text(build_pdfs_index_html(), encoding="utf-8")
+        print(f"[pdfs] wrote {out} ({out.stat().st_size} bytes)")
+
+
+if __name__ == "__main__":
+    main(sys.argv)
