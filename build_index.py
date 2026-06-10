@@ -95,3 +95,42 @@ def load_patents_csv():
     """Return list of dicts from timeseries/pdfs/patents_index.csv."""
     with (PDFS_DIR / "patents_index.csv").open(encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def _html_escape(s):
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def render_paper_card(row, doc_fields, doc_dir_name):
+    """Render one <article class="card"> for a paper."""
+    title = _html_escape(doc_fields["title"])
+    etitle = _html_escape(row.get("title", ""))
+    venue = _html_escape(row.get("venue", ""))
+    summary = _html_escape(doc_fields["summary"])
+    year = row.get("year", "")
+    topic = doc_fields["topic"]
+    pdf_url = row.get("pdf_url", "").strip()
+    arxiv_html = ""
+    if pdf_url and "arxiv.org" in pdf_url.lower():
+        arxiv_id = pdf_url.rstrip("/").split("/")[-1]
+        arxiv_html = (
+            f'      <a class="arxiv-link" href="{_html_escape(pdf_url)}" '
+            f'target="_blank" rel="noopener">arXiv:{_html_escape(arxiv_id)}</a>\n'
+        )
+    badge = f'<span class="badge badge-{topic}">{_html_escape(topic)}</span>' if topic in {"anomaly","rca","forecast","failure","obs","llm","log"} else ""
+    return f"""  <article class="card" data-topic="{topic}" data-year="{year}"
+           data-keywords="{title} {etitle} {_html_escape(doc_fields.get('topic',''))}">
+    <a class="ctitle" href="./docs/{doc_dir_name}/README.html">{title}</a>
+    <p class="etitle">{etitle}</p>
+    <div class="meta">
+      {badge}
+      <span class="year-tag">{year}</span>
+{arxiv_html}    </div>
+    <p class="venue">{venue}</p>
+    <p class="summary">{summary}</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="./docs/{doc_dir_name}/README.html">阅读方案说明</a>
+      <a class="btn" href="./{_html_escape(row.get('pdf_file',''))}" target="_blank">查看 PDF</a>
+    </div>
+  </article>
+"""

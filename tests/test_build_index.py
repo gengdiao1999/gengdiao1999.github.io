@@ -8,6 +8,7 @@ from build_index import (
     load_alibaba_template,
     load_papers_csv,
     load_patents_csv,
+    render_paper_card,
 )
 
 
@@ -49,3 +50,28 @@ def test_load_patents_csv_returns_30_rows():
     assert len(rows) == 30
     assert "publication_date" in rows[0]
     assert "patent_id" in rows[0]
+
+
+def test_render_paper_card_contains_title_year_and_links():
+    csv_row = {
+        "year": "2024",
+        "title": "Smart Eye: A Log Anomaly Detector",
+        "authors": "Pei et al.",
+        "venue": "WWW 2026",
+        "pdf_url": "https://arxiv.org/abs/2510.04710",
+        "pdf_file": "2510.04710v1_11.pdf",
+        "size_bytes": "7632909",
+    }
+    doc_fields = {
+        "title": "Smart Eye: 日志异常检测框架",
+        "summary": "本文提出 LLM-Guided 工业级日志异常检测方案。",
+        "topic": "log",
+    }
+    html = render_paper_card(csv_row, doc_fields, "2510.04710v1_11")
+    assert 'class="card"' in html
+    assert 'data-topic="log"' in html
+    assert 'data-year="2024"' in html
+    assert "Smart Eye" in html
+    assert "arxiv.org/abs/2510.04710" in html
+    assert "./docs/2510.04710v1_11/README.html" in html
+    assert "./2510.04710v1_11.pdf" in html
