@@ -40,7 +40,7 @@ study/
 │   │           ├── README.md    ←  同上，Markdown 版本（部分论文）
 │   │           └── paper.txt    ←  论文原文摘录
 │   │
-│   └── pdfs/                  ←   34 份必示科技（AIOps 领域公司）专利 PDF
+│   └── pdfs/                  ←   30 份必示科技（AIOps 领域公司）专利 PDF
 │
 ├── logs/                      ← 专题二：日志
 └── tracing/                   ← 专题三：调用链
@@ -52,7 +52,7 @@ study/
 
 | 专题 | 简介 | 落地数据 | 入口 |
 |---|---|---|---|
-| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 34 件专利** | [`papers/`](timeseries/papers/) · [`pdfs/`](timeseries/pdfs/) · [`alibaba/`](timeseries/alibaba/index.html) |
+| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 30 件专利** | [`papers/`](timeseries/papers/index.html) · [`pdfs/`](timeseries/pdfs/index.html) · [`alibaba/`](timeseries/alibaba/index.html) |
 | 🟡 **日志（logs）** | 日志解析 / 异常识别 / LLM 日志分析 | ⏳ 规划中 | [`logs/`](logs/) |
 | 🟣 **调用链（tracing）** | 微服务追踪 / 根因定位 / Span 关联 | ⏳ 规划中 | [`tracing/`](tracing/) |
 
@@ -231,7 +231,7 @@ awk -F, 'NR>1 {print $1}' timeseries/papers/papers_index.csv | sort | uniq -c
 - **抓取时间**：2026-06-08
 - **使用范围**：学术研究与个人学习
 - **版权**：所有论文版权归原作者及发表会议/期刊所有。本仓库**仅做索引、归档与中文方案说明**，不替代正式发表渠道；如需引用请按原 venue 的引用规范进行。
-- **专利数据**：`timeseries/pdfs/` 中 34 件专利来源于公开专利数据库（CN 开头的中国专利），同样仅做归档与方案说明。
+- **专利数据**：`timeseries/pdfs/` 中 30 件专利来源于公开专利数据库（CN 开头的中国专利），同样仅做归档与方案说明。
 
 ---
 

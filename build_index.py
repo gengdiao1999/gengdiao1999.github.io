@@ -77,9 +77,18 @@ def _title_from_html(html_text):
 
 
 def _infer_topic(haystack):
+    """Infer a single topic from a haystack (lowercased by caller is fine).
+
+    Priority order: llm > forecast > failure > rca > log > obs > anomaly > other.
+    LLM/Agent gets highest priority because almost every modern AIOps paper
+    also mentions "anomaly" or "log" in passing; we want the strong, distinctive
+    signal (LLM) to win so the LLM chip is non-empty and meaningful.
+    """
+    priority = ["llm", "forecast", "failure", "rca", "log", "obs", "anomaly"]
+    by_topic = dict(TOPIC_KEYWORDS)
     h = haystack.lower()
-    for topic, kws in TOPIC_KEYWORDS:
-        for kw in kws:
+    for topic in priority:
+        for kw in by_topic[topic]:
             if kw in h:
                 return topic
     return "other"

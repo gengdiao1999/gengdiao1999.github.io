@@ -40,6 +40,31 @@ def test_extract_doc_fields_returns_title_and_summary():
     assert fields["topic"] == "log"  # 关键词 日志 命中 log
 
 
+def test_extract_doc_fields_llm_wins_over_anomaly():
+    """LLM/Agent 是更'强'的标签，应优先于 anomaly/log 等。"""
+    html = """<html><head><title>LLM 智能体驱动的日志异常检测（WWW 2026）</title></head>
+<body><h1>LLM 智能体驱动的日志异常检测</h1>
+<p>本文提出基于 LLM Agent 的日志异常检测框架，自动化分析告警。</p>
+</body></html>"""
+    fields = extract_doc_fields(html)
+    assert fields["topic"] == "llm"  # 关键词 LLM 命中 llm，且应优先于 log/anomaly
+
+
+def test_build_papers_index_html_covers_all_topic_chips():
+    """9 个方向 chip 至少应各被一篇论文命中（否则 chip 是空摆设）。"""
+    html = build_papers_index_html()
+    import re
+    from collections import Counter
+    chips = re.findall(r'data-filter="topic" data-value="(\S+)"', html)
+    cards = re.findall(r'<article class="card" data-topic="(\S+)"', html)
+    chip_set = {c for c in chips if c != "all"}
+    card_set = set(cards)
+    orphan = chip_set - card_set
+    assert not orphan, f"chips with zero cards: {orphan}"
+    # 同时校验 llm 应有相当数量（>=10），证明 LLM 优先级生效
+    assert Counter(cards).get("llm", 0) >= 10
+
+
 def test_load_papers_csv_returns_176_rows():
     rows = load_papers_csv()
     assert len(rows) == 176
