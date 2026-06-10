@@ -3,7 +3,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from build_index import extract_doc_fields, load_alibaba_template
+from build_index import (
+    extract_doc_fields,
+    load_alibaba_template,
+    load_papers_csv,
+    load_patents_csv,
+)
 
 
 def test_load_alibaba_template_returns_css_and_js():
@@ -29,3 +34,18 @@ def test_extract_doc_fields_returns_title_and_summary():
     assert fields["title"] == "一种基于日志的运维分析方法（ICSE 2024）"
     assert "深度学习" in fields["summary"]
     assert fields["topic"] == "log"  # 关键词 日志 命中 log
+
+
+def test_load_papers_csv_returns_176_rows():
+    rows = load_papers_csv()
+    assert len(rows) == 176
+    assert "year" in rows[0]
+    assert "title" in rows[0]
+    assert "pdf_file" in rows[0]
+
+
+def test_load_patents_csv_returns_30_rows():
+    rows = load_patents_csv()
+    assert len(rows) == 30
+    assert "publication_date" in rows[0]
+    assert "patent_id" in rows[0]

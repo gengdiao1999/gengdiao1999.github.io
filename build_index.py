@@ -83,3 +83,15 @@ def extract_doc_fields(html_text):
     summary = _first_p_text(html_text)
     topic = _infer_topic(html_text + " " + title)
     return {"title": title, "summary": summary, "topic": topic}
+
+
+def load_papers_csv():
+    """Return list of dicts from timeseries/papers/papers_index.csv."""
+    with (PAPERS_DIR / "papers_index.csv").open(encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def load_patents_csv():
+    """Return list of dicts from timeseries/pdfs/patents_index.csv."""
+    with (PDFS_DIR / "patents_index.csv").open(encoding="utf-8") as f:
+        return list(csv.DictReader(f))
