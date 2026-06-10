@@ -97,6 +97,10 @@ timeseries/papers/
 3. **看原文 PDF** → 打开 `timeseries/papers/<目录名>.pdf`
 4. **阿里 AIOps 16 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/alibaba/index.html)
    或本地 `open timeseries/alibaba/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv）
+5. **清华 NetMan 176 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/papers/index.html)
+   或本地 `open timeseries/papers/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF）
+6. **必示专利 30 件** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/pdfs/index.html)
+   或本地 `open timeseries/pdfs/index.html`（含搜索框 / 类型+年份筛选 / 每件专利直达 README/PDF/Google Patents）
 
 **用 CSV 检索**：
 ```bash
