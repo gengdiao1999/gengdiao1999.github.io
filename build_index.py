@@ -283,3 +283,111 @@ def build_papers_index_html():
 </body>
 </html>
 """
+
+
+def _year_chips_pdfs(years):
+    return [("all", "全部")] + [(y, y) for y in sorted(set(years), reverse=True)]
+
+
+def _kind_chips():
+    return [("all", "全部"), ("发明", "发明专利"), ("实用新型", "实用新型")]
+
+
+def build_pdfs_index_html():
+    css, js = load_alibaba_template()
+    rows = load_patents_csv()
+    cards = []
+    years = []
+    for row in rows:
+        doc_dir = row.get("patent_id", "")
+        readme = (PDFS_DIR / "docs" / doc_dir / "README.html")
+        doc_fields = extract_doc_fields(readme.read_text(encoding="utf-8")) if readme.exists() else {"title": row.get("title",""), "summary": "", "topic": "other"}
+        # override topic from pub_kind for chip routing
+        kind = row.get("pub_kind", "")
+        if "发明" in kind:
+            doc_fields["topic"] = "发明"
+        elif "实用新型" in kind:
+            doc_fields["topic"] = "实用新型"
+        else:
+            doc_fields["topic"] = "other"
+        cards.append(render_patent_card(row, doc_fields, doc_dir))
+        pub_date = row.get("publication_date", "")
+        if pub_date:
+            years.append(pub_date.split(".")[0])
+    # sort by publication_date DESC
+    cards_sorted = sorted(
+        cards,
+        key=lambda c: re.search(r'data-year="(\d+)"', c).group(1) if re.search(r'data-year="(\d+)"', c) else "",
+        reverse=True,
+    )
+    year_chips = _year_chips_pdfs(years)
+    kind_chips = _kind_chips()
+    kind_chips_html = "\n".join(
+        f'  <span class="chip{" active" if v=="all" else ""}" data-filter="topic" data-value="{v}">{lbl}</span>'
+        for v, lbl in kind_chips
+    )
+    year_chips_html = "\n".join(
+        f'  <span class="chip{" active" if v=="all" else ""}" data-filter="year" data-value="{v}">{lbl}</span>'
+        for v, lbl in year_chips
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>必示科技专利 30 件 · 索引</title>
+<style>{css}</style>
+</head>
+<body>
+
+<h1>📜 必示科技专利 30 件</h1>
+<p class="lead">北京必示科技有限公司 2019–2022 年公开的 AIOps / 智能运维 / 故障定位代表性专利合集。</p>
+<p class="top-links">
+  <a href="../../README.md">⬅ 返回根 README</a>
+  <a href="../alibaba/index.html">对比阿里 AIOps 16 篇</a>
+  <a href="../papers/index.html">对比清华 NetMan 176 篇</a>
+</p>
+
+<h2>📊 数据速览</h2>
+<div class="stats">
+  <div class="stat-card"><div class="num">30</div><div class="label">专利总数</div></div>
+  <div class="stat-card"><div class="num">2019–2022</div><div class="label">时间跨度</div></div>
+  <div class="stat-card"><div class="num">30</div><div class="label">中文方案说明</div></div>
+  <div class="stat-card"><div class="num">30 / 30</div><div class="label">PDF 已抓</div></div>
+</div>
+
+<h2>🔍 搜索 / 分类筛选</h2>
+<div class="search-bar">
+  <input type="text" id="search-input" placeholder="搜索专利标题、申请人、关键词..." autocomplete="off">
+</div>
+
+<div class="chips">
+  <span class="chips-label">类型：</span>
+{kind_chips_html}
+</div>
+
+<div class="chips">
+  <span class="chips-label">年份：</span>
+{year_chips_html}
+</div>
+
+<p class="lead" id="result-count" aria-live="polite">显示全部 30 件</p>
+
+<h2>📄 30 件专利（点击标题或按钮访问）</h2>
+<div class="grid" id="paper-grid">
+{''.join(cards_sorted)}
+</div>
+
+<footer>
+  <h3>📎 附录：抓取与版权</h3>
+  <ul>
+    <li><b>抓取日期</b>：2026-06-08</li>
+    <li><b>数据来源</b>：<a href="https://patents.google.com/" target="_blank" rel="noopener">Google Patents</a> assignee = 必示</li>
+    <li><b>版权说明</b>：所有 PDF 与方案说明仅用于学习研究目的，版权归北京必示科技有限公司所有</li>
+  </ul>
+</footer>
+
+<script>{js}</script>
+</body>
+</html>
+"""

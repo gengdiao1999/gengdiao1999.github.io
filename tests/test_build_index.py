@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from build_index import (
     build_papers_index_html,
+    build_pdfs_index_html,
     extract_doc_fields,
     load_alibaba_template,
     load_papers_csv,
@@ -106,3 +107,10 @@ def test_build_papers_index_html_has_176_cards():
     assert 'id="paper-grid"' in html
     assert 'id="search-input"' in html
     assert 'function applyFilter' in html
+
+
+def test_build_pdfs_index_html_has_30_cards():
+    html = build_pdfs_index_html()
+    assert html.count('<article class="card"') == 30
+    assert 'id="paper-grid"' in html
+    assert "必示科技" in html
