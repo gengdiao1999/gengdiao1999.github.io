@@ -40,7 +40,13 @@ study/
 │   │           ├── README.md    ←  同上，Markdown 版本（部分论文）
 │   │           └── paper.txt    ←  论文原文摘录
 │   │
-│   └── pdfs/                  ←   30 份必示科技（AIOps 领域公司）专利 PDF
+│   ├── pdfs/                  ←   30 份必示科技（AIOps 领域公司）专利 PDF
+│   └── classification/        ←   20 篇时间序列分类 (TSC) 代表论文 (arXiv)
+│       ├── index.html         ←     索引页（搜索 + 方向/年份筛选）
+│       ├── classification_index.csv  ← 元数据 CSV
+│       └── <论文 slug>/       ←     每篇论文一个目录
+│           ├── paper.pdf      ←       arXiv 原文 PDF
+│           └── README.html    ←       中文核心摘要 + 元信息表
 │
 ├── logs/                      ← 专题二：日志
 └── tracing/                   ← 专题三：调用链
@@ -52,7 +58,7 @@ study/
 
 | 专题 | 简介 | 落地数据 | 入口 |
 |---|---|---|---|
-| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 30 件专利** | [`papers/`](timeseries/papers/index.html) · [`pdfs/`](timeseries/pdfs/index.html) · [`alibaba/`](timeseries/alibaba/index.html) |
+| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 / 时序分类 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 30 件专利 + 20 篇 TSC 代表作** | [`papers/`](timeseries/papers/index.html) · [`pdfs/`](timeseries/pdfs/index.html) · [`alibaba/`](timeseries/alibaba/index.html) · [`classification/`](timeseries/classification/index.html) |
 | 🟡 **日志（logs）** | 日志解析 / 异常识别 / LLM 日志分析 | ⏳ 规划中 | [`logs/`](logs/) |
 | 🟣 **调用链（tracing）** | 微服务追踪 / 根因定位 / Span 关联 | ⏳ 规划中 | [`tracing/`](tracing/) |
 
@@ -101,6 +107,8 @@ timeseries/papers/
    或本地 `open timeseries/papers/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF）
 6. **必示专利 30 件** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/pdfs/index.html)
    或本地 `open timeseries/pdfs/index.html`（含搜索框 / 类型+年份筛选 / 每件专利直达 README/PDF/Google Patents）
+7. **时间序列分类 (TSC) 代表作 20 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/classification/index.html)
+   或本地 `open timeseries/classification/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv）
 
 **用 CSV 检索**：
 ```bash
@@ -193,6 +201,23 @@ awk -F, 'NR>1 {print $1}' timeseries/papers/papers_index.csv | sort | uniq -c
 | 主题分布 | 异常检测 4 / 根因分析 4 / 时序预测 4 / 故障预测 2 / 可观测性 2 / LLM Agent 2 |
 | 中文方案说明 | **16 / 16 完整覆盖**（`alibaba/<目录名>/README.html`） |
 | 入口 | [`timeseries/alibaba/index.html`](timeseries/alibaba/index.html)（带搜索 / 分类筛选 / 超链接的可浏览索引页） |
+
+---
+
+### 20 篇时间序列分类 (TSC) 代表作（独立子集）
+
+面向 UCR / UEA 通用时序分类基准，覆盖深度学习基线、随机卷积核家族、集成方法、自监督表示、Transformer 五大算法范式。
+
+| 维度 | 数值 |
+|---|---|
+| 论文数 | **20** |
+| 时间跨度 | **2017 – 2024** |
+| 算法范式 | 综述 3 / 深度 CNN（FCN/ResNet/InceptionTime/TimesNet/OS-CNN）5 / 随机卷积核（ROCKET/MiniRocket/MultiRocket）3 / 集成与森林（HIVE-COTE 2 / TS-CHIEF）2 / 自监督（TS2Vec/TS-TCC/TF-C/TimeMAE）4 / Transformer（TST/ConvTran/Medformer）3 / 特征工程（catch22）1 |
+| 数据规模 | 20 篇 PDF · ~39 MB · 来源 arXiv 公开渠道 |
+| 入口 | [`timeseries/classification/index.html`](timeseries/classification/index.html)（带搜索 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv） |
+| CSV 索引 | [`timeseries/classification/classification_index.csv`](timeseries/classification/classification_index.csv) |
+
+每个论文目录包含 `paper.pdf`（arXiv 原文）+ `README.html`（中文核心摘要 + 元信息表 + arXiv 跳转），目录命名与索引页 slug 一致，便于交叉引用。
 
 ---
 
