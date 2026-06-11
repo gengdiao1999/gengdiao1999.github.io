@@ -17,6 +17,8 @@
   - [数据访问方式](#数据访问方式)
   - [按年份浏览](#按年份浏览)
   - [按研究方向浏览](#按研究方向浏览)
+  - [16 篇阿里 AIOps 论文（独立子集）](#16-篇阿里-aiops-论文独立子集)
+  - [20 篇时间序列分类 (TSC) 代表作（独立子集）](#20-篇时间序列分类-tsc-代表作独立子集)
 - [日志与调用链专题](#日志与调用链专题)
 - [使用与维护建议](#使用与维护建议)
 - [数据来源与版权](#数据来源与版权)
@@ -236,24 +238,27 @@ awk -F, 'NR>1 {print $1}' timeseries/papers/papers_index.csv | sort | uniq -c
 
 ### 写给读者
 
-1. **找论文**：用 [`papers_index.csv`](timeseries/papers/papers_index.csv) 检索；或浏览 [`timeseries/papers/README.md`](timeseries/papers/README.md) 的年份分布
-2. **读方案**：打开 `docs/<目录名>/README.html` 浏览器阅读（已渲染 Mermaid + MathJax）
-3. **看原文**：同目录的 `.pdf`
+1. **找论文**：用 [`papers_index.csv`](timeseries/papers/papers_index.csv) 检索；或浏览 [`timeseries/papers/README.md`](timeseries/papers/README.md) 的年份分布；TSC 子集另有 [`classification_index.csv`](timeseries/classification/classification_index.csv)
+2. **读方案**：打开 `docs/<目录名>/README.html` 浏览器阅读（已渲染 Mermaid + MathJax）；TSC / 阿里子集为 `<子集>/<目录名>/README.html`
+3. **看原文**：同目录的 `.pdf`（清华子集在 `timeseries/papers/<目录名>.pdf`；阿里 / TSC 子集在各自目录内）
 4. **跨论文对比**：通过 `docs/<目录名>/README.html` 末尾"相关论文"小节跳转
 
 ### 写给维护者
 
-1. **新增论文**：把 PDF 放入 `timeseries/papers/`，更新 `papers_index.csv` 与 `timeseries/papers/README.md`
-2. **新增方案说明**：在 `timeseries/papers/docs/<目录名>/` 下写 `README.html`（沿用 14 章节模板）
-3. **跨分类链接**：在"相关论文"小节建立双向跳转
-4. **保持目录命名一致**：`<论文名>/` 目录名 = `<pdf 文件名去扩展名>`
+1. **新增论文（清华子集）**：把 PDF 放入 `timeseries/papers/`，更新 `papers_index.csv` 与 `timeseries/papers/README.md`
+2. **新增论文（阿里 / TSC 子集）**：在 `timeseries/<子集>/<目录 slug>/` 下放 `paper.pdf` + `README.html`，然后重跑对应索引生成脚本（TSC 子集见提交 `1d1902d` 的 `tsc_papers.py`）
+3. **新增方案说明**：在 `timeseries/papers/docs/<目录名>/` 下写 `README.html`（沿用 14 章节模板）
+4. **跨分类链接**：在"相关论文"小节建立双向跳转
+5. **保持目录命名一致**：`<论文名>/` 目录名 = `<pdf 文件名去扩展名>`
 
 ---
 
 ## 数据来源与版权
 
-- **论文数据来源**：[清华大学 NetMan AIOps Lab 官方 publications 页面](https://netman.aiops.org/publications/)
-- **抓取时间**：2026-06-08
+- **论文数据来源**：
+  - 清华子集 176 篇 → [清华大学 NetMan AIOps Lab 官方 publications 页面](https://netman.aiops.org/publications/)（抓取于 2026-06-08）
+  - 阿里子集 16 篇 → 达摩院 / 阿里云 / 蚂蚁公开发表论文（arXiv / 官方 venue）
+  - **TSC 子集 20 篇** → [arXiv](https://arxiv.org/) 公开 PDF（抓取于 2026-06-11）
 - **使用范围**：学术研究与个人学习
 - **版权**：所有论文版权归原作者及发表会议/期刊所有。本仓库**仅做索引、归档与中文方案说明**，不替代正式发表渠道；如需引用请按原 venue 的引用规范进行。
 - **专利数据**：`timeseries/pdfs/` 中 30 件专利来源于公开专利数据库（CN 开头的中国专利），同样仅做归档与方案说明。
