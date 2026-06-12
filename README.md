@@ -18,7 +18,7 @@
   - [按年份浏览](#按年份浏览)
   - [按研究方向浏览](#按研究方向浏览)
   - [16 篇阿里 AIOps 论文（独立子集）](#16-篇阿里-aiops-论文独立子集)
-  - [20 篇时间序列分类 (TSC) 代表作（独立子集）](#20-篇时间序列分类-tsc-代表作独立子集)
+  - [22 篇时间序列分类 (TSC) 代表作（独立子集）](#22-篇时间序列分类-tsc-代表作独立子集)
 - [日志与调用链专题](#日志与调用链专题)
 - [使用与维护建议](#使用与维护建议)
 - [数据来源与版权](#数据来源与版权)
@@ -60,7 +60,7 @@ study/
 
 | 专题 | 简介 | 落地数据 | 入口 |
 |---|---|---|---|
-| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 / 时序分类 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 30 件专利 + 20 篇 TSC 代表作** | [`papers/`](timeseries/papers/index.html) · [`pdfs/`](timeseries/pdfs/index.html) · [`alibaba/`](timeseries/alibaba/index.html) · [`classification/`](timeseries/classification/index.html) |
+| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 / 时序分类 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 30 件专利 + 22 篇 TSC 代表作** | [`papers/`](timeseries/papers/index.html) · [`pdfs/`](timeseries/pdfs/index.html) · [`alibaba/`](timeseries/alibaba/index.html) · [`classification/`](timeseries/classification/index.html) |
 | 🟡 **日志（logs）** | 日志解析 / 异常识别 / LLM 日志分析 | ⏳ 规划中 | [`logs/`](logs/) |
 | 🟣 **调用链（tracing）** | 微服务追踪 / 根因定位 / Span 关联 | ⏳ 规划中 | [`tracing/`](tracing/) |
 
@@ -109,7 +109,7 @@ timeseries/papers/
    或本地 `open timeseries/papers/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF）
 6. **必示专利 30 件** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/pdfs/index.html)
    或本地 `open timeseries/pdfs/index.html`（含搜索框 / 类型+年份筛选 / 每件专利直达 README/PDF/Google Patents）
-7. **时间序列分类 (TSC) 代表作 20 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/classification/index.html)
+7. **时间序列分类 (TSC) 代表作 22 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/classification/index.html)
    或本地 `open timeseries/classification/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv）
 
 **用 CSV 检索**：
@@ -206,20 +206,21 @@ awk -F, 'NR>1 {print $1}' timeseries/papers/papers_index.csv | sort | uniq -c
 
 ---
 
-### 20 篇时间序列分类 (TSC) 代表作（独立子集）
+### 22 篇时间序列分类 (TSC) 代表作（独立子集）
 
-面向 UCR / UEA 通用时序分类基准，覆盖深度学习基线、随机卷积核家族、集成方法、自监督表示、Transformer 五大算法范式。
+面向 UCR / UEA 通用时序分类基准，覆盖 Shapelet 原语、距离度量、深度学习基线、随机卷积核家族、集成方法、自监督表示、Transformer 七大算法范式。
 
 | 维度 | 数值 |
 |---|---|
-| 论文数 | **20** |
-| 时间跨度 | **2017 – 2024** |
-| 算法范式 | 综述 3 / 深度 CNN（FCN/ResNet/InceptionTime/TimesNet/OS-CNN）5 / 随机卷积核（ROCKET/MiniRocket/MultiRocket）3 / 集成与森林（HIVE-COTE 2 / TS-CHIEF）2 / 自监督（TS2Vec/TS-TCC/TF-C/TimeMAE）4 / Transformer（TST/ConvTran/Medformer）3 / 特征工程（catch22）1 |
-| 数据规模 | 20 篇 PDF · ~39 MB · 来源 arXiv 公开渠道 |
+| 论文数 | **22** |
+| 时间跨度 | **2009 – 2024** |
+| 算法范式 | Shapelet 原语 1（Ye & Keogh 2009 KDD） / 距离度量 1（MPdist 2018 SDM） / 综述 3 / 深度 CNN（FCN/ResNet/InceptionTime/TimesNet/OS-CNN）5 / 随机卷积核（ROCKET/MiniRocket/MultiRocket）3 / 集成与森林（HIVE-COTE 2 / TS-CHIEF）2 / 自监督（TS2Vec/TS-TCC/TF-C/TimeMAE）4 / Transformer（TST/ConvTran/Medformer）3 / 特征工程（catch22）1 |
+| 数据规模 | 22 篇 PDF · ~41 MB · 来源 arXiv + 清华 UCR 公开渠道 |
 | 入口 | [`timeseries/classification/index.html`](timeseries/classification/index.html)（带搜索 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv） |
 | CSV 索引 | [`timeseries/classification/classification_index.csv`](timeseries/classification/classification_index.csv) |
+| 深度解析 | Shapelets / MPdist 两篇采用 14 章节深度模板（`README.html` ≥ 250 行，含 Mermaid 架构图 / MathJax 公式 / 消融表 / 复杂度对比）；其余 20 篇沿用轻量卡片模板 |
 
-每个论文目录包含 `paper.pdf`（arXiv 原文）+ `README.html`（中文核心摘要 + 元信息表 + arXiv 跳转），目录命名与索引页 slug 一致，便于交叉引用。
+每个论文目录包含 `paper.pdf`（arXiv / 官方原文）+ `README.html`（中文核心摘要 + 元信息表 + arXiv 跳转），目录命名与索引页 slug 一致，便于交叉引用。
 
 ---
 
@@ -258,7 +259,7 @@ awk -F, 'NR>1 {print $1}' timeseries/papers/papers_index.csv | sort | uniq -c
 - **论文数据来源**：
   - 清华子集 176 篇 → [清华大学 NetMan AIOps Lab 官方 publications 页面](https://netman.aiops.org/publications/)（抓取于 2026-06-08）
   - 阿里子集 16 篇 → 达摩院 / 阿里云 / 蚂蚁公开发表论文（arXiv / 官方 venue）
-  - **TSC 子集 20 篇** → [arXiv](https://arxiv.org/) 公开 PDF（抓取于 2026-06-11）
+  - **TSC 子集 22 篇** → [arXiv](https://arxiv.org/) 公开 PDF + 清华 UCR 站点（Shapelets 2009，抓取于 2026-06-12）
 - **使用范围**：学术研究与个人学习
 - **版权**：所有论文版权归原作者及发表会议/期刊所有。本仓库**仅做索引、归档与中文方案说明**，不替代正式发表渠道；如需引用请按原 venue 的引用规范进行。
 - **专利数据**：`timeseries/pdfs/` 中 30 件专利来源于公开专利数据库（CN 开头的中国专利），同样仅做归档与方案说明。

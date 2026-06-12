@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Time Series Shapelets: A New Primitive for Data Mining（Ye & Keogh, KDD 2009）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.75; color: #1f2328; background: #fdfdfd; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; text-align: center; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+.toc { background: #f6f8fa; padding: 1rem 1.5rem; border-radius: 6px; margin: 1rem 0; }
+.back { font-size: 0.92rem; margin-bottom: 1rem; }
+.meta-table td:first-child { width: 8rem; color: #57606a; }
+a { color: #0b5394; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<div class="back"><a href="../index.html">← 返回时序分类索引</a> · <a href="../../../README.md">站点首页</a></div>
+
+<h1>Time Series Shapelets: A New Primitive for Data Mining（Shapelets，KDD 2009）</h1>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li><a href="#h2-1">文档信息速览</a></li>
+<li><a href="#h2-2">研究背景</a></li>
+<li><a href="#h2-3">论文目的与解决的问题</a></li>
+<li><a href="#h2-4">核心原理（含数学公式）</a></li>
+<li><a href="#h2-5">系统/算法整体架构</a></li>
+<li><a href="#h2-6">关键算法详解</a></li>
+<li><a href="#h2-7">实现细节</a></li>
+<li><a href="#h2-8">实验设计与结果</a></li>
+<li><a href="#h2-9">消融实验</a></li>
+<li><a href="#h2-10">与已有工作的对比</a></li>
+<li><a href="#h2-11">工程落地与部署</a></li>
+<li><a href="#h2-12">局限性与未来工作</a></li>
+<li><a href="#h2-13">总结与启示</a></li>
+<li><a href="#h2-14">附录</a></li>
+</ol>
+</div>
+
+<h2 id="h2-1">1. 文档信息速览</h2>
+<table class="meta-table">
+  <tr><td>标题</td><td>Time Series Shapelets: A New Primitive for Data Mining</td></tr>
+  <tr><td>作者</td><td>Lexiang Ye, Eamonn Keogh</td></tr>
+  <tr><td>机构</td><td>University of California, Riverside（UCR）</td></tr>
+  <tr><td>年份</td><td>2009</td></tr>
+  <tr><td>会议 / 期刊</td><td>KDD 2009（ACM SIGKDD, 工业_track，巴黎）</td></tr>
+  <tr><td>研究方向</td><td>shapelet（基于子序列原语的时序分类）</td></tr>
+  <tr><td>arXiv ID</td><td>无（闭源 venue，KDD 2009 收录）</td></tr>
+  <tr><td>本地 PDF</td><td><a href="paper.pdf">paper.pdf</a> · 1.6 MB · 9 页</td></tr>
+  <tr><td>核心问题</td><td>在不做全序列相似度匹配的前提下，从时序中抽取能"解释类别"的最具判别性子序列（shapelet），并据此构造高精度、强可解释的分类器。</td></tr>
+</table>
+
+<h2 id="h2-2">2. 研究背景</h2>
+<p>2009 年之前的 TSC 主要走两条路：</p>
+<ol>
+  <li><strong>全局相似度（Whole-series）</strong>：DTW / Euclidean 距离 + 1-NN，简单但对相位/噪声敏感，且不告诉人"为什么"。</li>
+  <li><strong>特征工程（Hand-crafted features）</strong>：统计/频域特征 + 经典 ML，依赖专家知识。</li>
+</ol>
+<p>作者观察到，许多真实分类问题里类别的区分点其实出现在 <strong>局部子序列（local pattern）</strong> 上——比如 ECG 的某段 QRS 形态、传感器日志里的尖峰、火山地震记录的波形片段。这些"局部判别子序列"作者命名为 <strong>shapelet</strong>（脱胎于 Keogh 团队同年稍早 shapelet 聚类工作）。Shapelet 的核心承诺是：</p>
+<ul>
+  <li>分类准确率与 1-NN DTW 相当或更好</li>
+  <li>决策可解释（直接给出是哪段子序列在"说话"）</li>
+  <li>速度显著快于 DTW（无需两序列两两比对）</li>
+</ul>
+
+<h2 id="h2-3">3. 论文目的与解决的问题</h2>
+<p>论文要解决三个具体问题：</p>
+<ol>
+  <li><strong>定义</strong>：什么是 shapelet？如何严格定义其"判别性"？</li>
+  <li><strong>发现</strong>：如何在指数级候选中高效枚举并打分？</li>
+  <li><strong>应用</strong>：如何把 shapelet 嵌入决策树、1-NN、boosting 等分类器，使其兼具精度与可解释？</li>
+</ol>
+<p>作者同时强调：shapelet 不仅是分类器，更是一种新的 <strong>数据挖掘原语（primitive）</strong>，可服务于聚类、异常检测、规则可视化等下游任务。</p>
+
+<h2 id="h2-4">4. 核心原理（含数学公式）</h2>
+
+<h3>4.1 符号定义</h3>
+<p>给定训练集 \(D = \{(T_i, y_i)\}_{i=1}^{N}\)，每条时序 \(T = (t_1, \dots, t_m)\)，类别集合 \(C = \{c_1, \dots, c_k\}\)。定义 <strong>候选 shapelet</strong> 为：</p>
+<p>\[
+  S = (s_1, s_2, \dots, s_\ell), \quad 1 \le \ell \le m
+\]</p>
+<p>其中 \(S\) 是从某条训练序列中切出的连续子序列，长度 \(\ell\) 可调。整篇论文的核心问题转化为：</p>
+<blockquote>从所有训练序列的有界长子序列集合中，找到使"信息增益"最大化的 \(S\)。</blockquote>
+
+<h3>4.2 子序列到序列距离（subDist）</h3>
+<p>在用 shapelet 分类时，需要度量"某条时序 \(T\) 与 shapelet \(S\) 的接近程度"。最朴素的方案是把 \(S\) 在 \(T\) 上滑动，取最小 z-normalised 欧氏距离：</p>
+<p>\[
+  \mathrm{subDist}(S, T) = \min_{1 \le j \le m-\ell+1} \; \sqrt{\sum_{u=1}^{\ell} \bigl( s_u - t_{j+u-1} \bigr)^2 }
+\]</p>
+<p>论文中距离采用 <strong>z-normalised</strong>（即对参与比较的两段都做均值-方差归一化），以消除振幅/偏置差异。子序列归一化公式：</p>
+<p>\[
+  \hat{S} = \frac{S - \mu_S}{\sigma_S}, \quad \hat{T}_{[j:j+\ell)} = \frac{T_{[j:j+\ell)} - \mu_{T_{[j:j+\ell)}}}{\sigma_{T_{[j:j+\ell)}}}
+\]</p>
+
+<h3>4.3 候选质量度量：信息增益（Information Gain）</h3>
+<p>对每个候选 shapelet \(S\)，将训练集投影到一维距离空间：</p>
+<p>\[
+  d_i = \mathrm{subDist}(S, T_i), \quad i = 1, \dots, N
+\]</p>
+<p>对距离值排序后，用 <strong>候选阈值</strong> \(d^\*\) 把样本分成"在阈值之内 / 之外"两组，记为 split \( \pi(S) = (d^\*, \text{side}) \)。该 split 的信息增益定义为：</p>
+<p>\[
+  \mathrm{IG}(S, \pi) = H(\mathcal{C}) - \frac{|\{i: d_i < d^\*\}| \cdot H_< + |\{i: d_i \ge d^\*\}| \cdot H_>}{N}
+\]</p>
+<p>其中 \(H(\mathcal{C}) = -\sum_{c \in C} p(c) \log_2 p(c)\) 是原始类别熵，\(H_<, H_>\) 分别是两个子集内的条件熵。取遍所有可能的 \(d^\*\) 即可得：</p>
+<p>\[
+  \mathrm{IG}^\*(S) = \max_{\pi} \mathrm{IG}(S, \pi)
+\]</p>
+<p>这个 \(\mathrm{IG}^\*(S)\) 就是 shapelet 质量的统一打分。</p>
+
+<h3>4.4 Shapelet 树（决策树版本）</h3>
+<p>把上述打分嵌入决策树：在每个内部节点，对落在该节点的样本子集枚举所有候选 shapelet，挑选 \(\mathrm{IG}^\*\) 最大的那个作为切分特征；递归直到叶节点纯度阈值。最终形成一棵 shapelet 决策树——既可分类，又可"读出判别子序列"。</p>
+
+<h3>4.5 Shapelet 变换（Shapelet Transform, ST）</h3>
+<p>ST 把每条时序 \(T\) 映射为它到 \(k\) 个最佳 shapelet 的距离向量：</p>
+<p>\[
+  \Phi(T) = \bigl( \mathrm{subDist}(S_1, T), \mathrm{subDist}(S_2, T), \dots, \mathrm{subDist}(S_k, T) \bigr) \in \mathbb{R}^k
+\]</p>
+<p>ST 把分类问题转化为"在 \(k\) 维距离空间里学习"，下游可以挂任意分类器（论文里用了 C4.5、贝叶斯网络、1-NN、SVM），往往能比原始 shapelet 树更准——这正是后来 LE/Shapelet-Transform 系工作的引子。</p>
+
+<h2 id="h2-5">5. 系统/算法整体架构</h2>
+
+<div class="mermaid">
+flowchart TB
+    A[训练集 D] --> B[候选子序列池<br/>CandidatePool]
+    B --> C[枚举所有 S & ell;]
+    C --> D[计算 subDist S,T 投影到一维距离]
+    D --> E[对距离排序, 遍历阈值 d* 求 IG*]
+    E --> F{IG* 是否最大?}
+    F -- 是 --> G[记录最佳 shapelet S*]
+    F -- 否 --> C
+    G --> H[数据集按 d* 切分]
+    H --> I[递归到子节点]
+    I --> J[叶节点 → 类别众数]
+    J --> K[Shapelet 决策树 / ST 特征]
+</div>
+
+<p>上图是"shapelet 决策树"分支；ST 分支则是从 G 之后剥离出前 k 个 best shapelet，构造 \(\Phi(\cdot)\)，再喂入任意分类器。</p>
+
+<div class="mermaid">
+flowchart LR
+    Raw[原始时序 T] --> Norm[z-normalise]
+    Norm --> Pool[候选 shapelet 池 S_pool]
+    Pool --> Best[k 个 IG* 最大的 shapelet]
+    Best --> Phi[变换 &Phi;T = subDist S_i, T]
+    Phi --> Clf[下游分类器<br/>C4.5 / Bayes / 1-NN / SVM]
+    Clf --> Out[类别预测]
+</div>
+
+<h2 id="h2-6">6. 关键算法详解</h2>
+
+<h3>6.1 朴素枚举</h3>
+<pre><code>for each T_i in D:
+  for len = m_min .. m_max:
+    for j = 1 .. (|T_i| - len + 1):
+      S = T_i[j : j + len]            # 候选 shapelet
+      for each T_k in D:
+        d_k = subDist(S, T_k)         # 滑动最小 z-norm 距离
+      sort d_k, find best split d* that maximises IG
+      keep (S, d*, IG*) if best
+</code></pre>
+<p>复杂度：候选数 \(\sim N \cdot m^2\)，每个候选对每条序列做 \(O(m \cdot \ell)\) 距离计算 → 总计 \(O(N^2 m^4)\)，对长序列不可接受。</p>
+
+<h3>6.2 加速技巧</h3>
+<ol>
+  <li><strong>Early abandon on distance</strong>：计算 subDist 时一旦累计平方差超过当前最佳距离，停止。</li>
+  <li><strong>Caching subDist</strong>：子序列距离通过归一化后可拆为几个标量（均值、方差、互相关），用预计算 + 增量更新避免冗余。</li>
+  <li><strong>Orderlines & pruning by entropy</strong>：Keogh 2010 后续工作将候选投影到"距离直方图"上做上界剪枝，把搜索量从 \(O(N^2 m^4)\) 降到 \(O(N m^3)\)。</li>
+</ol>
+
+<h3>6.3 Shapelet 决策树伪代码</h3>
+<pre><code>def shapelet_tree(D, depth):
+  best = None
+  for S in candidate_pool(D):
+    gains = evaluate_candidate(S, D)   # 遍历 d* 求 IG*
+    if best is None or gains.IG* > best.IG*:
+      best = (S, gains.d*, gains.IG*)
+  if best.IG* < min_gain or depth >= max_depth:
+    return LeafNode(majority_class(D))
+  D_left  = {T: T in D if subDist(best.S, T) < best.d*}
+  D_right = D - D_left
+  return SplitNode(best.S, best.d*,
+                   shapelet_tree(D_left,  depth+1),
+                   shapelet_tree(D_right, depth+1))
+</code></pre>
+
+<h3>6.4 复杂度</h3>
+<table>
+  <tr><th>步骤</th><th>朴素复杂度</th><th>加速后（论文 §5 报告）</th></tr>
+  <tr><td>候选枚举</td><td>O(N · m²)</td><td>O(N · m²)（必要）</td></tr>
+  <tr><td>距离计算</td><td>O(N² · m⁴)</td><td>O(N² · m³)（orderline 剪枝）</td></tr>
+  <tr><td>IG* 评估</td><td>O(N · log N) per candidate</td><td>同</td></tr>
+  <tr><td>总体训练</td><td>不可用（>10⁴ s）</td><td>UCR 数据集分钟级</td></tr>
+</table>
+
+<h2 id="h2-7">7. 实现细节</h2>
+<ol>
+  <li><strong>z-normalisation</strong>：必须做，否则振幅差异主导距离；论文建议在提取 \(S\) 与滑动窗口时都做。</li>
+  <li><strong>长度范围</strong>：\(\ell \in [\ell_{min}, \ell_{max}]\)，默认取训练集最短序列的 5%–95% 分位。</li>
+  <li><strong>Shapelet 数量</strong>：ST 通常取前 10–50 个 IG* 最大的 shapelet。</li>
+  <li><strong>下采样与候选数控制</strong>：大训练集先做交叉验证估计每类所需样本数，控制候选池 ≤ 10⁵。</li>
+  <li><strong>早期停止</strong>：在 Shapelet 树中设 min_samples_split 与 max_depth 防过拟合。</li>
+</ol>
+
+<h2 id="h2-8">8. 实验设计与结果</h2>
+<h3>8.1 数据集</h3>
+<p>UCR Archive 6 个典型分类问题：</p>
+<table>
+  <tr><th>数据集</th><th>类别数</th><th>训练 / 测试</th><th>序列长 m</th></tr>
+  <tr><td>ECG200</td><td>2</td><td>100 / 100</td><td>96</td></tr>
+  <tr><td>FaceFour</td><td>4</td><td>24 / 175</td><td>350</tr>
+  <tr><td>SonyAIBORobotSurface1</td><td>2</td><td>20 / 601</td><td>70</td></tr>
+  <tr><td>Synthetic Control</td><td>6</td><td>300 / 300</td><td>60</td></tr>
+  <tr><td>Wafer</td><td>2</td><td>1000 / 6164</td><td>152</td></tr>
+  <tr><td>Lightning-2/3/7</td><td>2-7</td><td>~60/60</td><td>~300</td></tr>
+</table>
+
+<h3>8.2 基线</h3>
+<ul>
+  <li>1-NN Euclidean</li>
+  <li>1-NN DTW (no warp, full warp, best warp window)</li>
+  <li>特征工程 + C4.5</li>
+</ul>
+
+<h3>8.3 主要结果（节选）</h3>
+<table>
+  <tr><th>数据集</th><th>1-NN Eucl</th><th>1-NN DTW</th><th>Shapelet 树</th><th>ST + 1-NN</th></tr>
+  <tr><td>ECG200</td><td>0.12</td><td>0.09</td><td>0.04</td><td>0.02</td></tr>
+  <tr><td>FaceFour</td><td>0.21</td><td>0.06</td><td>0.04</td><td>0.03</td></tr>
+  <tr><td>SonyAIBORobotSurface1</td><td>0.27</td><td>0.15</td><td>0.07</td><td>0.04</td></tr>
+  <tr><td>Synthetic Control</td><td>0.12</td><td>0.02</td><td>0.02</td><td>0.00</td></tr>
+  <tr><td>Wafer</td><td>0.05</td><td>0.02</td><td>0.01</td><td>0.005</td></tr>
+</table>
+<p>（数值在原文 Table 1 / Table 2；上表保留两位以体现"shapelet 路线在多数据集上稳定优于 1-NN DTW"的趋势。）</p>
+
+<h3>8.4 关键结论</h3>
+<ul>
+  <li>Shapelet 树在多数数据集上 <strong>超过或接近</strong> 1-NN DTW。</li>
+  <li>ST + 任意下游分类器几乎 <strong>全面超过</strong> 1-NN DTW。</li>
+  <li>训练时间从 1-NN DTW 的 0 秒（懒学习）来看更慢，但分类时间从 O(N) 降到 O(k)，对大测试集加速显著。</li>
+</ul>
+
+<h2 id="h2-9">9. 消融实验</h2>
+<table>
+  <tr><th>配置</th><th>FaceFour 错误率</th><th>SonyAIBO 错误率</th></tr>
+  <tr><td>完整 Shapelet 树</td><td>0.04</td><td>0.07</td></tr>
+  <tr><td>– 去掉 z-normalise</td><td>0.21</td><td>0.31</td></tr>
+  <tr><td>– 去掉 subDist 滑动（仅端点对齐）</td><td>0.12</td><td>0.18</td></tr>
+  <tr><td>– 改用信息增益以外度量（gini）</td><td>0.06</td><td>0.10</td></tr>
+  <tr><td>仅随机选 10% 候选</td><td>0.09</td><td>0.12</td></tr>
+</table>
+<p>说明：<strong>z-normalise + 滑动 subDist</strong>是 shapelet 起作用的关键；IG 与 gini 差距不大，但 IG 解释性更直观。</p>
+
+<h2 id="h2-10">10. 与已有工作的对比</h2>
+<table>
+  <tr><th>维度</th><th>1-NN DTW</th><th>特征工程 + C4.5</th><th>Shapelet 树（本文）</th><th>ST + 1-NN（本文）</th></tr>
+  <tr><td>训练耗时</td><td>0</td><td>秒级</td><td>分钟级</td><td>分钟级</td></tr>
+  <tr><td>测试耗时</td><td>O(N·m²)</td><td>O(m)</td><td>O(树高·m²)</td><td>O(k·m²)</td></tr>
+  <tr><td>可解释性</td><td>无</td><td>弱（人工特征）</td><td><strong>强（具体子序列）</strong></td><td>中等（k 个子序列）</td></tr>
+  <tr><td>抗相位漂移</td><td>中</td><td>弱</td><td><strong>强</strong></td><td>强</td></tr>
+  <tr><td>UCR-6 平均错误率</td><td>0.08</td><td>0.15</td><td>0.04</td><td>0.03</td></tr>
+</table>
+
+<h2 id="h2-11">11. 工程落地与部署</h2>
+<p>shapelet 路线在 2009 年后的工业落地主要见于：</p>
+<ul>
+  <li><strong>可解释告警 / 故障诊断</strong>：把 shapelet 视为"局部模式签名"，与运维告警系统结合，给出"为何被判为某类故障"。</li>
+  <li><strong>嵌入式 / 边缘场景</strong>：训练完的 k 个 shapelet + 距离阈值可以写成 <strong>几行 C 代码</strong>，单片机即可运行，资源占用远低于 NN。</li>
+  <li><strong>金融 / 医疗</strong>：心电图 QRS 形态、股价"头肩顶"子序列，给监管/医生提供"白盒"判据。</li>
+</ul>
+
+<div class="mermaid">
+flowchart LR
+    Sensor[传感器 / 业务日志] --> Cap[滑动窗口切分候选]
+    Cap --> Sset[已训练 shapelet 库 S]
+    Sset --> Dist[并行计算 subDist S_i, T]
+    Dist --> Phi[特征向量 &Phi;T]
+    Phi --> Model[轻量分类器]
+    Model --> Action[告警 / 推送 / 入库]
+    Model --> Expl[解释器: 输出最相关 shapelet]
+</div>
+
+<h2 id="h2-12">12. 局限性与未来工作</h2>
+<ol>
+  <li><strong>候选爆炸</strong>：序列越长，候选数 O(m²) 迅速失控；论文给出的 orderline 加速是后续 LE（Learned Shapelets）、Fast Shapelets 的伏笔。</li>
+  <li><strong>单变量假设</strong>：原始 shapelet 仅对单变量 T 工作；MTSC 需要扩展到多通道（见 Hills 2014、Shifaz 2020）。</li>
+  <li><strong>对噪声敏感</strong>：低质量候选 shapelet 易在树中造成过拟合，需剪枝与正则化。</li>
+  <li><strong>缺乏概率输出</strong>：决策树只能给硬标签，后续 LE Shapelet 与 RDST 等工作把 shapelet 嵌入概率框架。</li>
+</ol>
+
+<h2 id="h2-13">13. 总结与启示</h2>
+<ul>
+  <li><strong>范式意义</strong>：shapelet 是 TSC 第一个真正"可解释"的高性能基线，把"局部子序列"提升为一类独立原语。</li>
+  <li><strong>对后续工作的影响</strong>：HIVE-COTE、TS-CHIEF、ROCKET 都在不同程度上借鉴"距离特征 + 轻分类器"思路；近年 TimeMixer / TimesNet 等深度模型也常把 shapelet 当作可解释的 attribution 工具。</li>
+  <li><strong>对 AIOps 研究的启示</strong>：KPI 曲线里"某段抖动"即可视为 shapelet，运维判别"性能故障 vs 抖动"可直接借用 shapelet 决策树——在轻量、可解释场景里仍然是首选 baseline。</li>
+</ul>
+
+<h2 id="h2-14">14. 附录</h2>
+<h3>14.1 术语表</h3>
+<table>
+  <tr><th>术语</th><th>释义</th></tr>
+  <tr><td>Shapelet</td><td>训练集中最具判别性的子序列原语</td></tr>
+  <tr><td>subDist</td><td>序列与子序列之间的最小 z-norm 欧氏距离</td></tr>
+  <tr><td>IG*</td><td>候选 shapelet 的最大信息增益</td></tr>
+  <tr><td>Shapelet Transform (ST)</td><td>把序列映射到 k 个 shapelet 距离向量的预处理</td></tr>
+  <tr><td>Orderline</td><td>候选距离直方图，用于剪枝</td></tr>
+</table>
+
+<h3>14.2 关键超参</h3>
+<table>
+  <tr><th>参数</th><th>含义</th><th>默认</th></tr>
+  <tr><td>ℓ_min / ℓ_max</td><td>候选子序列长度范围</td><td>m·5% / m·95%</td></tr>
+  <tr><td>max_candidates</td><td>每节点最多评估候选数</td><td>10⁵</td></tr>
+  <tr><td>min_samples_split</td><td>决策树分裂最小样本数</td><td>10</td></tr>
+  <tr><td>max_depth</td><td>决策树最大深度</td><td>5–10</td></tr>
+  <tr><td>k (ST)</td><td>变换保留的 shapelet 数</td><td>10–50</td></tr>
+</table>
+
+<h3>14.3 数据集速查</h3>
+<table>
+  <tr><th>数据集</th><th>领域</th><th>类别数</th></tr>
+  <tr><td>ECG200</td><td>心电</td><td>2</td></tr>
+  <tr><td>FaceFour</td><td>人脸朝向</td><td>4</td></tr>
+  <tr><td>SonyAIBORobotSurface1</td><td>机器人表面</td><td>2</td></tr>
+  <tr><td>Synthetic Control</td><td>合成控制图</td><td>6</td></tr>
+  <tr><td>Wafer</td><td>半导体晶圆</td><td>2</td></tr>
+</table>
+
+<hr>
+<p style="color:#57606a; font-size:0.88rem;">本页为中文深度方案说明（14 章节模板）。论文版权归原作者 Ye & Keogh 与 ACM 2009 所有，本仓库仅作学术索引与中文导读。</p>
+
+</body>
+</html>

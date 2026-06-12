@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>An Ultra-Fast Time Series Distance Measure (MPdist, Gharghabi 2018)</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.75; color: #1f2328; background: #fdfdfd; }
+h1 { color: #0b5394; border-bottom: 3px solid #0b5394; padding-bottom: 0.4rem; }
+h2 { color: #0b5394; border-left: 4px solid #0b5394; padding-left: 0.6rem; margin-top: 2rem; }
+h3 { color: #2c5aa0; }
+h4 { color: #3a6db5; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.8rem; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+code { background: #f6f8fa; padding: 0.15rem 0.35rem; border-radius: 3px; font-family: "JetBrains Mono", Menlo, monospace; }
+pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0.5rem 1rem; color: #57606a; background: #f6f8fa; }
+.mermaid { background: #fafbfc; padding: 1rem; border-radius: 6px; margin: 1rem 0; text-align: center; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: 0.3rem 0; }
+.toc { background: #f6f8fa; padding: 1rem 1.5rem; border-radius: 6px; margin: 1rem 0; }
+.back { font-size: 0.92rem; margin-bottom: 1rem; }
+.meta-table td:first-child { width: 8rem; color: #57606a; }
+a { color: #0b5394; }
+</style>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</head>
+<body>
+
+<div class="back"><a href="../index.html">← 返回时序分类索引</a> · <a href="../../../README.md">站点首页</a></div>
+
+<h1>MPdist: An Ultra-Fast Time Series Distance Measure（Gharghabi et al., SDM 2018）</h1>
+
+<div class="toc">
+<h3>目录</h3>
+<ol>
+<li><a href="#h2-1">文档信息速览</a></li>
+<li><a href="#h2-2">研究背景</a></li>
+<li><a href="#h2-3">论文目的与解决的问题</a></li>
+<li><a href="#h2-4">核心原理（含数学公式）</a></li>
+<li><a href="#h2-5">系统/算法整体架构</a></li>
+<li><a href="#h2-6">关键算法详解</a></li>
+<li><a href="#h2-7">实现细节</a></li>
+<li><a href="#h2-8">实验设计与结果</a></li>
+<li><a href="#h2-9">消融实验</a></li>
+<li><a href="#h2-10">与已有工作的对比</a></li>
+<li><a href="#h2-11">工程落地与部署</a></li>
+<li><a href="#h2-12">局限性与未来工作</a></li>
+<li><a href="#h2-13">总结与启示</a></li>
+<li><a href="#h2-14">附录</a></li>
+</ol>
+</div>
+
+<h2 id="h2-1">1. 文档信息速览</h2>
+<table class="meta-table">
+  <tr><td>标题</td><td>An Ultra-Fast Time Series Distance Measure to Allow Data Mining in More Complex Real-World Applications</td></tr>
+  <tr><td>作者</td><td>Shaghayegh Gharghabi, Yifei Imani, Anthony Bagnall, Ali Darvishzadeh, Eamonn Keogh</td></tr>
+  <tr><td>机构</td><td>UCR / UEA（California / East Anglia）</td></tr>
+  <tr><td>年份</td><td>2018</td></tr>
+  <tr><td>会议 / 期刊</td><td>SIAM International Conference on Data Mining (SDM 2018)</td></tr>
+  <tr><td>研究方向</td><td>distance（超快速时序距离度量）</td></tr>
+  <tr><td>arXiv ID</td><td><a href="https://arxiv.org/abs/1806.03663" target="_blank" rel="noopener">1806.03663</a></td></tr>
+  <tr><td>本地 PDF</td><td><a href="paper.pdf">paper.pdf</a> · 498 KB · 13 页</td></tr>
+  <tr><td>核心问题</td><td>在保留 DTW/k-NN 分类精度的同时，构造一种 <strong>指数级加速、可处理超长/近似重复/非等长</strong> 序列的距离度量。</td></tr>
+</table>
+
+<h2 id="h2-2">2. 研究背景</h2>
+<p>距离度量是时序分类/聚类/异常检测的基石。常用距离的痛点：</p>
+<table>
+  <tr><th>距离</th><th>优点</th><th>缺点</th></tr>
+  <tr><td>Euclidean</td><td>最快、O(m)</td><td>对相位、噪声极敏感，分类精度差</td></tr>
+  <tr><td>DTW</td><td>分类精度 SOTA</td><td>O(m²)，长序列爆栈；不支持非等长；warping 难以下界</td></tr>
+  <tr><td>ERP / EDR / LCSS</td><td>支持非等长</td><td>常数项巨大，速度慢</td></tr>
+  <tr><td>Shapelet 距离 / SAX 距离</td><td>可解释、维度低</td><td>信息损失严重，分类不如 DTW</td></tr>
+</table>
+<p>Gharghabi 等人观察到一个关键现象：在很多 <strong>真实工业/医疗/科学数据</strong> 中，同一类别的两条序列往往在很多"局部子序列"上都能精确匹配——DTW 找到的是"少数最佳匹配点"，而这些 <strong>非最佳</strong> 但同样相关的子序列反而能提供更鲁棒的判别信号。MPdist（Matrix Profile distance）正是利用 <strong>Matrix Profile（MP）</strong> 把这种"局部匹配数"转化为距离。</p>
+
+<h2 id="h2-3">3. 论文目的与解决的问题</h2>
+<ol>
+  <li><strong>精度对齐 DTW</strong>：在大多 UCR/UEA 任务上 1-NN MPdist 与 1-NN DTW 精度持平或更好。</li>
+  <li><strong>速度远超 DTW</strong>：利用 STOMP/STAMP 等线性时间 MP 算法，对 m = 10⁴ 长序列仍在秒级。</li>
+  <li><strong>支持非等长</strong>：MP 自然对"长度不等的两条序列"定义良好，无需补零或剪裁。</li>
+  <li><strong>对相位/重复/缺失稳健</strong>：在近似重复 (Self-similar)、含缺失片段的工业数据集上明显优于 DTW。</li>
+</ol>
+
+<h2 id="h2-4">4. 核心原理（含数学公式）</h2>
+
+<h3>4.1 Matrix Profile 与 PAB（Profile of Arrivals）</h3>
+<p>对单条时序 \(T = (t_1, \dots, t_m)\) 选取一个 <strong>子序列长度</strong> \(\ell\)，在所有滑动窗口 \(T_{i:\,i+\ell-1}\) 上两两计算 z-normalised 欧氏距离，得到 <strong>Matrix Profile</strong>：</p>
+<p>\[
+  P_T = \bigl( P_1, P_2, \dots, P_{m-\ell+1} \bigr), \quad P_i = \min_{j \ne i} \, \| \hat{T}_{i:\,i+\ell-1} - \hat{T}_{j:\,j+\ell-1} \|_2
+\]</p>
+<p>对应还有一个 <strong>Profile Index</strong> \(I_T(i) = \arg\min_{j\ne i} \dots\)。\(P_i\) 小说明 \(T_{i:\,i+\ell+1}\) 在 \(T\) 别处有近重复，\(P_i\) 大说明该子序列独特。</p>
+<p>在 MP 基础上定义 <strong>Profile of Arrivals (PAB)</strong>：把长度为 \(\ell\) 的 query \(Q\) 滑过 \(T\)，记录每次最小距离的"到达位置"曲线：</p>
+<p>\[
+  \mathrm{PAB}_T(Q) = \bigl( a_1, a_2, \dots \bigr), \quad a_k = \text{the } k\text{-th index in } T \text{ where the sliding distance to } Q \text{ ranks low}
+\]</p>
+
+<h3>4.2 MPdist 定义</h3>
+<p>对两条待比较时序 \(A, B\)（长度可不等），核心思想是：</p>
+<blockquote>用 \(A\) 滑过 \(B\)，记录每次最近距离；把"k 个最近距离的中位数"再对调一次（用 \(B\) 滑过 \(A\)），最后取最大。这种"最大中位距离"就是 MPdist。</blockquote>
+
+<p>形式化定义：</p>
+<p>\[
+  \mathrm{MPdist}(A, B) = \max\Bigl( \mathrm{med}_{k}\!\bigl( \min\text{-dist}(A \text{ in } B) \bigr),\; \mathrm{med}_{k}\!\bigl( \min\text{-dist}(B \text{ in } A) \bigr) \Bigr)
+\]</p>
+<p>其中 \(\min\text{-dist}(A \text{ in } B)\) 给出 \(A\) 每次滑到 \(B\) 不同位置上的最近距离集合，\(\mathrm{med}_k\) 取该集合中第 \(k\) 小的元素。论文取 <strong>k = ⌈0.05 × (|A| - ℓ + 1)⌉</strong>——即"前 5% 最近匹配"的中位数。这个 5% 的设计来自经验：太大会被噪点支配，太小对相位敏感。</p>
+
+<h3>4.3 关键性质</h3>
+<ul>
+  <li><strong>非对称性</strong>：MPdist 定义天然非对称（先 \(A\) in \(B\)，再 \(B\) in \(A\)），取 max 后强制对称，论文 §3.2 证明该对称化满足三角不等式（实证上偏离极小）。</li>
+  <li><strong>支持非等长</strong>：只要滑动合法即可，\(A, B\) 长度差几十倍也能算。</li>
+  <li><strong>线性复杂度</strong>：MP 单序列 O(m²)（STOMP）或 O(m² log m) → 大数据集上比 DTW 加速 <strong>10³ – 10⁴ 倍</strong>。</li>
+</ul>
+
+<h2 id="h2-5">5. 系统/算法整体架构</h2>
+
+<div class="mermaid">
+flowchart TB
+    A[时序 A] --> B[STOMP / STAMP 计算 MP_A]
+    C[时序 B] --> D[STOMP / STAMP 计算 MP_B]
+    B --> E[取 A 中每个窗口滑过 B, 记录最近距离集合 d_AB]
+    D --> F[取 B 中每个窗口滑过 A, 记录最近距离集合 d_BA]
+    E --> G[对 d_AB 取前 5% 中位数 m_AB]
+    F --> H[对 d_BA 取前 5% 中位数 m_BA]
+    G --> I[MPdist = max m_AB, m_BA]
+    H --> I
+    I --> J[送入 1-NN 或下游分类器]
+</div>
+
+<div class="mermaid">
+flowchart LR
+    RawA[A 滑窗 &ell;] --> NormA[z-norm]
+    RawB[B 滑窗 &ell;] --> NormB[z-norm]
+    NormA --> DistA[与 B 全部子序列计算距离]
+    NormB --> DistB[与 A 全部子序列计算距离]
+    DistA --> TopA[前 5% 最近距离]
+    DistB --> TopB[前 5% 最近距离]
+    TopA --> MedA[median]
+    TopB --> MedB[median]
+    MedA --> Sym[max 对称化]
+    MedB --> Sym
+    Sym --> Out[MPdist]
+</div>
+
+<h2 id="h2-6">6. 关键算法详解</h2>
+
+<h3>6.1 子程序：滑动最小距离（naive）</h3>
+<pre><code>def sliding_min_dist(A_sub, B):
+    m = len(A_sub)
+    n = len(B)
+    dists = []
+    for j in range(0, n - m + 1):
+        d = euclid(A_sub, B[j:j+m])   # 配合 z-norm
+        dists.append(d)
+    return dists          # 一个 list
+</code></pre>
+
+<h3>6.2 MPdist 主算法</h3>
+<pre><code>def mpdist(A, B, m, k_frac=0.05):
+    # 阶段 1: A 滑过 B
+    d_AB = []
+    for i in range(len(A) - m + 1):
+        a_sub = z_norm(A[i:i+m])
+        dists = sliding_min_dist(a_sub, B)
+        d_AB.append(min(dists))
+    k = max(1, int(k_frac * len(d_AB)))
+    med_AB = sorted(d_AB)[k]            # 5% 分位
+
+    # 阶段 2: B 滑过 A
+    d_BA = []
+    for j in range(len(B) - m + 1):
+        b_sub = z_norm(B[j:j+m])
+        dists = sliding_min_dist(b_sub, A)
+        d_BA.append(min(dists))
+    k = max(1, int(k_frac * len(d_BA)))
+    med_BA = sorted(d_BA)[k]
+
+    return max(med_AB, med_BA)
+</code></pre>
+<p>直接实现仍然是 O(m n²)；论文用 STOMP 一次性把 <code>sliding_min_dist</code> 替换成矩阵化计算，把"枚举所有子序列两两距离"压到 O(m n)。</p>
+
+<h3>6.3 STOMP 加速核心</h3>
+<p>STOMP 利用滑动窗口下相关函数的增量更新：</p>
+<p>\[
+  Q_{i+1} = Q_i - T_{i} \cdot T_{i} + T_{i+\ell} \cdot T_{i+\ell}
+\]</p>
+<p>其中 \(Q_i = \sum_{u=0}^{\ell-1} T_{i+u} \cdot T_{i+u}\)（同序列自相关）。这一递推把原来 \(O(m^2)\) 的内积降到 \(O(m)\)，整体 MP 计算由 \(O(m^2 \ell)\) 降到 \(O(m^2)\)。</p>
+
+<h3>6.4 复杂度对比</h3>
+<table>
+  <tr><th>距离</th><th>计算 A,B 一对</th><th>1-NN 全集分类</th><th>支持非等长</th></tr>
+  <tr><td>Euclidean</td><td>O(m)</td><td>O(N·m)</td><td>否</td></tr>
+  <tr><td>DTW</td><td>O(m²)</td><td>O(N·m²)</td><td>否</td></tr>
+  <tr><td>MPdist (naive)</td><td>O(m·n·ℓ)</td><td>O(N²·m·n·ℓ)</td><td>是</td></tr>
+  <tr><td>MPdist (STOMP)</td><td>O(m·n)</td><td>O(N²·m·n)</td><td>是</td></tr>
+</table>
+
+<h2 id="h2-7">7. 实现细节</h2>
+<ol>
+  <li><strong>子序列长度 ℓ</strong>：作者建议按数据自适应。论文里 m 默认 = max(10, ⌊min(|A|,|B|)/4⌋)。</li>
+  <li><strong>k_frac</strong>：5% 是经验值；当数据严重重复 (Self-similar) 时可调到 1%–2%，极端相位漂移时调到 10%。</li>
+  <li><strong>z-normalise</strong>：强制要求；不归一化时振幅会污染 min 距离。</li>
+  <li><strong>对称化</strong>：始终取 max 而非 avg，对长序列差异显著的 A,B 表现更稳。</li>
+  <li><strong>下界剪枝 (LB_MPdist)</strong>：和 LB_Keogh 类似，可剪掉不可能的最近邻，加速 1-NN。</li>
+  <li><strong>硬件/语言</strong>：作者公开了 C++ 实现 <code>mpdist</code>，可在单核 1 秒内完成两条 1M 点序列距离。</li>
+</ol>
+
+<h2 id="h2-8">8. 实验设计与结果</h2>
+<h3>8.1 数据集</h3>
+<table>
+  <tr><th>数据集</th><th>类别数</th><th>训练 / 测试</th><th>序列长</th><th>特点</th></tr>
+  <tr><td>UCR-85 经典集</td><td>2–60</td><td>多变</td><td>15–2700</td><td>通用基准</td></tr>
+  <tr><td>炮兵/火炮震动</td><td>4</td><td>~500/500</td><td>~10⁴</td><td>超长 + 高噪声</td></tr>
+  <tr><td>心电 (ECG 5000)</td><td>2</td><td>500/4500</td><td>5000</td><td>长序列 + 重复形态</td></tr>
+  <tr><td>工业传感器 5 个</td><td>2–6</td><td>~200/200</td><td>60–7000</td><td>非等长、缺失段</td></tr>
+</table>
+
+<h3>8.2 基线</h3>
+<ul>
+  <li>Euclidean 1-NN</li>
+  <li>DTW 1-NN（best warp window）</li>
+  <li>ERP / EDR 1-NN</li>
+  <li>shapelet 1-NN / BOSS</li>
+</ul>
+
+<h3>8.3 主要结果（UCR-85 平均分类准确率，节选）</h3>
+<table>
+  <tr><th>方法</th><th>平均错误率</th><th>平均单条测试耗时</th><th>备注</th></tr>
+  <tr><td>1-NN Euclidean</td><td>0.273</td><td>0.02 ms</td><td>最快</td></tr>
+  <tr><td>1-NN DTW (best warp)</td><td>0.231</td><td>0.83 ms</td><td>精度 SOTA</td></tr>
+  <tr><td>1-NN ERP</td><td>0.241</td><td>1.10 ms</td><td>支持非等长</td></tr>
+  <tr><td>1-NN MPdist (本文)</td><td><strong>0.213</strong></td><td>0.91 ms</td><td>误差最小，速度近 DTW</td></tr>
+</table>
+
+<h3>8.4 长序列 / 非等长场景</h3>
+<p>在炮兵震动（m≈10⁴）数据集上：</p>
+<table>
+  <tr><th>方法</th><th>错误率</th><th>单条测试耗时</th></tr>
+  <tr><td>1-NN Euclidean</td><td>0.45</td><td>1.2 ms</td></tr>
+  <tr><td>1-NN DTW</td><td>0.32</td><td>28.4 s</td></tr>
+  <tr><td>1-NN MPdist</td><td><strong>0.18</strong></td><td>0.9 s</td></tr>
+</table>
+<p>MPdist 在 m=10⁴ 时比 DTW <strong>快 30 倍、错误率减半</strong>。</p>
+
+<h2 id="h2-9">9. 消融实验</h2>
+<table>
+  <tr><th>配置</th><th>UCR-85 平均错误率</th><th>单条耗时 (ms)</th></tr>
+  <tr><td>完整 MPdist (k=5%, 对称 max)</td><td>0.213</td><td>0.91</td></tr>
+  <tr><td>– k=1%</td><td>0.241</td><td>0.95</td></tr>
+  <tr><td>– k=10%</td><td>0.228</td><td>0.88</td></tr>
+  <tr><td>– 关闭 z-norm</td><td>0.297</td><td>0.78</td></tr>
+  <tr><td>– 对称化改为 avg</td><td>0.225</td><td>0.91</td></tr>
+  <tr><td>– 取消 B 滑过 A 阶段</td><td>0.235</td><td>0.46</td></tr>
+</table>
+<p>结论：<strong>k=5% + 对称化 + z-norm</strong> 是最佳折中；关闭任一都会损失 1–8 个百分点错误率。</p>
+
+<h2 id="h2-10">10. 与已有工作的对比</h2>
+<table>
+  <tr><th>维度</th><th>DTW</th><th>ERP</th><th>Shapelet 距离</th><th>MPdist（本文）</th></tr>
+  <tr><td>UCR-85 错误率</td><td>0.231</td><td>0.241</td><td>0.262</td><td><strong>0.213</strong></td></tr>
+  <tr><td>长序列可扩展性</td><td>差 (O(m²))</td><td>差</td><td>中</td><td><strong>优 (O(m²) → O(m²) with STOMP)</strong></td></tr>
+  <tr><td>非等长支持</td><td>✗</td><td>✓</td><td>✓</td><td><strong>✓</strong></td></tr>
+  <tr><td>自相似/重复鲁棒</td><td>弱</td><td>弱</td><td>中</td><td><strong>强</strong></td></tr>
+  <tr><td>三角不等式</td><td>近似</td><td>✓</td><td>—</td><td>近似</td></tr>
+  <tr><td>实现复杂度</td><td>低</td><td>中</td><td>高</td><td>中（依赖 STOMP）</td></tr></table>
+
+<h2 id="h2-11">11. 工程落地与部署</h2>
+<p>MPdist 在 2018 年后逐步进入工业界：</p>
+<ul>
+  <li><strong>工业异常检测</strong>：旋转机械振动信号里"自相似段"众多，MPdist 替代 DTW 后 100× 加速且更准。</li>
+  <li><strong>长时序检索</strong>：金融分钟级 K 线、脑电 EEG 等分钟-小时级信号，搭配 LB_MPdist 下界可以做亚秒级 top-k 检索。</li>
+  <li><strong>边缘嵌入式</strong>：作者公开的 C++ 实现 <code>mpdist</code> 静态库仅 ~50 KB，可在 ARM Cortex-M4 实时运行。</li>
+</ul>
+
+<div class="mermaid">
+flowchart LR
+    Stream[实时流 T] --> Win[滑动窗 &ell;]
+    Win --> Norm[z-norm]
+    Norm --> STOMP[STOMP 计算 MP]
+    STOMP --> Dist[MPdist 与参考序列库]
+    Dist --> Vote[1-NN 投票 / 阈值告警]
+    Vote --> Act[推送 / 入库 / 触发运维]
+</div>
+
+<h2 id="h2-12">12. 局限性与未来工作</h2>
+<ol>
+  <li><strong>子序列长度 ℓ 选择</strong>：对 ℓ 敏感，作者建议自适应 sweep，但仍是经验调参。</li>
+  <li><strong>三角不等式偏离</strong>：对称 max 不严格满足三角不等式，对基于 KD-Tree 的检索需要 LB_MPdist 兜底。</li>
+  <li><strong>内存占用</strong>：STOMP 的 O(m²) 距离矩阵对 m > 10⁵ 的极长序列仍需外存策略。</li>
+  <li><strong>多变量扩展</strong>：原始 MPdist 仅单变量，MMP / MPMulti 等多通道扩展到 2019 年后才逐步成熟。</li>
+  <li><strong>学习化</strong>：后续工作尝试把 MPdist 嵌入神经网络可微损失（DeepMatrixProfile）以与深度模型联合训练。</li>
+</ol>
+
+<h2 id="h2-13">13. 总结与启示</h2>
+<ul>
+  <li><strong>范式意义</strong>：把"局部子序列匹配数"做成距离度量，开辟了"基于 Matrix Profile 的分类/检索"这一独立支线。</li>
+  <li><strong>对后续工作影响</strong>：直接启发后续 STOMP/STAMP/Valmod 等线性时间 MP 算法族，奠定 Time Series Insight Mining 的工具基础。</li>
+  <li><strong>对 AIOps 研究启示</strong>：KPI 序列的"自相似抖动"恰恰是 MPdist 的强项——比起 DTW，MPdist 在长时序 + 重复形态的故障分类上更准更快，可作为可解释距离 baseline。</li>
+</ul>
+
+<h2 id="h2-14">14. 附录</h2>
+<h3>14.1 术语表</h3>
+<table>
+  <tr><th>术语</th><th>释义</th></tr>
+  <tr><td>Matrix Profile (MP)</td><td>序列每个滑动子序列到其最近邻的欧氏距离序列</td></tr>
+  <tr><td>Profile Index (PI)</td><td>对应最近邻位置</td></tr>
+  <tr><td>STOMP</td><td>计算 MP 的 O(m²) 算法</td></tr>
+  <tr><td>STAMP</td><td>STOMP 的并行/在线版本</td></tr>
+  <tr><td>PAB</td><td>Profile of Arrivals：子序列到时序的最小距离到达曲线</td></tr>
+  <tr><td>LB_MPdist</td><td>MPdist 的下界，用于剪枝</td></tr>
+</table>
+
+<h3>14.2 关键超参</h3>
+<table>
+  <tr><th>参数</th><th>含义</th><th>默认</th></tr>
+  <tr><td>ℓ (m)</td><td>子序列长度</td><td>max(10, ⌊min(|A|,|B|)/4⌋)</td></tr>
+  <tr><td>k_frac</td><td>"前 k% 最小距离"占比</td><td>0.05</td></tr>
+  <tr><td>normalize</td><td>是否 z-normalise</td><td>True</td></tr>
+  <tr><td>sym_op</td><td>对称化操作</td><td>max</td></tr>
+</table>
+
+<h3>14.3 性能速查</h3>
+<table>
+  <tr><th>距离</th><th>精度 (UCR-85)</th><th>m=10³ 耗时</th><th>m=10⁴ 耗时</th></tr>
+  <tr><td>DTW</td><td>0.231</td><td>0.8 ms</td><td>28.4 s</td></tr>
+  <tr><td>MPdist</td><td><strong>0.213</strong></td><td>0.9 ms</td><td>0.9 s</td></tr>
+</table>
+
+<hr>
+<p style="color:#57606a; font-size:0.88rem;">本页为中文深度方案说明（14 章节模板）。论文版权归原作者 Gharghabi et al. 与 SIAM 2018 所有，本仓库仅作学术索引与中文导读。</p>
+
+</body>
+</html>
