@@ -490,6 +490,95 @@ sign_changes = np.sum(np.abs(np.diff(rolling_signs[~np.isnan(rolling_signs)])) >
 
 ### 3.4 周期性特征
 
+**周期性（Periodicity）** 是指序列中重复出现的波动模式，其周期长度可以与日历无关。与季节性强调固定日历间隔（如小时、天、周）不同，周期性更关注数据本身内在的循环长度，例如机械振动、心电节律或网络流量的burst周期。刻画周期性不仅需要估计周期长度，还需要评估周期是否稳定。
+
+#### 3.4.1 ACF 峰值法
+
+自相关函数（ACF）是判断周期性的直接工具。对于序列 $\mathbf{x}$，滞后 $k$ 的自相关系数为：
+
+$$
+\rho_k = \frac{\sum_{t=1}^{N-k}(x_t - \bar{x})(x_{t+k} - \bar{x})}{\sum_{t=1}^{N}(x_t - \bar{x})^2}
+$$
+
+若序列存在周期 $T$，则 ACF 在 $k = T, 2T, \dots$ 处出现局部极大值。工程上常用一个近似置信区间判断峰值是否显著：
+
+$$
+\text{CI}_{0.95}(\rho_k) \approx \pm \frac{1.96}{\sqrt{N}}
+$$
+
+找到第一个同时满足局部最大且越过置信区间上界的滞后，即可作为周期估计：
+
+$$
+\hat{T}_{\text{ACF}} = \min\{k > 0: \rho_k > \frac{1.96}{\sqrt{N}}, \rho_k > \rho_{k-1}, \rho_k > \rho_{k+1}\}
+$$
+
+#### 3.4.2 周期图峰值法
+
+周期图通过离散傅里叶变换将序列的功率按频率分解。对于采样频率 $f_s = 1$ 的序列，功率谱可写为：
+
+$$
+P(f) = \frac{1}{N}\left|\sum_{t=0}^{N-1} x_t e^{-j 2\pi f t}\right|^2
+$$
+
+取非零频率中功率最大的频率 $f_{\max}$，对应周期为：
+
+$$
+\hat{T}_{\text{FFT}} = \frac{1}{f_{\max}}
+$$
+
+实际实现中，为提高频率分辨率，可对 FFT 峰值附近进行抛物线插值。
+
+#### 3.4.3 周期稳定性特征
+
+全局周期估计可能掩盖序列局部的周期变化。通过在滚动窗口内重复估计周期，并计算各窗口周期估计的标准差，可量化周期稳定性：
+
+$$
+\sigma_T = \sqrt{\frac{1}{n_w}\sum_{t}\left(\hat{T}_t^{(w)} - \bar{T}^{(w)}\right)^2}
+$$
+
+其中 $\hat{T}_t^{(w)}$ 是以 $t$ 结尾、长度为 $w$ 的窗口估计出的周期，$\bar{T}^{(w)}$ 为这些估计的均值。$\sigma_T$ 越小，说明周期越稳定；若 $\sigma_T$ 较大，则提示序列的波动节律可能随时间发生了变化。
+
+```python
+import numpy as np
+from scipy.signal import periodogram
+from statsmodels.tsa.stattools import acf
+
+# x 为已加载的时间序列
+n = len(x)
+
+# 1) ACF 峰值法
+acf_vals = acf(x, nlags=n // 2, fft=True)
+bound = 1.96 / np.sqrt(n)
+acf_peaks = [
+    k for k in range(1, len(acf_vals) - 1)
+    if acf_vals[k] > bound
+    and acf_vals[k] > acf_vals[k - 1]
+    and acf_vals[k] > acf_vals[k + 1]
+]
+acf_period = acf_peaks[0] if acf_peaks else None
+
+# 2) 周期图峰值法
+freqs, power = periodogram(x, fs=1.0)
+dominant_idx = 1 + np.argmax(power[1:])
+fft_period = 1.0 / freqs[dominant_idx]
+
+# 3) 滚动窗口周期稳定性
+window = 96
+periods = []
+for i in range(window - 1, n):
+    win = x[i - window + 1 : i + 1]
+    f_win, p_win = periodogram(win, fs=1.0)
+    idx = 1 + np.argmax(p_win[1:])
+    periods.append(1.0 / f_win[idx])
+period_stability = np.std(periods)
+```
+
+完整脚本见 [`assets/code/03-example-06-periodicity-features.py`](./assets/code/03-example-06-periodicity-features.py)。
+
+![图 3-6 周期性特征示例](./assets/images/03-fig-06-periodicity.png)
+
+**图 3-6** 周期性特征示例。上图展示合成的周期性序列；中间左右分别为 ACF 峰值法与周期图峰值法估计周期；下图展示滚动窗口周期估计的稳定性。
+
 ## 4. 频域特征
 
 ### 4.1 傅里叶变换特征
