@@ -124,13 +124,16 @@
 - 脚本头部必须包含：`# Generated for book/part-NN/MM/README.md`。
 - 使用统一的调色板（见下方）。
 - 推荐输出格式：`PNG`，分辨率 `300 dpi`，宽不超过 1600 px。
-- 图片标题、坐标轴标签、图例等文字能用中文的尽可能使用中文，保持全书风格统一。
+- 图片标题、坐标轴标签、刻度文字、图例（legend）等能用中文的尽可能使用中文，保持全书风格统一。
 - 必须正确配置中文字体，避免中文乱码。例如 `matplotlib` 中可设置：
   ```python
   plt.rcParams["font.sans-serif"] = ["SimHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "DejaVu Sans"]
   plt.rcParams["axes.unicode_minus"] = False
   ```
   脚本运行前应检测系统可用字体，优先选择支持中文的字体，确保保存的 PNG 中文字正常显示。
+- 整体排版应紧凑丰满：标题、坐标轴标签、刻度文字、图例字体均适当缩小；图例与标签不使用边框、不使用背景色。
+- 图片应尽量扁平、加宽，以充分利用 Markdown 页面宽度；内容较丰富的图在 Markdown 中宜独占一行展示，避免与文字混排。
+- 推荐通过 `fig.tight_layout()` 或 `bbox_inches="tight"` 减少空白边距。
 
 ### 4.2 统一调色板
 
@@ -149,10 +152,17 @@ COLORS = {
 plt.rcParams.update({
     "figure.dpi": 300,
     "savefig.dpi": 300,
-    "font.size": 10,
-    "axes.labelsize": 11,
-    "axes.titlesize": 12,
-    "figure.figsize": (8, 4.5),
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+    "legend.frameon": False,
+    "legend.facecolor": "none",
+    "legend.edgecolor": "none",
+    "figure.figsize": (10, 3.5),
+    "figure.autolayout": True,
 })
 ```
 
