@@ -581,11 +581,131 @@ period_stability = np.std(periods)
 
 ## 4. 频域特征
 
+频域特征通过将时间序列从时域变换到频域，揭示其内在的周期与能量分布。对于周期性、振动、声学或网络流量等序列，频域特征往往比单纯的时域统计量更具解释力。下面介绍三类最常用的频域特征：傅里叶变换特征、功率谱密度特征与频带能量特征。
+
 ### 4.1 傅里叶变换特征
+
+**离散傅里叶变换（Discrete Fourier Transform, DFT）** 将长度为 $N$ 的序列 $\mathbf{x}$ 映射为频率分量 $X_k$：
+
+$$
+X_k = \sum_{t=0}^{N-1} x_t e^{-i 2\pi k t / N}, \quad k = 0, 1, \dots, N-1
+$$
+
+工程实现通常使用快速傅里叶变换（FFT）。从频谱中可以提取以下标量特征：
+
+- **主导频率（Dominant Frequency）**：幅值最大的非零频率分量对应的频率 $f_{\max}$。
+- **主导频率幅值（Dominant Amplitude）**：$|X_{k_{\max}}| / N$，反映该频率成分的强度。
+- **低频/高频能量比（Low/High Frequency Energy Ratio）**：
+
+$$
+R_{\text{L/H}} = \frac{\sum_{f \in \text{low}} |X(f)|^2}{\sum_{f \in \text{high}} |X(f)|^2}
+$$
+
+比值越大，说明序列能量越集中在低频；比值越小，高频噪声或快速振荡越显著。
+
+```python
+import numpy as np
+
+# x 为已加载的时间序列，fs 为采样频率
+fs = 1000.0
+n = len(x)
+
+fft_vals = np.fft.rfft(x)
+fft_freqs = np.fft.rfftfreq(n, d=1.0 / fs)
+fft_power = np.abs(fft_vals) ** 2 / n
+fft_magnitude = np.abs(fft_vals) / n
+
+# 主导频率（排除直流分量）
+dominant_idx = 1 + int(np.argmax(fft_magnitude[1:]))
+dominant_freq = fft_freqs[dominant_idx]
+dominant_amp = fft_magnitude[dominant_idx]
+
+# 低频 / 高频能量比
+low_mask = (fft_freqs >= 0.0) & (fft_freqs < 30.0)
+high_mask = (fft_freqs >= 100.0) & (fft_freqs <= fs / 2.0)
+low_high_ratio = np.sum(fft_power[low_mask]) / (np.sum(fft_power[high_mask]) + 1e-12)
+```
 
 ### 4.2 功率谱密度特征
 
+周期图对频率分辨率敏感且方差较大。**Welch 法**通过分段加窗、重叠平均来估计功率谱密度（Power Spectral Density, PSD），能得到更平滑的谱估计。
+
+设 Welch 估计得到的功率谱为 $P(f)$，定义归一化谱分布：
+
+$$
+p_f = \frac{P(f)}{\sum_f P(f)}
+$$
+
+基于 $p_f$ 可提取以下特征：
+
+- **谱熵（Spectral Entropy）**：衡量功率在频率上的分散程度，值越大表示谱越平坦、周期性越弱。
+
+$$
+H = -\sum_f p_f \log p_f
+$$
+
+- **谱质心（Spectral Centroid）**：功率分布的“重心”频率，越高说明信号整体越尖锐。
+
+$$
+\text{SC} = \sum_f f \cdot p_f
+$$
+
+- **谱带宽（Spectral Bandwidth）**：功率分布围绕谱质心的离散程度。
+
+$$
+\text{SBW} = \sqrt{\sum_f p_f (f - \text{SC})^2}
+$$
+
+```python
+from scipy.signal import welch
+
+psd_freqs, psd_power = welch(x, fs=fs, nperseg=256, noverlap=128, window="hann")
+p_f = psd_power / (np.sum(psd_power) + 1e-12)
+
+spectral_entropy = -np.sum(p_f * np.log(p_f + 1e-12))
+spectral_centroid = np.sum(psd_freqs * p_f)
+spectral_bandwidth = np.sqrt(np.sum(p_f * (psd_freqs - spectral_centroid) ** 2))
+```
+
 ### 4.3 频带能量特征
+
+将频谱按业务或物理意义划分为若干频带（如低频、中频、高频），计算各频带能量占总能量之比，可得到更稳定的物理可解释特征。常见划分示例：
+
+| 频带 | 频率范围 | 典型含义 |
+|------|----------|----------|
+| 低频（Low） | $0 \sim 30\ \text{Hz}$ | 缓慢漂移、长期趋势 |
+| 中频（Mid） | $30 \sim 100\ \text{Hz}$ | 主要周期成分 |
+| 高频（High） | $100 \sim f_s/2$ | 快速振荡、噪声 |
+
+各频带能量占比定义为：
+
+$$
+E_{\text{band}}^{\text{ratio}} = \frac{\sum_{f \in \text{band}} P(f)}{\sum_{f} P(f)}
+$$
+
+```python
+bands = {
+    "low":  (0.0, 30.0),
+    "mid":  (30.0, 100.0),
+    "high": (100.0, fs / 2.0),
+}
+
+def band_energy(freqs, power, fmin, fmax):
+    mask = (freqs >= fmin) & (freqs < fmax)
+    return np.sum(power[mask])
+
+band_energies = {
+    name: band_energy(psd_freqs, psd_power, *b) for name, b in bands.items()
+}
+total_energy = sum(band_energies.values()) + 1e-12
+band_ratios = {name: energy / total_energy for name, energy in band_energies.items()}
+```
+
+完整脚本见 [`assets/code/03-example-07-frequency-features.py`](./assets/code/03-example-07-frequency-features.py)。
+
+![图 3-7 频域特征示例](./assets/images/03-fig-07-frequency.png)
+
+**图 3-7** 频域特征示例。上图：合成的多频率时序；中图：FFT 幅频谱与主导频率；下图：Welch 功率谱与低/中/高频带划分，右下角标注了主导频率、谱熵、谱质心与谱带宽等关键指标。
 
 ## 5. 特征组合与工程实践
 
