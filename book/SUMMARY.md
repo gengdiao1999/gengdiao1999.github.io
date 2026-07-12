@@ -7,7 +7,7 @@
 
 ## 第一篇：特征提取
 
-- [第 3 章 统计特征](part-01-feature-extraction/03-statistical-features/README.md)
+- [第 3 章 特征提取](part-01-feature-extraction/03-statistical-features/README.md)
 - [第 4 章 形状子特征](part-01-feature-extraction/04-shapelet-features/README.md)
 - [第 5 章 频域特征](part-01-feature-extraction/05-frequency-features/README.md)
 - [第 6 章 深度学习表征](part-01-feature-extraction/06-deep-representations/README.md)
