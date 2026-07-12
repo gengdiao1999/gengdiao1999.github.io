@@ -7,10 +7,12 @@ stationary AR(1) series and a non-stationary series with trend and
 heteroscedasticity.
 """
 import pathlib
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import adfuller, kpss
 
 # ---------------------------------------------------------------------------
@@ -79,7 +81,11 @@ def rolling_cv(series, window):
 def stationarity_summary(series, window=30):
     """Compute ADF, KPSS and rolling-CV features for a series."""
     adf_res = adfuller(series, autolag="AIC")
-    kpss_res = kpss(series, regression="c", nlags="auto")
+    # KPSS may emit InterpolationWarning when p-values are outside the
+    # tabulated range; this is expected and does not affect the statistic.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InterpolationWarning)
+        kpss_res = kpss(series, regression="c", nlags="auto")
     rolling_mean, rolling_var, cv_mean, cv_var = rolling_cv(series, window)
     return {
         "adf_stat": adf_res[0],

@@ -184,7 +184,7 @@ rolling_kurt = s.rolling(window=w).kurt()
 
 ### 3.1 平稳性特征
 
-**平稳性（Stationarity）** 是指时间序列的统计特性（均值、方差、自相关结构）不随时间推移而显著变化。它是许多经典时序模型（如 ARMA、ARIMA）的重要前提：非平稳序列的均值或方差漂移会让参数估计失去意义，而平稳序列更易于建模与预测。
+**平稳性（Stationarity）** 是指时间序列的统计特性（均值、方差、自相关结构）不随时间推移而显著变化。它是许多经典时序模型（如 ARMA、ARIMA ）的重要前提：非平稳序列的均值或方差漂移会让参数估计失去意义，而平稳序列更易于建模与预测。
 
 #### 3.1.1 ADF 检验
 
@@ -206,7 +206,11 @@ $$
 `statsmodels` 中的调用方式如下：
 
 ```python
+import numpy as np
 from statsmodels.tsa.stattools import adfuller
+
+# x 为已加载的时间序列，例如：x = np.array([...])
+x = np.random.randn(100)  # 占位示例序列，请替换为实际数据
 
 adf_res = adfuller(x, autolag="AIC")
 adf_stat, adf_pvalue, used_lags = adf_res[0], adf_res[1], adf_res[2]
@@ -222,7 +226,11 @@ is_stationary = adf_pvalue < 0.05
 - `kpss_is_stationary`：布尔值，p-value >= 0.05 时为 `True`。
 
 ```python
+import numpy as np
 from statsmodels.tsa.stattools import kpss
+
+# x 为已加载的时间序列，例如：x = np.array([...])
+x = np.random.randn(100)  # 占位示例序列，请替换为实际数据
 
 kpss_res = kpss(x, regression="c", nlags="auto")
 kpss_stat, kpss_pvalue = kpss_res[0], kpss_res[1]
@@ -253,7 +261,11 @@ $$
 $CV_m$ 与 $CV_v$ 越大，说明序列的局部均值或局部方差随时间变化越剧烈，平稳性越差。需要注意，当序列均值或方差接近零时，CV 可能不稳定，此时可改用绝对标准差或 MAD。
 
 ```python
+import numpy as np
 import pandas as pd
+
+# x 为已加载的时间序列，例如：x = np.array([...])
+x = np.random.randn(100)  # 占位示例序列，请替换为实际数据
 
 s = pd.Series(x)
 window = 30
