@@ -184,7 +184,7 @@ rolling_kurt = s.rolling(window=w).kurt()
 
 ### 3.1 平稳性特征
 
-**平稳性（Stationarity）** 是指时间序列的统计特性（均值、方差、自相关结构）不随时间推移而显著变化。它是许多经典时序模型（如 ARMA、ARIMA ）的重要前提：非平稳序列的均值或方差漂移会让参数估计失去意义，而平稳序列更易于建模与预测。
+**平稳性（Stationarity）** 是指时间序列的统计特性（均值、方差、自相关结构）不随时间推移而显著变化。它是许多经典时序模型（如 ARMA、ARIMA）的重要前提：非平稳序列的均值或方差漂移会让参数估计失去意义，而平稳序列更易于建模与预测。
 
 #### 3.1.1 ADF 检验
 
@@ -490,7 +490,7 @@ sign_changes = np.sum(np.abs(np.diff(rolling_signs[~np.isnan(rolling_signs)])) >
 
 ### 3.4 周期性特征
 
-**周期性（Periodicity）** 是指序列中重复出现的波动模式，其周期长度可以与日历无关。与季节性强调固定日历间隔（如小时、天、周）不同，周期性更关注数据本身内在的循环长度，例如机械振动、心电节律或网络流量的burst周期。刻画周期性不仅需要估计周期长度，还需要评估周期是否稳定。
+**周期性（Periodicity）** 是指序列中重复出现的波动模式，其周期长度可以与日历无关。与季节性强调固定日历间隔（如小时、天、周）不同，周期性更关注数据本身内在的循环长度，例如机械振动、心电节律或网络流量的 burst 周期。刻画周期性不仅需要估计周期长度，还需要评估周期是否稳定。
 
 #### 3.4.1 ACF 峰值法
 
@@ -709,13 +709,121 @@ band_ratios = {name: energy / total_energy for name, energy in band_energies.ite
 
 ## 5. 特征组合与工程实践
 
+前面各节分别介绍了统计特征、时域特征与频域特征。在实际工程中，通常会将这些特征组合成一个固定长度的特征向量，再输入到分类器、检测器或预测模型中。本节讨论特征组合的基本流程、多尺度窗口的重要性，以及三类典型任务中的应用方式。
+
+### 5.1 构建特征向量
+
+对于一个长度为 $N$ 的时间序列 $\mathbf{x}$，可以按以下层次构建特征向量：
+
+1. **全局统计特征**：均值、中位数、标准差、偏度、峰度、极差、IQR、绝对能量、RMS、过零率等。
+2. **局部窗口特征**：在多个窗口长度（如 5、20、50）下计算滚动均值、标准差、极差、偏度、峰度等，并进一步聚合为各窗口统计量的均值、标准差、最大值、最小值。
+3. **时域结构特征**：ADF/KPSS 检验统计量与 p-value、季节性强度 $F_s$、趋势强度 $F_t$、线性趋势斜率与 $R^2$、Mann-Kendall $S$、主导周期 $\hat{T}$ 与周期稳定性 $\sigma_T$。
+4. **频域特征**：主导频率、主导频率幅值、低/高频能量比、谱熵、谱质心、谱带宽、各频带能量占比。
+
+将这些标量按固定顺序拼接，即可得到：
+
+$$
+\mathbf{f} = [f_{\text{stat}},\ f_{\text{window}},\ f_{\text{time}},\ f_{\text{freq}}]^\top
+$$
+
+其中每个子向量内部可再做标准化或无量纲化处理。对于多条时间序列，最终形成特征矩阵 $\mathbf{F} \in \mathbb{R}^{M \times D}$，$M$ 为样本数，$D$ 为特征维度。
+
+```python
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+def extract_basic_features(x):
+    return {
+        "mean": np.mean(x),
+        "std": np.std(x),
+        "skew": stats.skew(x),
+        "kurt": stats.kurtosis(x),
+        "q25": np.percentile(x, 25),
+        "q75": np.percentile(x, 75),
+        "iqr": np.percentile(x, 75) - np.percentile(x, 25),
+        "rms": np.sqrt(np.mean(x ** 2)),
+        "zcr": np.sum((x[:-1] * x[1:]) < 0) / (len(x) - 1),
+    }
+
+def extract_window_features(x, windows=[10, 30, 60]):
+    feats = {}
+    s = pd.Series(x)
+    for w in windows:
+        rm = s.rolling(window=w).mean().dropna()
+        rs = s.rolling(window=w).std().dropna()
+        feats[f"rolling_mean_mean_w{w}"] = rm.mean()
+        feats[f"rolling_mean_std_w{w}"] = rm.std()
+        feats[f"rolling_std_mean_w{w}"] = rs.mean()
+        feats[f"rolling_std_max_w{w}"] = rs.max()
+    return feats
+
+# 拼接为特征向量
+basic = extract_basic_features(x)
+window = extract_window_features(x)
+# ... 时域、频域特征同理
+feature_vector = np.array(list(basic.values()) + list(window.values()))
+```
+
+### 5.2 多尺度窗口的重要性
+
+单一大小的滑动窗口难以兼顾不同时间尺度的模式：
+
+- **短窗口**（如 5、10）：对突发抖动、尖峰敏感，适合捕捉局部异常与高频扰动。
+- **中窗口**（如 30、60）：反映阶段性的均值漂移与波动聚集，适合刻画趋势转折。
+- **长窗口**（如 240、1440）：刻画长期水平与慢变周期，适合识别基线漂移与低频周期。
+
+工程实践中通常同时提取多个窗口下的统计量，并通过聚合（均值、标准差、最大/最小值）将其压缩为固定维度。多尺度窗口不仅能提高特征对尺度变化的鲁棒性，还能为下游模型提供不同粒度的信息，是时间序列特征工程中最有效的技巧之一。
+
+### 5.3 典型应用场景
+
+#### 分类
+
+在时序分类任务中，特征向量可以直接输入 **随机森林（Random Forest）**、**梯度提升树（Gradient Boosting Decision Tree, GBDT）** 或 **支持向量机（Support Vector Machine, SVM）**。例如，在设备振动信号分类中，可提取 RMS、频带能量占比、主导频率与滚动标准差最大值，用于区分正常、磨损与故障三种状态。
+
+```python
+from sklearn.ensemble import RandomForestClassifier
+
+X = np.vstack([extract_features(signal) for signal in signals])
+clf = RandomForestClassifier(n_estimators=200, random_state=42)
+clf.fit(X_train, y_train)
+```
+
+#### 异常检测
+
+在异常检测中，特征向量用于刻画“正常行为”的分布。通过计算待检测样本与正常样本在特征空间中的偏离程度（如马氏距离、孤立森林得分）来识别异常。例如，在服务器 KPI 监控中，可提取滚动均值、方差、谱熵与周期性强度；当近期窗口的谱熵突然升高或周期性强度显著下降时，往往预示着业务模式发生变化。
+
+```python
+from sklearn.ensemble import IsolationForest
+
+X = np.vstack([extract_features(window) for window in sliding_windows])
+detector = IsolationForest(contamination=0.01, random_state=42)
+detector.fit(X)
+```
+
+#### 预测
+
+在时间序列预测中，特征向量可作为回归模型的输入，用于预测未来一个或多个时刻的值。例如，在电力负荷预测中，可提取日内周期性相位统计量、趋势斜率、历史同期均值与频带能量比，作为 **XGBoost** 或 **LightGBM** 的特征，辅助模型捕捉周期与趋势。
+
+```python
+import lightgbm as lgb
+
+model = lgb.LGBMRegressor(n_estimators=500)
+model.fit(X_train, y_train)
+```
+
 ## 6. 本章小结
+
+- 时间序列特征可分为统计特征、时域特征与频域特征三个层面：统计特征刻画数值分布，时域特征刻画结构与演化规律，频域特征刻画周期与能量分布。
+- 滑动窗口与多尺度分析是时序特征工程的核心手段，能够在捕捉局部动态的同时兼顾不同时间尺度的模式。
+- 平稳性、季节性、趋势性与周期性是理解时间序列行为的四个关键维度，相应的特征（如 ADF/KPSS 统计量、季节/趋势强度、Mann-Kendall $S$、主导周期）为下游任务提供了可解释的输入。
+- 频域特征通过傅里叶变换与功率谱密度将周期信息显式化，谱熵、谱质心、谱带宽与频带能量占比等指标在振动、声学、网络流量等场景中尤为有效。
+- 在实际工程中，应将多类特征按固定顺序拼接为特征向量，并根据任务（分类、异常检测、预测）选择合适的模型与评估方式。
 
 ## 参考与延伸阅读
 
 - [本章引用](./references.md)
 - [本章习题](./exercises.md)
-- [附录 A：特征提取相关论文](../appendix/A-papers/README.md)
 
 ---
 
