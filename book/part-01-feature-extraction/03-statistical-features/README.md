@@ -356,6 +356,136 @@ seasonal_acf = [acf_vals[m], acf_vals[2 * m], acf_vals[3 * m]]
 
 ### 3.3 趋势性特征
 
+**趋势性（Trend）** 是指时间序列在较长时间尺度上呈现的持续上升、下降或保持稳定的倾向。与季节性不同，趋势通常不呈现固定周期，而是反映序列整体的演化方向，例如业务增长、设备老化、温度长期变化等。准确地刻画趋势不仅有助于理解序列的长期行为，也能为去趋势、预测与异常检测提供关键特征。
+
+#### 3.3.1 线性趋势特征
+
+最简单的趋势模型是线性回归：
+
+$$
+x_t = \beta_0 + \beta_1 t + \varepsilon_t
+$$
+
+其中 $t$ 为时间索引，$\beta_1$ 为斜率，$\beta_0$ 为截距，$\varepsilon_t$ 为残差。拟合后可提取以下标量特征：
+
+- `trend_slope`：斜率 $\beta_1$，正值表示上升，负值表示下降，绝对值越大趋势越陡。
+- `trend_intercept`：截距 $\beta_0$，表示 $t=0$ 时的序列水平。
+- `trend_r2`：决定系数 $R^2$，衡量线性趋势对序列波动的解释程度。
+
+决定系数定义为：
+
+$$
+R^2 = 1 - \frac{\sum_{t=1}^{N}(x_t - \hat{x}_t)^2}{\sum_{t=1}^{N}(x_t - \bar{x})^2}
+$$
+
+其中 $\hat{x}_t = \beta_0 + \beta_1 t$ 为线性拟合值。$R^2$ 接近 1 表示序列整体呈明显线性趋势；接近 0 则说明线性模型无法捕捉序列的长期演化。
+
+```python
+import numpy as np
+
+t = np.arange(len(x))
+coefs = np.polyfit(t, x, 1)  # [slope, intercept]
+slope, intercept = coefs
+linear_trend = slope * t + intercept
+r2 = 1.0 - np.sum((x - linear_trend) ** 2) / np.sum((x - np.mean(x)) ** 2)
+```
+
+#### 3.3.2 趋势强度
+
+当趋势并非严格线性时，可使用 **STL 分解** 将序列拆分为趋势项 $T_t$、季节项 $S_t$ 与残差项 $R_t$：
+
+$$
+x_t = T_t + S_t + R_t
+$$
+
+借鉴季节性强度的定义，**趋势强度（Trend Strength）** 可写为：
+
+$$
+F_t = 1 - \frac{\text{Var}(R_t)}{\text{Var}(T_t + R_t)}
+$$
+
+$F_t$ 越接近 1，说明序列的波动主要由趋势项解释；越接近 0，则趋势越弱。该指标特别适合评估非线性趋势的显著程度。
+
+```python
+from statsmodels.tsa.seasonal import STL
+import numpy as np
+
+s = pd.Series(x)
+res = STL(s, period=11).fit()  # period 根据数据周期选取，需为奇数
+
+F_t = 1 - np.var(res.resid, ddof=1) / np.var(res.trend + res.resid, ddof=1)
+```
+
+#### 3.3.3 Mann-Kendall 趋势检验
+
+**Mann-Kendall 检验** 是一种非参数趋势检验，不假设数据分布，对异常值较为稳健。其核心统计量为 Kendall's $S$：
+
+$$
+S = \sum_{i=1}^{N-1}\sum_{j=i+1}^{N} \text{sign}(x_j - x_i)
+$$
+
+其中 $\text{sign}(\cdot)$ 为符号函数。$S$ 为正且较大时，序列呈显著上升趋势；$S$ 为负且较小时，呈显著下降趋势。$S$ 的绝对值越大，趋势越显著。工程上常将 $|S|$ 或标准化后的 $Z$ 分数作为趋势显著性特征。
+
+```python
+from scipy import stats
+
+# 手动实现 Kendall's S
+def mann_kendall_s(series):
+    x_arr = np.asarray(series)
+    n_val = len(x_arr)
+    s = 0
+    for i in range(n_val - 1):
+        s += np.sum(np.sign(x_arr[i + 1:] - x_arr[i]))
+    return int(s)
+
+mk_s = mann_kendall_s(x)
+
+# 或用 scipy.stats.kendalltau 与时间的相关性等价计算
+tau, pvalue = stats.kendalltau(np.arange(len(x)), x)
+mk_s_check = int(tau * len(x) * (len(x) - 1) / 2)
+```
+
+#### 3.3.4 局部趋势变化特征
+
+全局线性趋势只能刻画序列整体的长期方向，而**局部趋势变化特征**可以捕捉趋势方向的转折。常用方法是在滑动窗口内拟合线性回归，记录斜率的符号序列：
+
+$$
+\text{sign}_t^{(w)} = \text{sign}(\beta_{1,t}^{(w)})
+$$
+
+其中 $\beta_{1,t}^{(w)}$ 为以 $t$ 结尾、长度为 $w$ 的窗口内线性拟合的斜率。通过统计符号变化次数或正/负斜率窗口的比例，可得到趋势方向稳定性的量化指标。
+
+```python
+import numpy as np
+import pandas as pd
+
+window = 30
+s = pd.Series(x)
+
+# pandas 暂未直接提供 rolling slope，可通过 apply 或 numpy 实现
+def rolling_slope(series, window):
+    s_arr = np.asarray(series)
+    n_val = len(s_arr)
+    slopes = np.full(n_val, np.nan)
+    for i in range(window - 1, n_val):
+        y = s_arr[i - window + 1 : i + 1]
+        x_win = np.arange(window) - (window - 1) / 2.0
+        slopes[i] = np.sum((x_win - np.mean(x_win)) * (y - np.mean(y))) / np.sum(
+            (x_win - np.mean(x_win)) ** 2
+        )
+    return slopes
+
+rolling_slopes = rolling_slope(s, window)
+rolling_signs = np.sign(rolling_slopes)
+sign_changes = np.sum(np.abs(np.diff(rolling_signs[~np.isnan(rolling_signs)])) > 1e-12)
+```
+
+完整脚本见 [`assets/code/03-example-05-trend-features.py`](./assets/code/03-example-05-trend-features.py)。
+
+![图 3-5 趋势性特征示例](./assets/images/03-fig-05-trend.png)
+
+**图 3-5** 趋势性特征示例。上图展示了原始序列、线性趋势与 STL 趋势，以及线性 $R^2$、趋势强度 $F_t$、Mann-Kendall $S$ 和滚动斜率符号变化次数；下图展示了滚动窗口斜率及其符号变化。
+
 ### 3.4 周期性特征
 
 ## 4. 频域特征
