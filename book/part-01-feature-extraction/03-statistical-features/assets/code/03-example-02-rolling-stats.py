@@ -28,7 +28,7 @@ plt.rcParams.update({
     "font.size": 10,
     "axes.labelsize": 11,
     "axes.titlesize": 12,
-    "figure.figsize": (10, 8),
+    "figure.figsize": (4.8, 3.8),
 })
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ rolling_kurt = s.rolling(window=window).kurt()
 # ---------------------------------------------------------------------------
 # 3. Visualize in a 2x2 panel
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True)
+fig, axes = plt.subplots(2, 2, sharex=True)
 
 # (1) Original series with rolling mean and std
 ax = axes[0, 0]

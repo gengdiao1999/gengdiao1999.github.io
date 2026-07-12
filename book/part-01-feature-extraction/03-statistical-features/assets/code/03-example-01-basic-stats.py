@@ -8,7 +8,6 @@ import pathlib
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from scipy import stats
 
 # ---------------------------------------------------------------------------
@@ -29,7 +28,7 @@ plt.rcParams.update({
     "font.size": 10,
     "axes.labelsize": 11,
     "axes.titlesize": 12,
-    "figure.figsize": (8, 6),
+    "figure.figsize": (5.0, 3.8),
 })
 
 # ---------------------------------------------------------------------------
@@ -78,7 +77,7 @@ print(f"Zero-cross:  {zcr:.3f}")
 # ---------------------------------------------------------------------------
 # 3. Visualize
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(2, 1, figsize=(8, 6), height_ratios=[2, 1])
+fig, axes = plt.subplots(2, 1, figsize=(5.0, 3.8), height_ratios=[2, 1])
 
 # Time series with key reference levels
 ax = axes[0]
