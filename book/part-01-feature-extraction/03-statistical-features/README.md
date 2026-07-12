@@ -184,6 +184,92 @@ rolling_kurt = s.rolling(window=w).kurt()
 
 ### 3.1 平稳性特征
 
+**平稳性（Stationarity）** 是指时间序列的统计特性（均值、方差、自相关结构）不随时间推移而显著变化。它是许多经典时序模型（如 ARMA、ARIMA）的重要前提：非平稳序列的均值或方差漂移会让参数估计失去意义，而平稳序列更易于建模与预测。
+
+#### 3.1.1 ADF 检验
+
+**ADF（Augmented Dickey-Fuller）检验** 是最常用的单位根检验，其回归模型可写为：
+
+$$
+\Delta x_t = \alpha + \beta t + \gamma x_{t-1} + \sum_{i=1}^{p}\delta_i \Delta x_{t-i} + \varepsilon_t
+$$
+
+其中 $\Delta x_t = x_t - x_{t-1}$ 为一阶差分，$p$ 为滞后阶数。原假设为序列存在单位根（非平稳）；当 p-value 小于显著性水平（通常取 0.05）时，拒绝原假设，认为序列平稳。
+
+从 ADF 检验可提取以下特征：
+
+- `adf_statistic`：ADF 统计量（越负越倾向于平稳）。
+- `adf_pvalue`：对应 p-value。
+- `adf_is_stationary`：布尔值，p-value < 0.05 时为 `True`。
+- `adf_lags`：检验时自动选择的滞后阶数。
+
+`statsmodels` 中的调用方式如下：
+
+```python
+from statsmodels.tsa.stattools import adfuller
+
+adf_res = adfuller(x, autolag="AIC")
+adf_stat, adf_pvalue, used_lags = adf_res[0], adf_res[1], adf_res[2]
+is_stationary = adf_pvalue < 0.05
+```
+
+#### 3.1.2 KPSS 检验
+
+**KPSS（Kwiatkowski-Phillips-Schmidt-Shin）检验** 与 ADF 检验的假设正好相反：原假设为序列平稳，备择假设为序列存在单位根。因此解读时需要注意 p-value 的方向：
+
+- `kpss_statistic`：LM 统计量。
+- `kpss_pvalue`：对应 p-value。
+- `kpss_is_stationary`：布尔值，p-value >= 0.05 时为 `True`。
+
+```python
+from statsmodels.tsa.stattools import kpss
+
+kpss_res = kpss(x, regression="c", nlags="auto")
+kpss_stat, kpss_pvalue = kpss_res[0], kpss_res[1]
+is_stationary = kpss_pvalue >= 0.05
+```
+
+实际工程中，通常同时报告 ADF 与 KPSS 结果。当两者结论冲突时，可结合滚动统计量的稳定性进一步判断。
+
+#### 3.1.3 滚动统计量稳定性特征
+
+全局检验只能给出整条序列是否平稳的结论，而滚动统计量可以刻画平稳性随时间的局部变化。给定窗口长度 $w$，时刻 $t$ 的滚动均值与滚动方差分别为：
+
+$$
+m_t^{(w)} = \frac{1}{w}\sum_{k=t-w+1}^{t}x_k
+$$
+
+$$
+v_t^{(w)} = \frac{1}{w}\sum_{k=t-w+1}^{t}\left(x_k - m_t^{(w)}\right)^2
+$$
+
+为了用单个标量衡量滚动均值或滚动方差自身的波动程度，可计算其**变异系数（Coefficient of Variation, CV）**：
+
+$$
+CV_m = \frac{\sigma\left(m_t^{(w)}\right)}{\bar{m}_t^{(w)}}, \quad
+CV_v = \frac{\sigma\left(v_t^{(w)}\right)}{\bar{v}_t^{(w)}}
+$$
+
+$CV_m$ 与 $CV_v$ 越大，说明序列的局部均值或局部方差随时间变化越剧烈，平稳性越差。需要注意，当序列均值或方差接近零时，CV 可能不稳定，此时可改用绝对标准差或 MAD。
+
+```python
+import pandas as pd
+
+s = pd.Series(x)
+window = 30
+rolling_mean = s.rolling(window=window).mean()
+rolling_var = s.rolling(window=window).var()
+
+cv_mean = rolling_mean.std() / rolling_mean.mean()
+cv_var = rolling_var.std() / rolling_var.mean()
+```
+
+完整脚本见 [`assets/code/03-example-03-stationarity-features.py`](./assets/code/03-example-03-stationarity-features.py)。
+
+![图 3-3 平稳序列与非平稳序列的 ADF/KPSS 检验与滚动统计量对比](./assets/images/03-fig-03-stationarity.png)
+
+**图 3-3** 平稳序列与非平稳序列的 ADF/KPSS 检验与滚动统计量对比。
+
 ### 3.2 季节性特征
 
 ### 3.3 趋势性特征
