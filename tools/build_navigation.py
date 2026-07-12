@@ -5,6 +5,11 @@ Parse book/SUMMARY.md and generate _data/navigation.yml.
 import re
 from pathlib import Path
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SUMMARY_PATH = REPO_ROOT / "book" / "SUMMARY.md"
 OUTPUT_PATH = REPO_ROOT / "_data" / "navigation.yml"
@@ -65,19 +70,32 @@ def parse_summary(text: str) -> list[dict]:
 
 
 def to_yaml(parts: list[dict]) -> str:
-    """Serialize parts to a minimal YAML string."""
+    """Serialize parts to a YAML string.
+
+    Uses PyYAML when available for robust quoting; falls back to a minimal
+    hand-rolled serializer that quotes titles containing ':' or '"'.
+    """
+    if yaml is not None:
+        return yaml.safe_dump(
+            parts,
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+
+    # Fallback if PyYAML is not installed.
+    def _quote(value: str) -> str:
+        if ":" in value or '"' in value:
+            escaped = value.replace('"', '\\"')
+            return f'"{escaped}"'
+        return value
+
     lines = []
     for part in parts:
-        title = part["title"]
-        if ":" in title:
-            title = f'"{title}"'
-        lines.append(f"- title: {title}")
+        lines.append(f"- title: {_quote(part['title'])}")
         lines.append("  chapters:")
         for chapter in part["chapters"]:
-            ct = chapter["title"]
-            if ":" in ct:
-                ct = f'"{ct}"'
-            lines.append(f"    - title: {ct}")
+            lines.append(f"    - title: {_quote(chapter['title'])}")
             lines.append(f"      url: {chapter['url']}")
     return "\n".join(lines) + "\n"
 

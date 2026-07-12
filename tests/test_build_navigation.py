@@ -3,7 +3,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
-from build_navigation import parse_summary, _convert_url, _clean_title
+from build_navigation import parse_summary, _convert_url, _clean_title, to_yaml
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 SAMPLE_SUMMARY = """# 全书目录
 
@@ -45,3 +50,20 @@ def test_parse_summary_structure():
     assert parts[1]["title"] == "附录"
     assert len(parts[1]["chapters"]) == 1
     assert parts[1]["chapters"][0]["title"] == "附录 A：论文"
+
+
+def test_to_yaml_is_valid_yaml():
+    parts = [
+        {
+            "title": '附录：带"引号"和：冒号的篇',
+            "chapters": [
+                {"title": '第 1 章："特殊"标题', "url": "/book/chapter/"},
+            ],
+        }
+    ]
+    output = to_yaml(parts)
+    if yaml is not None:
+        parsed = yaml.safe_load(output)
+        assert parsed == parts
+    else:
+        assert output  # Fallback path produces non-empty string.
