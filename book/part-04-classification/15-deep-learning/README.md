@@ -1,6 +1,6 @@
 # 第 15 章 深度学习方法
 
-讲解 FCN、ResNet、InceptionTime、TimesNet 等深度学习分类模型。
+讲解 **全卷积网络（FCN）**、**残差网络（ResNet）**、**InceptionTime**、**TimesNet** 等深度学习分类模型。
 
 ## 本章目标
 

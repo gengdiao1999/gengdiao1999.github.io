@@ -1,6 +1,6 @@
 # 第 21 章 单指标预测
 
-讲解 ARIMA、Prophet、DeepAR、N-BEATS 等单变量预测模型。
+讲解 **ARIMA**、**Prophet**、**DeepAR**、**N-BEATS** 等单变量预测模型。
 
 ## 本章目标
 

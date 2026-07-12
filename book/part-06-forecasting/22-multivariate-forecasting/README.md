@@ -1,6 +1,6 @@
 # 第 22 章 多指标预测
 
-讲解 VAR、LSTNet、MTGNN、PatchTST 等多变量预测模型。
+讲解 **向量自回归（VAR）**、**LSTNet**、**MTGNN**、**PatchTST** 等多变量预测模型。
 
 ## 本章目标
 

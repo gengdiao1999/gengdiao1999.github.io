@@ -1,6 +1,6 @@
 # 第 18 章 机器学习方法
 
-介绍基于聚类、One-Class SVM、Isolation Forest 的异常检测。
+介绍基于聚类、**单类支持向量机（One-Class SVM）**、**孤立森林（Isolation Forest）** 的异常检测。
 
 ## 本章目标
 
