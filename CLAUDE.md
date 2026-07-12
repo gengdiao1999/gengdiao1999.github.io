@@ -124,6 +124,13 @@
 - 脚本头部必须包含：`# Generated for book/part-NN/MM/README.md`。
 - 使用统一的调色板（见下方）。
 - 推荐输出格式：`PNG`，分辨率 `300 dpi`，宽不超过 1600 px。
+- 图片标题、坐标轴标签、图例等文字能用中文的尽可能使用中文，保持全书风格统一。
+- 必须正确配置中文字体，避免中文乱码。例如 `matplotlib` 中可设置：
+  ```python
+  plt.rcParams["font.sans-serif"] = ["SimHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "DejaVu Sans"]
+  plt.rcParams["axes.unicode_minus"] = False
+  ```
+  脚本运行前应检测系统可用字体，优先选择支持中文的字体，确保保存的 PNG 中文字正常显示。
 
 ### 4.2 统一调色板
 
