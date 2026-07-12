@@ -409,6 +409,7 @@ $F_t$ 越接近 1，说明序列的波动主要由趋势项解释；越接近 0�
 ```python
 from statsmodels.tsa.seasonal import STL
 import numpy as np
+import pandas as pd
 
 s = pd.Series(x)
 res = STL(s, period=11).fit()  # period 根据数据周期选取，需为奇数
@@ -427,6 +428,7 @@ $$
 其中 $\text{sign}(\cdot)$ 为符号函数。$S$ 为正且较大时，序列呈显著上升趋势；$S$ 为负且较小时，呈显著下降趋势。$S$ 的绝对值越大，趋势越显著。工程上常将 $|S|$ 或标准化后的 $Z$ 分数作为趋势显著性特征。
 
 ```python
+import numpy as np
 from scipy import stats
 
 # 手动实现 Kendall's S
