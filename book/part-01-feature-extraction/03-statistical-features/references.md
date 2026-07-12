@@ -1,6 +1,5 @@
 # 第 3 章引用
 
-[^hyndman2018forecasting]: Hyndman, R. J., & Athanasopoulos, G. (2018). *Forecasting: Principles and Practice*. OTexts.
 [^christ2018tsfresh]: Christ, M., Braun, N., Neuffer, J., & Kempa-Liehr, A. W. (2018). Time Series FeatuRe Extraction on basis of Scalable Hypothesis tests (tsfresh — A Python package). *Neurocomputing*, 307, 72–77.
 [^mckinney2011pandas]: McKinney, W. (2011). pandas: a foundational Python library for data analysis and statistics. *Python for High Performance and Scientific Computing*, 14(9), 1–9.
 [^dickey1979adf]: Dickey, D. A., & Fuller, W. A. (1979). Distribution of the estimators for autoregressive time series with a unit root. *Journal of the American Statistical Association*, 74(366), 427–431.
