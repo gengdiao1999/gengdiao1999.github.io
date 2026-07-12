@@ -9,6 +9,7 @@ heteroscedasticity.
 import pathlib
 import warnings
 
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -16,7 +17,7 @@ from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import adfuller, kpss
 
 # ---------------------------------------------------------------------------
-# Palette (see CLAUDE.md)
+# Palette and Chinese font setup (see CLAUDE.md)
 # ---------------------------------------------------------------------------
 COLORS = {
     "primary": "#0b5394",
@@ -27,14 +28,45 @@ COLORS = {
     "background": "#f8f9fa",
 }
 
-# Width <= 5.3 in at 300 dpi keeps the PNG width <= 1600 px.
+
+def setup_chinese_font():
+    """Use bundled WenQuanYi Micro Hei or a system Chinese font."""
+    font_path = pathlib.Path(__file__).parent.parent / "fonts" / "wqy-microhei.ttc"
+    if font_path.exists():
+        fm.fontManager.addfont(str(font_path))
+        prop = fm.FontProperties(fname=str(font_path))
+        plt.rcParams["font.sans-serif"] = [prop.get_name(), "DejaVu Sans"]
+    else:
+        candidates = [
+            "SimHei",
+            "WenQuanYi Micro Hei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "Microsoft YaHei",
+            "DejaVu Sans",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        chosen = next((f for f in candidates if f in available), "DejaVu Sans")
+        plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+setup_chinese_font()
+
 plt.rcParams.update({
     "figure.dpi": 300,
     "savefig.dpi": 300,
-    "font.size": 9,
-    "axes.labelsize": 10,
-    "axes.titlesize": 11,
-    "figure.figsize": (5.3, 6.2),
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+    "legend.frameon": False,
+    "legend.facecolor": "none",
+    "legend.edgecolor": "none",
+    "figure.figsize": (10, 3.5),
+    "figure.autolayout": True,
 })
 
 # ---------------------------------------------------------------------------
@@ -105,46 +137,47 @@ def stationarity_summary(series, window=30):
 feat_stationary = stationarity_summary(x_stationary, window=window)
 feat_nonstationary = stationarity_summary(x_nonstationary, window=window)
 
-print("Stationary series features:")
-print(f"  ADF statistic = {feat_stationary['adf_stat']:.4f}")
-print(f"  ADF p-value   = {feat_stationary['adf_pvalue']:.4f}")
-print(f"  ADF lags      = {feat_stationary['adf_lags']}")
-print(f"  ADF stationary? {feat_stationary['adf_is_stationary']}")
-print(f"  KPSS statistic = {feat_stationary['kpss_stat']:.4f}")
-print(f"  KPSS p-value   = {feat_stationary['kpss_pvalue']:.4f}")
-print(f"  KPSS stationary? {feat_stationary['kpss_is_stationary']}")
-print(f"  CV(mean) = {feat_stationary['cv_mean']:.4f}, CV(var) = {feat_stationary['cv_var']:.4f}")
+print("平稳序列特征:")
+print(f"  ADF 统计量 = {feat_stationary['adf_stat']:.4f}")
+print(f"  ADF p-value = {feat_stationary['adf_pvalue']:.4f}")
+print(f"  ADF 滞后阶数 = {feat_stationary['adf_lags']}")
+print(f"  ADF 平稳? {feat_stationary['adf_is_stationary']}")
+print(f"  KPSS 统计量 = {feat_stationary['kpss_stat']:.4f}")
+print(f"  KPSS p-value = {feat_stationary['kpss_pvalue']:.4f}")
+print(f"  KPSS 平稳? {feat_stationary['kpss_is_stationary']}")
+print(f"  CV(均值) = {feat_stationary['cv_mean']:.4f}, CV(方差) = {feat_stationary['cv_var']:.4f}")
 
-print("\nNon-stationary series features:")
-print(f"  ADF statistic = {feat_nonstationary['adf_stat']:.4f}")
-print(f"  ADF p-value   = {feat_nonstationary['adf_pvalue']:.4f}")
-print(f"  ADF lags      = {feat_nonstationary['adf_lags']}")
-print(f"  ADF stationary? {feat_nonstationary['adf_is_stationary']}")
-print(f"  KPSS statistic = {feat_nonstationary['kpss_stat']:.4f}")
-print(f"  KPSS p-value   = {feat_nonstationary['kpss_pvalue']:.4f}")
-print(f"  KPSS stationary? {feat_nonstationary['kpss_is_stationary']}")
-print(f"  CV(mean) = {feat_nonstationary['cv_mean']:.4f}, CV(var) = {feat_nonstationary['cv_var']:.4f}")
+print("\n非平稳序列特征:")
+print(f"  ADF 统计量 = {feat_nonstationary['adf_stat']:.4f}")
+print(f"  ADF p-value = {feat_nonstationary['adf_pvalue']:.4f}")
+print(f"  ADF 滞后阶数 = {feat_nonstationary['adf_lags']}")
+print(f"  ADF 平稳? {feat_nonstationary['adf_is_stationary']}")
+print(f"  KPSS 统计量 = {feat_nonstationary['kpss_stat']:.4f}")
+print(f"  KPSS p-value = {feat_nonstationary['kpss_pvalue']:.4f}")
+print(f"  KPSS 平稳? {feat_nonstationary['kpss_is_stationary']}")
+print(f"  CV(均值) = {feat_nonstationary['cv_mean']:.4f}, CV(方差) = {feat_nonstationary['cv_var']:.4f}")
 
 # ---------------------------------------------------------------------------
 # 3. Visualize
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(2, 1, sharex=True)
+fig, axes = plt.subplots(1, 2, sharex=True, figsize=(10, 3.2))
 
 series_data = [
-    (x_stationary, feat_stationary, "Stationary AR(1) series"),
-    (x_nonstationary, feat_nonstationary, "Non-stationary series (trend + heteroscedasticity)"),
+    (x_stationary, feat_stationary, "平稳 AR(1) 序列"),
+    (x_nonstationary, feat_nonstationary, "非平稳序列（趋势 + 异方差）"),
 ]
 
 for ax, (x, feat, title) in zip(axes, series_data):
     # Primary axis: original series and rolling mean
-    ax.plot(x, label="Original series", color=COLORS["primary"], linewidth=1.0, alpha=0.8)
+    ax.plot(x, label="原始序列", color=COLORS["primary"], linewidth=1.0, alpha=0.8)
     ax.plot(
         feat["rolling_mean"],
-        label=f"Rolling mean (w={window})",
+        label=f"滚动均值 (w={window})",
         color=COLORS["accent"],
-        linewidth=1.5,
+        linewidth=1.2,
     )
-    ax.set_ylabel("Value")
+    ax.set_xlabel("时间步")
+    ax.set_ylabel("取值")
     ax.set_title(title)
     ax.grid(True, linestyle=":", alpha=0.5)
     ax.set_facecolor(COLORS["background"])
@@ -153,40 +186,38 @@ for ax, (x, feat, title) in zip(axes, series_data):
     ax2 = ax.twinx()
     ax2.plot(
         feat["rolling_var"],
-        label=f"Rolling variance (w={window})",
+        label=f"滚动方差 (w={window})",
         color=COLORS["danger"],
-        linewidth=1.2,
+        linewidth=1.0,
         linestyle="--",
         alpha=0.8,
     )
-    ax2.set_ylabel("Rolling variance", color=COLORS["danger"])
+    ax2.set_ylabel("滚动方差", color=COLORS["danger"])
     ax2.tick_params(axis="y", labelcolor=COLORS["danger"])
 
-    # Combine legends
+    # Combine legends without frame
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=7)
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
 
-    # Text annotation box with test results
-    label = "stationary" if feat["adf_is_stationary"] else "non-stationary"
+    # Text annotation (no background box)
+    label = "平稳" if feat["adf_is_stationary"] else "非平稳"
     textstr = (
         f"ADF: {feat['adf_stat']:.3f} (p={feat['adf_pvalue']:.3f}, lags={feat['adf_lags']})\n"
         f"KPSS: {feat['kpss_stat']:.3f} (p={feat['kpss_pvalue']:.3f})\n"
-        f"CV(mean)={feat['cv_mean']:.3f}, CV(var)={feat['cv_var']:.3f}\n"
-        f"Decision: {label}"
+        f"CV(均值)={feat['cv_mean']:.3f}, CV(方差)={feat['cv_var']:.3f}\n"
+        f"判定: {label}"
     )
     ax.text(
         0.98,
         0.97,
         textstr,
         transform=ax.transAxes,
-        fontsize=8,
+        fontsize=7,
         verticalalignment="top",
         horizontalalignment="right",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=COLORS["neutral"], alpha=0.9),
     )
 
-axes[-1].set_xlabel("Time step")
 fig.tight_layout()
 
 # ---------------------------------------------------------------------------

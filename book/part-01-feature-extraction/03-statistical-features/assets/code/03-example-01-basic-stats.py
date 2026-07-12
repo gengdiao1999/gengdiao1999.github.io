@@ -6,12 +6,13 @@ This script generates Figure 3-1: an overview of basic statistical features.
 """
 import pathlib
 
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
 
 # ---------------------------------------------------------------------------
-# Palette (see CLAUDE.md)
+# Palette and Chinese font setup (see CLAUDE.md)
 # ---------------------------------------------------------------------------
 COLORS = {
     "primary": "#0b5394",
@@ -22,13 +23,45 @@ COLORS = {
     "background": "#f8f9fa",
 }
 
+
+def setup_chinese_font():
+    """Use bundled WenQuanYi Micro Hei or a system Chinese font."""
+    font_path = pathlib.Path(__file__).parent.parent / "fonts" / "wqy-microhei.ttc"
+    if font_path.exists():
+        fm.fontManager.addfont(str(font_path))
+        prop = fm.FontProperties(fname=str(font_path))
+        plt.rcParams["font.sans-serif"] = [prop.get_name(), "DejaVu Sans"]
+    else:
+        candidates = [
+            "SimHei",
+            "WenQuanYi Micro Hei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "Microsoft YaHei",
+            "DejaVu Sans",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        chosen = next((f for f in candidates if f in available), "DejaVu Sans")
+        plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+setup_chinese_font()
+
 plt.rcParams.update({
     "figure.dpi": 300,
     "savefig.dpi": 300,
-    "font.size": 10,
-    "axes.labelsize": 11,
-    "axes.titlesize": 12,
-    "figure.figsize": (5.0, 3.8),
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+    "legend.frameon": False,
+    "legend.facecolor": "none",
+    "legend.edgecolor": "none",
+    "figure.figsize": (10, 3.5),
+    "figure.autolayout": True,
 })
 
 # ---------------------------------------------------------------------------
@@ -58,77 +91,75 @@ energy = np.sum(x ** 2)
 rms = np.sqrt(np.mean(x ** 2))
 zcr = np.sum((x[:-1] * x[1:]) < 0) / (n - 1)
 
-print("=== Basic statistics ===")
-print(f"Mean:        {mean:.3f}")
-print(f"Median:      {median:.3f}")
-print(f"Mode:        {mode:.3f}")
-print(f"Variance:    {variance:.3f}")
-print(f"Std:         {std:.3f}")
-print(f"Range:       {range_val:.3f}")
+print("=== 基本统计量 ===")
+print(f"均值:        {mean:.3f}")
+print(f"中位数:      {median:.3f}")
+print(f"众数:        {mode:.3f}")
+print(f"方差:        {variance:.3f}")
+print(f"标准差:      {std:.3f}")
+print(f"极差:        {range_val:.3f}")
 print(f"Q1:          {q1:.3f}")
 print(f"Q3:          {q3:.3f}")
 print(f"IQR:         {iqr:.3f}")
-print(f"Skewness:    {skewness:.3f}")
-print(f"Kurtosis:    {kurtosis:.3f}")
-print(f"Energy:      {energy:.3f}")
+print(f"偏度:        {skewness:.3f}")
+print(f"峰度:        {kurtosis:.3f}")
+print(f"绝对能量:    {energy:.3f}")
 print(f"RMS:         {rms:.3f}")
-print(f"Zero-cross:  {zcr:.3f}")
+print(f"过零率:      {zcr:.3f}")
 
 # ---------------------------------------------------------------------------
 # 3. Visualize
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(2, 1, figsize=(5.0, 3.8), height_ratios=[2, 1])
+fig, axes = plt.subplots(1, 2, figsize=(10, 3.2))
 
 # Time series with key reference levels
 ax = axes[0]
-ax.plot(x, label="Original series", color=COLORS["primary"], linewidth=1.2)
-ax.axhline(mean, color=COLORS["accent"], linestyle="--", label="Mean")
-ax.axhline(median, color=COLORS["secondary"], linestyle="-.", label="Median")
+ax.plot(x, label="原始序列", color=COLORS["primary"], linewidth=1.0)
+ax.axhline(mean, color=COLORS["accent"], linestyle="--", label="均值")
+ax.axhline(median, color=COLORS["secondary"], linestyle="-.", label="中位数")
 ax.axhline(q1, color=COLORS["neutral"], linestyle=":", label="Q1 / Q3")
 ax.axhline(q3, color=COLORS["neutral"], linestyle=":")
-ax.set_xlabel("Time step")
-ax.set_ylabel("Value")
-ax.set_title("Basic Statistical Features Overview")
-ax.legend(loc="upper left", fontsize=8)
+ax.set_xlabel("时间步")
+ax.set_ylabel("取值")
+ax.set_title("基本统计量概览")
+ax.legend(loc="upper left")
 ax.grid(True, linestyle=":", alpha=0.5)
 ax.set_facecolor(COLORS["background"])
 
 # Histogram with central tendency and spread markers
 ax = axes[1]
 ax.hist(x, bins=20, color=COLORS["primary"], edgecolor="white", alpha=0.7)
-ax.axvline(mean, color=COLORS["accent"], linestyle="--", linewidth=1.5, label="Mean")
-ax.axvline(median, color=COLORS["secondary"], linestyle="-.", linewidth=1.5, label="Median")
+ax.axvline(mean, color=COLORS["accent"], linestyle="--", linewidth=1.5, label="均值")
+ax.axvline(median, color=COLORS["secondary"], linestyle="-.", linewidth=1.5, label="中位数")
 ax.axvline(q1, color=COLORS["neutral"], linestyle=":", linewidth=1.5)
 ax.axvline(q3, color=COLORS["neutral"], linestyle=":", linewidth=1.5)
-ax.set_xlabel("Value")
-ax.set_ylabel("Count")
-ax.set_title("Distribution Histogram")
-ax.legend(loc="upper right", fontsize=8)
+ax.set_xlabel("取值")
+ax.set_ylabel("频数")
+ax.set_title("分布直方图")
+ax.legend(loc="upper right")
 ax.grid(True, linestyle=":", alpha=0.5)
 ax.set_facecolor(COLORS["background"])
 
-# Compact statistics table as a text box
+# Compact statistics table as a text box (no background border)
 stat_text = (
-    f"Mean={mean:.2f}\n"
-    f"Median={median:.2f}\n"
-    f"Std={std:.2f}\n"
-    f"Range={range_val:.2f}\n"
+    f"均值={mean:.2f}\n"
+    f"中位数={median:.2f}\n"
+    f"标准差={std:.2f}\n"
+    f"极差={range_val:.2f}\n"
     f"IQR={iqr:.2f}\n"
-    f"Skew={skewness:.2f}\n"
-    f"Kurt={kurtosis:.2f}\n"
-    f"Energy={energy:.1f}\n"
+    f"偏度={skewness:.2f}\n"
+    f"峰度={kurtosis:.2f}\n"
+    f"能量={energy:.1f}\n"
     f"RMS={rms:.2f}\n"
-    f"ZCR={zcr:.2f}"
+    f"过零率={zcr:.2f}"
 )
 ax.text(
     0.02,
     0.98,
     stat_text,
     transform=ax.transAxes,
-    fontsize=8,
+    fontsize=7,
     verticalalignment="top",
-    fontfamily="monospace",
-    bbox=dict(boxstyle="round", facecolor=COLORS["background"], alpha=0.9),
 )
 
 fig.tight_layout()

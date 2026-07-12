@@ -8,6 +8,7 @@ local rolling slope signs.
 """
 import pathlib
 
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -15,7 +16,7 @@ from scipy import stats
 from statsmodels.tsa.seasonal import STL
 
 # ---------------------------------------------------------------------------
-# Palette (see CLAUDE.md)
+# Palette and Chinese font setup (see CLAUDE.md)
 # ---------------------------------------------------------------------------
 COLORS = {
     "primary": "#0b5394",
@@ -26,14 +27,45 @@ COLORS = {
     "background": "#f8f9fa",
 }
 
-# Width <= 5.3 in at 300 dpi keeps the PNG width <= 1600 px.
+
+def setup_chinese_font():
+    """Use bundled WenQuanYi Micro Hei or a system Chinese font."""
+    font_path = pathlib.Path(__file__).parent.parent / "fonts" / "wqy-microhei.ttc"
+    if font_path.exists():
+        fm.fontManager.addfont(str(font_path))
+        prop = fm.FontProperties(fname=str(font_path))
+        plt.rcParams["font.sans-serif"] = [prop.get_name(), "DejaVu Sans"]
+    else:
+        candidates = [
+            "SimHei",
+            "WenQuanYi Micro Hei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "Microsoft YaHei",
+            "DejaVu Sans",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        chosen = next((f for f in candidates if f in available), "DejaVu Sans")
+        plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+setup_chinese_font()
+
 plt.rcParams.update({
     "figure.dpi": 300,
     "savefig.dpi": 300,
-    "font.size": 9,
-    "axes.labelsize": 10,
-    "axes.titlesize": 11,
-    "figure.figsize": (5.3, 5.5),
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+    "legend.frameon": False,
+    "legend.facecolor": "none",
+    "legend.edgecolor": "none",
+    "figure.figsize": (10, 3.2),
+    "figure.autolayout": True,
 })
 
 # ---------------------------------------------------------------------------
@@ -118,7 +150,6 @@ def rolling_slope(series, window):
     slopes = np.full(n_val, np.nan)
     for i in range(window - 1, n_val):
         y = s_arr[i - window + 1 : i + 1]
-        # x is centered at 0 to improve numerical stability
         x_win = np.arange(window) - (window - 1) / 2.0
         slopes[i] = np.sum((x_win - np.mean(x_win)) * (y - np.mean(y))) / np.sum(
             (x_win - np.mean(x_win)) ** 2
@@ -129,85 +160,84 @@ def rolling_slope(series, window):
 rolling_slopes = rolling_slope(s, window)
 rolling_signs = np.sign(rolling_slopes)
 
-# Count sign changes in the valid portion of the rolling slope series
 valid_signs = pd.Series(rolling_signs).dropna().values
 sign_changes = int(np.sum(np.abs(np.diff(valid_signs)) > 1e-12))
 
-print("Linear trend:")
-print(f"  Slope beta_1 = {slope_linear:.6f}")
-print(f"  Intercept beta_0 = {intercept_linear:.4f}")
+print("线性趋势:")
+print(f"  斜率 beta_1 = {slope_linear:.6f}")
+print(f"  截距 beta_0 = {intercept_linear:.4f}")
 print(f"  R^2 = {r2_linear:.4f}")
-print(f"\nSTL trend strength F_t = {F_t:.4f}")
-print(f"\nMann-Kendall S statistic = {mk_s} (scipy check: {mk_s_scipy})")
+print(f"\nSTL 趋势强度 F_t = {F_t:.4f}")
+print(f"\nMann-Kendall S 统计量 = {mk_s} (scipy 校验: {mk_s_scipy})")
 print(f"Kendall tau = {tau:.4f}, p-value = {tau_pvalue:.4e}")
-print(f"\nRolling slope signs (window={window}):")
-print(f"  Positive windows: {int(np.sum(valid_signs > 0))}")
-print(f"  Negative windows: {int(np.sum(valid_signs < 0))}")
-print(f"  Sign changes: {sign_changes}")
+print(f"\n滚动斜率符号 (window={window}):")
+print(f"  正窗口数: {int(np.sum(valid_signs > 0))}")
+print(f"  负窗口数: {int(np.sum(valid_signs < 0))}")
+print(f"  符号变化次数: {sign_changes}")
 
 # ---------------------------------------------------------------------------
-# 6. Visualize
+# 6. Visualize in a flat 1x2 layout
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(2, 1, sharex=True)
+fig, axes = plt.subplots(1, 2, sharex=True, figsize=(10, 3.2))
 
 # Panel 1: original series with linear and STL trends
-axes[0].plot(t, x, label="Original series", color=COLORS["primary"], linewidth=0.9, alpha=0.8)
+axes[0].plot(t, x, label="原始序列", color=COLORS["primary"], linewidth=0.9, alpha=0.8)
 axes[0].plot(
     t,
     linear_trend,
-    label=f"Linear trend ($\\beta_1$={slope_linear:.4f})",
+    label=f"线性趋势 ($\\beta_1$={slope_linear:.4f})",
     color=COLORS["accent"],
-    linewidth=1.5,
+    linewidth=1.2,
     linestyle="--",
 )
 axes[0].plot(
     t,
     res.trend.values,
-    label="STL trend",
+    label="STL 趋势",
     color=COLORS["secondary"],
-    linewidth=1.5,
+    linewidth=1.2,
 )
-axes[0].set_ylabel("Value")
-axes[0].set_title("Trend Features on a Synthetic Series")
+axes[0].set_ylabel("取值")
+axes[0].set_xlabel("时间步")
+axes[0].set_title("趋势特征示例")
 axes[0].grid(True, linestyle=":", alpha=0.5)
 axes[0].set_facecolor(COLORS["background"])
-axes[0].legend(loc="upper left", fontsize=8)
+axes[0].legend(loc="upper left")
 
-# Annotation box with trend metrics
+# Annotation (no box)
 textstr = (
-    f"Linear $R^2$ = {r2_linear:.3f}\n"
-    f"Trend strength $F_t$ = {F_t:.3f}\n"
+    f"线性 $R^2$ = {r2_linear:.3f}\n"
+    f"趋势强度 $F_t$ = {F_t:.3f}\n"
     f"Mann-Kendall $S$ = {mk_s}\n"
-    f"Rolling sign changes = {sign_changes}"
+    f"滚动符号变化 = {sign_changes}"
 )
 axes[0].text(
     0.98,
     0.97,
     textstr,
     transform=axes[0].transAxes,
-    fontsize=9,
+    fontsize=7,
     verticalalignment="top",
     horizontalalignment="right",
-    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=COLORS["neutral"], alpha=0.9),
 )
 
 # Panel 2: rolling window slope and its sign
 axes[1].axhline(0, color=COLORS["neutral"], linewidth=0.8, linestyle="-", alpha=0.6)
-axes[1].plot(t, rolling_slopes, label=f"Rolling slope (w={window})", color=COLORS["accent"], linewidth=1.2)
+axes[1].plot(t, rolling_slopes, label=f"滚动斜率 (w={window})", color=COLORS["accent"], linewidth=1.0)
 axes[1].scatter(
     t[window - 1:],
     rolling_slopes[window - 1:],
     c=np.where(rolling_signs[window - 1:] > 0, COLORS["secondary"], COLORS["danger"]),
-    s=12,
+    s=10,
     zorder=3,
-    label="Slope sign (+/−)",
+    label="斜率符号 (+/−)",
 )
-axes[1].set_ylabel("Slope")
-axes[1].set_xlabel("Time step")
-axes[1].set_title("Local Rolling Slope Signs")
+axes[1].set_ylabel("斜率")
+axes[1].set_xlabel("时间步")
+axes[1].set_title("局部滚动斜率符号")
 axes[1].grid(True, linestyle=":", alpha=0.5)
 axes[1].set_facecolor(COLORS["background"])
-axes[1].legend(loc="upper left", fontsize=8)
+axes[1].legend(loc="upper left")
 
 fig.tight_layout()
 

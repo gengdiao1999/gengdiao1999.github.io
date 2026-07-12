@@ -3,11 +3,11 @@
 Generated for book/part-01-feature-extraction/03-statistical-features/README.md
 
 This script generates Figure 3-4: STL decomposition of a synthetic seasonal
-series and visualizes seasonality strength, intra-period statistics, and
-seasonal-lag autocorrelation features.
+series and visualizes seasonality strength.
 """
 import pathlib
 
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.stattools import acf
 
 # ---------------------------------------------------------------------------
-# Palette (see CLAUDE.md)
+# Palette and Chinese font setup (see CLAUDE.md)
 # ---------------------------------------------------------------------------
 COLORS = {
     "primary": "#0b5394",
@@ -27,14 +27,45 @@ COLORS = {
     "background": "#f8f9fa",
 }
 
-# Width <= 5.3 in at 300 dpi keeps the PNG width <= 1600 px.
+
+def setup_chinese_font():
+    """Use bundled WenQuanYi Micro Hei or a system Chinese font."""
+    font_path = pathlib.Path(__file__).parent.parent / "fonts" / "wqy-microhei.ttc"
+    if font_path.exists():
+        fm.fontManager.addfont(str(font_path))
+        prop = fm.FontProperties(fname=str(font_path))
+        plt.rcParams["font.sans-serif"] = [prop.get_name(), "DejaVu Sans"]
+    else:
+        candidates = [
+            "SimHei",
+            "WenQuanYi Micro Hei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "Microsoft YaHei",
+            "DejaVu Sans",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        chosen = next((f for f in candidates if f in available), "DejaVu Sans")
+        plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+setup_chinese_font()
+
 plt.rcParams.update({
     "figure.dpi": 300,
     "savefig.dpi": 300,
-    "font.size": 9,
-    "axes.labelsize": 10,
-    "axes.titlesize": 11,
-    "figure.figsize": (5.2, 6.5),
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+    "legend.frameon": False,
+    "legend.facecolor": "none",
+    "legend.edgecolor": "none",
+    "figure.figsize": (10, 4.2),
+    "figure.autolayout": True,
 })
 
 # ---------------------------------------------------------------------------
@@ -74,7 +105,6 @@ def seasonal_strength(trend, seasonal, residual):
     signal = seasonal + residual
     var_residual = np.var(residual, ddof=1)
     var_signal = np.var(signal, ddof=1)
-    # Guard against numerical issues when there is no seasonal variation
     if var_signal < 1e-12:
         return 0.0
     return 1.0 - var_residual / var_signal
@@ -103,48 +133,48 @@ F_s = seasonal_strength(res.trend.values, res.seasonal.values, res.resid.values)
 intra_stats = intra_period_stats(s, period)
 seasonal_acf = seasonal_acf_features(s, period, max_lag_order=3)
 
-print(f"Seasonal strength F_s = {F_s:.4f}")
-print(f"Intra-period mean  = {intra_stats['mean'][:5].round(4)} ...")
-print(f"Intra-period std   = {intra_stats['std'][:5].round(4)} ...")
-print(f"Intra-period skew  = {intra_stats['skew'][:5].round(4)} ...")
-print(f"Intra-period kurt  = {intra_stats['kurt'][:5].round(4)} ...")
+print(f"季节性强度 F_s = {F_s:.4f}")
+print(f"周期内均值  = {intra_stats['mean'][:5].round(4)} ...")
+print(f"周期内标准差 = {intra_stats['std'][:5].round(4)} ...")
+print(f"周期内偏度  = {intra_stats['skew'][:5].round(4)} ...")
+print(f"周期内峰度  = {intra_stats['kurt'][:5].round(4)} ...")
 for k, v in seasonal_acf.items():
     print(f"{k} = {v:.4f}")
 
 # ---------------------------------------------------------------------------
-# 4. Visualize STL decomposition
+# 4. Visualize STL decomposition in a flat 2x2 layout
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(4, 1, sharex=True)
+fig, axes = plt.subplots(2, 2, sharex=True, figsize=(10, 4.2))
 
 components = [
-    ("Observed", s.values, COLORS["primary"]),
-    ("Trend", res.trend.values, COLORS["accent"]),
-    ("Seasonal", res.seasonal.values, COLORS["secondary"]),
-    ("Residual", res.resid.values, COLORS["neutral"]),
+    ("原始序列", s.values, COLORS["primary"]),
+    ("趋势项", res.trend.values, COLORS["accent"]),
+    ("季节项", res.seasonal.values, COLORS["secondary"]),
+    ("残差项", res.resid.values, COLORS["neutral"]),
 ]
 
-for ax, (name, values, color) in zip(axes, components):
+for ax, (name, values, color) in zip(axes.flat, components):
     ax.plot(t, values, color=color, linewidth=1.0)
-    ax.set_ylabel(name, fontsize=9)
+    ax.set_ylabel(name)
     ax.grid(True, linestyle=":", alpha=0.5)
     ax.set_facecolor(COLORS["background"])
 
-axes[0].set_title(f"STL Decomposition (period={period})")
+axes[0, 0].set_title(f"STL 分解 (周期={period})")
 
-# Annotate seasonal strength on the observed subplot
-textstr = f"Seasonal strength $F_s$ = {F_s:.3f}"
-axes[0].text(
+# Annotate seasonal strength on the observed subplot (no box)
+textstr = f"季节性强度 $F_s$ = {F_s:.3f}"
+axes[0, 0].text(
     0.02,
     0.97,
     textstr,
-    transform=axes[0].transAxes,
-    fontsize=9,
+    transform=axes[0, 0].transAxes,
+    fontsize=8,
     verticalalignment="top",
     horizontalalignment="left",
-    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=COLORS["neutral"], alpha=0.9),
 )
 
-axes[-1].set_xlabel("Time step")
+axes[1, 0].set_xlabel("时间步")
+axes[1, 1].set_xlabel("时间步")
 fig.tight_layout()
 
 # ---------------------------------------------------------------------------
