@@ -16,6 +16,38 @@ pip install numpy pandas scipy statsmodels matplotlib scikit-learn
 
 ---
 
+## 3.0 本章特征概览
+
+本章系统介绍时间序列特征提取中常用的六大类特征。下表汇总了每类特征的代表性指标及其核心原理，便于快速定位所需内容。
+
+| 特征类别 | 代表性特征 | 核心原理 |
+|---|---|---|
+| **统计特征** | 均值、中位数、众数 | 描述序列取值的中心位置 |
+| **统计特征** | 方差、标准差、极差、四分位距（IQR） | 描述序列取值的离散程度与分布范围 |
+| **统计特征** | 偏度、峰度 | 刻画分布的不对称性与尾部厚度 |
+| **统计特征** | 绝对能量、均方根（RMS）、过零率（ZCR） | 刻画序列整体强度与穿越参考水平的频繁程度 |
+| **统计特征** | 滚动窗口统计量 | 在滑动窗口内重复计算统计量，捕捉序列的局部时变特性 |
+| **平稳性特征** | ADF 统计量与 p-value | 单位根检验：原假设为序列存在单位根（非平稳） |
+| **平稳性特征** | KPSS 统计量与 p-value | 平稳性检验：原假设为序列平稳 |
+| **平稳性特征** | 滚动均值/方差变异系数 | 局部窗口内统计量的波动程度，衡量局部平稳性 |
+| **季节性特征** | 季节性强度 $F_s$ | 基于 STL 分解，衡量季节项解释的方差比例 |
+| **季节性特征** | 周期内统计量 | 按固定周期位置分组，计算每个相位上的均值、标准差等 |
+| **季节性特征** | 季节滞后自相关（ACF） | 在周期倍数滞后处的自相关系数，反映季节性重复强度 |
+| **趋势性特征** | 线性趋势斜率、截距、$R^2$ | 线性回归拟合序列长期演化方向 |
+| **趋势性特征** | 趋势强度 $F_t$ | 基于 STL 分解，衡量趋势项解释的方差比例 |
+| **趋势性特征** | Mann-Kendall $S$ 统计量 | 非参数 Kendall's $S$，衡量单调趋势的显著性 |
+| **趋势性特征** | 滚动斜率符号变化 | 局部窗口线性斜率的方向转折次数 |
+| **周期性特征** | ACF 峰值周期 | 自相关函数越过置信界的第一个显著峰值对应滞后 |
+| **周期性特征** | 周期图峰值周期 | FFT 功率谱主导频率对应的周期 |
+| **周期性特征** | 滚动周期稳定性 | 滚动窗口周期估计的标准差，衡量周期是否稳定 |
+| **频域特征** | 主导频率、主导幅值、低/高频能量比 | FFT 将序列分解为不同频率分量，从能量角度揭示周期性 |
+| **频域特征** | 谱熵、谱质心、谱带宽 | Welch PSD 描述功率在频率上的分布形态 |
+| **频域特征** | 频带能量占比 | 将频谱划分为低/中/高频带，计算各带能量占总能量之比 |
+
+表中每一类特征都将在后续小节中详细展开，包括定义、公式、Python 实现与可视化解读。
+
+---
+
 ## 3.1 统计特征
 
 统计特征用少量标量刻画整条序列或局部窗口的数值特性，是后续建模最直接、最可解释的特征来源。它们回答的是“序列取值本身的分布如何”，不涉及时间先后顺序，但对异常检测、分类与基线刻画非常有用。下面按全局基本量、分布形态、能量与计数、滑动窗口四个层面展开。
@@ -760,6 +792,13 @@ band_ratios = {name: energy / total_energy for name, energy in band_energies.ite
 - [本章引用](./references.md)
 - [本章习题](./exercises.md)
 - [附录 A：相关论文](../appendix/A-papers/README.md)
+
+[^christ2018tsfresh]: Christ, M., Braun, N., Neuffer, J., & Kempa-Liehr, A. W. (2018). Time Series FeatuRe Extraction on basis of Scalable Hypothesis tests (tsfresh — A Python package). *Neurocomputing*, 307, 72–77.
+[^mckinney2011pandas]: McKinney, W. (2011). pandas: a foundational Python library for data analysis and statistics. *Python for High Performance and Scientific Computing*, 14(9), 1–9.
+[^dickey1979adf]: Dickey, D. A., & Fuller, W. A. (1979). Distribution of the estimators for autoregressive time series with a unit root. *Journal of the American Statistical Association*, 74(366), 427–431.
+[^kwiatkowski1992kpss]: Kwiatkowski, D., Phillips, P. C., Schmidt, P., & Shin, Y. (1992). Testing the null hypothesis of stationarity against the alternative of a unit root. *Journal of Econometrics*, 54(1–3), 159–178.
+[^cleveland1990stl]: Cleveland, R. B., Cleveland, W. S., McRae, J. E., & Terpenning, I. (1990). STL: A seasonal-trend decomposition procedure based on loess. *Journal of Official Statistics*, 6(1), 3–73.
+[^mann1945trend]: Mann, H. B. (1945). Nonparametric tests against trend. *Econometrica*, 13(3), 245–259.
 
 ---
 
