@@ -728,6 +728,8 @@ $$
 
 其中每个子向量内部可再做标准化或无量纲化处理。对于多条时间序列，最终形成特征矩阵 $\mathbf{F} \in \mathbb{R}^{M \times D}$，$M$ 为样本数，$D$ 为特征维度。
 
+以下代码为示意框架，实际使用时需补充输入序列 `x` 以及时域、频域特征提取函数：
+
 ```python
 import numpy as np
 import pandas as pd
@@ -761,7 +763,7 @@ def extract_window_features(x, windows=[10, 30, 60]):
 # 拼接为特征向量
 basic = extract_basic_features(x)
 window = extract_window_features(x)
-# ... 时域、频域特征同理
+# 此处需调用时域、频域特征提取函数并拼接
 feature_vector = np.array(list(basic.values()) + list(window.values()))
 ```
 
@@ -781,10 +783,12 @@ feature_vector = np.array(list(basic.values()) + list(window.values()))
 
 在时序分类任务中，特征向量可以直接输入 **随机森林（Random Forest）**、**梯度提升树（Gradient Boosting Decision Tree, GBDT）** 或 **支持向量机（Support Vector Machine, SVM）**。例如，在设备振动信号分类中，可提取 RMS、频带能量占比、主导频率与滚动标准差最大值，用于区分正常、磨损与故障三种状态。
 
+以下代码为示意框架，实际使用时需补充训练数据 `X_train`、`y_train` 与特征提取函数 `extract_features`：
+
 ```python
 from sklearn.ensemble import RandomForestClassifier
 
-X = np.vstack([extract_features(signal) for signal in signals])
+X_train = np.vstack([extract_features(signal) for signal in signals])
 clf = RandomForestClassifier(n_estimators=200, random_state=42)
 clf.fit(X_train, y_train)
 ```
@@ -792,6 +796,8 @@ clf.fit(X_train, y_train)
 #### 异常检测
 
 在异常检测中，特征向量用于刻画“正常行为”的分布。通过计算待检测样本与正常样本在特征空间中的偏离程度（如马氏距离、孤立森林得分）来识别异常。例如，在服务器 KPI 监控中，可提取滚动均值、方差、谱熵与周期性强度；当近期窗口的谱熵突然升高或周期性强度显著下降时，往往预示着业务模式发生变化。
+
+以下代码为示意框架，实际使用时需补充滑动窗口数据 `sliding_windows` 与特征提取函数 `extract_features`：
 
 ```python
 from sklearn.ensemble import IsolationForest
@@ -804,6 +810,8 @@ detector.fit(X)
 #### 预测
 
 在时间序列预测中，特征向量可作为回归模型的输入，用于预测未来一个或多个时刻的值。例如，在电力负荷预测中，可提取日内周期性相位统计量、趋势斜率、历史同期均值与频带能量比，作为 **XGBoost** 或 **LightGBM** 的特征，辅助模型捕捉周期与趋势。
+
+以下代码为示意框架，实际使用时需补充训练特征 `X_train` 与目标值 `y_train`：
 
 ```python
 import lightgbm as lgb
