@@ -280,18 +280,19 @@ fig.savefig("../images/03-fig-01-rolling-mean-std.png", dpi=300)
 
 ## 8. 构建与验证
 
-### 8.1 生成索引
+### 8.1 生成索引与导航
 
 ```bash
-python3 tools/build_index.py            # 论文 + 专利
-python3 tools/build_index.py papers     # 仅论文
-python3 tools/build_index.py pdfs       # 仅专利
+python3 tools/build_navigation.py      # 生成章节目录数据
+python3 tools/build_index.py           # 论文 + 专利
+python3 tools/build_index.py papers    # 仅论文
+python3 tools/build_index.py pdfs      # 仅专利
 ```
 
 ### 8.2 运行测试
 
 ```bash
-python3 -m pytest tests/test_build_index.py -v
+python3 -m pytest tests/ -v
 ```
 
 ### 8.3 生成图片
@@ -325,6 +326,8 @@ python3 book/part-01-feature-extraction/03-statistical-features/assets/code/03-e
 - [ ] 图片由 Python 脚本生成并保存到 `assets/images/`
 - [ ] 代码块标注语言且可运行
 - [ ] 已更新 `book/SUMMARY.md`
+- [ ] 已运行 `tools/build_navigation.py` 并提交 `_data/navigation.yml`
+- [ ] 已通过 `pytest tests/test_build_navigation.py`
 - [ ] 已通过 `pytest tests/test_build_index.py`
 
 ---
