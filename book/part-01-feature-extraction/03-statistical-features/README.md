@@ -284,6 +284,76 @@ cv_var = rolling_var.std() / rolling_var.mean()
 
 ### 3.2 季节性特征
 
+**季节性（Seasonality）** 是指时间序列在固定时间间隔（如小时、天、周、年）上重复出现的模式。与趋势性不同，季节性通常围绕一个相对稳定的周期波动，例如电力负荷的日内峰谷、零售销量的周末效应等。刻画季节性不仅有助于理解业务规律，还能为后续的去季节、预测与异常检测提供结构化特征。
+
+#### 3.2.1 季节性强度
+
+给定序列的 STL 分解 $x_t = T_t + S_t + R_t$，其中 $T_t$ 为趋势项、$S_t$ 为季节项、$R_t$ 为残差项，**季节性强度（Seasonal Strength）** 可定义为：
+
+$$
+F_s = 1 - \frac{\text{Var}(R_t)}{\text{Var}(S_t + R_t)}
+$$
+
+$F_s$ 越接近 1，说明序列的波动主要由季节性解释；越接近 0，则季节性越弱。该指标在 `statsmodels.tsa.seasonal.STL` 分解后可直接计算。
+
+#### 3.2.2 周期内统计量
+
+将序列按周期位置 $p = t \bmod m$ 分组（$m$ 为周期长度），可计算每个位置上的均值、标准差、偏度与峰度：
+
+$$
+\bar{x}^{(p)} = \frac{1}{n_p}\sum_{t: t \bmod m = p} x_t
+$$
+
+$$
+\sigma^{(p)} = \sqrt{\frac{1}{n_p}\sum_{t: t \bmod m = p}(x_t - \bar{x}^{(p)})^2}
+$$
+
+同理可计算位置 $p$ 上的偏度 $\gamma_1^{(p)}$ 与峰度 $\gamma_2^{(p)}$。这些向量特征可以捕捉季节性波形在不同相位上的形态差异。
+
+#### 3.2.3 季节滞后自相关特征
+
+若序列存在周期为 $m$ 的季节性，则在滞后 $k = m, 2m, \dots$ 处的自相关系数通常显著为正。取前几个季节滞后的 ACF 值作为标量特征：
+
+$$
+\rho_{m}, \rho_{2m}, \rho_{3m}, \dots
+$$
+
+它们既可作为季节性强度的补充指标，也可直接输入下游模型。
+
+```python
+from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.stattools import acf
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+# x 为已加载的时间序列，m 为已知周期
+m = 24
+s = pd.Series(x)
+res = STL(s, period=m).fit()
+
+# 季节性强度
+F_s = 1 - np.var(res.resid, ddof=1) / np.var(res.seasonal + res.resid, ddof=1)
+
+# 周期内统计量
+df = pd.DataFrame({"value": x, "pos": np.arange(len(x)) % m})
+grouped = df.groupby("pos")["value"]
+intra_mean = grouped.mean().values
+intra_std = grouped.std(ddof=1).values
+intra_skew = grouped.apply(lambda g: stats.skew(g, bias=False)).values
+intra_kurt = grouped.apply(lambda g: stats.kurtosis(g, bias=False)).values
+
+# 季节滞后 ACF
+acf_vals = acf(x, nlags=3 * m, fft=True)
+seasonal_acf = [acf_vals[m], acf_vals[2 * m], acf_vals[3 * m]]
+```
+
+完整脚本见 [`assets/code/03-example-04-seasonality-features.py`](./assets/code/03-example-04-seasonality-features.py)。
+
+![图 3-4 STL 分解与季节性强度示例](./assets/images/03-fig-04-seasonality.png)
+
+**图 3-4** STL 分解与季节性强度示例。
+
 ### 3.3 趋势性特征
 
 ### 3.4 周期性特征
