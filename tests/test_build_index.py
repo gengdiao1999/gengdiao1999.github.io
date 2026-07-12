@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
 from build_index import (
     build_papers_index_html,
     build_pdfs_index_html,

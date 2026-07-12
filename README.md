@@ -1,269 +1,44 @@
-# AIOps Study Site
+# 时间序列分析：从特征到因果
 
-清华大学 **NetMan AIOps Lab**（[netman.aiops.org](https://netman.aiops.org/)）的论文、专利、源码与个人笔记索引站，部署在 GitHub Pages：
+欢迎来到本仓库。这里正在编写一部面向工程与研究人员的**中文时间序列分析技术书籍**，同时保留并整理了清华 NetMan Lab 论文、阿里 AIOps 论文、时序分类代表论文，以及必示科技专利作为附录。
 
-🌐 **在线访问**：<https://gengdiao1999.github.io/>
+## 阅读入口
 
-仓库内每个专题都按"**论文 / 专利 / 源码 / 笔记**"四类资料组织，本 README 是站点的总入口与使用说明。
+- **📖 书籍正文**：[`book/README.md`](book/README.md)
+- **📑 全书目录**：[`book/SUMMARY.md`](book/SUMMARY.md)
+- **🧾 编写规范**：[`CLAUDE.md`](CLAUDE.md)
+- **📚 附录 A：论文索引**：[`book/appendix/A-papers/index.html`](book/appendix/A-papers/index.html)
+- **📜 附录 B：专利索引**：[`book/appendix/B-patents/index.html`](book/appendix/B-patents/index.html)
 
----
+## 书籍主题
 
-## 📑 目录
+| 篇 | 主题 | 对应目录 |
+|---|---|---|
+| 基础篇 | 绪论、时序基础 | `book/part-00-fundamentals/` |
+| 第一篇 | 特征提取 | `book/part-01-feature-extraction/` |
+| 第二篇 | 时域分析 | `book/part-02-time-domain/` |
+| 第三篇 | 频域分析 | `book/part-03-frequency-domain/` |
+| 第四篇 | 时序分类 | `book/part-04-classification/` |
+| 第五篇 | 时序异常检测 | `book/part-05-anomaly-detection/` |
+| 第六篇 | 时序预测（单/多指标） | `book/part-06-forecasting/` |
+| 第七篇 | 时序因果分析 | `book/part-07-causal-analysis/` |
+| 附录 A | 论文 | `book/appendix/A-papers/` |
+| 附录 B | 专利 | `book/appendix/B-patents/` |
 
-- [仓库与站点结构](#仓库与站点结构)
-- [三大专题导航](#三大专题导航)
-- [时序专题 (`timeseries/`)](#时序专题-timeseries)
-  - [论文库：176 篇清华 AIOps Lab 论文](#论文库176-篇清华-aiops-lab-论文)
-  - [数据访问方式](#数据访问方式)
-  - [按年份浏览](#按年份浏览)
-  - [按研究方向浏览](#按研究方向浏览)
-  - [16 篇阿里 AIOps 论文（独立子集）](#16-篇阿里-aiops-论文独立子集)
-  - [22 篇时间序列分类 (TSC) 代表作（独立子集）](#22-篇时间序列分类-tsc-代表作独立子集)
-- [日志与调用链专题](#日志与调用链专题)
-- [使用与维护建议](#使用与维护建议)
-- [数据来源与版权](#数据来源与版权)
+## 本地构建
 
----
-
-## 仓库与站点结构
-
-```text
-study/
-├── README.md                  ← 本文件（站点总入口）
-│
-├── timeseries/                ← 专题一：时间序列
-│   ├── papers/                ←   176 篇 AIOps Lab 论文 PDF + 方案说明
-│   │   ├── *.pdf              ←     176 份原始 PDF（349 MB）
-│   │   ├── papers_index.csv   ←     176 行的元数据索引（year/title/authors/venue/...）
-│   │   ├── README.md          ←     抓取记录与年份/方向统计
-│   │   └── docs/              ←     每篇论文一个子目录
-│   │       └── <论文名>/
-│   │           ├── README.html  ←  深度中文方案说明（14 章节 / Mermaid 架构图 / MathJax 公式）
-│   │           ├── README.md    ←  同上，Markdown 版本（部分论文）
-│   │           └── paper.txt    ←  论文原文摘录
-│   │
-│   ├── pdfs/                  ←   30 份必示科技（AIOps 领域公司）专利 PDF
-│   └── classification/        ←   20 篇时间序列分类 (TSC) 代表论文 (arXiv)
-│       ├── index.html         ←     索引页（搜索 + 方向/年份筛选）
-│       ├── classification_index.csv  ← 元数据 CSV
-│       └── <论文 slug>/       ←     每篇论文一个目录
-│           ├── paper.pdf      ←       arXiv 原文 PDF
-│           └── README.html    ←       中文核心摘要 + 元信息表
-│
-├── logs/                      ← 专题二：日志
-└── tracing/                   ← 专题三：调用链
-```
-
----
-
-## 三大专题导航
-
-| 专题 | 简介 | 落地数据 | 入口 |
-|---|---|---|---|
-| 🟢 **时序（timeseries）** | 时序异常检测 / KPI 预测 / 根因分析 / TCP 优化 / 时序分类 | ✅ **176 篇清华论文 + 16 篇阿里 AIOps + 30 件专利 + 22 篇 TSC 代表作** | [`papers/`](timeseries/papers/index.html) · [`pdfs/`](timeseries/pdfs/index.html) · [`alibaba/`](timeseries/alibaba/index.html) · [`classification/`](timeseries/classification/index.html) |
-| 🟡 **日志（logs）** | 日志解析 / 异常识别 / LLM 日志分析 | ⏳ 规划中 | [`logs/`](logs/) |
-| 🟣 **调用链（tracing）** | 微服务追踪 / 根因定位 / Span 关联 | ⏳ 规划中 | [`tracing/`](tracing/) |
-
-> 本次主提交集中在 **时序专题** —— 抓齐 176 篇清华 AIOps Lab 论文、补全其中 40 篇深度版中文方案说明。下文将围绕 `timeseries/` 详细展开。
-
----
-
-## 时序专题 (`timeseries/`)
-
-### 论文库：176 篇清华 AIOps Lab 论文
-
-> 📚 完整索引：[`timeseries/papers/papers_index.csv`](timeseries/papers/papers_index.csv)（176 行，含 year / title / authors / venue / pdf_url / pdf_file / size_bytes）
-
-| 维度 | 数值 |
-|---|---|
-| 论文数 | **176** |
-| 原始 PDF 大小 | **349 MB** |
-| 时间跨度 | **2014 – 2026**（13 年） |
-| 收录会议/期刊 | SIGKDD、ICML、ICSE、FSE、ISSRE、ATC、INFOCOM、TSC、TIFS、IEEE Access、WWW、CoNEXT、MobiSys、ICCCN、IWQoS、ASPLOS、ASE、KDD、VLDB、EuroSys、SIGMETRICS、UbiComp 等 |
-| 中文方案说明 | **176 / 176 完整覆盖**（`docs/<论文名>/README.html`） |
-| 抓取方式 | 见 [`timeseries/papers/README.md`](timeseries/papers/README.md) |
-
-### 数据访问方式
-
-每篇论文对应仓库内的一个子目录，目录内同时提供 **PDF 原文** 与 **HTML 方案说明**：
-
-```text
-timeseries/papers/
-├── SmartIW-Camera-Ready.pdf        ← 论文原始 PDF
-└── docs/
-    └── SmartIW-Camera-Ready/      ← 方案说明目录
-        ├── README.html            ← 浏览器可读的中文方案说明
-        ├── README.md              ← Markdown 源（部分论文）
-        └── paper.txt              ← 论文原文摘录
-```
-
-**三种访问入口**：
-
-1. **浏览器（推荐）** → 直接打开 GitHub Pages 站点的对应 HTML 页：
-   <https://gengdiao1999.github.io/timeseries/papers/docs/SmartIW-Camera-Ready/README.html>
-2. **本地** → `open timeseries/papers/docs/<目录名>/README.html`（macOS / Linux）
-3. **看原文 PDF** → 打开 `timeseries/papers/<目录名>.pdf`
-4. **阿里 AIOps 16 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/alibaba/index.html)
-   或本地 `open timeseries/alibaba/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv）
-5. **清华 NetMan 176 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/papers/index.html)
-   或本地 `open timeseries/papers/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF）
-6. **必示专利 30 件** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/pdfs/index.html)
-   或本地 `open timeseries/pdfs/index.html`（含搜索框 / 类型+年份筛选 / 每件专利直达 README/PDF/Google Patents）
-7. **时间序列分类 (TSC) 代表作 22 篇** → 直接打开 [GitHub Pages 索引页](https://gengdiao1999.github.io/timeseries/classification/index.html)
-   或本地 `open timeseries/classification/index.html`（含搜索框 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv）
-
-**用 CSV 检索**：
 ```bash
-# 在 papers_index.csv 中查找关键字
-grep -i "anomaly" timeseries/papers/papers_index.csv | head
+# 生成论文/专利 HTML 索引
+python3 tools/build_index.py
 
-# 用 awk 按年份统计
-awk -F, 'NR>1 {print $1}' timeseries/papers/papers_index.csv | sort | uniq -c
+# 运行测试
+python3 -m pytest tests/test_build_index.py -v
 ```
 
-### 按年份浏览
+## 贡献说明
 
-| 年份 | 论文数 | 重点主题 |
-|---|---|---|
-| 2026 | 10 | LLM 日志、时序基础模型、ICML 2026 / WWW 2026 / ICSE 2026 / FSE 2026 |
-| 2025 | 21 | 数据库压测、KAD 强化学习、Flow-of-Action、LogEval、TechSupportEval、DiagFusion |
-| 2024 | 25 | SparseRCA、Chain-of-Event、GrayScope、ISSRE 2024 群、AIOpsArena |
-| 2023 | 16 | TraceSieve、AnoTuner、LabelEase、FluxInfer、SPRINT |
-| 2022 | 11 | Revisiting-VAE、AetherLog、PIPCell、PerfScout、RootDiag |
-| 2021 | 10 | LatentScope、JumpStarter、Foundroot、LogClass、MonitorAssistant |
-| 2020 | 17 | OmniAnomaly、Opprentice2、CIRCA、InterFusion、DiagFusion、AlertRCA |
-| 2019 | 15 | AlertRCA、FluxInfer 雏形、ADELE、SmartScreen、DeST、LogParse |
-| 2018 | 14 | LogKG、Log2Vec、SmartIW、HotSpot、TraceAnomaly、CloudWatch+ |
-| 2017 | 10 | iRCA、LogPAI、OutSpot、LogAnomaly、Anomaly Detection 综述 |
-| 2016 | 13 | LogCluster、Opprentice、MobiCamp、WiFiSeer、F2Tree |
-| 2015 | 9 | FluxInfer 早期、PCQ、CQRD、流量工程 |
-| 2014 | 5 | 早期工作：F2Tree、pSqueeze、CQRD-LCN 等 |
-
-### 按研究方向浏览
-
-| 方向 | 论文数 | 关键论文（部分） |
-|---|---|---|
-| 🚨 **异常检测 / 时序** | ~30 | Opprentice、Donut、Buzz、InterFusion、Disformer、AnoTuner、CMDiagnostor、Revisiting-VAE、TSR-AD、SPRINT、TameR、OmniAnomaly、FluxInfer、KAD-Disformer、AutoDA-Timeseries |
-| 🔍 **根因分析 / 告警压缩** | ~25 | iRCA、AlertRCA、AlertSummary、alertrank、CIRCA、SparseRCA、Chain-of-Event、FoundRoot、RefinedEdge、MonitorAssistant、Auto-PIP、SCWarn、wch、LogTransfer、PUAD |
-| 🪵 **日志解析 / LLM 日志** | ~20 | Drain、LogParse、Log2Vec、LogKG、LogCraft、LogSummary、Eagle、Smart Eye、LogEval、TechSupportEval、LogClass、Device_Agnostic |
-| 🌐 **网络 / TCP / 数据中心** | ~20 | F2Tree、CQRD、pSqueeze、Multi-AS、SmartIW、MobiCamp、WiFiSeer、WING、firewall、InformationSciences-OmniFed、EDUM、conext15 |
-| 📊 **多模态 / 评测基准** | ~15 | AIOpsArena、LogEval、OpsEval、TechSupportEval、TSRBench、TADBench、TSC-TADBench、AIOpsArena |
-| 🛠️ **微服务 / Trace / 根因诊断** | ~20 | TraceSieve、TraceAnomaly、TraceVAE、DiagFusion、CMDiagnostor、FoundRoot、Chain-of-Event、DeST、AutoKAD、PerfScout、Eagle、F2Tree、Response-Time-Anomaly |
-| 📈 **KPI / 时序预测 / 性能测试** | ~10 | AutoDA-Timeseries、PerfScout、DiagFusion、Disformer、TimeMixer、TimeKD、SPRINT、TameR、TraceSieve |
-| 🧠 **大模型 / 智能体** | ~10 | Eagle、Smart Eye、Flow-of-Action、LogEval、TechSupportEval、FoundRoot、Chain-of-Event、DeST、MonitorAssistant、Shiyu_Accurate_Interpretable |
-| 📖 **综述 / 方法论** | ~10 | A-survey-on-intelligent-management、Empirical_Analysis、The_Search_for_Sparse、logstudy、Device_Agnostic、xuezsh-LogTransfer |
-
-> 上述分类基于论文标题快速归纳；交叉主题论文可能出现在多个类别中。
-
-### 论文方案说明文档规范
-
-每篇 `docs/<论文名>/README.html` 统一结构：
-
-| # | 章节 | 内容 |
-|---|---|---|
-| 1 | 文档信息速览 | 标题、作者、机构、年份、会议/期刊、分类、核心问题 |
-| 2 | 研究背景 | 领域脉络 + 相关工作 |
-| 3 | 论文目的 | 要解决的痛点 |
-| 4 | 核心原理 | 数学公式（MathJax 渲染） |
-| 5 | 系统/算法架构 | **≥ 2 个 Mermaid 架构图** |
-| 6 | 关键算法详解 | 伪代码 + 复杂度分析 |
-| 7 | 实现细节 | 超参 + 工程优化 |
-| 8 | 实验设计 | 数据集 / 基线 / 指标 / 结果表 |
-| 9 | 消融实验 | 消融表 + 关键结论 |
-| 10 | 对比已有工作 | 对比表 |
-| 11 | 工程落地 | 部署 Mermaid 架构图 |
-| 12 | 局限性与未来工作 | |
-| 13 | 总结与启示 | |
-| 14 | 附录 | 术语表 / 参数表 / 数据集表 |
-
-技术元素统计：每篇 HTML **≥ 1500 行 / ≥ 3 个 Mermaid 图 / ≥ 8 处数学公式 / ≥ 2 段伪代码 / ≥ 5 个表格**。
-
-### 抓取与维护说明
-
-详见 [`timeseries/papers/README.md`](timeseries/papers/README.md)：
-
-- 抓取日期：**2026-06-08**
-- 抓取脚本：`curl` + Python（`urllib.parse.quote` 处理中文路径）
-- 数据校验：所有 PDF 通过 `%PDF` magic 头校验
-- 已知问题：
-  1. 1 篇源站 403/404 已剔除
-  2. 3 个 URL 共享同一文件名，下载时被后者覆盖
-  3. 标题解析按 `.` 切分，对带缩写的英文名偶尔切错（详见 CSV）
+新增或修改章节前，请先阅读 [`CLAUDE.md`](CLAUDE.md)。每章以独立文件夹组织，预留 `assets/images/`、`assets/code/`、`assets/data/` 目录，便于后续扩展。
 
 ---
 
-### 16 篇阿里 AIOps 论文（独立子集）
-
-达摩院 / 阿里云 PAI / EagleEye / 蚂蚁 等 2020–2026 年 AIOps 与时序分析代表性论文。
-
-| 维度 | 数值 |
-|---|---|
-| 论文数 | **16** |
-| 时间跨度 | **2020 – 2026** |
-| 主题分布 | 异常检测 4 / 根因分析 4 / 时序预测 4 / 故障预测 2 / 可观测性 2 / LLM Agent 2 |
-| 中文方案说明 | **16 / 16 完整覆盖**（`alibaba/<目录名>/README.html`） |
-| 入口 | [`timeseries/alibaba/index.html`](timeseries/alibaba/index.html)（带搜索 / 分类筛选 / 超链接的可浏览索引页） |
-
----
-
-### 22 篇时间序列分类 (TSC) 代表作（独立子集）
-
-面向 UCR / UEA 通用时序分类基准，覆盖 Shapelet 原语、距离度量、深度学习基线、随机卷积核家族、集成方法、自监督表示、Transformer 七大算法范式。
-
-| 维度 | 数值 |
-|---|---|
-| 论文数 | **22** |
-| 时间跨度 | **2009 – 2024** |
-| 算法范式 | Shapelet 原语 1（Ye & Keogh 2009 KDD） / 距离度量 1（MPdist 2018 SDM） / 综述 3 / 深度 CNN（FCN/ResNet/InceptionTime/TimesNet/OS-CNN）5 / 随机卷积核（ROCKET/MiniRocket/MultiRocket）3 / 集成与森林（HIVE-COTE 2 / TS-CHIEF）2 / 自监督（TS2Vec/TS-TCC/TF-C/TimeMAE）4 / Transformer（TST/ConvTran/Medformer）3 / 特征工程（catch22）1 |
-| 数据规模 | 22 篇 PDF · ~41 MB · 来源 arXiv + 清华 UCR 公开渠道 |
-| 入口 | [`timeseries/classification/index.html`](timeseries/classification/index.html)（带搜索 / 方向+年份筛选 / 每篇论文直达 README/PDF/arXiv） |
-| CSV 索引 | [`timeseries/classification/classification_index.csv`](timeseries/classification/classification_index.csv) |
-| 深度解析 | Shapelets / MPdist 两篇采用 14 章节深度模板（`README.html` ≥ 250 行，含 Mermaid 架构图 / MathJax 公式 / 消融表 / 复杂度对比）；其余 20 篇沿用轻量卡片模板 |
-
-每个论文目录包含 `paper.pdf`（arXiv / 官方原文）+ `README.html`（中文核心摘要 + 元信息表 + arXiv 跳转），目录命名与索引页 slug 一致，便于交叉引用。
-
----
-
-## 日志与调用链专题
-
-`logs/` 和 `tracing/` 目录的 `index.html` 已发布站点骨架，但资料尚未落地。规划：
-
-- `logs/papers/`：日志解析、异常检测、LLM 日志分析论文
-- `logs/patents/`、`logs/repos/`、`logs/notes/`：待补
-- `tracing/papers/`：微服务 Trace、根因分析、Span 关联论文
-- `tracing/patents/`、`tracing/repos/`、`tracing/notes/`：待补
-
----
-
-## 使用与维护建议
-
-### 写给读者
-
-1. **找论文**：用 [`papers_index.csv`](timeseries/papers/papers_index.csv) 检索；或浏览 [`timeseries/papers/README.md`](timeseries/papers/README.md) 的年份分布；TSC 子集另有 [`classification_index.csv`](timeseries/classification/classification_index.csv)
-2. **读方案**：打开 `docs/<目录名>/README.html` 浏览器阅读（已渲染 Mermaid + MathJax）；TSC / 阿里子集为 `<子集>/<目录名>/README.html`
-3. **看原文**：同目录的 `.pdf`（清华子集在 `timeseries/papers/<目录名>.pdf`；阿里 / TSC 子集在各自目录内）
-4. **跨论文对比**：通过 `docs/<目录名>/README.html` 末尾"相关论文"小节跳转
-
-### 写给维护者
-
-1. **新增论文（清华子集）**：把 PDF 放入 `timeseries/papers/`，更新 `papers_index.csv` 与 `timeseries/papers/README.md`
-2. **新增论文（阿里 / TSC 子集）**：在 `timeseries/<子集>/<目录 slug>/` 下放 `paper.pdf` + `README.html`，然后重跑对应索引生成脚本（TSC 子集见提交 `1d1902d` 的 `tsc_papers.py`）
-3. **新增方案说明**：在 `timeseries/papers/docs/<目录名>/` 下写 `README.html`（沿用 14 章节模板）
-4. **跨分类链接**：在"相关论文"小节建立双向跳转
-5. **保持目录命名一致**：`<论文名>/` 目录名 = `<pdf 文件名去扩展名>`
-
----
-
-## 数据来源与版权
-
-- **论文数据来源**：
-  - 清华子集 176 篇 → [清华大学 NetMan AIOps Lab 官方 publications 页面](https://netman.aiops.org/publications/)（抓取于 2026-06-08）
-  - 阿里子集 16 篇 → 达摩院 / 阿里云 / 蚂蚁公开发表论文（arXiv / 官方 venue）
-  - **TSC 子集 22 篇** → [arXiv](https://arxiv.org/) 公开 PDF + 清华 UCR 站点（Shapelets 2009，抓取于 2026-06-12）
-- **使用范围**：学术研究与个人学习
-- **版权**：所有论文版权归原作者及发表会议/期刊所有。本仓库**仅做索引、归档与中文方案说明**，不替代正式发表渠道；如需引用请按原 venue 的引用规范进行。
-- **专利数据**：`timeseries/pdfs/` 中 30 件专利来源于公开专利数据库（CN 开头的中国专利），同样仅做归档与方案说明。
-
----
-
-> 🛠️ 本 README 由 Claude 协助完善。如有建议或数据错误，欢迎提 Issue。
+*本仓库基于 GitHub Pages 部署，原 `timeseries/` 论文与专利资产已迁移到 `book/appendix/`。*
