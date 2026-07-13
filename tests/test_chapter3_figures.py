@@ -55,3 +55,13 @@ def test_seasonal_strength_ranges():
     assert 0.10 <= low <= 0.30, f"Weak seasonal strength out of range: {low}"
     assert 0.50 <= mid <= 0.75, f"Medium seasonal strength out of range: {mid}"
     assert 0.88 <= high <= 0.99, f"Strong seasonal strength out of range: {high}"
+
+
+def test_trend_strength_ranges():
+    result = _run_script(TREND_SCRIPT)
+    values = _extract_strengths(result.stdout, "F_t")
+    assert len(values) == 3, f"Expected 3 trend strength values, got {values}"
+    low, mid, high = sorted(values)
+    assert 0.10 <= low <= 0.30, f"Weak trend strength out of range: {low}"
+    assert 0.50 <= mid <= 0.75, f"Medium trend strength out of range: {mid}"
+    assert 0.88 <= high <= 0.99, f"Strong trend strength out of range: {high}"
