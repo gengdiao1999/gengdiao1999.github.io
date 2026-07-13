@@ -415,6 +415,8 @@ $$
 
 $F_s$ 越接近 1，说明序列的波动主要由季节性解释；越接近 0，则季节性越弱。该指标在 `statsmodels.tsa.seasonal.STL` 分解后可直接计算。
 
+> 图 3-4 展示了不同季节性强度下序列的典型形态，读者可据此判断实际数据中 $F_s$ 的相对强弱。
+
 ### 3.3.3 周期内统计量
 
 将序列按周期位置 $p = t \bmod m$ 分组（$m$ 为周期长度），可计算每个位置上的均值、标准差、偏度与峰度：
@@ -467,11 +469,11 @@ acf_vals = acf(x, nlags=3 * m, fft=True)
 seasonal_acf = [acf_vals[m], acf_vals[2 * m], acf_vals[3 * m]]
 ```
 
-完整脚本见 [`assets/code/03-example-04-seasonality-features.py`](./assets/code/03-example-04-seasonality-features.py)。
+该对比图的完整脚本见 [`assets/code/03-example-04-seasonality-features.py`](./assets/code/03-example-04-seasonality-features.py)。
 
-![图 3-4 STL 分解与季节性强度示例](./assets/images/03-fig-04-seasonality.png)
+![图 3-4 不同季节性强度的序列形态对比](./assets/images/03-fig-04-seasonality.png)
 
-**图 3-4** STL 分解与季节性强度示例。
+**图 3-4** 不同季节性强度的序列形态对比。从上到下依次为弱、中、强季节性示例，标题中标注了对应的季节性强度 $F_s$。$F_s$ 越接近 1，季节波形越清晰；越接近 0，序列越接近噪声。
 
 ---
 
@@ -535,6 +537,8 @@ F_t = 1 - \frac{\text{Var}(R_t)}{\text{Var}(T_t + R_t)}
 $$
 
 $F_t$ 越接近 1，说明序列的波动主要由趋势项解释；越接近 0，则趋势越弱。该指标特别适合评估非线性趋势的显著程度。
+
+> 图 3-5 展示了不同趋势强度下序列的典型形态，读者可据此判断实际数据中 $F_t$ 的相对强弱。
 
 ```python
 from statsmodels.tsa.seasonal import STL
@@ -612,11 +616,11 @@ rolling_signs = np.sign(rolling_slopes)
 sign_changes = np.sum(np.abs(np.diff(rolling_signs[~np.isnan(rolling_signs)])) > 1e-12)
 ```
 
-完整脚本见 [`assets/code/03-example-05-trend-features.py`](./assets/code/03-example-05-trend-features.py)。
+该对比图的完整脚本见 [`assets/code/03-example-05-trend-features.py`](./assets/code/03-example-05-trend-features.py)。
 
-![图 3-5 趋势性特征示例](./assets/images/03-fig-05-trend.png)
+![图 3-5 不同趋势强度的序列形态对比](./assets/images/03-fig-05-trend.png)
 
-**图 3-5** 趋势性特征示例。上图展示了原始序列、线性趋势与 STL 趋势，以及线性 $R^2$、趋势强度 $F_t$、Mann-Kendall $S$ 和滚动斜率符号变化次数；下图展示了滚动窗口斜率及其符号变化。
+**图 3-5** 不同趋势强度的序列形态对比。从上到下依次为弱、中、强趋势性示例，橙色曲线为 STL 提取的趋势项，标题中标注了对应的趋势强度 $F_t$。$F_t$ 越接近 1，趋势项对序列波动的解释程度越高。
 
 ---
 
