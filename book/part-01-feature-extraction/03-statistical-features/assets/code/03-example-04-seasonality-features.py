@@ -62,7 +62,7 @@ plt.rcParams.update({
     "legend.frameon": False,
     "legend.facecolor": "none",
     "legend.edgecolor": "none",
-    "figure.figsize": (10, 5.5),
+    "figure.figsize": (5.25, 5.5),
     "figure.autolayout": True,
 })
 
@@ -104,7 +104,7 @@ configs = [
     {"label": "强季节性", "amp": 1.10, "noise": 0.4, "target_low": 0.88, "target_high": 0.99},
 ]
 
-fig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 5.5))
+fig, axes = plt.subplots(3, 1, sharex=True, figsize=(5.25, 5.5))
 stl_period = period if period % 2 == 1 else period + 1
 results = []
 
