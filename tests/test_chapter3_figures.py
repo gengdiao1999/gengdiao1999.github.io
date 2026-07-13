@@ -1,4 +1,5 @@
 """Regression tests for Chapter 3 figure generation scripts."""
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -38,3 +39,19 @@ def test_run_trend_script():
     _run_script(TREND_SCRIPT)
     assert TREND_FIG.exists()
     assert TREND_FIG.stat().st_size > 0
+
+
+def _extract_strengths(stdout: str, marker: str):
+    """Extract numeric strength values printed by a script."""
+    pattern = re.compile(rf"{marker}\s*=\s*([0-9.]+)")
+    return [float(m) for m in pattern.findall(stdout)]
+
+
+def test_seasonal_strength_ranges():
+    result = _run_script(SEASONALITY_SCRIPT)
+    values = _extract_strengths(result.stdout, "F_s")
+    assert len(values) == 3, f"Expected 3 seasonal strength values, got {values}"
+    low, mid, high = sorted(values)
+    assert 0.10 <= low <= 0.30, f"Weak seasonal strength out of range: {low}"
+    assert 0.50 <= mid <= 0.75, f"Medium seasonal strength out of range: {mid}"
+    assert 0.88 <= high <= 0.99, f"Strong seasonal strength out of range: {high}"
